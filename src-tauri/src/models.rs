@@ -586,17 +586,10 @@ pub struct RefsResult {
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
 pub enum DiscoveryMode {
-    RootProjects,
+    /// Members were found inside a chosen folder (SPEC §7).
+    Discovered,
+    /// Members were picked one by one.
     Manual,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "snake_case")]
-#[ts(export)]
-pub enum MemberRole {
-    Root,
-    Project,
-    Folder,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -619,10 +612,11 @@ pub enum MemberStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct WorkspaceMember {
-    pub role: MemberRole,
     pub origin: MemberOrigin,
     pub display_name: String,
     pub canonical_path: String,
+    /// Absent for a non-Git folder. The root is the member whose ID equals
+    /// `Workspace::root_repository_id`.
     pub repository_id: Option<String>,
     pub status: MemberStatus,
 }
@@ -633,8 +627,12 @@ pub struct Workspace {
     pub id: String,
     pub name: String,
     pub discovery_mode: DiscoveryMode,
+    /// Set when the discovery root is itself a Git repository.
     pub root_repository_id: Option<String>,
-    pub projects_relative_path: Option<String>,
+    /// Canonical path of the folder chosen for discovery; discovered workspaces only.
+    pub discovery_root: Option<String>,
+    /// Folder scanned for repositories, relative to `discovery_root`; absent means the root itself.
+    pub discovery_path: Option<String>,
     pub members: Vec<WorkspaceMember>,
 }
 

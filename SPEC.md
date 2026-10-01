@@ -41,7 +41,7 @@ The product can eventually include PR and CI status, calendar context, recurring
 | Capability | Release | Scope |
 | --- | --- | --- |
 | Add/open one local repository | v0.1 | Folder picker, recent and pinned repositories |
-| Named multi-repository workspaces | v0.1 | Root repo + `projects/` discovery and manual repository selection |
+| Named multi-repository workspaces | v0.1 | Manual repository selection and discovery of repositories inside a chosen folder |
 | Repository overview | v0.1 | Branch, dirty/conflict state, file counts, local upstream comparison, stale/error state |
 | Changes and diff viewer | v0.1 | Staged/unstaged changes, untracked preview, unified text diffs |
 | Commit history and details | v0.1 | Paginated history, commit metadata, changed files, per-file patches |
@@ -144,7 +144,7 @@ The sidebar switches scope. The center shows either an aggregate repository tabl
 | Branches and tags | Read-only local/remote-tracking refs and tags; select a ref to view its history without checking it out |
 | Pinned / Recent | Fast access to repositories and workspaces |
 
-- **Onboarding:** add a repository, select a root repository to discover its `projects/` repositories, create a workspace from selected folders, and choose which discovered repositories to track. Preview resolution errors and let valid entries proceed.
+- **Onboarding:** add a repository, create a workspace by picking repositories or by discovering the repositories inside a chosen folder, and choose which discovered repositories to track. Preview resolution errors and let valid entries proceed.
 - **Single repo:** open a registered repository directly without creating a workspace first.
 - **Multi repo:** see which repositories have changes or conflicts, filter the overview, and drill into one while retaining the selected workspace.
 - **Inspect changes:** select staged/unstaged files and inspect added/deleted lines. A file changed in both places has distinct index and working-tree comparisons.
@@ -296,10 +296,9 @@ The implementation converts this model into versioned SQL migrations at the indi
 | `search_documents` | FTS5 rows: entity type/ID plus title and searchable body | v0.2 |
 | `note_sources` | `note_id`, source type, canonical URL/provider ID, source time, import time, content scope, source hash; derived from note provenance | v0.3 |
 | `import_jobs` | `id`, input reference, adapter, state, staged payload reference, error, result note ID, idempotency key | v0.3 |
-| `workspaces` | `id`, `name`, `discovery_mode` (`root_projects`, `manual`), `root_repository_id?`, `projects_relative_path?` | v0.1 |
-| `workspace_folders` | `id`, `workspace_id`, `display_name`, `canonical_path` | v0.1 |
+| `workspaces` | `id`, `name`, `discovery_mode` (`discovered`, `manual`), `root_repository_id?`, `discovery_root?`, `discovery_path?` | v0.1 |
+| `workspace_members` | `id`, `workspace_id`, `display_name`, `canonical_path`, `origin` (`discovered`, `manual`), `repository_id?` (absent for non-Git folders); unique path per workspace, so one repository can belong to several workspaces | v0.1 |
 | `repositories` | `id`, `canonical_root`, `git_dir`, `common_git_dir`, `last_opened_at?` (drives the Recent list), `last_checked_at`, cached status/error as JSON | v0.1 |
-| `workspace_repositories` | `workspace_id`, `repository_id`, `membership_origin` (`discovered`, `manual`); many-to-many membership | v0.1 |
 | `note_links` | `source_note_id`, `target_note_id?`, `raw_target`, source location; unresolved links retained | v0.2 |
 | `note_repository_links` | `note_id`, `repository_id` | v0.2 |
 | `embedding_profiles` | `id`, provider/model identity, dimensions, distance metric, chunker version | v0.4 |
@@ -312,63 +311,66 @@ Use foreign keys, WAL mode, a bounded busy timeout, and explicit transactions. K
 
 ## 7. Developer workspaces — v0.1
 
-### Primary topology: root repository with child repositories
+### Workspace model
 
-A common layout is a root repository that anchors a workspace, with independent project repositories nested inside it:
+A workspace is a named list of repositories that the user wants to see together. Brainiac imposes no folder layout: members can live anywhere on disk, and one repository can belong to several workspaces. There are two ways to build one, and both produce the same kind of workspace:
+
+- **Manual:** pick repositories one by one. The workspace is a flat list.
+- **Discovered:** pick a folder and let Brainiac find the repositories directly inside it. The chosen folder can itself be a Git repository, in which case it becomes the workspace's **root**, or a plain folder.
+
+Discovery supports layouts such as these without requiring any of them:
 
 ```text
-workspace-root/                 Git repository; also the workspace anchor
-  .git/
-  projects/
-    project-a/                  Independent Git repository
-      .git/
-    project-b/                  Independent Git repository
-      .git/
-    project-n/                  Independent Git repository
-      .git/
+code/                           Plain folder; no root repository
+  api/                          Independent Git repository
+  web/                          Independent Git repository
+
+product/                        Git repository; becomes the workspace root
+  services/                     Discovery folder, chosen by the user
+    billing/                    Independent Git repository
+    search/                     Independent Git repository
 ```
 
-Treat this as a hierarchical workspace containing multiple repositories. The root repository has its own status, history, branches, and diffs. Each child repository has independent Git state. Physical nesting does not imply a monorepo, a submodule relationship, coordinated branches, or atomic changes across repositories. Display actual Git relationships only when detected.
+When a root exists, it has its own status, history, branches, and diffs, and each member repository has independent Git state. Physical nesting does not imply a monorepo, a submodule relationship, coordinated branches, or atomic changes across repositories. Display actual Git relationships only when detected.
 
 #### Discovery and membership
 
-- **Add workspace from root** selects the root repository, defaults the discovery directory to `projects/`, and previews the root plus its discovered children. Keep the relative directory configurable.
-- Enumerate immediate child directories of `projects/`; query Git to resolve each candidate's working-tree root and metadata paths. Register a child only when its resolved canonical Git root equals the candidate directory. A plain folder that inherits the enclosing root's Git context is not another repository.
+- **Add workspace from folder** selects a folder and a discovery folder relative to it. The discovery folder defaults to the selected folder itself; the user can point it at any subfolder. The preview lists the root (if the selected folder is a repository) and the discovered repositories, and the user chooses which to track.
+- Enumerate immediate child directories of the discovery folder; query Git to resolve each candidate's working-tree root and metadata paths. Register a child only when its resolved canonical Git root equals the candidate directory. A plain folder that inherits the enclosing root's Git context is not another repository.
 - Handle `.git` directories and `.git` files, including linked worktrees and actual submodules. Preserve the detected relationship; do not assume every child is a submodule.
-- Include the root repository as a distinct **Root** row and each child as a **Project** row. Keep grouping metadata in workspace membership; repository records can still appear in other workspaces.
-- Deduplicate by canonical checkout root, retaining distinct linked worktree paths. Do not combine separate projects merely because their current branch names match.
-- A missing `projects/` directory leaves the root repository usable and shows the discovery issue. Non-Git children are skipped with a preview explanation; explicitly selected non-Git workspace folders can remain folder entries.
-- Watch the discovery directory for added/removed child folders and expose **Rescan projects**. Refresh the candidate list and surface additions. Mark removed or inaccessible registered projects missing; preserve registrations and future context links until explicitly removed or relocated.
-- Stay within the selected root/discovery directory. Symlinked external projects require explicit selection. Deeper descendants require explicit addition; do not crawl arbitrary nested dependency trees.
-- Brainiac owns its tracked-repository selection independently of editor configuration. The user can select a subset of discovered projects and add other repositories manually.
+- Membership records each member's path, origin (discovered or manual), and repository when it is one; an explicitly selected non-Git folder has none. The root is identified by the workspace's `root_repository_id`, not by a per-member role. Repository records can still appear in other workspaces.
+- Deduplicate by canonical checkout root, retaining distinct linked worktree paths. Do not combine separate repositories merely because their current branch names match.
+- A missing discovery folder leaves the root and any manually added members usable and shows the discovery issue. Non-Git children are skipped with a preview explanation.
+- For discovered workspaces, watch the discovery folder for added/removed child folders and expose **Rescan**. Surface additions for the user to track; never add them silently. Mark removed or inaccessible registered members missing; preserve registrations and future context links until explicitly removed or relocated.
+- Stay within the discovery folder. Symlinked external repositories require explicit selection. Deeper descendants require explicit addition; do not crawl arbitrary nested dependency trees.
+- Brainiac owns its tracked-repository selection independently of editor configuration. Any workspace can gain manually added repositories or drop members, whichever way it was created.
+- A discovered workspace stores the selected folder as `discovery_root` and the scanned folder relative to it as `discovery_path` (absent when the selected folder itself is scanned), so Rescan works whether or not the selected folder is a repository.
 
 #### Presentation and Git boundaries
 
-Show the root followed by an expandable `projects/` group in the sidebar. The overview includes **Root + projects**, **Projects only**, and individual-repository scopes. Aggregate counts reflect the selected scope and retain per-repository attribution; histories and diffs are never implicitly merged into one Git history.
+In the sidebar and the overview, a workspace with a root shows the root first, followed by its other members; discovered members are grouped under the discovery folder's name. A manual workspace shows a flat list. The overview has no layout-specific scope switch: users narrow it with the name/path and state filters and by opening one repository. Aggregate counts retain per-repository attribution; histories and diffs are never implicitly merged into one Git history.
 
-Root-repository status is exactly what Git reports for the root. Child-repository status is collected independently, including when `projects/` is ignored by the root. If the root tracks a child as a gitlink/submodule or reports a nested directory as untracked, display that parent entry as its own observation; it is not a substitute for the child's detailed status. Do not add child file counts into the root's own dirty-file count.
+Root-repository status is exactly what Git reports for the root. Member status is collected independently, including when the root ignores the discovery folder. If the root tracks a member as a gitlink/submodule or reports a nested directory as untracked, display that parent entry as its own observation; it is not a substitute for the member's detailed status. Do not add member file counts into the root's own dirty-file count.
 
 Route working-tree notifications to the most specific registered repository root. Refresh an ancestor when its own tracked state or detected Git relationship may have changed; avoid a full parent status job on every child keystroke. Keep a separate lightweight watcher for workspace membership discovery. Treat each linked worktree's available project folders independently; do not assume a root worktree automatically contains every child checkout.
 
 ### Relationship to editor workspace files
 
-Editor workspace files such as VS Code's `.code-workspace` often describe the same topology: a root folder plus a list of project folders, some commented out, alongside editor-only settings such as `files.exclude` and task definitions. Reading, importing, watching, rewriting, or synchronizing such files is not a v0.1 requirement.
+Editor workspace files such as VS Code's `.code-workspace` often describe a similar grouping: a list of folders, some commented out, alongside editor-only settings such as `files.exclude` and task definitions. Reading, importing, watching, rewriting, or synchronizing such files is not a v0.1 requirement.
 
-The resulting navigation for such a workspace looks like:
+A discovered workspace with a root renders in the sidebar like this; a manual one omits the root and the group:
 
 ```text
-Work workspace
-  Root
-  projects/
-    api
-    gateway
-    admin
-    web-ui
+Product
+  product            root
+  services/
+    billing
+    search
 ```
 
-v0.1 supports this arrangement by selecting the root, discovering actual repositories under `projects/`, and letting the user choose which ones to track. Other repositories on disk may be selected too. Brainiac's selection is persisted in its own SQLite configuration; an editor's active or commented folder entries do not determine membership.
+v0.1 recreates such a grouping by discovery from a folder, by manual selection, or both. Brainiac's selection is persisted in its own SQLite configuration; an editor's active or commented folder entries do not determine membership.
 
-Editor display settings such as hiding `projects/` or `.git` do not change Brainiac's tracking model. Each selected repository remains independently inspectable. Task or launch definitions found in such files introduce no launcher requirement and are never executed.
+Editor display settings such as hiding folders or `.git` do not change Brainiac's tracking model. Each selected repository remains independently inspectable. Task or launch definitions found in such files introduce no launcher requirement and are never executed.
 
 A `.code-workspace` convenience importer can be considered later if useful. It is outside v0.1 acceptance criteria, with no required ongoing synchronization.
 
@@ -569,7 +571,7 @@ Snapshot import is the default. Live synchronization, scheduled bulk acquisition
 3. **v0.3.x:** one authenticated connector, selected by daily use—Jira or the email provider—and validated video metadata/transcript improvements.
 4. **Later:** browser/share entry points, optional forwarding service, batches, and explicit synchronization.
 
-All external content-import behavior starts in v0.3. Selecting local repositories and discovering `projects/` in v0.1 is workspace configuration, separate from importing knowledge content.
+All external content-import behavior starts in v0.3. Selecting local repositories and discovering them inside a folder in v0.1 is workspace configuration, separate from importing knowledge content.
 
 **Acceptance scenario:** capture an email, an issue excerpt, an article, and a video reference into the Inbox; add commentary, create a task from one item, find captured material offline, open each original source, retry an interrupted import without duplicates, and identify which items contain only metadata.
 
@@ -651,7 +653,7 @@ Commands are thin adapters over Rust services. Use `#[tauri::command]`, serializ
 | `prepare_import` / `commit_import` / `list_import_jobs` | Source input or job ID; preview/provenance, duplicate choice, resulting note, retry state |
 | `get_app_snapshot` | v0.1 repositories/workspaces, settings and observation versions; optional vault/tasks/indexing added in v0.2 |
 | `rebuild_search` / `export_backup` / `restore_backup` | Job ID, progress and explicit completion |
-| `register_repository` / `create_workspace` / `discover_projects` / `update_workspace_membership` / `refresh_repository` | v0.1: validated registration, root-based/manual workspace configuration, discovered candidates, selected membership, timestamped status |
+| `register_repository` / `create_workspace` / `discover_repositories` / `update_workspace_membership` / `refresh_repository` | v0.1: validated registration, discovered/manual workspace configuration, discovered candidates, selected membership, timestamped status |
 | `list_repositories` / `list_changes` / `get_diff` | v0.1: workspace/filter scope, repository ID, diff kind and safe file selector; bounded results |
 | `list_commits` / `get_commit` / `list_refs` | v0.1: repository/ref scope, pagination cursor or commit ID; history/details/ref DTOs |
 | `configure_shortcut` | v0.3: validated binding and registration result |
@@ -742,15 +744,16 @@ type RefsResult = { repository_id: string; refs: RefEntry[] };
 
 type Workspace = {
   id: string; name: string;
-  discovery_mode: "root_projects" | "manual";
-  root_repository_id?: string; projects_relative_path?: string;
+  discovery_mode: "discovered" | "manual";
+  root_repository_id?: string;            // set when discovery_root is itself a repository
+  discovery_root?: string;                // discovered only: canonical path of the selected folder
+  discovery_path?: string;                // discovered only: scanned folder relative to discovery_root; absent = discovery_root
   members: WorkspaceMember[];
 };
 type WorkspaceMember = {
-  role: "root" | "project" | "folder";
   origin: "discovered" | "manual";
   display_name: string; canonical_path: string;
-  repository_id?: string;                 // absent for non-Git folders
+  repository_id?: string;                 // absent for non-Git folders; equals root_repository_id for the root
   status: "ok" | "missing" | "not_git";
 };
 type WorkspacePreview = {
@@ -765,7 +768,7 @@ type RepositoryChangedEvent = { repository_id: string; snapshot_version: number;
 // changed is false when a timer/wake poll or a list_changes call observed the same status as before; watcher, manual refresh, and registration events are always changed
 ```
 
-Commands map onto these as follows: `get_app_snapshot → AppSnapshot`; `register_repository(path) → RepositorySummary`; `remove_repository(id)`; `open_repository(id)` marks it recent; `set_repository_tab(id, tab)`; `open_in_editor(id, path?, line?)`; `reveal_in_finder(id, path?)`; `discover_projects(root_path, projects_relative_path?) → WorkspacePreview`; `create_workspace(name, mode, selected entries) → Workspace`; `update_workspace_membership(workspace_id, entries) → Workspace`; `refresh_repository(id) → RepositorySummary`; `list_changes(id) → ChangesResult`; `get_diff(id, DiffSelector) → DiffResult`; `list_commits(ListCommitsRequest) → CommitPage`; `get_commit(id, commit_id, parent_index?) → CommitDetail`; `list_refs(id) → RefsResult`. Every result carries the repository ID so a late response for a previously selected repository can be discarded by the frontend.
+Commands map onto these as follows: `get_app_snapshot → AppSnapshot`; `register_repository(path) → RepositorySummary`; `remove_repository(id)`; `open_repository(id)` marks it recent; `set_repository_tab(id, tab)`; `open_in_editor(id, path?, line?)`; `reveal_in_finder(id, path?)`; `discover_repositories(folder_path, discovery_path?) → WorkspacePreview`; `create_workspace(name, mode, selected entries) → Workspace`; `update_workspace_membership(workspace_id, entries) → Workspace`; `refresh_repository(id) → RepositorySummary`; `list_changes(id) → ChangesResult`; `get_diff(id, DiffSelector) → DiffResult`; `list_commits(ListCommitsRequest) → CommitPage`; `get_commit(id, commit_id, parent_index?) → CommitDetail`; `list_refs(id) → RefsResult`. Every result carries the repository ID so a late response for a previously selected repository can be discarded by the frontend.
 
 Committed notifications include `note_changed`, `note_missing`, `task_changed`, `repository_changed`, and `index_status_changed`. Scope payloads to the authorized window. Do not broadcast note contents through global events. Commands return definitive state even if an event is missed. [Tauri frontend events](https://v2.tauri.app/develop/calling-frontend/)
 
@@ -842,7 +845,7 @@ M0 landed on 1 October 2026 with 58 Rust tests and 3 frontend tests. Known M0 si
 ### v0.1 — Git viewer and repository tracker
 
 - [ ] Add/open one repository directly; persist recent/pinned repositories and relocate missing paths.
-- [ ] Create a workspace from a root repository and discover independent repositories under `projects/`, with root/project grouping and rescan.
+- [ ] Create a workspace manually or by discovering independent repositories inside a chosen folder, with optional root grouping and rescan.
 - [ ] Let the user choose which discovered repositories to track and manage membership independently of their IDE.
 - [ ] Aggregate status table, unique changed-file counts, dirty/conflicted/stale filters, partial-error handling.
 - [ ] Changes list with staged/unstaged diffs, untracked previews, conflict and binary/large-file states.
@@ -852,9 +855,9 @@ M0 landed on 1 October 2026 with 58 Rust tests and 3 frontend tests. Known M0 si
 - [ ] Repository/workspace command palette, copy hashes/paths, Open in editor, Reveal in Finder.
 - [ ] SQLite snapshot backup of settings/workspaces (export manifest is v0.2); no note vault, account, FTS index, or model required.
 
-**Exit gate:** use the app for a week with both a standalone repository and a root + `projects/` multi-repository workspace. Identify dirty/conflicted repos, inspect staged and unstaged patches, navigate history and refs, observe external changes, retain registrations after restart, and recover from one slow/missing repo while the rest remain usable. Confirm viewing does not alter working files, refs, or the index.
+**Exit gate:** use the app for a week with a standalone repository, a manual workspace, and a discovered workspace whose folder is itself a repository. Identify dirty/conflicted repos, inspect staged and unstaged patches, navigate history and refs, observe external changes, retain registrations after restart, and recover from one slow/missing repo while the rest remain usable. Confirm viewing does not alter working files, refs, or the index.
 
-**Topology acceptance:** select the root once and discover its direct `projects/*` repositories. Root and child changes remain separately attributed even when the root ignores `projects/`. Adding/removing a child is detected, plain child folders do not become false repositories, and repeated discovery/manual selection does not duplicate registrations. Include independent nested repos, a linked worktree, and an actual submodule in fixtures.
+**Topology acceptance:** select a folder once and discover the repositories directly inside its discovery folder, both when the discovery folder is the selected folder and when it is a subfolder, and both when the selected folder is a repository and when it is not. Root and member changes remain separately attributed even when the root ignores the discovery folder. Adding/removing a child is detected, plain child folders do not become false repositories, and repeated discovery/manual selection does not duplicate registrations. Include independent nested repos, a linked worktree, and an actual submodule in fixtures.
 
 **Setup acceptance:** configure the root plus the selected project repositories through folder discovery/selection, persist that selection across restart, and inspect all of them without reading or depending on the IDE workspace file.
 
@@ -917,7 +920,7 @@ Remote services require their own authentication, rate-limit, cache, error, and 
 - SQLite stores authoritative tasks/application data and rebuildable search caches.
 - Keyword and vector search coexist; optional local AI follows usable retrieval.
 - Multi-repository workspace support is part of the product roadmap.
-- The primary supported topology is a root Git repository with independent project repositories directly inside `projects/`.
+- Workspaces impose no folder layout: they are built by manual selection or by discovering repositories inside a user-chosen folder, which may itself be a root repository.
 - Open source from day one: the repository holds no company-specific paths, workspace files, or credentials, and test fixtures are synthetic.
 
 ### Proposed defaults

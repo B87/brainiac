@@ -2,4 +2,16 @@
 import type { DiscoveryMode } from "./DiscoveryMode";
 import type { WorkspaceMember } from "./WorkspaceMember";
 
-export type Workspace = { id: string, name: string, discovery_mode: DiscoveryMode, root_repository_id: string | null, projects_relative_path: string | null, members: Array<WorkspaceMember>, };
+export type Workspace = { id: string, name: string, discovery_mode: DiscoveryMode, 
+/**
+ * Set when the discovery root is itself a Git repository.
+ */
+root_repository_id: string | null, 
+/**
+ * Canonical path of the folder chosen for discovery; discovered workspaces only.
+ */
+discovery_root: string | null, 
+/**
+ * Folder scanned for repositories, relative to `discovery_root`; absent means the root itself.
+ */
+discovery_path: string | null, members: Array<WorkspaceMember>, };

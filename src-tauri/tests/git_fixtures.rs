@@ -771,6 +771,43 @@ async fn watcher_notices_unstaged_edit_without_git_metadata_change() {
     let _ = PathBuf::new();
 }
 
+#[test]
+fn enum_columns_use_lookup_tables() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = Db::open(&tmp.path().join("brainiac.sqlite3")).unwrap();
+    db.call_blocking(|c| {
+        c.execute(
+            "INSERT INTO workspaces (id, name, discovery_mode, created_at) \
+             VALUES ('w1', 'Work', 'manual', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        // An unknown value is rejected by the foreign key, as a CHECK would.
+        let bad = c.execute(
+            "INSERT INTO workspaces (id, name, discovery_mode, created_at) \
+             VALUES ('w2', 'Bad', 'nested', '2026-01-01T00:00:00Z')",
+            [],
+        );
+        assert!(bad.is_err(), "unknown discovery_mode must be rejected");
+        // Renaming a value updates the lookup row; the workspace row follows.
+        c.execute(
+            "UPDATE discovery_modes SET name = 'picked' WHERE name = 'manual'",
+            [],
+        )
+        .unwrap();
+        let mode: String = c
+            .query_row(
+                "SELECT discovery_mode FROM workspaces WHERE id = 'w1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(mode, "picked");
+        Ok(())
+    })
+    .unwrap();
+}
+
 #[tokio::test]
 async fn database_migrates_backs_up_and_keeps_settings() {
     let tmp = tempfile::tempdir().unwrap();
