@@ -55,8 +55,10 @@ jobs:
 
       - name: Install Rust (version from rust-toolchain.toml)
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      # The action's `targets` input only applies to its own `stable` channel;
+      # the pinned toolchain from rust-toolchain.toml needs the targets added itself.
+      - name: Add macOS targets to the pinned toolchain
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
