@@ -18,6 +18,15 @@ Brainiac never runs `checkout`, `commit`, `stash`, `fetch`, hooks, or anything f
 
 Download the `.dmg` from the [latest release](https://github.com/B87/brainiac/releases/latest), open it and drag Brainiac to Applications. The build is universal (Apple Silicon and Intel).
 
+Or let a script do it, including the Gatekeeper step below:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/B87/brainiac/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/B87/brainiac/main/scripts/install.sh | bash -s -- v0.1.0   # a specific tag
+```
+
+From a checkout, `scripts/install.sh [tag]` does the same, and `scripts/install.sh --dmg <file>` installs a local build.
+
 Releases are not yet signed with an Apple Developer certificate, so macOS blocks the first launch. Right-click `Brainiac.app` in Applications, choose **Open**, and confirm once. Alternatively:
 
 ```sh
