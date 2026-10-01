@@ -49,7 +49,7 @@ if [[ -z "$dmg" ]]; then
     if [[ -z "$tag" ]]; then
       tag=$(gh release view --repo "$REPO" --json tagName --jq .tagName)
     fi
-    echo "Downloading $tag with gh…"
+    echo "Downloading $tag with gh..."
     gh release download "$tag" --repo "$REPO" --pattern '*.dmg' --dir "$tmp"
   else
     if [[ -z "$tag" ]]; then
@@ -62,7 +62,7 @@ if [[ -z "$dmg" ]]; then
     fi
     version="${tag#v}"
     url="https://github.com/$REPO/releases/download/$tag/Brainiac_${version}_universal.dmg"
-    echo "Downloading $url…"
+    echo "Downloading $url..."
     curl -fL --progress-bar -o "$tmp/Brainiac.dmg" "$url"
   fi
   for candidate in "$tmp"/*.dmg; do dmg="$candidate"; break; done
@@ -73,7 +73,7 @@ if [[ ! -f "$dmg" ]]; then
 fi
 
 # --- Mount, copy, unmount -----------------------------------------------------
-echo "Mounting $(basename "$dmg")…"
+echo "Mounting $(basename "$dmg")..."
 mount_point=$(hdiutil attach -nobrowse -readonly -noautoopen "$dmg" \
   | awk -F'\t' '/\/Volumes\// { print $NF }' | tail -n1)
 if [[ -z "$mount_point" || ! -d "$mount_point/$APP" ]]; then
@@ -82,25 +82,25 @@ if [[ -z "$mount_point" || ! -d "$mount_point/$APP" ]]; then
 fi
 
 if pgrep -xq Brainiac; then
-  echo "Quitting the running Brainiac…"
+  echo "Quitting the running Brainiac..."
   osascript -e 'tell application "Brainiac" to quit' >/dev/null 2>&1 || pkill -x Brainiac || true
   sleep 1
 fi
 
 mkdir -p "$dest"
-if [[ -d "$dest/$APP" ]]; then
-  echo "Replacing $dest/$APP…"
+if [[ -d "${dest}/${APP}" ]]; then
+  echo "Replacing ${dest}/${APP}..."
   rm -rf "${dest:?}/${APP:?}"
 fi
 # ditto preserves bundle metadata and code signature; cp -R does not always.
-ditto "$mount_point/$APP" "$dest/$APP"
+ditto "$mount_point/$APP" "${dest}/${APP}"
 
 # Releases are ad-hoc signed; without this Gatekeeper refuses to open the app.
-xattr -dr com.apple.quarantine "$dest/$APP" 2>/dev/null || true
+xattr -dr com.apple.quarantine "${dest}/${APP}" 2>/dev/null || true
 
-installed=$(defaults read "$dest/$APP/Contents/Info" CFBundleShortVersionString 2>/dev/null || echo "?")
-echo "Installed Brainiac $installed to $dest/$APP"
+installed=$(defaults read "${dest}/${APP}/Contents/Info" CFBundleShortVersionString 2>/dev/null || echo "?")
+echo "Installed Brainiac $installed to ${dest}/${APP}"
 
 if [[ "$launch" -eq 1 ]]; then
-  open "$dest/$APP"
+  open "${dest}/${APP}"
 fi
