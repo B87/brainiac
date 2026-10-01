@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  displayWidth,
   hunkAtRow,
   hunkRowIndexes,
+  longestLines,
   pairLines,
   splitRows,
   tokenize,
@@ -119,5 +121,17 @@ describe("wordDiff", () => {
     const words = wordHighlighter([hunk(lines)]);
     for (const l of lines.slice(0, 80)) words(l);
     expect(performance.now() - started).toBeLessThan(500);
+  });
+});
+
+describe("split column widths", () => {
+  it("counts tab stops and wide characters", () => {
+    expect(displayWidth("ab")).toBe(2);
+    expect(displayWidth("\tx")).toBe(5);
+    expect(displayWidth("ab\tx")).toBe(5);
+    expect(displayWidth("日本")).toBe(4);
+    expect(displayWidth("ok 👍")).toBe(5);
+    const h = hunk([del(1, "\t\treturn"), add(1, "x")]);
+    expect(longestLines([h])).toEqual({ old: 14, new: 1 });
   });
 });

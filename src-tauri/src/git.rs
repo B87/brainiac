@@ -50,6 +50,8 @@ const FETCH_CONFIG: &[&str] = &[
     "fetch.writeCommitGraph=false",
     "-c",
     "core.hooksPath=/dev/null",
+    "-c",
+    "transfer.bundleURI=false",
 ];
 
 /// Command-line options of every fetch; these beat any configuration. An
@@ -67,10 +69,9 @@ const FETCH_FLAGS: &[&str] = &[
     "--quiet",
 ];
 
-/// Lock files that mean another Git process is changing the repository.
+/// Lock files that mean another Git process is changing what a fetch writes
+/// (the index and `HEAD` are not among them: a commit can run alongside).
 const LOCK_FILES: &[&str] = &[
-    "index.lock",
-    "HEAD.lock",
     "packed-refs.lock",
     "shallow.lock",
     "reftable/tables.list.lock",
@@ -301,10 +302,14 @@ impl GitService {
             AppError::dependency("Could not start Git.")
                 .with_details(format!("{}: {e}", self.binary.display()))
         })?;
-        let mut stdout = child.stdout.take().expect("stdout piped");
+        let stdout = child.stdout.take().expect("stdout piped");
         let mut stderr = child.stderr.take().expect("stderr piped");
 
-        let read_all = async {
+        // `move` gives the block the stdout pipe, so stopping early closes it:
+        // Git, still writing, gets EPIPE and exits. Keeping the pipe open
+        // would leave Git blocked on a full pipe until the timeout.
+        let read_all = async move {
+            let mut stdout = stdout;
             let mut out = Vec::new();
             let mut buf = vec![0u8; 64 * 1024];
             let mut truncated = false;
@@ -436,17 +441,63 @@ impl GitService {
                 ],
             )
             .await?;
-        let mut snapshot = parse_status_v2(&out)?;
-        snapshot.last_commit_at = match snapshot.head.commit_id.as_deref() {
-            Some(id) => self
-                .run_raw(Some(root), &["log", "-1", "--format=%cI", id, "--"])
-                .await
-                .ok()
-                .map(|b| String::from_utf8_lossy(&b).trim().to_string())
-                .filter(|s| !s.is_empty()),
-            None => None,
+        parse_status_v2(&out)
+    }
+
+    /// Committer date of a commit, RFC 3339.
+    pub async fn commit_time(&self, root: &Path, commit_id: &str) -> Option<String> {
+        validate_revision(commit_id).ok()?;
+        let out = self
+            .run_raw(
+                Some(root),
+                &[
+                    "log",
+                    "-1",
+                    "--format=%cI",
+                    "--end-of-options",
+                    commit_id,
+                    "--",
+                ],
+            )
+            .await
+            .ok()?;
+        Some(String::from_utf8_lossy(&out).trim().to_string()).filter(|s| !s.is_empty())
+    }
+
+    /// Whether a ref pattern is valid for Git: `refs/heads/<p>` as a fetch
+    /// refspec pattern (one `*` at most) for branches, `refs/tags/<p>` with
+    /// each `*` standing for a name character for tags (which are only matched).
+    pub async fn ref_pattern_ok(&self, pattern: &str, branch: bool) -> bool {
+        if pattern.starts_with('-') {
+            return false;
+        }
+        let (args, full) = if branch {
+            (
+                vec!["check-ref-format", "--refspec-pattern"],
+                format!("refs/heads/{pattern}"),
+            )
+        } else {
+            (
+                vec!["check-ref-format"],
+                format!("refs/tags/{}", pattern.replace('*', "x")),
+            )
         };
-        Ok(snapshot)
+        let mut args = args;
+        args.push(&full);
+        self.exec(None, &args, 1024, &[], self.timeout)
+            .await
+            .is_ok_and(|out| out.success())
+    }
+
+    /// Whether `id` names an object in the repository. Errors other than
+    /// "missing" (a timeout, a failed spawn) are errors.
+    pub async fn object_exists(&self, root: &Path, id: &str) -> AppResult<bool> {
+        validate_revision(id)?;
+        let args = ["cat-file", "-e", "--end-of-options", id];
+        let out = self
+            .exec(Some(root), &args, 1024, &[], self.timeout)
+            .await?;
+        Ok(out.success())
     }
 
     // -----------------------------------------------------------------------
@@ -1109,15 +1160,15 @@ impl GitService {
     // Activity (SPEC.md, Workspace activity)
     // -----------------------------------------------------------------------
 
-    /// Tips of remote-tracking branches and tags as `(full name, commit id)`,
-    /// annotated tags peeled to their commit. Symbolic refs are skipped.
-    pub async fn remote_and_tag_tips(&self, root: &Path) -> AppResult<Vec<(String, String)>> {
+    /// Tips of remote-tracking branches and tags, annotated tags peeled to
+    /// their commit. Symbolic refs are skipped.
+    pub async fn remote_and_tag_tips(&self, root: &Path) -> AppResult<Vec<RefTip>> {
         let out = self
             .run_raw(
                 Some(root),
                 &[
                     "for-each-ref",
-                    "--format=%(refname)%1f%(objectname)%1f%(*objectname)%1f%(symref)",
+                    "--format=%(refname)%1f%(objectname)%1f%(*objectname)%1f%(symref)%1f%(creatordate:unix)",
                     "refs/remotes",
                     "refs/tags",
                 ],
@@ -1301,26 +1352,6 @@ impl GitService {
             })
             .collect())
     }
-
-    /// Tags with their creation dates (tagger date, or the commit date for
-    /// lightweight tags), as `(short name, RFC 3339)`.
-    pub async fn tag_dates(&self, root: &Path) -> AppResult<Vec<(String, String)>> {
-        let out = self
-            .run_raw(
-                Some(root),
-                &[
-                    "for-each-ref",
-                    "--format=%(refname:short)%1f%(creatordate:iso-strict)",
-                    "refs/tags",
-                ],
-            )
-            .await?;
-        Ok(String::from_utf8_lossy(&out)
-            .lines()
-            .filter_map(|l| l.split_once(FIELD_SEP))
-            .map(|(n, d)| (n.to_string(), d.to_string()))
-            .collect())
-    }
 }
 
 /// `path -> (additions, deletions)`; both `None` for a binary file.
@@ -1366,14 +1397,21 @@ pub fn refspec_is_safe(spec: &str, remote: &str) -> bool {
     if let Some(neg) = spec.strip_prefix('^') {
         return neg.starts_with("refs/") && !neg.contains(':');
     }
+    let forced = spec.starts_with('+');
     let spec = spec.strip_prefix('+').unwrap_or(spec);
     let Some((src, dst)) = spec.split_once(':') else {
         // No destination: only FETCH_HEAD, which `--no-write-fetch-head` skips.
         return false;
     };
-    !src.is_empty()
-        && !dst.contains("..")
-        && (dst.starts_with(&format!("refs/remotes/{remote}/")) || dst.starts_with("refs/tags/"))
+    if src.is_empty() || dst.contains("..") {
+        return false;
+    }
+    // Tags: only a tag into the same name, never forced, so a fetch cannot
+    // overwrite the user's own tags.
+    if dst.starts_with("refs/tags/") {
+        return !forced && src == dst;
+    }
+    dst.starts_with(&format!("refs/remotes/{remote}/"))
 }
 
 /// The source side of a refspec, without `+`: `refs/heads/main`.
@@ -1478,8 +1516,19 @@ pub fn classify_fetch_error(remote: &str, stderr: &str) -> AppError {
     }
 }
 
+/// One remote-tracking branch or tag.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefTip {
+    /// Full ref name.
+    pub name: String,
+    /// The commit it points at (annotated tags peeled).
+    pub target: String,
+    /// When it was made, Unix seconds: the tag's date, or the tip commit's.
+    pub time: i64,
+}
+
 /// Parse the `remote_and_tag_tips` format.
-pub fn parse_tips(bytes: &[u8]) -> Vec<(String, String)> {
+pub fn parse_tips(bytes: &[u8]) -> Vec<RefTip> {
     String::from_utf8_lossy(bytes)
         .lines()
         .filter_map(|line| {
@@ -1488,7 +1537,11 @@ pub fn parse_tips(bytes: &[u8]) -> Vec<(String, String)> {
                 return None;
             }
             let target = if f[2].is_empty() { f[1] } else { f[2] };
-            Some((f[0].to_string(), target.to_string()))
+            Some(RefTip {
+                name: f[0].to_string(),
+                target: target.to_string(),
+                time: f.get(4).and_then(|t| t.trim().parse().ok()).unwrap_or(0),
+            })
         })
         .collect()
 }
@@ -2481,6 +2534,8 @@ mod tests {
             "origin"
         ));
         assert!(refspec_is_safe("refs/tags/*:refs/tags/*", "origin"));
+        assert!(!refspec_is_safe("+refs/tags/*:refs/tags/*", "origin"));
+        assert!(!refspec_is_safe("+refs/heads/*:refs/tags/*", "origin"));
         assert!(refspec_is_safe("^refs/heads/wip/*", "origin"));
         assert!(!refspec_is_safe("+refs/heads/*:refs/heads/*", "origin"));
         assert!(!refspec_is_safe(

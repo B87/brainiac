@@ -6,13 +6,19 @@
 //! pass per directory at a time, so two observations that race (a fetch and
 //! the watcher it triggers) cannot record the same move twice.
 //!
+//! The tracker is the only owner of its tables (the private `store` module):
+//! its in-memory state (fingerprints, caches) can only be invalidated through
+//! it, for example by `forget` when a repository's last checkout goes away.
+//!
 //! A pass is cheap when nothing moved: the ref files' modification times and
-//! the watched patterns are fingerprinted, and an unchanged fingerprint skips
-//! Git and the database. The stored baseline remembers which patterns it
-//! covers; refs that start matching later (a new pattern, a second workspace)
-//! join it silently instead of arriving as news.
+//! the watched patterns are fingerprinted, and an unchanged, recent
+//! fingerprint skips Git and the database. The stored baseline remembers which
+//! patterns it covers; refs that start matching later (a new pattern, a second
+//! workspace, a new remote) join it silently instead of arriving as news.
 //!
 //! Everything is read from local refs; news arrives when a fetch moves them.
+
+mod store;
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
@@ -23,27 +29,32 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::db::{self, Db, EventRow};
+use crate::db::{self, Db, WatchConfig};
 use crate::git::{Checkout, GitService, RefName};
 use crate::models::{
     now_rfc3339, ActivityDetail, ActivityDrift, ActivityItem, ActivityKind, ActivitySettings,
     AppError, AppResult, HeadKind, PulseAuthor, StatusSnapshot, TeamPulse,
 };
+use store::{EventRow, Filter};
 
 /// Commits listed on one event.
 const EVENT_COMMITS: u32 = 5;
 /// Overlapping paths listed on one event.
 const MAX_CONFLICT_PATHS: usize = 20;
-/// Events one pass records; further moves join the baseline silently, so a
-/// burst (hundreds of new tags) cannot flood the feed or stall refreshes.
+/// Events one pass records, newest first; further moves join the baseline
+/// silently, so a burst (hundreds of new tags) cannot flood the feed or
+/// stall refreshes.
 const MAX_EVENTS_PER_PASS: usize = 20;
 /// Events kept, and events returned to the Activity tab.
 const RETENTION_DAYS: i64 = 90;
 const FEED_LIMIT: usize = 200;
 /// At most one "branch moved" notification per repository and workspace in this window.
 const NOTIFY_EVERY: Duration = Duration::from_secs(60 * 60);
-/// Ref directories looked at for the fingerprint.
+/// Ref directories looked at for the fingerprint, per kind (remotes, tags).
 const MAX_STAMP_DIRS: usize = 5000;
+/// A fingerprint older than this is not trusted: filesystems with coarse
+/// modification times can miss a second update within one tick.
+const FINGERPRINT_TTL: Duration = Duration::from_secs(5 * 60);
 
 /// A notification to show.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,6 +75,15 @@ pub struct Pass {
 pub struct Feed {
     pub items: Vec<ActivityItem>,
     pub unseen: u32,
+}
+
+/// What the tracker needs to know about a workspace to count its unread events.
+#[derive(Debug, Clone)]
+pub struct WorkspaceScope {
+    pub workspace_id: String,
+    pub config: WatchConfig,
+    /// The workspace's Git directories.
+    pub stores: Vec<String>,
 }
 
 /// Watched patterns, sorted and without duplicates so that equal sets
@@ -101,11 +121,6 @@ impl Watched {
         let patterns = if is_tag { &self.tags } else { &self.branches };
         patterns.iter().any(|p| glob_match(p, name))
     }
-
-    /// Whether a stored event is watched.
-    fn covers(&self, e: &EventRow) -> bool {
-        self.matches(e.ref_name.starts_with("refs/tags/"), &e.match_name)
-    }
 }
 
 /// A watched ref as observed now.
@@ -114,7 +129,17 @@ struct Tip {
     full: String,
     target: String,
     is_tag: bool,
+    /// The remote of a remote-tracking branch.
+    remote: Option<String>,
     match_name: String,
+    /// When the tag or tip commit was made, Unix seconds.
+    time: i64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Fingerprint {
+    value: u64,
+    at: Instant,
 }
 
 pub struct ActivityTracker {
@@ -123,11 +148,11 @@ pub struct ActivityTracker {
     /// the pass holds it across `.await`s (Git subprocesses).
     locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// Fingerprint of ref files and watched patterns at the last completed
-    /// pass, per Git directory. `0` marks a directory nothing watches.
-    fingerprints: Mutex<HashMap<String, u64>>,
+    /// pass, per Git directory. `value == 0` marks a directory nothing watches.
+    fingerprints: Mutex<HashMap<String, Fingerprint>>,
     last_notified: Mutex<HashMap<(String, String), Instant>>,
-    /// Team-pulse inputs per Git directory and watched patterns, reused while
-    /// the ref files are unchanged (the same fingerprint as tracking passes).
+    /// Team-pulse inputs per Git directory, reused while the ref files and
+    /// the patterns they were read for are unchanged.
     pulse_cache: Mutex<HashMap<String, RepoPulse>>,
 }
 
@@ -157,19 +182,49 @@ impl ActivityTracker {
             .lock()
             .expect("fingerprints")
             .get(store)
-            .copied()
+            .filter(|f| f.value == 0 || f.at.elapsed() < FINGERPRINT_TTL)
+            .map(|f| f.value)
     }
 
     fn set_fingerprint(&self, store: &str, value: u64) {
+        self.fingerprints.lock().expect("fingerprints").insert(
+            store.to_string(),
+            Fingerprint {
+                value,
+                at: Instant::now(),
+            },
+        );
+    }
+
+    /// Forget a Git directory: its baseline and tips, and with `events` its
+    /// feed, plus everything held in memory for it. The next pass starts over
+    /// silently. Waits for a pass in progress, so none can write it back.
+    pub async fn forget(&self, store: &str, events: bool) -> AppResult<()> {
+        let lock = self.lock_for(store);
+        let _pass = lock.lock().await;
+        let s = store.to_string();
+        self.db
+            .call(move |conn| store::forget(conn, &s, events))
+            .await?;
         self.fingerprints
             .lock()
             .expect("fingerprints")
-            .insert(store.to_string(), value);
+            .remove(store);
+        self.pulse_cache.lock().expect("pulse cache").remove(store);
+        self.last_notified
+            .lock()
+            .expect("notify lock")
+            .retain(|(s, _), _| s != store);
+        if events {
+            self.locks.lock().expect("tracker locks").remove(store);
+        }
+        Ok(())
     }
 
     /// Record events for watched refs of `checkout`'s Git directory that moved
     /// since the last pass. `status` is the checkout's current observation,
-    /// used for conflict-risk and drift details.
+    /// used for conflict-risk and drift details. A Git failure that leaves
+    /// the moves undecided fails the pass, which is then retried.
     pub async fn observe(
         &self,
         git: &GitService,
@@ -186,14 +241,14 @@ impl ActivityTracker {
                 .call(move |conn| db::watchers_of_store(conn, &store))
                 .await?
         };
-        let watched = Watched::union(watchers.iter().map(|w| &w.settings));
+        let watched = Watched::union(watchers.iter().map(|w| &w.config.settings));
         if watched.is_empty() {
             // Not watched any more: drop the baseline once, so watching it
             // again later starts silently instead of reporting old moves.
             if self.fingerprint(&store) != Some(0) {
                 let s = store.clone();
                 self.db
-                    .call(move |conn| db::forget_store(conn, &s, false))
+                    .call(move |conn| store::forget(conn, &s, false))
                     .await?;
                 self.set_fingerprint(&store, 0);
             }
@@ -213,42 +268,63 @@ impl ActivityTracker {
 
         let root = checkout.root.as_path();
         let remotes = git.remotes(root).await?;
-        let tips: Vec<Tip> = git
+        let mut tips: Vec<Tip> = git
             .remote_and_tag_tips(root)
             .await?
             .into_iter()
-            .filter_map(|(full, target)| {
-                let (is_tag, name) = match RefName::parse(&full, &remotes) {
-                    RefName::RemoteBranch { branch, .. } => (false, branch.to_string()),
-                    RefName::Tag(tag) => (true, tag.to_string()),
+            .filter_map(|t| {
+                let (is_tag, remote, name) = match RefName::parse(&t.name, &remotes) {
+                    RefName::RemoteBranch { remote, branch } => {
+                        (false, Some(remote.to_string()), branch.to_string())
+                    }
+                    RefName::Tag(tag) => (true, None, tag.to_string()),
                     RefName::Other => return None,
                 };
                 watched.matches(is_tag, &name).then_some(Tip {
-                    full,
-                    target,
+                    full: t.name,
+                    target: t.target,
                     is_tag,
+                    remote,
                     match_name: name,
+                    time: t.time,
                 })
             })
             .collect();
+        // Newest first, so the per-pass cap keeps the latest news.
+        tips.sort_by(|a, b| b.time.cmp(&a.time).then(a.full.cmp(&b.full)));
         let previous = {
             let store = store.clone();
-            self.db.call(move |conn| db::baseline(conn, &store)).await?
+            self.db
+                .call(move |conn| store::baseline(conn, &store))
+                .await?
         };
         let (old_watched, stored) = match previous {
             Some((json, tips)) => (serde_json::from_str::<Watched>(&json).ok(), tips),
             None => (None, HashMap::new()),
         };
+        // Remotes the baseline already knew: a new or renamed remote's
+        // branches join silently, they are not news.
+        let known_remotes: HashSet<String> = stored
+            .keys()
+            .filter_map(|full| match RefName::parse(full, &remotes) {
+                RefName::RemoteBranch { remote, .. } => Some(remote.to_string()),
+                _ => None,
+            })
+            .collect();
 
         let now = now_rfc3339();
         let mut events = Vec::new();
         let mut fork_base: Option<Option<String>> = None;
         for tip in &tips {
             // A ref the baseline did not cover joins it silently.
-            let known = old_watched
+            let covered = old_watched
                 .as_ref()
                 .is_some_and(|w| w.matches(tip.is_tag, &tip.match_name));
-            if !known {
+            let new_remote = tip
+                .remote
+                .as_ref()
+                .is_some_and(|r| !known_remotes.contains(r));
+            if !covered || new_remote {
                 continue;
             }
             let old = stored.get(&tip.full);
@@ -260,12 +336,7 @@ impl ActivityTracker {
                 (Some(_), true) => continue,
                 (None, true) => ActivityKind::Tagged,
                 (None, false) => ActivityKind::Created,
-                // An old tip that no longer exists (garbage-collected after a
-                // force-push) cannot be an ancestor: report a rewrite.
-                (Some(old), false) => match git.is_ancestor(root, old, &tip.target).await {
-                    Ok(true) => ActivityKind::Advanced,
-                    _ => ActivityKind::Rewritten,
-                },
+                (Some(old), false) => classify_move(git, root, old, &tip.target).await?,
             };
             if events.len() == MAX_EVENTS_PER_PASS {
                 tracing::info!(store = %store, "too many moved refs in one pass; the rest join the baseline");
@@ -320,16 +391,19 @@ impl ActivityTracker {
                 .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
             self.db
                 .call(move |conn| {
-                    db::save_pass(conn, &store, &watched_json, &tips, &to_save, &now, &cutoff)
+                    store::save_pass(conn, &store, &watched_json, &tips, &to_save, &now, &cutoff)
                 })
                 .await?;
         }
         self.set_fingerprint(&store, stamp);
 
         let mut notices = Vec::new();
-        for w in watchers.iter().filter(|w| w.settings.notify_moves) {
-            let mine = Watched::of(&w.settings);
-            let relevant: Vec<&EventRow> = events.iter().filter(|e| mine.covers(e)).collect();
+        for w in watchers.iter().filter(|w| w.config.settings.notify_moves) {
+            let mine = Watched::of(&w.config.settings);
+            let relevant: Vec<&EventRow> = events
+                .iter()
+                .filter(|e| mine.matches(e.ref_name.starts_with("refs/tags/"), &e.match_name))
+                .collect();
             if relevant.is_empty() || !self.may_notify(&store, &w.workspace_id) {
                 continue;
             }
@@ -351,47 +425,59 @@ impl ActivityTracker {
         true
     }
 
-    /// The feed of a workspace with `settings` whose members are `checkouts`:
-    /// only events its own patterns match.
-    pub async fn feed(
-        &self,
-        settings: &ActivitySettings,
-        checkouts: &[Checkout],
-    ) -> AppResult<Feed> {
+    /// The feed of a workspace configured by `config` whose members are
+    /// `checkouts`: only events its own patterns match, observed after it
+    /// started watching them.
+    pub async fn feed(&self, config: &WatchConfig, checkouts: &[Checkout]) -> AppResult<Feed> {
         let reps = representatives(checkouts);
-        let stores: Vec<String> = reps.keys().cloned().collect();
-        let watched = Watched::of(settings);
-        let (events, unseen) = {
-            let stores = stores.clone();
-            self.db
-                .call(move |conn| {
-                    Ok((
-                        db::list_events(conn, &stores, FEED_LIMIT * 4)?,
-                        db::unseen_events(conn)?,
-                    ))
-                })
-                .await?
+        let filter = Filter {
+            stores: reps.keys().cloned().collect(),
+            patterns: config.patterns(),
         };
-        let store_set: HashSet<String> = stores.into_iter().collect();
+        let (events, unseen) = self
+            .db
+            .call(move |conn| {
+                Ok((
+                    store::list_events(conn, &filter, FEED_LIMIT)?,
+                    store::count_unseen(conn, &filter)?,
+                ))
+            })
+            .await?;
         let items = events
             .into_iter()
-            .filter(|e| watched.covers(e))
-            .take(FEED_LIMIT)
             .filter_map(|e| {
                 let checkout = reps.get(&e.git_store)?;
                 Some(to_item(e, checkout))
             })
             .collect();
-        Ok(Feed {
-            items,
-            unseen: count_unseen(settings, &store_set, &unseen),
-        })
+        Ok(Feed { items, unseen })
+    }
+
+    /// Unread events per workspace, by workspace ID.
+    pub async fn unread_counts(
+        &self,
+        scopes: Vec<WorkspaceScope>,
+    ) -> AppResult<HashMap<String, u32>> {
+        self.db
+            .call(move |conn| {
+                let mut counts = HashMap::new();
+                for scope in scopes {
+                    let filter = Filter {
+                        stores: scope.stores,
+                        patterns: scope.config.patterns(),
+                    };
+                    counts.insert(scope.workspace_id, store::count_unseen(conn, &filter)?);
+                }
+                Ok(counts)
+            })
+            .await
     }
 
     /// Commits, merges, releases, and authors on a workspace's watched refs
     /// over the last seven days. Each Git directory is read only when its
-    /// ref files changed since the last time; the others come from a cache,
-    /// and the misses are read in parallel.
+    /// ref files (or the patterns) changed since the last time; the others
+    /// come from a cache, and the misses are read in parallel. A failed read
+    /// is not cached; the previous reading stands in for it.
     pub async fn pulse(
         &self,
         git: &GitService,
@@ -407,74 +493,86 @@ impl ActivityTracker {
             if !checkout.root.is_dir() {
                 continue;
             }
-            let key = format!("{}\u{0}{watched_json}", checkout.store());
+            let store = checkout.store();
             let stamp = ref_stamp(&checkout.common_git_dir);
             let cached = self
                 .pulse_cache
                 .lock()
                 .expect("pulse cache")
-                .get(&key)
-                .filter(|r| r.stamp == stamp)
+                .get(&store)
+                .filter(|r| r.stamp == stamp && r.watched_json == watched_json)
                 .cloned();
             match cached {
                 Some(r) => repos.push(r),
                 // Each task owns clones: spawned tasks may outlive this borrow.
                 None => {
-                    let (git, watched) = (git.clone(), watched.clone());
+                    let (git, watched, watched_json) =
+                        (git.clone(), watched.clone(), watched_json.clone());
                     jobs.spawn(async move {
-                        let r = read_pulse(&git, &checkout, &watched, since_time, stamp).await;
-                        (key, r)
+                        let r =
+                            read_pulse(&git, &checkout, &watched, since_time, stamp, watched_json)
+                                .await;
+                        (store, r)
                     });
                 }
             }
         }
-        while let Some(Ok((key, r))) = jobs.join_next().await {
-            self.pulse_cache
-                .lock()
-                .expect("pulse cache")
-                .insert(key, r.clone());
-            repos.push(r);
+        while let Some(Ok((store, r))) = jobs.join_next().await {
+            let mut cache = self.pulse_cache.lock().expect("pulse cache");
+            match r {
+                Ok(r) => {
+                    cache.insert(store, r.clone());
+                    repos.push(r);
+                }
+                Err(e) => {
+                    tracing::warn!(store = %store, error = %e, "could not read the team pulse");
+                    if let Some(old) = cache.get(&store) {
+                        repos.push(old.clone());
+                    }
+                }
+            }
         }
         summarize_pulse(&repos, since_time)
     }
 
     /// Mark a workspace's unread events as seen: the listed ones, or all of
-    /// them. Events its patterns do not match are left alone.
+    /// them. Events it does not show are left alone.
     pub async fn mark_seen(
         &self,
-        settings: &ActivitySettings,
+        config: &WatchConfig,
         checkouts: &[Checkout],
         event_ids: Option<&[String]>,
     ) -> AppResult<usize> {
-        let stores: HashSet<String> = checkouts.iter().map(Checkout::store).collect();
-        let watched = Watched::of(settings);
-        let wanted: Option<HashSet<String>> = event_ids.map(|ids| ids.iter().cloned().collect());
+        let filter = Filter {
+            stores: representatives(checkouts).into_keys().collect(),
+            patterns: config.patterns(),
+        };
+        let ids = event_ids.map(<[String]>::to_vec);
         let at = now_rfc3339();
         self.db
-            .call(move |conn| {
-                let ids: Vec<String> = db::unseen_events(conn)?
-                    .into_iter()
-                    .filter(|e| stores.contains(&e.git_store) && watched.covers(e))
-                    .filter(|e| wanted.as_ref().is_none_or(|w| w.contains(&e.id)))
-                    .map(|e| e.id)
-                    .collect();
-                db::mark_events_seen(conn, &ids, &at)
-            })
+            .call(move |conn| store::mark_seen(conn, &filter, ids.as_deref(), &at))
             .await
     }
 }
 
-/// Unread events a workspace's patterns match among its Git directories.
-pub fn count_unseen(
-    settings: &ActivitySettings,
-    stores: &HashSet<String>,
-    unseen: &[EventRow],
-) -> u32 {
-    let watched = Watched::of(settings);
-    unseen
-        .iter()
-        .filter(|e| stores.contains(&e.git_store) && watched.covers(e))
-        .count() as u32
+/// Whether a branch that moved from `old` to `new` advanced or was
+/// rewritten. "Rewritten" needs evidence: `old` is not an ancestor, or no
+/// longer exists (garbage-collected after a force-push). Any other failure
+/// is an error, so the pass is retried rather than reporting a rewrite.
+async fn classify_move(
+    git: &GitService,
+    root: &Path,
+    old: &str,
+    new: &str,
+) -> AppResult<ActivityKind> {
+    match git.is_ancestor(root, old, new).await {
+        Ok(true) => Ok(ActivityKind::Advanced),
+        Ok(false) => Ok(ActivityKind::Rewritten),
+        Err(e) => match git.object_exists(root, old).await {
+            Ok(false) => Ok(ActivityKind::Rewritten),
+            _ => Err(e),
+        },
+    }
 }
 
 /// One checkout per Git directory, preferring the main checkout over a
@@ -494,7 +592,8 @@ fn representatives(checkouts: &[Checkout]) -> HashMap<String, Checkout> {
 
 /// A cheap fingerprint of the ref files: modification times of `packed-refs`,
 /// the reftable list, and every directory under `refs/remotes` and
-/// `refs/tags`. Git updates a loose ref by renaming a lock file into its
+/// `refs/tags` (each walked separately, so many tag folders cannot crowd out
+/// the remotes). Git updates a loose ref by renaming a lock file into its
 /// directory, which changes that directory's time.
 fn ref_stamp(common: &Path) -> u64 {
     let mtime = |p: &Path| {
@@ -508,22 +607,21 @@ fn ref_stamp(common: &Path) -> u64 {
     for f in ["packed-refs", "reftable/tables.list"] {
         mtime(&common.join(f)).hash(&mut h);
     }
-    let mut stack = vec![
-        common.join("refs").join("remotes"),
-        common.join("refs").join("tags"),
-    ];
-    let mut seen = 0;
-    while let Some(dir) = stack.pop() {
-        seen += 1;
-        if seen > MAX_STAMP_DIRS {
-            break;
-        }
-        dir.hash(&mut h);
-        mtime(&dir).hash(&mut h);
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                if entry.file_type().is_ok_and(|t| t.is_dir()) {
-                    stack.push(entry.path());
+    for kind in ["remotes", "tags"] {
+        let mut stack = vec![common.join("refs").join(kind)];
+        let mut seen = 0;
+        while let Some(dir) = stack.pop() {
+            seen += 1;
+            if seen > MAX_STAMP_DIRS {
+                break;
+            }
+            dir.hash(&mut h);
+            mtime(&dir).hash(&mut h);
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                        stack.push(entry.path());
+                    }
                 }
             }
         }
@@ -532,21 +630,21 @@ fn ref_stamp(common: &Path) -> u64 {
 }
 
 /// Glob matching with `*` (any run of characters, `/` included); every other
-/// character matches itself.
+/// character matches itself. Works on bytes: `*` never splits a character
+/// that the pattern names, and nothing is allocated.
 pub fn glob_match(pattern: &str, text: &str) -> bool {
-    let p: Vec<char> = pattern.chars().collect();
-    let t: Vec<char> = text.chars().collect();
+    let (p, t) = (pattern.as_bytes(), text.as_bytes());
     let (mut pi, mut ti) = (0, 0);
     let mut star: Option<(usize, usize)> = None;
     while ti < t.len() {
-        if pi < p.len() && p[pi] == t[ti] && p[pi] != '*' {
+        if pi < p.len() && p[pi] == t[ti] && p[pi] != b'*' {
             pi += 1;
             ti += 1;
-        } else if pi < p.len() && p[pi] == '*' {
+        } else if pi < p.len() && p[pi] == b'*' {
             star = Some((pi, ti));
             pi += 1;
         } else if let Some((sp, st)) = star {
-            // Let the last `*` swallow one more character and retry.
+            // Let the last `*` swallow one more byte and retry.
             pi = sp + 1;
             ti = st + 1;
             star = Some((sp, st + 1));
@@ -554,7 +652,7 @@ pub fn glob_match(pattern: &str, text: &str) -> bool {
             return false;
         }
     }
-    p[pi..].iter().all(|&c| c == '*')
+    p[pi..].iter().all(|&c| c == b'*')
 }
 
 /// Characters a ref name (and so a pattern) may not contain, besides `*`.
@@ -567,7 +665,10 @@ pub fn refspec_pattern_ok(p: &str) -> bool {
 }
 
 fn pattern_ok(p: &str) -> bool {
+    // `@` alone is reserved for HEAD; Git refuses it as a branch name even
+    // though `refs/heads/@` passes `check-ref-format`.
     !p.is_empty()
+        && p != "@"
         && !p.starts_with(['-', '/', '.'])
         && !p.ends_with(['/', '.'])
         && !p.ends_with(".lock")
@@ -785,6 +886,8 @@ fn summary_line(e: &EventRow) -> String {
 #[derive(Debug, Clone)]
 struct RepoPulse {
     stamp: u64,
+    /// The patterns it was read for.
+    watched_json: String,
     name: String,
     /// Author, merge, commit time (Unix seconds).
     commits: Vec<(String, bool, i64)>,
@@ -798,38 +901,35 @@ async fn read_pulse(
     watched: &Watched,
     since_time: chrono::DateTime<chrono::Utc>,
     stamp: u64,
-) -> RepoPulse {
+    watched_json: String,
+) -> AppResult<RepoPulse> {
     let root = checkout.root.as_path();
     let since = since_time.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-    let remotes = git.remotes(root).await.unwrap_or_default();
-    let tips = git.remote_and_tag_tips(root).await.unwrap_or_default();
+    let remotes = git.remotes(root).await?;
+    let tips = git.remote_and_tag_tips(root).await?;
     let branches: Vec<String> = tips
         .iter()
-        .filter(|(full, _)| match RefName::parse(full, &remotes) {
+        .filter(|t| match RefName::parse(&t.name, &remotes) {
             RefName::RemoteBranch { branch, .. } => watched.matches(false, branch),
             _ => false,
         })
-        .map(|(full, _)| full.clone())
+        .map(|t| t.name.clone())
         .collect();
-    let commits = git
-        .commits_since(root, &branches, &since)
-        .await
-        .unwrap_or_default();
-    let releases = git
-        .tag_dates(root)
-        .await
-        .unwrap_or_default()
+    let commits = git.commits_since(root, &branches, &since).await?;
+    let releases = tips
         .iter()
-        .filter(|(name, _)| watched.matches(true, name))
-        .filter_map(|(_, date)| chrono::DateTime::parse_from_rfc3339(date).ok())
-        .map(|d| d.timestamp())
+        .filter_map(|t| match RefName::parse(&t.name, &remotes) {
+            RefName::Tag(name) if watched.matches(true, name) => Some(t.time),
+            _ => None,
+        })
         .collect();
-    RepoPulse {
+    Ok(RepoPulse {
         stamp,
+        watched_json,
         name: checkout.name.clone(),
         commits,
         releases,
-    }
+    })
 }
 
 /// Aggregate per-repository pulse inputs inside the seven-day window.
@@ -943,6 +1043,7 @@ mod tests {
         let t = |days: i64| (now - chrono::Duration::days(days)).timestamp();
         let repo = |name: &str, commits: Vec<(String, bool, i64)>| RepoPulse {
             stamp: 1,
+            watched_json: String::new(),
             name: name.into(),
             commits,
             releases: vec![t(1), t(30)],

@@ -5,15 +5,13 @@
 
 use std::collections::HashSet;
 use std::path::Path;
-use std::sync::Arc;
 
 use super::RepositoryService;
-use crate::activity::clean_patterns;
-use crate::db::{self, RepositoryRow};
+use crate::db::{self, RepositoryRow, WatchConfig};
 use crate::fetcher::last_fetch_at;
 use crate::git::Checkout;
 use crate::models::{
-    ActivitySettings, AppError, AppResult, ChangeOrigin, RepositoryFreshness, StatusSnapshot,
+    now_rfc3339, ActivitySettings, AppError, AppResult, RepositoryFreshness, StatusSnapshot,
     TeamPulse, Workspace, WorkspaceActivity,
 };
 
@@ -49,10 +47,9 @@ impl RepositoryService {
     /// The Activity tab: feed and freshness of each member. The team pulse
     /// is separate (`team_pulse`), so the feed never waits for it.
     pub async fn workspace_activity(&self, workspace_id: &str) -> AppResult<WorkspaceActivity> {
-        let workspace = self.workspace(workspace_id).await?;
-        let rows = self.member_rows(&workspace).await?;
-        let checkouts: Vec<Checkout> = rows.iter().map(Checkout::from).collect();
-        let feed = self.tracker.feed(&workspace.activity, &checkouts).await?;
+        let scope = self.workspace_scope(workspace_id).await?;
+        let feed = self.tracker.feed(&scope.config, &scope.checkouts).await?;
+        let (workspace, rows) = (scope.workspace, scope.rows);
         // One line per Git directory: linked worktrees share their fetches.
         let mut seen = HashSet::new();
         let mut freshness: Vec<RepositoryFreshness> = rows
@@ -83,16 +80,10 @@ impl RepositoryService {
     /// Commits, merges, releases, and the most active people on a
     /// workspace's watched refs over the last seven days.
     pub async fn team_pulse(&self, workspace_id: &str) -> AppResult<TeamPulse> {
-        let workspace = self.workspace(workspace_id).await?;
-        let checkouts: Vec<Checkout> = self
-            .member_rows(&workspace)
-            .await?
-            .iter()
-            .map(Checkout::from)
-            .collect();
+        let scope = self.workspace_scope(workspace_id).await?;
         Ok(self
             .tracker
-            .pulse(self.git()?, &workspace.activity, &checkouts)
+            .pulse(self.git()?, &scope.config.settings, &scope.checkouts)
             .await)
     }
 
@@ -102,47 +93,48 @@ impl RepositoryService {
         workspace_id: &str,
         event_ids: Option<&[String]>,
     ) -> AppResult<()> {
-        let workspace = self.workspace(workspace_id).await?;
-        let checkouts: Vec<Checkout> = self
-            .member_rows(&workspace)
-            .await?
-            .iter()
-            .map(Checkout::from)
-            .collect();
+        let scope = self.workspace_scope(workspace_id).await?;
         self.tracker
-            .mark_seen(&workspace.activity, &checkouts, event_ids)
+            .mark_seen(&scope.config, &scope.checkouts, event_ids)
             .await?;
         self.bump_version();
         Ok(())
     }
 
-    /// Save a workspace's activity settings, then take a tracking pass of each
-    /// member Git directory, so refs that start matching join the baseline
-    /// now (silently) and branches created later still arrive as news.
+    /// Save a workspace's activity settings. When the watched patterns
+    /// changed, take a tracking pass of each member Git directory right away
+    /// (from its last status, without running Git status again), so refs that
+    /// start matching join the baseline silently and branches created later
+    /// still arrive as news.
     pub async fn update_activity_settings(
-        self: &Arc<Self>,
+        &self,
         workspace_id: &str,
         settings: ActivitySettings,
     ) -> AppResult<Workspace> {
+        let git = self.git()?;
         let settings = ActivitySettings {
-            watched_branches: clean_patterns(&settings.watched_branches, true)?,
-            watched_tags: clean_patterns(&settings.watched_tags, false)?,
+            watched_branches: clean_patterns(git, &settings.watched_branches, true).await?,
+            watched_tags: clean_patterns(git, &settings.watched_tags, false).await?,
             ..settings
         };
         let id = workspace_id.to_string();
-        let saved = self
+        let now = now_rfc3339();
+        let new = settings.clone();
+        let previous = self
             .db
-            .call(move |conn| db::set_activity_settings(conn, &id, &settings))
-            .await?;
-        if !saved {
-            return Err(AppError::not_found("That workspace no longer exists."));
-        }
-        let workspace = self.workspace(workspace_id).await?;
-        let mut stores = HashSet::new();
-        for row in self.member_rows(&workspace).await? {
-            if stores.insert(row.common_git_dir.clone()) {
-                if let Err(e) = self.refresh(&row.id, ChangeOrigin::Refresh).await {
-                    tracing::warn!(repository = %row.display_path, error = %e, "refresh after settings change failed");
+            .call(move |conn| db::set_activity_settings(conn, &id, &new, &now))
+            .await?
+            .ok_or_else(|| AppError::not_found("That workspace no longer exists."))?;
+        let patterns_changed = previous.watched_branches != settings.watched_branches
+            || previous.watched_tags != settings.watched_tags;
+        if patterns_changed {
+            let scope = self.workspace_scope(workspace_id).await?;
+            let mut stores = HashSet::new();
+            for row in &scope.rows {
+                if let Some(status) = &row.status {
+                    if stores.insert(row.common_git_dir.clone()) {
+                        self.track(row, status).await;
+                    }
                 }
             }
         }
@@ -192,18 +184,61 @@ impl RepositoryService {
         }
     }
 
-    /// Registered repositories of a workspace, each once.
-    async fn member_rows(&self, workspace: &Workspace) -> AppResult<Vec<RepositoryRow>> {
+    /// A workspace with its activity configuration and member checkouts.
+    async fn workspace_scope(&self, workspace_id: &str) -> AppResult<ActivityScope> {
+        let workspace = self.workspace(workspace_id).await?;
+        let id = workspace_id.to_string();
+        let config = self
+            .db
+            .call(move |conn| Ok(db::activity_settings(conn)?.remove(&id)))
+            .await?
+            .ok_or_else(|| AppError::not_found("That workspace no longer exists."))?;
         let ids: HashSet<&String> = workspace
             .members
             .iter()
             .filter_map(|m| m.repository_id.as_ref())
             .collect();
-        Ok(self
+        let rows: Vec<RepositoryRow> = self
             .rows()
             .await?
             .into_iter()
             .filter(|r| ids.contains(&r.id))
-            .collect())
+            .collect();
+        let checkouts = rows.iter().map(Checkout::from).collect();
+        Ok(ActivityScope {
+            workspace,
+            config,
+            rows,
+            checkouts,
+        })
     }
+}
+
+/// What the Activity features need about one workspace.
+struct ActivityScope {
+    workspace: Workspace,
+    config: WatchConfig,
+    /// Registered member repositories, each once.
+    rows: Vec<RepositoryRow>,
+    checkouts: Vec<Checkout>,
+}
+
+/// Trim, drop empties and duplicates, and reject patterns Git could not use
+/// (`git check-ref-format`), plus `?`, `[` and `]`, which the feed's matching
+/// does not support. Branch patterns become fetch refspecs and allow one `*`.
+async fn clean_patterns(
+    git: &crate::git::GitService,
+    patterns: &[String],
+    branches: bool,
+) -> AppResult<Vec<String>> {
+    let cleaned = crate::activity::clean_patterns(patterns, branches)?;
+    for p in &cleaned {
+        if !git.ref_pattern_ok(p, branches).await {
+            return Err(AppError::validation(format!(
+                "\"{p}\" is not a valid {} name or pattern.",
+                if branches { "branch" } else { "tag" }
+            )));
+        }
+    }
+    Ok(cleaned)
 }

@@ -12,6 +12,7 @@ import {
   type WorkspaceActivity,
 } from "../lib/ipc";
 import { olderThan, plural } from "../lib/repo";
+import { createSaveQueue } from "../lib/saveQueue";
 import { createLatest } from "../lib/stale";
 import { Avatar } from "./HistoryTab";
 import {
@@ -61,6 +62,23 @@ export default function ActivityView({
   // The feed and the pulse load separately: the feed comes from the
   // database and is immediate; the pulse may need Git for repositories whose
   // refs moved, and fills in when it arrives.
+  // The queue outlives renders; it reaches the latest callbacks through a ref.
+  const callbacks = useRef({ onError, onChanged, load: () => {} });
+  const saves = useRef(
+    createSaveQueue<ActivitySettings>(
+      (next) => ipc.updateActivitySettings(workspace.id, next).then(() => {}),
+      {
+        onError: (e) => {
+          callbacks.current.onError(errorMessage(e));
+          setDraft(null);
+        },
+        onIdle: () => {
+          callbacks.current.onChanged();
+          callbacks.current.load();
+        },
+      },
+    ),
+  ).current;
   const load = useCallback(() => {
     void pulseLatest.run(
       () => ipc.getTeamPulse(workspace.id),
@@ -74,14 +92,15 @@ export default function ActivityView({
         setLoading(false);
         if (a.workspace_id !== workspace.id) return;
         setActivity(a);
-        if (pendingSaves.current === 0) setDraft(null);
+        if (saves.pending() === 0) setDraft(null);
       },
       (e) => {
         setLoading(false);
         onError(errorMessage(e));
       },
     );
-  }, [workspace.id, latest, pulseLatest, onError]);
+  }, [workspace.id, latest, pulseLatest, saves, onError]);
+  callbacks.current = { onError, onChanged, load };
 
   // Reload when news arrives, something is marked seen, or a fetch finishes.
   // Fetch all changes several repositories in a row; later changes wait
@@ -112,26 +131,11 @@ export default function ActivityView({
   const settings = draft ?? activity?.settings ?? workspace.activity;
   const latestSettings = useRef(settings);
   latestSettings.current = settings;
-  const saving = useRef<Promise<void>>(Promise.resolve());
-  const pendingSaves = useRef(0);
   const update = (patch: Partial<ActivitySettings>) => {
     const next = { ...latestSettings.current, ...patch };
     latestSettings.current = next;
     setDraft(next);
-    pendingSaves.current++;
-    saving.current = saving.current.then(async () => {
-      try {
-        await ipc.updateActivitySettings(workspace.id, next);
-      } catch (e) {
-        onError(errorMessage(e));
-        setDraft(null);
-      }
-      pendingSaves.current--;
-      if (pendingSaves.current === 0) {
-        onChanged();
-        load();
-      }
-    });
+    void saves.enqueue(next);
   };
   const markSeen = async (ids?: string[]) => {
     try {

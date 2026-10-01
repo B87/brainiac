@@ -11,6 +11,8 @@ into the release's section.
 
 ## [Unreleased]
 
+Workspaces with an activity feed of what your team merged, Fetch now and opt-in auto-fetch, and a redesigned Git viewer.
+
 ### Added
 
 - Workspaces: group repositories by picking them, or by choosing a folder and the repositories inside it; a folder that is itself a repository becomes the root.

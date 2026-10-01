@@ -22,19 +22,20 @@ M0 landed on 1 October 2026 with 58 Rust tests and 3 frontend tests. Known M0 si
 
 ### v0.1 — Git viewer and repository tracker
 
-- [ ] Add/open one repository directly; persist recent/pinned repositories and relocate missing paths.
-- [ ] Create a workspace manually or by discovering independent repositories inside a chosen folder, with optional root grouping and rescan.
-- [ ] Let the user choose which discovered repositories to track and manage membership independently of their IDE.
-- [ ] Aggregate status table, unique changed-file counts, dirty/conflicted/stale filters, partial-error handling.
-- [ ] Changes list with staged/unstaged diffs, untracked previews, conflict and binary/large-file states.
+- [x] Add/open one repository directly; persist recent/pinned repositories.
+- [ ] Relocate a repository whose folder moved (today: remove and add again).
+- [x] Create a workspace manually or by discovering independent repositories inside a chosen folder, with optional root grouping and rescan.
+- [x] Let the user choose which discovered repositories to track and manage membership independently of their IDE.
+- [x] Aggregate status table, unique changed-file counts, dirty/conflicted/stale filters, partial-error handling.
+- [x] Changes list with staged/unstaged diffs, untracked previews, conflict and binary/large-file states.
 - [x] Paginated commit history, message/hash filtering, metadata, changed files, and per-file commit patches.
 - [x] Read-only branch/tag lists and ref-scoped history selection.
-- [ ] Debounced tracking, bounded subprocesses, manual refresh, wake/activation reconciliation.
-- [ ] Repository/workspace command palette, copy hashes/paths, Open in editor, Reveal in Finder.
-- [ ] Fetch now and opt-in per-workspace auto-fetch of watched branches, with lock detection, backoff, and non-interactive credentials.
-- [ ] Workspace Activity tab: watched refs, advanced/rewritten/created/tagged events, unread state, conflict-risk and drift warnings, team pulse, fetch freshness, optional notifications and morning digest.
-- [ ] Viewer refinements: line counts in Changes, Both comparison, ignore whitespace, split layout, word highlights, hunk navigation, author filter, comparison with the default branch, keyboard shortcuts, AA contrast.
-- [ ] SQLite snapshot backup of settings/workspaces (export manifest is v0.2); no note vault, account, FTS index, or model required.
+- [x] Debounced tracking, bounded subprocesses, manual refresh, wake/activation reconciliation.
+- [x] Repository/workspace command palette, copy hashes/paths, Open in editor, Reveal in Finder.
+- [x] Fetch now and opt-in per-workspace auto-fetch of watched branches, with lock detection, backoff, and non-interactive credentials.
+- [x] Workspace Activity tab: watched refs, advanced/rewritten/created/tagged events, unread state, conflict-risk and drift warnings, team pulse, fetch freshness, optional notifications and morning digest.
+- [x] Viewer refinements: line counts in Changes, Both comparison, ignore whitespace, split layout, word highlights, hunk navigation, author filter, comparison with the default branch, keyboard shortcuts, AA contrast.
+- [x] SQLite snapshot backup of settings/workspaces (export manifest is v0.2); no note vault, account, FTS index, or model required.
 
 **Exit gate:** use the app for a week with a standalone repository, a manual workspace, and a discovered workspace whose folder is itself a repository. Identify dirty/conflicted repos, inspect staged and unstaged patches, navigate history and refs, observe external changes, see a teammate's merge in the Activity tab after a fetch, retain registrations after restart, and recover from one slow/missing repo while the rest remain usable. Confirm viewing does not alter working files, refs, or the index, and that fetching changes only remote-tracking refs and tags.
 

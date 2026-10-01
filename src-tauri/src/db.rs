@@ -12,8 +12,8 @@ use std::thread;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::models::{
-    ActivityDetail, ActivityKind, ActivitySettings, AppError, AppResult, DiscoveryMode,
-    MemberOrigin, Pin, PinEntityType, RepositoryTab, Settings, StatusSnapshot,
+    ActivitySettings, AppError, AppResult, DiscoveryMode, MemberOrigin, Pin, PinEntityType,
+    RepositoryTab, Settings, StatusSnapshot,
 };
 
 /// Ordered migrations. Add new entries at the end; never edit a shipped one.
@@ -384,7 +384,7 @@ pub fn store_observation(
 /// non-Git rows; removing the registration is an explicit "stop tracking".
 /// A workspace whose root this was keeps its other members (`root_repository_id`
 /// becomes NULL through the foreign key).
-pub fn delete_repository(conn: &Connection, id: &str) -> AppResult<bool> {
+pub fn delete_repository(conn: &Connection, id: &str) -> AppResult<Deleted> {
     let store: Option<String> = conn
         .query_row(
             "SELECT common_git_dir FROM repositories WHERE id = ?1",
@@ -401,7 +401,7 @@ pub fn delete_repository(conn: &Connection, id: &str) -> AppResult<bool> {
         params![id],
     )?;
     let removed = conn.execute("DELETE FROM repositories WHERE id = ?1", params![id])? > 0;
-    // Ref tracking belongs to the shared Git directory; drop it with its last checkout.
+    let mut orphaned_store = None;
     if let Some(store) = store {
         let others: i64 = conn.query_row(
             "SELECT COUNT(*) FROM repositories WHERE common_git_dir = ?1",
@@ -409,10 +409,22 @@ pub fn delete_repository(conn: &Connection, id: &str) -> AppResult<bool> {
             |r| r.get(0),
         )?;
         if others == 0 {
-            forget_store(conn, &store, true)?;
+            orphaned_store = Some(store);
         }
     }
-    Ok(removed)
+    Ok(Deleted {
+        removed,
+        orphaned_store,
+    })
+}
+
+/// What `delete_repository` did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Deleted {
+    pub removed: bool,
+    /// The shared Git directory that has no checkout left; the activity
+    /// tracker, which owns its ref tracking, forgets it.
+    pub orphaned_store: Option<String>,
 }
 
 /// Return the ID of the repository registered at `row.display_path`, inserting
@@ -464,7 +476,7 @@ pub struct MemberRow {
 
 /// The `snake_case` name serde gives a unit enum variant, which is also the
 /// value stored in the lookup tables.
-fn enum_name<T: serde::Serialize>(value: T) -> AppResult<String> {
+pub(crate) fn enum_name<T: serde::Serialize>(value: T) -> AppResult<String> {
     match serde_json::to_value(value)? {
         serde_json::Value::String(s) => Ok(s),
         other => Err(AppError::db("Unexpected enum encoding.").with_details(other.to_string())),
@@ -473,7 +485,7 @@ fn enum_name<T: serde::Serialize>(value: T) -> AppResult<String> {
 
 /// Parse a stored enum name back; `T: DeserializeOwned` means any serde type
 /// that can be built from owned data (no borrowed strings).
-fn parse_enum<T: serde::de::DeserializeOwned>(name: String) -> rusqlite::Result<T> {
+pub(crate) fn parse_enum<T: serde::de::DeserializeOwned>(name: String) -> rusqlite::Result<T> {
     serde_json::from_value(serde_json::Value::String(name)).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
     })
@@ -699,26 +711,80 @@ fn json_list(text: String) -> Vec<String> {
     serde_json::from_str(&text).unwrap_or_default()
 }
 
-const ACTIVITY_COLUMNS: &str = "w.id, w.watched_branches_json, w.watched_tags_json, w.auto_fetch, w.notify_moves, w.morning_digest, w.warn_conflicts";
+const ACTIVITY_COLUMNS: &str = "w.id, w.watched_branches_json, w.watched_tags_json, w.auto_fetch, w.notify_moves, w.morning_digest, w.warn_conflicts, w.watched_since_json, w.created_at";
 
-fn row_to_activity(r: &rusqlite::Row<'_>) -> rusqlite::Result<(String, ActivitySettings)> {
-    Ok((
-        r.get(0)?,
-        ActivitySettings {
-            watched_branches: json_list(r.get(1)?),
-            watched_tags: json_list(r.get(2)?),
-            auto_fetch: bool_col(r, 3)?,
-            notify_moves: bool_col(r, 4)?,
-            morning_digest: bool_col(r, 5)?,
-            warn_conflicts: bool_col(r, 6)?,
-        },
-    ))
+/// A workspace's activity settings and, for each watched pattern, since when
+/// it is watched. Events observed before a pattern was watched are not that
+/// workspace's news (SPEC.md, Workspace activity).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WatchConfig {
+    pub settings: ActivitySettings,
+    /// `"b:<pattern>"` or `"t:<pattern>"` → RFC 3339 time it started being
+    /// watched; patterns without an entry date from the workspace's creation.
+    pub since: std::collections::HashMap<String, String>,
 }
 
-/// Activity settings of every workspace, keyed by workspace ID.
+impl WatchConfig {
+    /// `(is_tag, pattern, since)` for every watched pattern.
+    pub fn patterns(&self) -> Vec<(bool, String, String)> {
+        let entry = |tag: bool, p: &String| {
+            let key = format!("{}:{p}", if tag { "t" } else { "b" });
+            (
+                tag,
+                p.clone(),
+                self.since.get(&key).cloned().unwrap_or_default(),
+            )
+        };
+        let s = &self.settings;
+        s.watched_branches
+            .iter()
+            .map(|p| entry(false, p))
+            .chain(s.watched_tags.iter().map(|p| entry(true, p)))
+            .collect()
+    }
+}
+
+fn since_map(
+    json: &str,
+    created_at: &str,
+    settings: &ActivitySettings,
+) -> std::collections::HashMap<String, String> {
+    let stored: std::collections::HashMap<String, String> =
+        serde_json::from_str(json).unwrap_or_default();
+    let mut since = std::collections::HashMap::new();
+    for (tag, list) in [
+        (false, &settings.watched_branches),
+        (true, &settings.watched_tags),
+    ] {
+        for p in list {
+            let key = format!("{}:{p}", if tag { "t" } else { "b" });
+            let at = stored
+                .get(&key)
+                .cloned()
+                .unwrap_or_else(|| created_at.to_string());
+            since.insert(key, at);
+        }
+    }
+    since
+}
+
+fn row_to_activity(r: &rusqlite::Row<'_>) -> rusqlite::Result<(String, WatchConfig)> {
+    let settings = ActivitySettings {
+        watched_branches: json_list(r.get(1)?),
+        watched_tags: json_list(r.get(2)?),
+        auto_fetch: bool_col(r, 3)?,
+        notify_moves: bool_col(r, 4)?,
+        morning_digest: bool_col(r, 5)?,
+        warn_conflicts: bool_col(r, 6)?,
+    };
+    let since = since_map(&r.get::<_, String>(7)?, &r.get::<_, String>(8)?, &settings);
+    Ok((r.get(0)?, WatchConfig { settings, since }))
+}
+
+/// Activity configuration of every workspace, keyed by workspace ID.
 pub fn activity_settings(
     conn: &Connection,
-) -> AppResult<std::collections::HashMap<String, ActivitySettings>> {
+) -> AppResult<std::collections::HashMap<String, WatchConfig>> {
     let sql = format!("SELECT {ACTIVITY_COLUMNS} FROM workspaces w");
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map([], row_to_activity)?;
@@ -730,7 +796,7 @@ pub fn activity_settings(
 pub struct Watcher {
     pub workspace_id: String,
     pub workspace_name: String,
-    pub settings: ActivitySettings,
+    pub config: WatchConfig,
 }
 
 /// Workspaces with at least one member checkout of `git_store`.
@@ -744,24 +810,51 @@ pub fn watchers_of_store(conn: &Connection, git_store: &str) -> AppResult<Vec<Wa
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params![git_store], |r| {
-        let (workspace_id, settings) = row_to_activity(r)?;
+        let (workspace_id, config) = row_to_activity(r)?;
         Ok(Watcher {
             workspace_id,
-            workspace_name: r.get(7)?,
-            settings,
+            workspace_name: r.get(9)?,
+            config,
         })
     })?;
     Ok(rows.collect::<Result<_, _>>()?)
 }
 
+/// Save a workspace's activity settings. Patterns it already watched keep
+/// their start time; new ones start now. Returns the previous settings, or
+/// `None` when there is no such workspace.
 pub fn set_activity_settings(
-    conn: &Connection,
+    conn: &mut Connection,
     workspace_id: &str,
     settings: &ActivitySettings,
-) -> AppResult<bool> {
-    Ok(conn.execute(
+    now: &str,
+) -> AppResult<Option<ActivitySettings>> {
+    let tx = conn.transaction()?;
+    let sql = format!("SELECT {ACTIVITY_COLUMNS} FROM workspaces w WHERE w.id = ?1");
+    let Some((_, previous)) = tx
+        .query_row(&sql, params![workspace_id], row_to_activity)
+        .optional()?
+    else {
+        return Ok(None);
+    };
+    let mut since = std::collections::HashMap::new();
+    for (tag, list) in [
+        (false, &settings.watched_branches),
+        (true, &settings.watched_tags),
+    ] {
+        for p in list {
+            let key = format!("{}:{p}", if tag { "t" } else { "b" });
+            let at = previous
+                .since
+                .get(&key)
+                .cloned()
+                .unwrap_or_else(|| now.to_string());
+            since.insert(key, at);
+        }
+    }
+    tx.execute(
         "UPDATE workspaces SET watched_branches_json = ?2, watched_tags_json = ?3, auto_fetch = ?4,
-             notify_moves = ?5, morning_digest = ?6, warn_conflicts = ?7
+             notify_moves = ?5, morning_digest = ?6, warn_conflicts = ?7, watched_since_json = ?8
          WHERE id = ?1",
         params![
             workspace_id,
@@ -770,9 +863,12 @@ pub fn set_activity_settings(
             settings.auto_fetch,
             settings.notify_moves,
             settings.morning_digest,
-            settings.warn_conflicts
+            settings.warn_conflicts,
+            serde_json::to_string(&since)?
         ],
-    )? > 0)
+    )?;
+    tx.commit()?;
+    Ok(Some(previous.settings))
 }
 
 /// The local date of each workspace's last digest check, keyed by workspace ID.
@@ -790,177 +886,6 @@ pub fn set_last_digest_on(conn: &Connection, workspace_id: &str, date: &str) -> 
         params![workspace_id, date],
     )?;
     Ok(())
-}
-
-/// The baseline of a shared Git directory: the watched patterns it was taken
-/// with (JSON) and the stored tips, full ref name to commit ID.
-pub fn baseline(
-    conn: &Connection,
-    git_store: &str,
-) -> AppResult<Option<(String, std::collections::HashMap<String, String>)>> {
-    let watched: Option<String> = conn
-        .query_row(
-            "SELECT watched_json FROM ref_baselines WHERE git_store = ?1",
-            params![git_store],
-            |r| r.get(0),
-        )
-        .optional()?;
-    let Some(watched) = watched else {
-        return Ok(None);
-    };
-    let mut stmt = conn.prepare("SELECT ref_name, target_id FROM ref_tips WHERE git_store = ?1")?;
-    let rows = stmt.query_map(params![git_store], |r| Ok((r.get(0)?, r.get(1)?)))?;
-    Ok(Some((watched, rows.collect::<Result<_, _>>()?)))
-}
-
-/// A stored activity event.
-#[derive(Debug, Clone, PartialEq)]
-pub struct EventRow {
-    pub id: String,
-    pub git_store: String,
-    pub kind: ActivityKind,
-    /// Full ref name.
-    pub ref_name: String,
-    /// What workspace patterns match: the branch without its remote, or the tag.
-    pub match_name: String,
-    pub old_id: Option<String>,
-    pub new_id: String,
-    pub observed_at: String,
-    pub seen_at: Option<String>,
-    pub detail: ActivityDetail,
-}
-
-/// Write one tracking pass atomically: the new baseline (patterns and tips)
-/// and its events, and prune events older than `prune_before`.
-pub fn save_pass(
-    conn: &mut Connection,
-    git_store: &str,
-    watched_json: &str,
-    tips: &[(String, String)],
-    events: &[EventRow],
-    at: &str,
-    prune_before: &str,
-) -> AppResult<()> {
-    let tx = conn.transaction()?;
-    tx.execute(
-        "INSERT INTO ref_baselines (git_store, watched_json, taken_at) VALUES (?1, ?2, ?3)
-         ON CONFLICT(git_store) DO UPDATE SET watched_json = excluded.watched_json, taken_at = excluded.taken_at",
-        params![git_store, watched_json, at],
-    )?;
-    tx.execute(
-        "DELETE FROM ref_tips WHERE git_store = ?1",
-        params![git_store],
-    )?;
-    for (name, target) in tips {
-        tx.execute(
-            "INSERT INTO ref_tips (git_store, ref_name, target_id) VALUES (?1, ?2, ?3)",
-            params![git_store, name, target],
-        )?;
-    }
-    for e in events {
-        tx.execute(
-            "INSERT INTO activity_events (id, git_store, kind, ref_name, match_name, old_id, new_id, observed_at, seen_at, detail_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            params![
-                e.id,
-                e.git_store,
-                enum_name(e.kind)?,
-                e.ref_name,
-                e.match_name,
-                e.old_id,
-                e.new_id,
-                e.observed_at,
-                e.seen_at,
-                serde_json::to_string(&e.detail)?
-            ],
-        )?;
-    }
-    tx.execute(
-        "DELETE FROM activity_events WHERE observed_at < ?1",
-        params![prune_before],
-    )?;
-    tx.commit()?;
-    Ok(())
-}
-
-/// Drop a shared Git directory's baseline and tips, so the next pass starts
-/// over silently; `events` also drops its feed.
-pub fn forget_store(conn: &Connection, git_store: &str, events: bool) -> AppResult<()> {
-    conn.execute(
-        "DELETE FROM ref_baselines WHERE git_store = ?1",
-        params![git_store],
-    )?;
-    conn.execute(
-        "DELETE FROM ref_tips WHERE git_store = ?1",
-        params![git_store],
-    )?;
-    if events {
-        conn.execute(
-            "DELETE FROM activity_events WHERE git_store = ?1",
-            params![git_store],
-        )?;
-    }
-    Ok(())
-}
-
-fn row_to_event(r: &rusqlite::Row<'_>) -> rusqlite::Result<EventRow> {
-    Ok(EventRow {
-        id: r.get(0)?,
-        git_store: r.get(1)?,
-        kind: parse_enum(r.get(2)?)?,
-        ref_name: r.get(3)?,
-        match_name: r.get(4)?,
-        old_id: r.get(5)?,
-        new_id: r.get(6)?,
-        observed_at: r.get(7)?,
-        seen_at: r.get(8)?,
-        detail: serde_json::from_str(&r.get::<_, String>(9)?).unwrap_or_default(),
-    })
-}
-
-const EVENT_COLUMNS: &str =
-    "id, git_store, kind, ref_name, match_name, old_id, new_id, observed_at, seen_at, detail_json";
-
-/// Events of the given shared Git directories, unread first, newest first, at
-/// most `limit`. Callers filter by a workspace's patterns.
-pub fn list_events(
-    conn: &Connection,
-    git_stores: &[String],
-    limit: usize,
-) -> AppResult<Vec<EventRow>> {
-    if git_stores.is_empty() {
-        return Ok(Vec::new());
-    }
-    // A JSON array keeps the store list to one bound parameter.
-    let sql = format!(
-        "SELECT {EVENT_COLUMNS} FROM activity_events
-         WHERE git_store IN (SELECT value FROM json_each(?1))
-         ORDER BY seen_at IS NOT NULL, observed_at DESC, id
-         LIMIT ?2"
-    );
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(
-        params![serde_json::to_string(git_stores)?, limit as i64],
-        row_to_event,
-    )?;
-    Ok(rows.collect::<Result<_, _>>()?)
-}
-
-/// Every unread event, for per-workspace unread counts.
-pub fn unseen_events(conn: &Connection) -> AppResult<Vec<EventRow>> {
-    let sql = format!("SELECT {EVENT_COLUMNS} FROM activity_events WHERE seen_at IS NULL");
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map([], row_to_event)?;
-    Ok(rows.collect::<Result<_, _>>()?)
-}
-
-/// Mark the given events as seen.
-pub fn mark_events_seen(conn: &Connection, event_ids: &[String], at: &str) -> AppResult<usize> {
-    Ok(conn.execute(
-        "UPDATE activity_events SET seen_at = ?2
-         WHERE seen_at IS NULL AND id IN (SELECT value FROM json_each(?1))",
-        params![serde_json::to_string(event_ids)?, at],
-    )?)
 }
 
 /// The shared Git directory of every registered repository, by repository ID.

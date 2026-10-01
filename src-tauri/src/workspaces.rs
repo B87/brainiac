@@ -211,12 +211,18 @@ impl RepositoryService {
 
     pub async fn remove(&self, id: &str) -> AppResult<()> {
         let id2 = id.to_string();
-        let removed = self
+        let deleted = self
             .db
             .call(move |conn| db::delete_repository(conn, &id2))
             .await?;
-        if !removed {
+        if !deleted.removed {
             return Err(AppError::not_found("That repository is not registered."));
+        }
+        // The last checkout of a Git directory is gone: its ref tracking and
+        // feed go with it, through their owners.
+        if let Some(store) = deleted.orphaned_store {
+            self.tracker.forget(&store, true).await?;
+            self.fetcher.forget(&store);
         }
         self.slots.lock().expect("slots").remove(id);
         let version = self.bump_version();
@@ -372,6 +378,26 @@ impl RepositoryService {
                 Err(e) => Err(e),
             }
         };
+        // The last commit's time only changes with HEAD: reuse it otherwise
+        // instead of running another Git process.
+        let outcome = match outcome {
+            Ok(mut s) => {
+                let previous = row
+                    .status
+                    .as_ref()
+                    .filter(|p| p.head.commit_id == s.head.commit_id);
+                s.last_commit_at = match (previous, s.head.commit_id.as_deref()) {
+                    (Some(p), _) => p.last_commit_at.clone(),
+                    (None, Some(id)) => match self.git() {
+                        Ok(git) => git.commit_time(Path::new(&row.canonical_root), id).await,
+                        Err(_) => None,
+                    },
+                    (None, None) => None,
+                };
+                Ok(s)
+            }
+            Err(e) => Err(e),
+        };
         let checked_at = now_rfc3339();
         let previous = row.status.as_ref().map(without_timestamp);
         let (status, error) = match outcome {
@@ -476,9 +502,20 @@ impl RepositoryService {
     /// A fresh status observation with the full entry list (the dashboard uses
     /// the cached counts; the Changes view wants the entries).
     pub async fn changes(self: &Arc<Self>, id: &str) -> AppResult<ChangesResult> {
-        // Never forced: the caller is the view that would reload on a change.
-        self.observe(id, ChangeOrigin::Refresh, false).await?;
+        // The Changes tab reloads right after each change event, whose
+        // observation is then milliseconds old: reuse it instead of running
+        // `git status` again. Never forced: the caller is the view that would
+        // reload on a change.
         let row = self.row(id).await?;
+        let fresh = row.status.is_some()
+            && row.error.is_none()
+            && !is_stale_ms(row.last_checked_at.as_deref(), REUSE_OBSERVATION_MS);
+        let row = if fresh {
+            row
+        } else {
+            self.observe(id, ChangeOrigin::Refresh, false).await?;
+            self.row(id).await?
+        };
         match (row.status, row.error) {
             (Some(s), None) => {
                 let mut entries = s.entries;
@@ -679,6 +716,19 @@ fn without_timestamp(s: &crate::models::StatusSnapshot) -> crate::models::Status
     crate::models::StatusSnapshot {
         observed_at: String::new(),
         ..s.clone()
+    }
+}
+
+/// An observation this recent is reused by `list_changes`.
+const REUSE_OBSERVATION_MS: i64 = 1000;
+
+fn is_stale_ms(last_checked_at: Option<&str>, max_age_ms: i64) -> bool {
+    match last_checked_at.and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok()) {
+        Some(t) => {
+            let age = chrono::Utc::now().signed_duration_since(t.with_timezone(&chrono::Utc));
+            age.num_milliseconds() < 0 || age.num_milliseconds() > max_age_ms
+        }
+        None => true,
     }
 }
 

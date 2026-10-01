@@ -3,10 +3,13 @@
  * J/K and the arrow keys without being clicked first.
  *
  * One listener dispatches to every mounted `useKeys` registration in
- * registration order, and the first one that binds the key handles it. Since
- * React mounts children before parents, a component's own bindings win over
- * its container's. A shortcut never fires while the user types in a field,
- * while a modal dialog is open, or for keys a focused control needs itself
+ * registration order, and the first one that binds the key handles it. A
+ * registration is made when a component mounts or re-enables its bindings,
+ * so two components shown together should not bind the same key; today none
+ * do (each view binds its own keys, and the diff binds N, P, [ and ]).
+ *
+ * A shortcut never fires while the user types in a field, while a modal
+ * dialog or a menu is open, or for keys a focused control needs itself
  * (Enter and Space on a button, the arrows in a scrolled patch).
  */
 import { useEffect, useRef } from "react";
@@ -15,6 +18,23 @@ import { useEffect, useRef } from "react";
 export type KeyMap = Record<string, (e: KeyboardEvent) => void>;
 
 type Registration = { map: { current: KeyMap } };
+
+/** What a key event's target looks like, as far as routing cares. */
+export type KeyTarget = {
+  tagName?: string;
+  isContentEditable?: boolean;
+  closest?: (selector: string) => unknown;
+} | null;
+
+/** The state of the page a key press arrives in. */
+export type KeyContext = {
+  /** A modal dialog is open; it owns the keyboard. */
+  modalOpen: boolean;
+  /** A popover menu is open; plain keys belong to it. */
+  menuOpen: boolean;
+  /** The last click landed in a region that scrolls with the arrows. */
+  arrowsOwned: boolean;
+};
 
 const registrations: Registration[] = [];
 
@@ -25,28 +45,28 @@ const registrations: Registration[] = [];
  */
 let arrowsOwned = false;
 
+const ACTIVATES =
+  'button, a[href], summary, [role="button"], [role="tab"], [role="menuitem"], [role="menuitemradio"], [role="checkbox"], [role="switch"]';
+
+function within(target: KeyTarget, selector: string): boolean {
+  return !!target?.closest?.(selector);
+}
+
 /** True when the key press belongs to a text field rather than to the app. */
-export function isTyping(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false;
-  const tag = target.tagName;
+export function isTyping(target: KeyTarget): boolean {
+  const tag = target?.tagName;
   return (
     tag === "INPUT" ||
     tag === "TEXTAREA" ||
     tag === "SELECT" ||
-    target.isContentEditable
+    !!target?.isContentEditable
   );
 }
 
-const ACTIVATES =
-  'button, a[href], summary, [role="button"], [role="tab"], [role="menuitem"], [role="menuitemradio"], [role="checkbox"], [role="switch"]';
-
-/** True when Enter or Space would activate the focused element itself. */
-export function activatesTarget(target: EventTarget | null): boolean {
-  return target instanceof Element && !!target.closest(ACTIVATES);
-}
-
 /** The binding name of a key event, or null when an unbound modifier is held. */
-export function bindingOf(e: KeyboardEvent): string | null {
+export function bindingOf(
+  e: Pick<KeyboardEvent, "key" | "altKey" | "ctrlKey" | "metaKey" | "shiftKey">,
+): string | null {
   if (e.altKey || e.ctrlKey) return null;
   const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
   if (e.metaKey) return e.shiftKey ? null : `mod+${key}`;
@@ -54,45 +74,65 @@ export function bindingOf(e: KeyboardEvent): string | null {
 }
 
 /** Whether the app may take this key press, or it belongs to what has focus. */
-export function shortcutAllowed(e: KeyboardEvent, binding: string): boolean {
-  if (document.querySelector('[aria-modal="true"]')) return false;
+export function shortcutAllowed(
+  binding: string,
+  target: KeyTarget,
+  ctx: KeyContext,
+): boolean {
+  if (ctx.modalOpen) return false;
   if (binding.startsWith("mod+")) return true;
-  if (isTyping(e.target)) return false;
-  if ((binding === "Enter" || binding === " ") && activatesTarget(e.target))
+  if (ctx.menuOpen) return false;
+  if (isTyping(target)) return false;
+  if ((binding === "Enter" || binding === " ") && within(target, ACTIVATES))
     return false;
   if (
     binding.startsWith("Arrow") &&
-    (arrowsOwned ||
-      (e.target instanceof Element && !!e.target.closest("[data-own-arrows]")))
+    (ctx.arrowsOwned || within(target, "[data-own-arrows]"))
   )
     return false;
   return true;
 }
 
+/** The handler that takes `binding`: the first registration that binds it. */
+export function pickHandler(
+  binding: string,
+  maps: ReadonlyArray<KeyMap>,
+): ((e: KeyboardEvent) => void) | null {
+  for (const map of maps) if (map[binding]) return map[binding];
+  return null;
+}
+
 function dispatch(e: KeyboardEvent) {
   if (e.defaultPrevented) return;
   const binding = bindingOf(e);
-  if (!binding || !shortcutAllowed(e, binding)) return;
-  for (const r of registrations) {
-    const handler = r.map.current[binding];
-    if (handler) {
-      e.preventDefault();
-      handler(e);
-      return;
-    }
+  if (!binding) return;
+  const ctx: KeyContext = {
+    modalOpen: !!document.querySelector('[aria-modal="true"]'),
+    menuOpen: !!document.querySelector('[role="menu"]'),
+    arrowsOwned,
+  };
+  const target = e.target instanceof Element ? (e.target as HTMLElement) : null;
+  if (!shortcutAllowed(binding, target, ctx)) return;
+  const handler = pickHandler(
+    binding,
+    registrations.map((r) => r.map.current),
+  );
+  if (handler) {
+    e.preventDefault();
+    handler(e);
   }
 }
 
 if (typeof window !== "undefined") {
   window.addEventListener("keydown", dispatch);
-  window.addEventListener(
-    "mousedown",
-    (e) => {
-      arrowsOwned =
-        e.target instanceof Element && !!e.target.closest("[data-own-arrows]");
-    },
-    true,
-  );
+  // Arrows belong to a patch from the click that lands in it until the
+  // pointer or the focus moves elsewhere.
+  const track = (e: Event) => {
+    arrowsOwned =
+      e.target instanceof Element && !!e.target.closest("[data-own-arrows]");
+  };
+  window.addEventListener("mousedown", track, true);
+  window.addEventListener("focusin", track, true);
 }
 
 /**

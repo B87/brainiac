@@ -436,10 +436,12 @@ function PatchRows({
     [wrap, rows, hunkRows, hunkTop, onHunk],
   );
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: a new patch (the component is keyed by it) starts at its first hunk.
+  // A reloaded patch (same file, new content) keeps its scroll position;
+  // recompute which hunk that is, so the counter never points past the end.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: runs when the patch's hunks change.
   useEffect(() => {
-    onHunk(0);
-  }, []);
+    track(scroller.current?.scrollTop ?? 0);
+  }, [hunks]);
 
   useEffect(() => {
     jumpRef.current = (i: number) => {

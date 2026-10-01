@@ -126,7 +126,9 @@ async fn status_reports_staged_unstaged_and_untracked_separately() {
     assert_eq!(clean.head.kind, HeadKind::Branch);
     assert_eq!(clean.head.branch.as_deref(), Some("main"));
     assert_eq!(clean.counts, ChangeCounts::default());
-    assert!(clean.last_commit_at.is_some());
+    // The service adds the commit time only when HEAD moved.
+    let head = clean.head.commit_id.clone().unwrap();
+    assert!(g.commit_time(&repo, &head).await.is_some());
 
     // Edit without touching .git (the case plain .git watching misses).
     write(&repo, "a.txt", "changed\n");
@@ -700,13 +702,21 @@ async fn loading_changes_reports_a_change_only_when_status_differs() {
 
     // The view reloads on changed events and itself calls `changes`, so an
     // unchanged repository must not report a change or the two would loop.
+    // An observation under a second old is reused without a new event.
+    let settle = || tokio::time::sleep(std::time::Duration::from_millis(1100));
+    let count = || events.lock().unwrap().len();
+    let before = count();
     service.changes(&summary.id).await.unwrap();
+    assert_eq!(count(), before, "a fresh observation is reused");
+    settle().await;
     service.changes(&summary.id).await.unwrap();
     assert_eq!(last_changed(), Some(false));
 
     write(&repo, "a.txt", "edited\n");
+    settle().await;
     service.changes(&summary.id).await.unwrap();
     assert_eq!(last_changed(), Some(true));
+    settle().await;
     service.changes(&summary.id).await.unwrap();
     assert_eq!(last_changed(), Some(false));
 

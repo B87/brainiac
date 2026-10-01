@@ -726,6 +726,8 @@
     font-size: 12px;
     line-height: 20px;
     color: var(--diff-text);
+    /* Must match TAB_SIZE in lib/diff.ts, which sizes split columns. */
+    tab-size: 4;
   }
   .diff-row {
     display: flex;
@@ -819,6 +821,13 @@
     left: 0;
     z-index: 4;
     box-shadow: 0 1px 0 var(--hunk-line);
+  }
+  /* Exactly one row tall even when wrapping, so it overlays one row. */
+  .diff-pinned .diff-row {
+    height: 20px;
+    overflow: hidden;
+    white-space: pre;
+    text-overflow: ellipsis;
   }
 
   kbd,

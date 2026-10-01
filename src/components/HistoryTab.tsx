@@ -62,23 +62,44 @@ export default function HistoryTab({
   const filterRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
-  const load = useCallback(
-    (cursor: string | null, replace: boolean, limit?: number) => {
-      setLoading(true);
+  const page = useCallback(
+    (cursor: string | null, limit: number | null) => {
       const query = parseHistoryFilter(filter);
+      return ipc.listCommits({
+        repository_id: repositoryId,
+        ref: historyRef?.full_name ?? null,
+        filter: query.text || null,
+        author: query.author,
+        cursor,
+        limit,
+      });
+    },
+    [repositoryId, filter, historyRef],
+  );
+
+  /** Load from the top until at least `target` commits are in, then show them at once. */
+  const reload = useCallback(
+    (target: number) => {
+      setLoading(true);
       void latest.run(
-        () =>
-          ipc.listCommits({
-            repository_id: repositoryId,
-            ref: historyRef?.full_name ?? null,
-            filter: query.text || null,
-            author: query.author,
-            cursor,
-            limit: limit ?? null,
-          }),
-        (page) => {
-          if (page.repository_id !== repositoryId) return;
-          setPages((prev) => (replace ? [page] : [...prev, page]));
+        async () => {
+          const loadedPages: CommitPage[] = [];
+          let cursor: string | null = null;
+          let count = 0;
+          do {
+            const next: CommitPage = await page(
+              cursor,
+              Math.min(500, Math.max(100, target - count)),
+            );
+            loadedPages.push(next);
+            count += next.items.length;
+            cursor = next.next_cursor;
+          } while (cursor && count < target);
+          return loadedPages;
+        },
+        (loadedPages) => {
+          if (loadedPages[0]?.repository_id !== repositoryId) return;
+          setPages(loadedPages);
           setLoading(false);
         },
         (e) => {
@@ -87,24 +108,38 @@ export default function HistoryTab({
         },
       );
     },
-    [repositoryId, filter, historyRef, latest, onError],
+    [repositoryId, page, latest, onError],
   );
 
-  // A refresh after a backend event reloads as many commits as are shown
-  // (up to the 500 cap), so the list does not shrink back to its first page.
-  // A different filter or ref starts over with one page.
+  const loadMore = (cursor: string) => {
+    setLoading(true);
+    void latest.run(
+      () => page(cursor, null),
+      (next) => {
+        if (next.repository_id !== repositoryId) return;
+        setPages((prev) => [...prev, next]);
+        setLoading(false);
+      },
+      (e) => {
+        setLoading(false);
+        onError(errorMessage(e));
+      },
+    );
+  };
+
+  // A refresh after a backend event reloads as many commits as are shown,
+  // page by page, so the list keeps its length and selection. A different
+  // filter or ref starts over with one page.
   const loaded = useRef({ scope: "", count: 0 });
   const scope = `${historyRef?.full_name ?? "HEAD"}\u0000${filter}`;
   // biome-ignore lint/correctness/useExhaustiveDependencies: changeTick refreshes history after backend events; scope is read through the ref.
   useEffect(() => {
     const same = loaded.current.scope === scope;
     loaded.current.scope = scope;
-    const limit = same
-      ? Math.min(500, Math.max(100, loaded.current.count))
-      : undefined;
-    const t = setTimeout(() => load(null, true, limit), filter ? 300 : 0);
+    const target = same ? Math.max(100, loaded.current.count) : 100;
+    const t = setTimeout(() => reload(target), filter ? 300 : 0);
     return () => clearTimeout(t);
-  }, [load, changeTick]);
+  }, [reload, changeTick]);
 
   const commits = useMemo(() => pages.flatMap((p) => p.items), [pages]);
   loaded.current.count = commits.length;
@@ -239,7 +274,7 @@ export default function HistoryTab({
               <button
                 type="button"
                 className="btn btn-sm w-full"
-                onClick={() => load(nextCursor, false)}
+                onClick={() => loadMore(nextCursor)}
               >
                 Load more
               </button>

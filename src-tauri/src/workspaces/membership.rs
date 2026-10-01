@@ -23,6 +23,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use super::RepositoryService;
+use crate::activity::WorkspaceScope;
 use crate::db::{self, MemberRow, RepositoryRow, WorkspaceRow};
 use crate::git::ResolvedRepository;
 use crate::models::{
@@ -270,17 +271,32 @@ impl RepositoryService {
 
     /// All workspaces with their members, ordered by name ignoring case.
     pub async fn workspaces(&self) -> AppResult<Vec<Workspace>> {
-        let (rows, members, mut activity, unseen) = self
+        self.load_workspaces(None).await
+    }
+
+    pub async fn workspace(&self, id: &str) -> AppResult<Workspace> {
+        self.load_workspaces(Some(id))
+            .await?
+            .pop()
+            .ok_or_else(workspace_not_found)
+    }
+
+    /// One workspace, or all of them, with members, settings, and unread
+    /// counts (which the activity tracker computes).
+    async fn load_workspaces(&self, only: Option<&str>) -> AppResult<Vec<Workspace>> {
+        let only = only.map(str::to_string);
+        let (rows, members, mut activity, stores) = self
             .db
-            .call(|conn| {
+            .call(move |conn| {
+                let rows = match &only {
+                    Some(id) => db::get_workspace(conn, id)?.into_iter().collect(),
+                    None => db::list_workspaces(conn)?,
+                };
                 Ok((
-                    db::list_workspaces(conn)?,
-                    db::list_members(conn, None)?,
+                    rows,
+                    db::list_members(conn, only.as_deref())?,
                     db::activity_settings(conn)?,
-                    Unread {
-                        stores: db::repository_stores(conn)?,
-                        events: db::unseen_events(conn)?,
-                    },
+                    db::repository_stores(conn)?,
                 ))
             })
             .await?;
@@ -291,37 +307,36 @@ impl RepositoryService {
                 .or_default()
                 .push(m);
         }
-        Ok(rows
+        let mut scopes = Vec::new();
+        let mut parts = Vec::new();
+        for row in rows {
+            let members = by_workspace.remove(&row.id).unwrap_or_default();
+            let Some(config) = activity.remove(&row.id) else {
+                continue;
+            };
+            // Events belong to Git directories, which several members can share.
+            let mut member_stores: Vec<String> = members
+                .iter()
+                .filter_map(|m| m.repository_id.as_ref())
+                .filter_map(|id| stores.get(id).cloned())
+                .collect();
+            member_stores.sort();
+            member_stores.dedup();
+            scopes.push(WorkspaceScope {
+                workspace_id: row.id.clone(),
+                config: config.clone(),
+                stores: member_stores,
+            });
+            parts.push((row, members, config.settings));
+        }
+        let unread = self.tracker.unread_counts(scopes).await?;
+        Ok(parts
             .into_iter()
-            .map(|row| {
-                let members = by_workspace.remove(&row.id).unwrap_or_default();
-                let settings = activity.remove(&row.id).unwrap_or_default();
-                to_workspace(row, members, settings, &unseen)
+            .map(|(row, members, settings)| {
+                let unseen = unread.get(&row.id).copied().unwrap_or(0);
+                to_workspace(row, members, settings, unseen)
             })
             .collect())
-    }
-
-    pub async fn workspace(&self, id: &str) -> AppResult<Workspace> {
-        let id2 = id.to_string();
-        let (row, members, mut activity, unseen) = self
-            .db
-            .call(move |conn| {
-                let row = db::get_workspace(conn, &id2)?;
-                let members = db::list_members(conn, Some(&id2))?;
-                Ok((
-                    row,
-                    members,
-                    db::activity_settings(conn)?,
-                    Unread {
-                        stores: db::repository_stores(conn)?,
-                        events: db::unseen_events(conn)?,
-                    },
-                ))
-            })
-            .await?;
-        let row = row.ok_or_else(workspace_not_found)?;
-        let settings = activity.remove(&row.id).unwrap_or_default();
-        Ok(to_workspace(row, members, settings, &unseen))
     }
 
     // -----------------------------------------------------------------------
@@ -367,7 +382,7 @@ impl RepositoryService {
         let workspace_id = workspace.id.clone();
         // `move` hands ownership of `workspace` and `planned` to the closure,
         // which runs later on the database thread.
-        let new_repositories = self
+        let inserted = self
             .db
             .call(move |conn| {
                 // Dropping a transaction without `commit` rolls it back, so an
@@ -375,10 +390,9 @@ impl RepositoryService {
                 let tx = conn.transaction()?;
                 let mut workspace = workspace;
                 db::insert_workspace(&tx, &workspace)?;
-                let (new_rows, root_id) =
-                    insert_members(&tx, &workspace.id, planned, root_path.as_deref())?;
-                if root_id.is_some() {
-                    workspace.root_repository_id = root_id;
+                let inserted = insert_members(&tx, &workspace.id, planned, root_path.as_deref())?;
+                if inserted.root_id.is_some() {
+                    workspace.root_repository_id = inserted.root_id.clone();
                     db::set_workspace_root(
                         &tx,
                         &workspace.id,
@@ -386,10 +400,10 @@ impl RepositoryService {
                     )?;
                 }
                 tx.commit()?;
-                Ok(new_rows)
+                Ok(inserted)
             })
             .await?;
-        self.finish_change(&workspace_id, new_repositories).await
+        self.finish_change(&workspace_id, inserted).await
     }
 
     /// Add and remove members. Removal drops the membership only; the
@@ -423,7 +437,7 @@ impl RepositoryService {
         let root_path = scope.map(|s| s.root);
         let remove = request.remove;
 
-        let new_repositories = self
+        let inserted = self
             .db
             .call(move |conn| {
                 let tx = conn.transaction()?;
@@ -435,19 +449,18 @@ impl RepositoryService {
                         }
                     }
                 }
-                let (new_rows, added_root) =
-                    insert_members(&tx, &row.id, planned, root_path.as_deref())?;
+                let inserted = insert_members(&tx, &row.id, planned, root_path.as_deref())?;
                 if root_id.is_none() {
-                    root_id = added_root;
+                    root_id = inserted.root_id.clone();
                 }
                 if root_id != row.root_repository_id {
                     db::set_workspace_root(&tx, &row.id, root_id.as_deref())?;
                 }
                 tx.commit()?;
-                Ok(new_rows)
+                Ok(inserted)
             })
             .await?;
-        self.finish_change(&workspace_id, new_repositories).await
+        self.finish_change(&workspace_id, inserted).await
     }
 
     pub async fn rename_workspace(&self, id: &str, name: &str) -> AppResult<Workspace> {
@@ -543,22 +556,15 @@ impl RepositoryService {
     async fn finish_change(
         self: &Arc<Self>,
         workspace_id: &str,
-        new_repositories: Vec<RepositoryRow>,
+        inserted: Inserted,
     ) -> AppResult<WorkspaceChange> {
         self.bump_version();
         let workspace = self.workspace(workspace_id).await?;
-        // Every member, not only new registrations: a repository that joins
-        // this workspace may now be watched for more refs, and the refresh
-        // takes that baseline before any news arrives.
-        let mut ids: Vec<&String> = workspace
-            .members
-            .iter()
-            .filter_map(|m| m.repository_id.as_ref())
-            .collect();
-        ids.sort();
-        ids.dedup();
-        for id in ids {
-            let origin = if new_repositories.iter().any(|r| &r.id == id) {
+        // Repositories that joined may now be watched for more refs; their
+        // refresh takes that baseline before any news arrives. Members that
+        // left only narrow what is watched, which needs no pass.
+        for id in &inserted.joined {
+            let origin = if inserted.new_rows.iter().any(|r| &r.id == id) {
                 ChangeOrigin::Registration
             } else {
                 ChangeOrigin::Refresh
@@ -567,7 +573,7 @@ impl RepositoryService {
         }
         Ok(WorkspaceChange {
             workspace,
-            new_repositories,
+            new_repositories: inserted.new_rows,
         })
     }
 }
@@ -580,10 +586,11 @@ fn insert_members(
     workspace_id: &str,
     planned: Vec<PlannedMember>,
     discovery_root: Option<&Path>,
-) -> AppResult<(Vec<RepositoryRow>, Option<String>)> {
+) -> AppResult<Inserted> {
     let now = now_rfc3339();
     let mut new_rows = Vec::new();
     let mut root_id = None;
+    let mut joined = Vec::new();
     for member in planned {
         let repository_id = match &member.repository {
             Some(r) => {
@@ -614,7 +621,7 @@ fn insert_members(
         if repository_id.is_some() && discovery_root == Some(member.canonical_path.as_path()) {
             root_id = repository_id.clone();
         }
-        db::insert_member(
+        let inserted = db::insert_member(
             conn,
             &MemberRow {
                 id: uuid::Uuid::new_v4().to_string(),
@@ -622,35 +629,38 @@ fn insert_members(
                 display_name: member.display_name,
                 canonical_path: member.canonical_path.display().to_string(),
                 origin: member.origin,
-                repository_id,
+                repository_id: repository_id.clone(),
             },
         )?;
+        if let (true, Some(id)) = (inserted, repository_id) {
+            joined.push(id);
+        }
     }
-    Ok((new_rows, root_id))
+    Ok(Inserted {
+        new_rows,
+        root_id,
+        joined,
+    })
+}
+
+/// What `insert_members` did.
+struct Inserted {
+    /// Repositories registered by this change.
+    new_rows: Vec<RepositoryRow>,
+    /// The member that is the discovery root, if any.
+    root_id: Option<String>,
+    /// Repositories that became members (new registrations included).
+    joined: Vec<String>,
 }
 
 /// Build the DTO: root member first, then the rest by display name.
-/// What per-workspace unread counts are computed from.
-struct Unread {
-    /// Repository ID to shared Git directory.
-    stores: HashMap<String, String>,
-    events: Vec<db::EventRow>,
-}
-
 fn to_workspace(
     row: WorkspaceRow,
     members: Vec<MemberRow>,
     activity: ActivitySettings,
-    unread: &Unread,
+    unseen_activity: u32,
 ) -> Workspace {
     let root_id = row.root_repository_id.clone();
-    // Events belong to Git directories, which several members can share.
-    let stores: HashSet<String> = members
-        .iter()
-        .filter_map(|m| m.repository_id.as_ref())
-        .filter_map(|id| unread.stores.get(id).cloned())
-        .collect();
-    let unseen_activity = crate::activity::count_unseen(&activity, &stores, &unread.events);
     let mut members: Vec<WorkspaceMember> = members
         .into_iter()
         .map(|m| {

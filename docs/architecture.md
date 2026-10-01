@@ -135,7 +135,7 @@ Tables of later releases are in `docs/roadmap.md` and are not created before the
 | --- | --- | --- |
 | `pins` | `entity_type`, `entity_id`, `position`; repository/workspace pins in v0.1, note pins in v0.2; unique entity | v0.1 |
 | `settings` | `key`, `value_json`, `version` | v0.1 |
-| `workspaces` | `id`, `name`, `discovery_mode` (`discovered`, `manual`), `root_repository_id?`, `discovery_root?`, `discovery_path?`; activity settings: watched branch and tag patterns, `auto_fetch`, `notify_moves`, `morning_digest`, `warn_conflicts`, `last_digest_on?` | v0.1 |
+| `workspaces` | `id`, `name`, `discovery_mode` (`discovered`, `manual`), `root_repository_id?`, `discovery_root?`, `discovery_path?`; activity settings: watched branch and tag patterns and since when each is watched, `auto_fetch`, `notify_moves`, `morning_digest`, `warn_conflicts`, `last_digest_on?` | v0.1 |
 | `workspace_members` | `id`, `workspace_id`, `display_name`, `canonical_path`, `origin` (`discovered`, `manual`), `repository_id?` (absent for non-Git folders); unique path per workspace, so one repository can belong to several workspaces | v0.1 |
 | `repositories` | `id`, `canonical_root`, `git_dir`, `common_git_dir`, `last_opened_at?` (drives the Recent list), `last_checked_at`, cached status/error as JSON, `last_fetch_at?` and `last_fetch_error?` of Brainiac's own fetches | v0.1 |
 | `ref_baselines` | `git_store` (a `common_git_dir`), `watched_json`, `taken_at`; which watched patterns the stored tips cover, derived and rebuildable | v0.1 |
@@ -166,7 +166,13 @@ git -c gc.auto=0 -c maintenance.auto=false -c fetch.prune=false -c fetch.pruneTa
 - Command-line options beat per-remote configuration such as `remote.<name>.prune`; the empty `--refmap` stops Git from also applying the configured `remote.<name>.fetch` refspecs to what it fetched.
 - The environment sets `GIT_TERMINAL_PROMPT=0`, `GCM_INTERACTIVE=never`, empty `GIT_ASKPASS`/`SSH_ASKPASS`, and, unless the user configured `core.sshCommand`, `GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=15"`.
 - Timeout 60 seconds. Git is stopped with SIGTERM, which lets it remove its lock files, and only killed if it is still running three seconds later.
-- `crate::fetcher::Fetcher` owns remote and refspec choice, lock checks, concurrency, outcome recording, and backoff; `GitService::fetch` owns the command line.
+- `-c transfer.bundleURI=false` keeps a fetch from downloading bundles into `refs/bundles/`.
+- `crate::fetcher::Fetcher` owns remote and refspec choice, lock checks, one fetch per Git directory (later requests join it), outcome recording, auto-fetch scheduling and backoff, and the branches a remote no longer has; it reports `Fetched`, `Joined`, `Busy`, or `Failed`. `GitService::fetch` owns the command line.
+- On a timeout, and when output is truncated, Git's stdout is closed or the process stopped right away, so a large diff comes back truncated instead of timing out.
+
+### Activity tracking
+
+`crate::activity::ActivityTracker` is the only code that reads or writes `ref_baselines`, `ref_tips`, and `activity_events` (its private `store` module), so its in-memory state (per-directory locks, fingerprints, the team-pulse cache) cannot go stale behind its back. Removing a repository's last checkout calls `ActivityTracker::forget`. Feeds, unread counts, and Mark seen filter in SQL: a pattern's `*` is SQLite's `GLOB` `*`, and each pattern also has a start time (`workspaces.watched_since_json`).
 
 ## IPC
 

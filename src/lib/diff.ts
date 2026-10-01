@@ -150,14 +150,45 @@ export function wordHighlighter(
   };
 }
 
-/** Length of the longest line on each side, for sizing split columns. */
+/** Columns a tab advances to; must match `tab-size` on `.diff` in index.css. */
+export const TAB_SIZE = 4;
+
+/**
+ * Display width of a line in monospace columns: tabs advance to the next
+ * stop, and wide characters (CJK, emoji, fullwidth forms) take two columns.
+ */
+export function displayWidth(text: string): number {
+  let width = 0;
+  for (const ch of text) {
+    if (ch === "\t") {
+      width += TAB_SIZE - (width % TAB_SIZE);
+      continue;
+    }
+    const code = ch.codePointAt(0) ?? 0;
+    const wide =
+      (code >= 0x1100 && code <= 0x115f) ||
+      (code >= 0x2e80 && code <= 0xa4cf) ||
+      (code >= 0xac00 && code <= 0xd7a3) ||
+      (code >= 0xf900 && code <= 0xfaff) ||
+      (code >= 0xfe30 && code <= 0xfe4f) ||
+      (code >= 0xff00 && code <= 0xff60) ||
+      (code >= 0xffe0 && code <= 0xffe6) ||
+      (code >= 0x1f300 && code <= 0x1faff) ||
+      (code >= 0x20000 && code <= 0x3fffd);
+    width += wide ? 2 : 1;
+  }
+  return width;
+}
+
+/** Display width of the longest line on each side, for sizing split columns. */
 export function longestLines(hunks: Hunk[]): { old: number; new: number } {
   let old = 0;
   let neu = 0;
   for (const h of hunks)
     for (const l of h.lines) {
-      if (l.kind !== "add") old = Math.max(old, l.text.length);
-      if (l.kind !== "delete") neu = Math.max(neu, l.text.length);
+      const w = displayWidth(l.text);
+      if (l.kind !== "add") old = Math.max(old, w);
+      if (l.kind !== "delete") neu = Math.max(neu, w);
     }
   return { old, new: neu };
 }

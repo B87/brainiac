@@ -63,6 +63,9 @@ CREATE TABLE workspaces (
   notify_moves          INTEGER NOT NULL DEFAULT 0,
   morning_digest        INTEGER NOT NULL DEFAULT 0,
   warn_conflicts        INTEGER NOT NULL DEFAULT 1,
+  -- {"b:<pattern>"|"t:<pattern>": RFC 3339}: since when each pattern is
+  -- watched; a missing entry means since created_at.
+  watched_since_json    TEXT NOT NULL DEFAULT '{}',
   last_digest_on        TEXT
 );
 

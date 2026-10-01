@@ -1,6 +1,6 @@
 //! Fetch now and auto-fetch, as the service offers them (SPEC.md, Fetching).
-//! `crate::fetcher::Fetcher` decides how a fetch runs; this module picks what
-//! to fetch, schedules auto-fetches, and refreshes the checkouts afterwards.
+//! `crate::fetcher::Fetcher` decides how and when a fetch runs; this module
+//! picks the checkouts and patterns and refreshes the checkouts afterwards.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -11,7 +11,7 @@ use super::RepositoryService;
 use crate::db::{self, RepositoryRow};
 use crate::fetcher::{last_fetch_at, Scope};
 use crate::git::Checkout;
-use crate::models::{now_rfc3339, AppError, AppResult, ChangeOrigin, FetchResult};
+use crate::models::{AppError, AppResult, ChangeOrigin, FetchResult};
 
 /// Shortest auto-fetch interval a setting can ask for.
 const MIN_INTERVAL: Duration = Duration::from_secs(5 * 60);
@@ -33,23 +33,29 @@ impl RepositoryService {
         let git = self.git()?.clone();
         let store = checkout.store();
         let scope = if auto {
-            Scope::Watched(self.auto_fetch_patterns(&store).await?)
+            Scope::Watched {
+                patterns: self.auto_fetch_patterns(&store).await?,
+                interval: self.auto_fetch_interval(),
+            }
         } else {
             Scope::Remote
         };
         let timeout = Duration::from_secs(self.settings().fetch_timeout_seconds.max(10));
-        let result = self.fetcher.fetch(&git, &checkout, scope, timeout).await;
-        // A busy repository changed nothing and recorded nothing.
-        if !matches!(&result, Err(e) if e.code == crate::models::ErrorCode::Conflict) {
+        let outcome = self.fetcher.fetch(&git, &checkout, scope, timeout).await;
+        if outcome.changed_state() {
             self.refresh_store(&store).await;
         }
-        let fetched = result?;
+        let fetched = outcome.into_result()?;
         Ok(FetchResult {
             repository_id: id.to_string(),
             remote: fetched.remote,
-            fetched_at: fetched.fetched_at.unwrap_or_else(now_rfc3339),
+            fetched_at: fetched.fetched_at,
             moved: fetched.moved,
         })
+    }
+
+    fn auto_fetch_interval(&self) -> Duration {
+        Duration::from_secs(self.settings().auto_fetch_interval_minutes * 60).max(MIN_INTERVAL)
     }
 
     async fn refresh_store(self: &Arc<Self>, store: &str) {
@@ -71,8 +77,7 @@ impl RepositoryService {
     /// Start the auto-fetches that are due, one per Git directory. Called
     /// about once a minute while the app runs.
     pub async fn auto_fetch_tick(self: &Arc<Self>) {
-        let interval =
-            Duration::from_secs(self.settings().auto_fetch_interval_minutes * 60).max(MIN_INTERVAL);
+        let interval = self.auto_fetch_interval();
         let candidates = match self.auto_fetch_candidates().await {
             Ok(c) => c,
             Err(e) => {
@@ -90,12 +95,12 @@ impl RepositoryService {
             if !self.fetcher.is_due(&store, last.as_deref(), interval) {
                 continue;
             }
+            // The fetcher schedules the next attempt itself (Scope::Watched).
             let service = Arc::clone(self);
             tokio::spawn(async move {
-                let result = service.fetch(&row.id, true).await;
-                service
-                    .fetcher
-                    .record_auto(&store, result.as_ref().err(), interval);
+                if let Err(e) = service.fetch(&row.id, true).await {
+                    tracing::debug!(repository = %row.display_path, error = %e, "auto-fetch did not complete");
+                }
             });
         }
     }
@@ -109,7 +114,11 @@ impl RepositoryService {
             .await?;
         let wanted: HashSet<String> = members
             .into_iter()
-            .filter(|m| settings.get(&m.workspace_id).is_some_and(|s| s.auto_fetch))
+            .filter(|m| {
+                settings
+                    .get(&m.workspace_id)
+                    .is_some_and(|c| c.settings.auto_fetch)
+            })
             .filter_map(|m| m.repository_id)
             .collect();
         let mut by_store: HashMap<String, RepositoryRow> = HashMap::new();
@@ -137,8 +146,8 @@ impl RepositoryService {
             .call(move |conn| db::watchers_of_store(conn, &store))
             .await?;
         let mut patterns: Vec<String> = Vec::new();
-        for w in watchers.iter().filter(|w| w.settings.auto_fetch) {
-            for p in &w.settings.watched_branches {
+        for w in watchers.iter().filter(|w| w.config.settings.auto_fetch) {
+            for p in &w.config.settings.watched_branches {
                 if !patterns.contains(p) {
                     patterns.push(p.clone());
                 }

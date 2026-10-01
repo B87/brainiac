@@ -931,7 +931,9 @@ pub struct WorkspaceActivity {
 pub struct FetchResult {
     pub repository_id: String,
     pub remote: String,
-    pub fetched_at: String,
+    /// `None` when there was nothing to fetch (auto-fetch: no watched branch
+    /// exists on the remote yet).
+    pub fetched_at: Option<String>,
     /// Refs whose tips changed, such as `origin/main` or `v1.2`.
     pub moved: Vec<String>,
 }
