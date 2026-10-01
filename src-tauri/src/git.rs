@@ -1259,14 +1259,15 @@ impl GitService {
         Some(String::from_utf8_lossy(&out).trim().to_string()).filter(|t| !t.is_empty())
     }
 
-    /// Author name and whether it is a merge, for every commit reachable from
-    /// `refs` and committed after `since` (at most 10,000).
+    /// Author name, whether it is a merge, and the commit time (Unix seconds),
+    /// for every commit reachable from `refs` and committed after `since`
+    /// (at most 10,000).
     pub async fn commits_since(
         &self,
         root: &Path,
         refs: &[String],
         since: &str,
-    ) -> AppResult<Vec<(String, bool)>> {
+    ) -> AppResult<Vec<(String, bool, i64)>> {
         if refs.is_empty() {
             return Ok(Vec::new());
         }
@@ -1274,7 +1275,7 @@ impl GitService {
             validate_revision(r)?;
         }
         let since = format!("--since={since}");
-        let format = format!("--format=%an{FIELD_SEP}%P");
+        let format = format!("--format=%an{FIELD_SEP}%P{FIELD_SEP}%ct");
         let mut args = vec![
             "log",
             &format,
@@ -1287,8 +1288,17 @@ impl GitService {
         let out = self.run_raw(Some(root), &args).await?;
         Ok(String::from_utf8_lossy(&out)
             .lines()
-            .filter_map(|l| l.split_once(FIELD_SEP))
-            .map(|(author, parents)| (author.to_string(), parents.split_whitespace().count() > 1))
+            .filter_map(|l| {
+                let mut f = l.split(FIELD_SEP);
+                let author = f.next()?;
+                let parents = f.next()?;
+                let time = f.next()?.trim().parse().ok()?;
+                Some((
+                    author.to_string(),
+                    parents.split_whitespace().count() > 1,
+                    time,
+                ))
+            })
             .collect())
     }
 

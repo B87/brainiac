@@ -10,8 +10,8 @@ use crate::db::RepositoryRow;
 use crate::models::{
     ActivitySettings, AppResult, AppSnapshot, ChangesResult, CommitDetail, CommitPage,
     CreateWorkspaceRequest, DiffOptions, DiffResult, DiffSelector, FetchResult, ListCommitsRequest,
-    PinEntityType, RefsResult, RepositorySummary, RepositoryTab, UpdateWorkspaceMembershipRequest,
-    Workspace, WorkspaceActivity, WorkspacePreview,
+    PinEntityType, RefsResult, RepositorySummary, RepositoryTab, TeamPulse,
+    UpdateWorkspaceMembershipRequest, Workspace, WorkspaceActivity, WorkspacePreview,
 };
 use crate::watcher::RepositoryWatcher;
 use crate::workspaces::{RepositoryService, WorkspaceChange};
@@ -260,4 +260,12 @@ pub async fn update_activity_settings(
     service
         .update_activity_settings(&workspace_id, settings)
         .await
+}
+
+#[tauri::command]
+pub async fn get_team_pulse(
+    workspace_id: String,
+    service: State<'_, Service>,
+) -> AppResult<TeamPulse> {
+    service.team_pulse(&workspace_id).await
 }

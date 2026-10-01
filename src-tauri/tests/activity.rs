@@ -145,7 +145,10 @@ async fn baseline_then_fast_forward_with_overlap() {
     let drift = item.detail.drift.as_ref().expect("drift");
     assert_eq!((drift.branch.as_str(), drift.behind), ("main", 2));
     assert!(feed.freshness[0].last_fetch_at.is_some());
-    assert_eq!(feed.pulse.commits, 3);
+    let pulse = f.svc.team_pulse(&f.workspace_id).await.unwrap();
+    assert_eq!(pulse.commits, 3);
+    // Unchanged refs reuse the cached pulse.
+    assert_eq!(f.svc.team_pulse(&f.workspace_id).await.unwrap(), pulse);
 
     let summary = f.svc.list().await.unwrap();
     assert!(summary[0].last_fetch_at.is_some());
@@ -199,7 +202,7 @@ async fn force_push_and_tags() {
         .expect("tag event");
     assert_eq!(tagged.ref_name, "v1.0");
     assert_eq!(tagged.detail.authors, vec!["Jo Martin".to_string()]);
-    assert_eq!(feed.pulse.releases, 1);
+    assert_eq!(f.svc.team_pulse(&f.workspace_id).await.unwrap().releases, 1);
 }
 
 #[tokio::test]

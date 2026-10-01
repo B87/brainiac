@@ -153,6 +153,7 @@ pub fn run() {
             commands::set_pinned,
             commands::fetch_repository,
             commands::get_workspace_activity,
+            commands::get_team_pulse,
             commands::mark_activity_seen,
             commands::update_activity_settings,
         ])

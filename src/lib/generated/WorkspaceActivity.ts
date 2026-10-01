@@ -2,7 +2,6 @@
 import type { ActivityItem } from "./ActivityItem";
 import type { ActivitySettings } from "./ActivitySettings";
 import type { RepositoryFreshness } from "./RepositoryFreshness";
-import type { TeamPulse } from "./TeamPulse";
 
 export type WorkspaceActivity = { workspace_id: string, settings: ActivitySettings, 
 /**
@@ -12,4 +11,4 @@ items: Array<ActivityItem>, unseen: number,
 /**
  * Oldest fetch first.
  */
-freshness: Array<RepositoryFreshness>, pulse: TeamPulse, };
+freshness: Array<RepositoryFreshness>, };

@@ -39,6 +39,8 @@ type Props = {
 
 /** A repository not fetched for this long gets a warning. */
 const STALE_FETCH_DAYS = 2;
+/** Changes within this window cause a single reload. */
+const RELOAD_DELAY_MS = 400;
 
 export default function ActivityView({
   snapshot,
@@ -52,9 +54,19 @@ export default function ActivityView({
   const [activity, setActivity] = useState<WorkspaceActivity | null>(null);
   const [loading, setLoading] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [pulse, setPulse] = useState<TeamPulse | null>(null);
   const latest = useRef(createLatest()).current;
+  const pulseLatest = useRef(createLatest()).current;
 
+  // The feed and the pulse load separately: the feed comes from the
+  // database and is immediate; the pulse may need Git for repositories whose
+  // refs moved, and fills in when it arrives.
   const load = useCallback(() => {
+    void pulseLatest.run(
+      () => ipc.getTeamPulse(workspace.id),
+      setPulse,
+      () => setPulse(null),
+    );
     setLoading(true);
     void latest.run(
       () => ipc.getWorkspaceActivity(workspace.id),
@@ -69,9 +81,11 @@ export default function ActivityView({
         onError(errorMessage(e));
       },
     );
-  }, [workspace.id, latest, onError]);
+  }, [workspace.id, latest, pulseLatest, onError]);
 
   // Reload when news arrives, something is marked seen, or a fetch finishes.
+  // Fetch all changes several repositories in a row; later changes wait
+  // briefly so they cause one reload, not one per repository.
   const memberIds = useMemo(
     () => new Set(workspace.members.flatMap((m) => m.repository_id ?? [])),
     [workspace.members],
@@ -80,9 +94,16 @@ export default function ActivityView({
     .filter((r) => memberIds.has(r.id))
     .map((r) => `${r.last_fetch_at}:${r.fetch_error?.message ?? ""}`)
     .join("|");
+  const loadedOnce = useRef(false);
   // biome-ignore lint/correctness/useExhaustiveDependencies: these values signal new data, they are not read.
   useEffect(() => {
-    load();
+    if (!loadedOnce.current) {
+      loadedOnce.current = true;
+      load();
+      return;
+    }
+    const t = setTimeout(load, RELOAD_DELAY_MS);
+    return () => clearTimeout(t);
   }, [load, workspace.unseen_activity, fetchedKey]);
 
   // Edits show at once and are saved one after another, each building on the
@@ -243,7 +264,7 @@ export default function ActivityView({
         aria-label="Team pulse and settings"
         className="flex w-[320px] shrink-0 flex-col overflow-y-auto border-l bg-panel"
       >
-        <Pulse pulse={activity?.pulse ?? null} name={workspace.name} />
+        <Pulse pulse={pulse} name={workspace.name} />
         <div className="flex flex-col gap-2.5 border-b px-[18px] py-3.5">
           <span className="section-label text-fg-2">Keep up to date</span>
           <Toggle
@@ -605,6 +626,13 @@ function Pulse({ pulse, name }: { pulse: TeamPulse | null; name: string }) {
         <Stat value={pulse?.merges} label="merges" />
         <Stat value={pulse?.releases} label="releases" />
       </div>
+      {!pulse &&
+        [70, 50, 35].map((w) => (
+          <div key={w} className="flex items-center gap-2">
+            <div className="skeleton h-5 w-5 rounded-full" />
+            <div className="skeleton" style={{ width: `${w}%` }} />
+          </div>
+        ))}
       {pulse?.authors.map((a) => (
         <div key={a.name} className="flex items-center gap-2 text-[12.5px]">
           <Avatar name={a.name} size={20} />

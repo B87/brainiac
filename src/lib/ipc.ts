@@ -22,6 +22,7 @@ import type { RefsResult } from "./generated/RefsResult";
 import type { RepositoryChangedEvent } from "./generated/RepositoryChangedEvent";
 import type { RepositorySummary } from "./generated/RepositorySummary";
 import type { RepositoryTab } from "./generated/RepositoryTab";
+import type { TeamPulse } from "./generated/TeamPulse";
 import type { UpdateWorkspaceMembershipRequest } from "./generated/UpdateWorkspaceMembershipRequest";
 import type { Workspace } from "./generated/Workspace";
 import type { WorkspaceActivity } from "./generated/WorkspaceActivity";
@@ -43,7 +44,6 @@ export type { Pin } from "./generated/Pin";
 export type { PreviewStatus } from "./generated/PreviewStatus";
 export type { RefEntry } from "./generated/RefEntry";
 export type { RepositoryFreshness } from "./generated/RepositoryFreshness";
-export type { TeamPulse } from "./generated/TeamPulse";
 export type { WorkspaceMember } from "./generated/WorkspaceMember";
 export type { WorkspacePreviewEntry } from "./generated/WorkspacePreviewEntry";
 export type {
@@ -63,6 +63,7 @@ export type {
   RefsResult,
   RepositorySummary,
   RepositoryTab,
+  TeamPulse,
   UpdateWorkspaceMembershipRequest,
   Workspace,
   WorkspaceActivity,
@@ -149,6 +150,8 @@ export const ipc = {
     invoke<FetchResult>("fetch_repository", { repositoryId }),
   getWorkspaceActivity: (workspaceId: string) =>
     invoke<WorkspaceActivity>("get_workspace_activity", { workspaceId }),
+  getTeamPulse: (workspaceId: string) =>
+    invoke<TeamPulse>("get_team_pulse", { workspaceId }),
   /** Without `eventIds`, marks every unread event of the workspace. */
   markActivitySeen: (workspaceId: string, eventIds?: string[]) =>
     invoke<void>("mark_activity_seen", {

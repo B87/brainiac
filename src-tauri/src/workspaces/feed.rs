@@ -14,7 +14,7 @@ use crate::fetcher::last_fetch_at;
 use crate::git::Checkout;
 use crate::models::{
     ActivitySettings, AppError, AppResult, ChangeOrigin, RepositoryFreshness, StatusSnapshot,
-    Workspace, WorkspaceActivity,
+    TeamPulse, Workspace, WorkspaceActivity,
 };
 
 /// Local hour of the morning digest.
@@ -46,15 +46,13 @@ impl RepositoryService {
         }
     }
 
-    /// The Activity tab: feed, freshness of each member, and the team pulse.
+    /// The Activity tab: feed and freshness of each member. The team pulse
+    /// is separate (`team_pulse`), so the feed never waits for it.
     pub async fn workspace_activity(&self, workspace_id: &str) -> AppResult<WorkspaceActivity> {
         let workspace = self.workspace(workspace_id).await?;
         let rows = self.member_rows(&workspace).await?;
         let checkouts: Vec<Checkout> = rows.iter().map(Checkout::from).collect();
-        let feed = self
-            .tracker
-            .feed(self.git().ok(), &workspace.activity, &checkouts)
-            .await?;
+        let feed = self.tracker.feed(&workspace.activity, &checkouts).await?;
         // One line per Git directory: linked worktrees share their fetches.
         let mut seen = HashSet::new();
         let mut freshness: Vec<RepositoryFreshness> = rows
@@ -79,8 +77,23 @@ impl RepositoryService {
             items: feed.items,
             unseen: feed.unseen,
             freshness,
-            pulse: feed.pulse,
         })
+    }
+
+    /// Commits, merges, releases, and the most active people on a
+    /// workspace's watched refs over the last seven days.
+    pub async fn team_pulse(&self, workspace_id: &str) -> AppResult<TeamPulse> {
+        let workspace = self.workspace(workspace_id).await?;
+        let checkouts: Vec<Checkout> = self
+            .member_rows(&workspace)
+            .await?
+            .iter()
+            .map(Checkout::from)
+            .collect();
+        Ok(self
+            .tracker
+            .pulse(self.git()?, &workspace.activity, &checkouts)
+            .await)
     }
 
     /// Mark the listed events, or every unread event the workspace shows, as seen.

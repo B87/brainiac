@@ -924,7 +924,6 @@ pub struct WorkspaceActivity {
     pub unseen: u32,
     /// Oldest fetch first.
     pub freshness: Vec<RepositoryFreshness>,
-    pub pulse: TeamPulse,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

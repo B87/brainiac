@@ -64,7 +64,6 @@ pub struct Pass {
 pub struct Feed {
     pub items: Vec<ActivityItem>,
     pub unseen: u32,
-    pub pulse: TeamPulse,
 }
 
 /// Watched patterns, sorted and without duplicates so that equal sets
@@ -127,6 +126,9 @@ pub struct ActivityTracker {
     /// pass, per Git directory. `0` marks a directory nothing watches.
     fingerprints: Mutex<HashMap<String, u64>>,
     last_notified: Mutex<HashMap<(String, String), Instant>>,
+    /// Team-pulse inputs per Git directory and watched patterns, reused while
+    /// the ref files are unchanged (the same fingerprint as tracking passes).
+    pulse_cache: Mutex<HashMap<String, RepoPulse>>,
 }
 
 impl ActivityTracker {
@@ -136,6 +138,7 @@ impl ActivityTracker {
             locks: Mutex::new(HashMap::new()),
             fingerprints: Mutex::new(HashMap::new()),
             last_notified: Mutex::new(HashMap::new()),
+            pulse_cache: Mutex::new(HashMap::new()),
         }
     }
 
@@ -352,7 +355,6 @@ impl ActivityTracker {
     /// only events its own patterns match.
     pub async fn feed(
         &self,
-        git: Option<&GitService>,
         settings: &ActivitySettings,
         checkouts: &[Checkout],
     ) -> AppResult<Feed> {
@@ -380,15 +382,60 @@ impl ActivityTracker {
                 Some(to_item(e, checkout))
             })
             .collect();
-        let pulse = match git {
-            Some(git) => team_pulse(git, &reps.into_values().collect::<Vec<_>>(), &watched).await,
-            None => TeamPulse::default(),
-        };
         Ok(Feed {
             items,
             unseen: count_unseen(settings, &store_set, &unseen),
-            pulse,
         })
+    }
+
+    /// Commits, merges, releases, and authors on a workspace's watched refs
+    /// over the last seven days. Each Git directory is read only when its
+    /// ref files changed since the last time; the others come from a cache,
+    /// and the misses are read in parallel.
+    pub async fn pulse(
+        &self,
+        git: &GitService,
+        settings: &ActivitySettings,
+        checkouts: &[Checkout],
+    ) -> TeamPulse {
+        let watched = Watched::of(settings);
+        let watched_json = serde_json::to_string(&watched).unwrap_or_default();
+        let since_time = chrono::Utc::now() - chrono::Duration::days(7);
+        let mut repos: Vec<RepoPulse> = Vec::new();
+        let mut jobs = tokio::task::JoinSet::new();
+        for checkout in representatives(checkouts).into_values() {
+            if !checkout.root.is_dir() {
+                continue;
+            }
+            let key = format!("{}\u{0}{watched_json}", checkout.store());
+            let stamp = ref_stamp(&checkout.common_git_dir);
+            let cached = self
+                .pulse_cache
+                .lock()
+                .expect("pulse cache")
+                .get(&key)
+                .filter(|r| r.stamp == stamp)
+                .cloned();
+            match cached {
+                Some(r) => repos.push(r),
+                // Each task owns clones: spawned tasks may outlive this borrow.
+                None => {
+                    let (git, watched) = (git.clone(), watched.clone());
+                    jobs.spawn(async move {
+                        let r = read_pulse(&git, &checkout, &watched, since_time, stamp).await;
+                        (key, r)
+                    });
+                }
+            }
+        }
+        while let Some(Ok((key, r))) = jobs.join_next().await {
+            self.pulse_cache
+                .lock()
+                .expect("pulse cache")
+                .insert(key, r.clone());
+            repos.push(r);
+        }
+        summarize_pulse(&repos, since_time)
     }
 
     /// Mark a workspace's unread events as seen: the listed ones, or all of
@@ -732,86 +779,91 @@ fn summary_line(e: &EventRow) -> String {
     }
 }
 
-/// What one repository contributed to the pulse.
+/// What one Git directory contributes to the pulse, before the seven-day
+/// window is applied (so a cached entry stays correct as days pass: commits
+/// only leave the window, and new ones change the ref files).
+#[derive(Debug, Clone)]
 struct RepoPulse {
+    stamp: u64,
     name: String,
-    commits: Vec<(String, bool)>,
-    releases: u32,
+    /// Author, merge, commit time (Unix seconds).
+    commits: Vec<(String, bool, i64)>,
+    /// Creation times of watched tags (Unix seconds).
+    releases: Vec<i64>,
 }
 
-/// Commits, merges, releases, and authors on the watched refs over seven
-/// days. Repositories are read in parallel.
-async fn team_pulse(git: &GitService, checkouts: &[Checkout], watched: &Watched) -> TeamPulse {
-    let since_time = chrono::Utc::now() - chrono::Duration::days(7);
+async fn read_pulse(
+    git: &GitService,
+    checkout: &Checkout,
+    watched: &Watched,
+    since_time: chrono::DateTime<chrono::Utc>,
+    stamp: u64,
+) -> RepoPulse {
+    let root = checkout.root.as_path();
     let since = since_time.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-    let mut jobs = tokio::task::JoinSet::new();
-    for checkout in checkouts.iter().filter(|c| c.root.is_dir()) {
-        // Each task owns clones: spawned tasks may outlive this borrow.
-        let (git, checkout, watched, since) = (
-            git.clone(),
-            checkout.clone(),
-            watched.clone(),
-            since.clone(),
-        );
-        jobs.spawn(async move {
-            let root = checkout.root.as_path();
-            let remotes = git.remotes(root).await.unwrap_or_default();
-            let tips = git.remote_and_tag_tips(root).await.unwrap_or_default();
-            let branches: Vec<String> = tips
-                .iter()
-                .filter(|(full, _)| match RefName::parse(full, &remotes) {
-                    RefName::RemoteBranch { branch, .. } => watched.matches(false, branch),
-                    _ => false,
-                })
-                .map(|(full, _)| full.clone())
-                .collect();
-            let commits = git
-                .commits_since(root, &branches, &since)
-                .await
-                .unwrap_or_default();
-            let releases = git
-                .tag_dates(root)
-                .await
-                .unwrap_or_default()
-                .iter()
-                .filter(|(name, date)| {
-                    watched.matches(true, name)
-                        && chrono::DateTime::parse_from_rfc3339(date).is_ok_and(|d| d >= since_time)
-                })
-                .count() as u32;
-            RepoPulse {
-                name: checkout.name.clone(),
-                commits,
-                releases,
-            }
-        });
+    let remotes = git.remotes(root).await.unwrap_or_default();
+    let tips = git.remote_and_tag_tips(root).await.unwrap_or_default();
+    let branches: Vec<String> = tips
+        .iter()
+        .filter(|(full, _)| match RefName::parse(full, &remotes) {
+            RefName::RemoteBranch { branch, .. } => watched.matches(false, branch),
+            _ => false,
+        })
+        .map(|(full, _)| full.clone())
+        .collect();
+    let commits = git
+        .commits_since(root, &branches, &since)
+        .await
+        .unwrap_or_default();
+    let releases = git
+        .tag_dates(root)
+        .await
+        .unwrap_or_default()
+        .iter()
+        .filter(|(name, _)| watched.matches(true, name))
+        .filter_map(|(_, date)| chrono::DateTime::parse_from_rfc3339(date).ok())
+        .map(|d| d.timestamp())
+        .collect();
+    RepoPulse {
+        stamp,
+        name: checkout.name.clone(),
+        commits,
+        releases,
     }
+}
+
+/// Aggregate per-repository pulse inputs inside the seven-day window.
+fn summarize_pulse(repos: &[RepoPulse], since_time: chrono::DateTime<chrono::Utc>) -> TeamPulse {
+    let since = since_time.timestamp();
     let mut pulse = TeamPulse {
-        since,
+        since: since_time.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         ..TeamPulse::default()
     };
     let mut authors: Vec<PulseAuthor> = Vec::new();
     let mut per_repo: Vec<(String, u32)> = Vec::new();
-    while let Some(Ok(repo)) = jobs.join_next().await {
-        pulse.releases += repo.releases;
+    for repo in repos {
+        pulse.releases += repo.releases.iter().filter(|t| **t >= since).count() as u32;
         let mut n = 0;
-        for (author, is_merge) in repo.commits {
-            if is_merge {
+        for (author, is_merge, time) in &repo.commits {
+            if *time < since {
+                continue;
+            }
+            if *is_merge {
                 pulse.merges += 1;
                 continue;
             }
             pulse.commits += 1;
             n += 1;
-            match authors.iter_mut().find(|a| a.name == author) {
+            match authors.iter_mut().find(|a| &a.name == author) {
                 Some(a) => a.commits += 1,
                 None => authors.push(PulseAuthor {
-                    name: author,
+                    name: author.clone(),
                     commits: 1,
                 }),
             }
         }
         if n > 0 {
-            per_repo.push((repo.name, n));
+            per_repo.push((repo.name.clone(), n));
         }
     }
     authors.sort_by(|a, b| b.commits.cmp(&a.commits).then(a.name.cmp(&b.name)));
@@ -882,6 +934,36 @@ mod tests {
         }
         assert!(clean_patterns(&["v*.*".into()], false).is_ok());
         assert!(clean_patterns(&["v*.*".into()], true).is_err());
+    }
+
+    #[test]
+    fn pulse_counts_only_the_last_seven_days() {
+        let now = chrono::Utc::now();
+        let since = now - chrono::Duration::days(7);
+        let t = |days: i64| (now - chrono::Duration::days(days)).timestamp();
+        let repo = |name: &str, commits: Vec<(String, bool, i64)>| RepoPulse {
+            stamp: 1,
+            name: name.into(),
+            commits,
+            releases: vec![t(1), t(30)],
+        };
+        let a = |n: &str, merge: bool, days: i64| (n.to_string(), merge, t(days));
+        let pulse = summarize_pulse(
+            &[
+                repo(
+                    "api",
+                    vec![a("Alex", false, 1), a("Alex", false, 2), a("Jo", true, 3)],
+                ),
+                repo("web", vec![a("Jo", false, 1), a("Sam", false, 9)]),
+            ],
+            since,
+        );
+        assert_eq!((pulse.commits, pulse.merges, pulse.releases), (3, 1, 2));
+        assert_eq!(pulse.authors[0].name, "Alex");
+        assert_eq!(
+            pulse.repositories,
+            vec!["api".to_string(), "web".to_string()]
+        );
     }
 
     #[test]
