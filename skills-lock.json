@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "software-design-philosophy": {
+      "source": "B87/software-design-skill",
+      "sourceType": "github",
+      "skillPath": "software-design-philosophy/SKILL.md",
+      "computedHash": "961690b551c7e518d3f861767896b4768e2cc4df9dd38584282b0c572b82fade"
+    }
+  }
+}
