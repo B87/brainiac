@@ -13,9 +13,9 @@ use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
 use crate::models::{
-    AppError, AppResult, ChangeCounts, ChangeEntry, ChangeGroup, ChangeKind, CommitSummary,
-    DiffContent, DiffLimits, DiffLine, DiffLineKind, DiffSelector, HeadKind, HeadState, Hunk,
-    NonTextKind, StatusSnapshot, UpstreamState,
+    AppError, AppResult, ChangeCounts, ChangeEntry, ChangeGroup, ChangeKind, CommitDetail,
+    CommitFile, CommitSummary, DiffContent, DiffLimits, DiffLine, DiffLineKind, DiffSelector,
+    HeadKind, HeadState, Hunk, NonTextKind, RefEntry, RefKind, StatusSnapshot, UpstreamState,
 };
 
 /// Minimum supported Git version (SPEC §3).
@@ -394,6 +394,114 @@ impl GitService {
         })
     }
 
+    /// Full parent ids of a commit, in order (empty for a root commit).
+    async fn commit_parents(&self, root: &Path, commit_id: &str) -> AppResult<Vec<String>> {
+        validate_revision(commit_id)?;
+        let spec = format!("{commit_id}^{{commit}}");
+        // Prints "<commit> <parent1> <parent2> ...".
+        let out = self
+            .run_raw(
+                Some(root),
+                &[
+                    "rev-list",
+                    "--parents",
+                    "--max-count=1",
+                    "--end-of-options",
+                    &spec,
+                    "--",
+                ],
+            )
+            .await?;
+        Ok(String::from_utf8_lossy(&out)
+            .split_whitespace()
+            .skip(1)
+            .map(str::to_string)
+            .collect())
+    }
+
+    /// Metadata, full message, and changed files of one commit, compared with
+    /// the parent at `parent_index` (the empty tree for a root commit).
+    /// `repository_id` is left empty for the caller to fill in.
+    pub async fn commit_detail(
+        &self,
+        root: &Path,
+        commit_id: &str,
+        parent_index: u32,
+    ) -> AppResult<CommitDetail> {
+        validate_revision(commit_id)?;
+        let format = format!(
+            "--format=%H{s}%h{s}%P{s}%an{s}%ae{s}%aI{s}%cI{s}%D{s}%cn{s}%ce{s}%s{s}%b",
+            s = FIELD_SEP
+        );
+        let spec = format!("{commit_id}^{{commit}}");
+        let out = self
+            .run_raw(
+                Some(root),
+                &[
+                    "log",
+                    "-z",
+                    "--max-count=1",
+                    &format,
+                    "--end-of-options",
+                    &spec,
+                    "--",
+                ],
+            )
+            .await?;
+        let mut detail = parse_commit_header(&out)
+            .ok_or_else(|| AppError::not_found(format!("Commit {commit_id} was not found.")))?;
+
+        let base = compare_base(&detail.summary.parent_ids, parent_index)?;
+        let id = detail.summary.id.clone();
+        let mut revs: Vec<&str> = Vec::new();
+        match base {
+            Some(parent) => revs.extend(["--end-of-options", parent, &id]),
+            None => revs.extend(["--root", "--end-of-options", &id]),
+        }
+        let tree_diff = |format: &'static str| {
+            let mut args = vec![
+                "diff-tree",
+                "-r",
+                "-z",
+                "--no-commit-id",
+                "--find-renames",
+                format,
+            ];
+            args.extend(revs.iter().copied());
+            args
+        };
+        let names = self
+            .run_raw(Some(root), &tree_diff("--name-status"))
+            .await?;
+        let stats = self.run_raw(Some(root), &tree_diff("--numstat")).await?;
+        detail.files = merge_file_stats(parse_name_status(&names), &parse_numstat(&stats));
+        detail.compared_parent_index = parent_index;
+        Ok(detail)
+    }
+
+    // -----------------------------------------------------------------------
+    // Refs
+    // -----------------------------------------------------------------------
+
+    /// Local branches, remote-tracking branches, and tags, sorted by full name.
+    pub async fn list_refs(&self, root: &Path) -> AppResult<Vec<RefEntry>> {
+        // `%1f` is for-each-ref's hex escape for the field separator.
+        let format = "--format=%(refname)%1f%(refname:short)%1f%(objectname)%1f%(*objectname)%1f%(HEAD)%1f%(upstream:short)%1f%(symref)";
+        let out = self
+            .run_raw(
+                Some(root),
+                &[
+                    "for-each-ref",
+                    format,
+                    "refs/heads",
+                    "refs/remotes",
+                    "refs/tags",
+                ],
+            )
+            .await?;
+        Ok(parse_refs(&out))
+    }
+
     // -----------------------------------------------------------------------
     // Diffs
     // -----------------------------------------------------------------------
@@ -434,25 +542,28 @@ impl GitService {
             }
             DiffSelector::Commit {
                 commit_id,
+                old_path,
                 parent_index,
                 ..
             } => {
                 validate_revision(commit_id)?;
-                if *parent_index == 0 {
-                    // `show` compares with the first parent, or the empty tree for a root commit.
-                    let mut args = vec!["show", "--format=", "--first-parent"];
-                    args.extend(common);
-                    args.extend(["--end-of-options", commit_id, "--", path]);
-                    self.run_bounded(Some(root), &args, max_bytes.saturating_mul(2))
-                        .await?
-                } else {
-                    let parent = format!("{commit_id}^{parent_index}");
-                    let mut args = vec!["diff"];
-                    args.extend(common);
-                    args.extend(["--end-of-options", &parent, commit_id, "--", path]);
-                    self.run_bounded(Some(root), &args, max_bytes.saturating_mul(2))
-                        .await?
+                let parents = self.commit_parents(root, commit_id).await?;
+                let base = compare_base(&parents, *parent_index)?;
+                let mut args = vec!["diff-tree", "-r", "-p", "--no-commit-id"];
+                args.extend(common);
+                // `--root` compares a root commit with the empty tree.
+                match base {
+                    Some(parent) => args.extend(["--end-of-options", parent, commit_id]),
+                    None => args.extend(["--root", "--end-of-options", commit_id]),
                 }
+                args.extend(["--", path]);
+                // Naming the old path too lets rename detection pair the two sides.
+                if let Some(old) = old_path.as_deref().filter(|o| *o != path) {
+                    validate_repo_path(old)?;
+                    args.push(old);
+                }
+                self.run_bounded(Some(root), &args, max_bytes.saturating_mul(2))
+                    .await?
             }
         };
         Ok(parse_unified_diff(&raw, truncated, limits))
@@ -896,6 +1007,11 @@ pub fn parse_unified_diff(bytes: &[u8], input_truncated: bool, limits: &DiffLimi
                 old_path = strip_prefix_ab(p);
             } else if let Some(p) = line.strip_prefix("+++ ") {
                 new_path = strip_prefix_ab(p);
+            } else if let Some(p) = line.strip_prefix("rename from ") {
+                // A pure rename has no ---/+++ lines; these headers name both sides.
+                old_path = Some(p.to_string());
+            } else if let Some(p) = line.strip_prefix("rename to ") {
+                new_path = Some(p.to_string());
             }
             continue;
         }
@@ -966,6 +1082,164 @@ pub fn parse_unified_diff(bytes: &[u8], input_truncated: bool, limits: &DiffLimi
         truncated,
         total_lines: Some(total_lines),
     }
+}
+
+/// The parent to compare a commit with: `None` means the empty tree (root commit).
+pub fn compare_base(parents: &[String], parent_index: u32) -> AppResult<Option<&str>> {
+    match parents.get(parent_index as usize) {
+        Some(parent) => Ok(Some(parent.as_str())),
+        None if parents.is_empty() && parent_index == 0 => Ok(None),
+        None => Err(AppError::validation(format!(
+            "This commit has {} parent(s); parent {} does not exist.",
+            parents.len(),
+            parent_index + 1
+        ))),
+    }
+}
+
+/// Parse one `git log -z` record in the commit-detail format (summary fields,
+/// then committer name/email, subject, and body).
+pub fn parse_commit_header(bytes: &[u8]) -> Option<CommitDetail> {
+    let record = bytes.split(|&b| b == 0).find(|r| !r.is_empty())?;
+    let text = String::from_utf8_lossy(record);
+    let f: Vec<&str> = text.split(FIELD_SEP).collect();
+    if f.len() < 12 {
+        return None;
+    }
+    Some(CommitDetail {
+        repository_id: String::new(),
+        summary: CommitSummary {
+            id: f[0].to_string(),
+            short_id: f[1].to_string(),
+            parent_ids: f[2].split_whitespace().map(str::to_string).collect(),
+            author_name: f[3].to_string(),
+            author_email: f[4].to_string(),
+            authored_at: f[5].to_string(),
+            committed_at: f[6].to_string(),
+            decorations: f[7]
+                .split(", ")
+                .filter(|d| !d.is_empty())
+                .map(str::to_string)
+                .collect(),
+            subject: f[10].to_string(),
+        },
+        committer_name: f[8].to_string(),
+        committer_email: f[9].to_string(),
+        body: f[11..].join(&FIELD_SEP.to_string()).trim_end().to_string(),
+        compared_parent_index: 0,
+        files: Vec::new(),
+    })
+}
+
+/// Parse `git diff-tree -r -z --name-status`: `STATUS\0path\0`, or
+/// `R<score>\0old\0new\0` for renames and copies.
+pub fn parse_name_status(bytes: &[u8]) -> Vec<CommitFile> {
+    let mut fields = bytes
+        .split(|&b| b == 0)
+        .map(|f| String::from_utf8_lossy(f).into_owned());
+    let mut files = Vec::new();
+    while let Some(status) = fields.next() {
+        let Some(code) = status.chars().next() else {
+            continue;
+        };
+        let Some(first) = fields.next() else { break };
+        let (path, old_path) = if matches!(code, 'R' | 'C') {
+            match fields.next() {
+                Some(new) => (new, Some(first)),
+                None => break,
+            }
+        } else {
+            (first, None)
+        };
+        files.push(CommitFile {
+            path,
+            old_path,
+            kind: kind_from_char(code),
+            additions: None,
+            deletions: None,
+            is_binary: false,
+        });
+    }
+    files
+}
+
+/// Parse `git diff-tree -r -z --numstat` into `path -> (additions, deletions)`.
+/// Binary files report `-` and map to `None`. Renames are
+/// `adds\tdels\t\0old\0new\0` and are keyed by the new path.
+pub fn parse_numstat(
+    bytes: &[u8],
+) -> std::collections::HashMap<String, (Option<u64>, Option<u64>)> {
+    let mut stats = std::collections::HashMap::new();
+    let mut fields = bytes
+        .split(|&b| b == 0)
+        .map(|f| String::from_utf8_lossy(f).into_owned());
+    while let Some(record) = fields.next() {
+        if record.is_empty() {
+            continue;
+        }
+        let mut parts = record.splitn(3, '\t');
+        let adds = parts.next().and_then(|v| v.parse().ok());
+        let dels = parts.next().and_then(|v| v.parse().ok());
+        let path = match parts.next() {
+            Some(p) if !p.is_empty() => p.to_string(),
+            // Empty path field: a rename, followed by the old and new paths.
+            _ => {
+                let _old = fields.next();
+                match fields.next() {
+                    Some(new) => new,
+                    None => break,
+                }
+            }
+        };
+        stats.insert(path, (adds, dels));
+    }
+    stats
+}
+
+fn merge_file_stats(
+    mut files: Vec<CommitFile>,
+    stats: &std::collections::HashMap<String, (Option<u64>, Option<u64>)>,
+) -> Vec<CommitFile> {
+    for file in &mut files {
+        if let Some(&(adds, dels)) = stats.get(&file.path) {
+            file.additions = adds;
+            file.deletions = dels;
+            file.is_binary = adds.is_none() && dels.is_none();
+        }
+    }
+    files
+}
+
+/// Parse `git for-each-ref` output in the `list_refs` format.
+pub fn parse_refs(bytes: &[u8]) -> Vec<RefEntry> {
+    String::from_utf8_lossy(bytes)
+        .lines()
+        .filter_map(|line| {
+            let f: Vec<&str> = line.split(FIELD_SEP).collect();
+            if f.len() < 7 || !f[6].is_empty() {
+                // Too short, or a symbolic ref such as `origin/HEAD`.
+                return None;
+            }
+            let kind = if f[0].starts_with("refs/heads/") {
+                RefKind::LocalBranch
+            } else if f[0].starts_with("refs/remotes/") {
+                RefKind::RemoteBranch
+            } else if f[0].starts_with("refs/tags/") {
+                RefKind::Tag
+            } else {
+                return None;
+            };
+            Some(RefEntry {
+                name: f[1].to_string(),
+                full_name: f[0].to_string(),
+                kind,
+                // Annotated tags point at a tag object; `*objectname` is the commit behind it.
+                target_id: if f[3].is_empty() { f[2] } else { f[3] }.to_string(),
+                is_head: f[4] == "*",
+                upstream: Some(f[5].to_string()).filter(|u| !u.is_empty()),
+            })
+        })
+        .collect()
 }
 
 fn parse_range(s: &str) -> (u64, u64) {
@@ -1126,6 +1400,79 @@ mod tests {
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_commit_files_with_renames_and_binaries() {
+        let names = b"M\0a.txt\0A\0bin.dat\0R100\0old.txt\0new.txt\0D\0gone.txt\0";
+        let stats = b"1\t1\ta.txt\0-\t-\tbin.dat\0" as &[u8];
+        let stats = [
+            stats,
+            b"0\t0\t\0old.txt\0new.txt\0" as &[u8],
+            b"0\t3\tgone.txt\0",
+        ]
+        .concat();
+        let files = merge_file_stats(parse_name_status(names), &parse_numstat(&stats));
+        assert_eq!(files.len(), 4);
+        assert_eq!(files[0].kind, ChangeKind::Modified);
+        assert_eq!((files[0].additions, files[0].deletions), (Some(1), Some(1)));
+        assert!(files[1].is_binary);
+        assert_eq!(files[1].additions, None);
+        assert_eq!(files[2].kind, ChangeKind::Renamed);
+        assert_eq!(files[2].path, "new.txt");
+        assert_eq!(files[2].old_path.as_deref(), Some("old.txt"));
+        assert_eq!(files[2].additions, Some(0));
+        assert!(!files[2].is_binary);
+        assert_eq!(
+            (files[3].kind, files[3].deletions),
+            (ChangeKind::Deleted, Some(3))
+        );
+    }
+
+    #[test]
+    fn parses_commit_header_with_multiline_body() {
+        let raw = format!(
+            "aaaa{s}aaa{s}bbbb{s}Ann{s}ann@x{s}2026-01-01T00:00:00+00:00{s}2026-01-02T00:00:00+00:00{s}tag: v1{s}Cy{s}cy@x{s}Subject{s}Line one\n\nLine two\n\0",
+            s = FIELD_SEP
+        );
+        let d = parse_commit_header(raw.as_bytes()).unwrap();
+        assert_eq!(d.summary.subject, "Subject");
+        assert_eq!(d.committer_name, "Cy");
+        assert_eq!(d.body, "Line one\n\nLine two");
+        assert_eq!(d.summary.parent_ids, vec!["bbbb"]);
+    }
+
+    #[test]
+    fn chooses_the_compared_parent() {
+        let parents = vec!["p1".to_string(), "p2".to_string()];
+        assert_eq!(compare_base(&parents, 0).unwrap(), Some("p1"));
+        assert_eq!(compare_base(&parents, 1).unwrap(), Some("p2"));
+        assert!(compare_base(&parents, 2).is_err());
+        assert_eq!(compare_base(&[], 0).unwrap(), None);
+        assert!(compare_base(&[], 1).is_err());
+    }
+
+    #[test]
+    fn parses_refs_and_skips_symbolic_ones() {
+        let s = FIELD_SEP;
+        let raw = format!(
+            "refs/heads/main{s}main{s}c1{s}{s}*{s}origin/main{s}\n\
+             refs/remotes/origin/HEAD{s}origin{s}c1{s}{s} {s}{s}refs/remotes/origin/main\n\
+             refs/remotes/origin/main{s}origin/main{s}c1{s}{s} {s}{s}\n\
+             refs/tags/v1{s}v1{s}t1{s}c0{s} {s}{s}\n"
+        );
+        let refs = parse_refs(raw.as_bytes());
+        assert_eq!(refs.len(), 3);
+        assert_eq!(refs[0].kind, RefKind::LocalBranch);
+        assert!(refs[0].is_head);
+        assert_eq!(refs[0].upstream.as_deref(), Some("origin/main"));
+        assert_eq!(refs[1].kind, RefKind::RemoteBranch);
+        assert!(!refs[1].is_head);
+        assert_eq!(refs[1].upstream, None);
+        assert_eq!(
+            (refs[2].kind, refs[2].target_id.as_str()),
+            (RefKind::Tag, "c0")
+        );
     }
 
     #[test]

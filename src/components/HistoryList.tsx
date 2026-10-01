@@ -11,6 +11,8 @@ type Props = {
   filterActive: boolean;
   onSelect: (commit: CommitSummary) => void;
   onLoadMore: () => void;
+  /** Present while a branch or tag is shown instead of HEAD. */
+  onShowHead?: () => void;
 };
 
 export default function HistoryList({
@@ -23,13 +25,25 @@ export default function HistoryList({
   filterActive,
   onSelect,
   onLoadMore,
+  onShowHead,
 }: Props) {
   return (
     <div className="py-1">
-      <div className="muted px-3 py-1 text-[11px]">
-        {anchor === ""
-          ? "No commits yet."
-          : `${refName}${filterActive ? " · filtered" : ""}`}
+      <div className="muted flex items-center gap-2 px-3 py-1 text-[11px]">
+        <span className="mono truncate">
+          {anchor === ""
+            ? "No commits yet."
+            : `${refName}${filterActive ? " · filtered" : ""}`}
+        </span>
+        {onShowHead && (
+          <button
+            type="button"
+            className="ml-auto shrink-0 rounded border px-1"
+            onClick={onShowHead}
+          >
+            Show HEAD
+          </button>
+        )}
       </div>
       {commits.map((c) => (
         <button

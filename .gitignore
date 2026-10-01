@@ -19,3 +19,7 @@ src-tauri/gen/schemas/
 # Updater signing keys must never be committed (keep them in ~/.tauri or CI secrets)
 *.key
 *.key.pub
+
+
+#Ignore vscode AI rules
+.github/instructions/codacy.instructions.md

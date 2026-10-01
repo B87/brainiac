@@ -15,9 +15,9 @@ use tokio::sync::Semaphore;
 use crate::db::{self, Db, RepositoryRow};
 use crate::git::GitService;
 use crate::models::{
-    now_rfc3339, AppError, AppResult, AppSnapshot, ChangeOrigin, ChangesResult, CommitPage,
-    DiffResult, DiffSelector, GitInfo, ListCommitsRequest, RepositoryChangedEvent, RepositoryState,
-    RepositorySummary, RepositoryTab, Settings,
+    now_rfc3339, AppError, AppResult, AppSnapshot, ChangeOrigin, ChangesResult, CommitDetail,
+    CommitPage, DiffResult, DiffSelector, GitInfo, ListCommitsRequest, RefsResult,
+    RepositoryChangedEvent, RepositoryState, RepositorySummary, RepositoryTab, Settings,
 };
 
 /// Default page size and hard cap for history requests (SPEC §7).
@@ -188,6 +188,7 @@ impl RepositoryService {
             repository_id: id.to_string(),
             snapshot_version: version,
             origin: ChangeOrigin::Refresh,
+            changed: true,
         });
         Ok(())
     }
@@ -295,10 +296,26 @@ impl RepositoryService {
     // -----------------------------------------------------------------------
 
     /// Observe status now, store it, bump the snapshot version, and emit a change event.
+    /// Observe status and emit `repository_changed`. Watcher, manual, and
+    /// registration refreshes always report a change: a file edit can leave
+    /// `git status` identical while the displayed diff is out of date.
     pub async fn refresh(
         self: &Arc<Self>,
         id: &str,
         origin: ChangeOrigin,
+    ) -> AppResult<RepositorySummary> {
+        let force = matches!(
+            origin,
+            ChangeOrigin::Watcher | ChangeOrigin::Refresh | ChangeOrigin::Registration
+        );
+        self.observe(id, origin, force).await
+    }
+
+    async fn observe(
+        self: &Arc<Self>,
+        id: &str,
+        origin: ChangeOrigin,
+        force_changed: bool,
     ) -> AppResult<RepositorySummary> {
         let row = self.row(id).await?;
         let _permit = self.status_jobs.acquire().await.map_err(|_| {
@@ -309,6 +326,7 @@ impl RepositoryService {
             Err(e) => Err(e),
         };
         let checked_at = now_rfc3339();
+        let previous = row.status.as_ref().map(without_timestamp);
         let (status, error) = match outcome {
             Ok(s) => (Some(s), None),
             Err(e) => {
@@ -327,11 +345,15 @@ impl RepositoryService {
                 })
                 .await?;
         }
+        let changed = force_changed
+            || previous != status.as_ref().map(without_timestamp)
+            || row.error != error;
         let version = self.bump_version();
         (self.emitter)(RepositoryChangedEvent {
             repository_id: id.to_string(),
             snapshot_version: version,
             origin,
+            changed,
         });
         let row = self.row(id).await?;
         let settings = self.settings();
@@ -400,7 +422,8 @@ impl RepositoryService {
     /// A fresh status observation with the full entry list (the dashboard uses
     /// the cached counts; the Changes view wants the entries).
     pub async fn changes(self: &Arc<Self>, id: &str) -> AppResult<ChangesResult> {
-        self.refresh(id, ChangeOrigin::Refresh).await?;
+        // Never forced: the caller is the view that would reload on a change.
+        self.observe(id, ChangeOrigin::Refresh, false).await?;
         let row = self.row(id).await?;
         match (row.status, row.error) {
             (Some(s), None) => Ok(ChangesResult {
@@ -426,6 +449,38 @@ impl RepositoryService {
             repository_id: id.to_string(),
             selector,
             content,
+        })
+    }
+
+    /// One commit's metadata and changed files, compared with parent `parent_index` (default 0).
+    pub async fn commit(
+        &self,
+        id: &str,
+        commit_id: &str,
+        parent_index: Option<u32>,
+    ) -> AppResult<CommitDetail> {
+        let row = self.row(id).await?;
+        let mut detail = self
+            .git()?
+            .commit_detail(
+                Path::new(&row.canonical_root),
+                commit_id,
+                parent_index.unwrap_or(0),
+            )
+            .await?;
+        detail.repository_id = id.to_string();
+        Ok(detail)
+    }
+
+    pub async fn refs(&self, id: &str) -> AppResult<RefsResult> {
+        let row = self.row(id).await?;
+        let refs = self
+            .git()?
+            .list_refs(Path::new(&row.canonical_root))
+            .await?;
+        Ok(RefsResult {
+            repository_id: id.to_string(),
+            refs,
         })
     }
 
@@ -525,6 +580,14 @@ impl RepositoryService {
 
     pub async fn repository_root(&self, id: &str) -> AppResult<PathBuf> {
         Ok(PathBuf::from(self.row(id).await?.canonical_root))
+    }
+}
+
+/// A status snapshot with its observation time cleared, for change comparison.
+fn without_timestamp(s: &crate::models::StatusSnapshot) -> crate::models::StatusSnapshot {
+    crate::models::StatusSnapshot {
+        observed_at: String::new(),
+        ..s.clone()
     }
 }
 

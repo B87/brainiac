@@ -103,7 +103,9 @@ export default function App() {
     const unlisteners: Array<() => void> = [];
     let pending = false;
     void onRepositoryChanged((e) => {
-      if (e.repository_id === selectedRef.current) setChangeTick((t) => t + 1);
+      // Only real changes reload the open view; unchanged polls just refresh the snapshot.
+      if (e.changed && e.repository_id === selectedRef.current)
+        setChangeTick((t) => t + 1);
       if (!pending) {
         pending = true;
         setTimeout(() => {

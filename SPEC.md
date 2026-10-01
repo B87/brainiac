@@ -712,7 +712,7 @@ type DiffSelector =
   | { kind: "index_vs_head"; path: string }
   | { kind: "worktree_vs_index"; path: string }
   | { kind: "untracked_preview"; path: string }
-  | { kind: "commit"; commit_id: string; path: string; parent_index: number }; // 0 = first parent
+  | { kind: "commit"; commit_id: string; path: string; old_path?: string; parent_index: number }; // 0 = first parent; old_path pairs a rename
 type DiffResult = {
   selector: DiffSelector;
   content:
@@ -731,6 +731,7 @@ type CommitSummary = {
   parent_ids: string[]; decorations: string[];       // e.g. "HEAD -> main", "tag: v1.2", "origin/main"
 };
 type CommitDetail = CommitSummary & {
+  repository_id: string;
   body: string; committer_name: string; committer_email: string;
   compared_parent_index: number; files: CommitFile[];
 };
@@ -760,7 +761,8 @@ type WorkspacePreview = {
   candidates?: WorkspacePreview["entries"];   // discovered but not yet included
 };
 
-type RepositoryChangedEvent = { repository_id: string; snapshot_version: number; origin: "watcher" | "refresh" | "timer" | "wake" };
+type RepositoryChangedEvent = { repository_id: string; snapshot_version: number; origin: "watcher" | "refresh" | "timer" | "wake" | "registration"; changed: boolean };
+// changed is false when a timer/wake poll or a list_changes call observed the same status as before; watcher, manual refresh, and registration events are always changed
 ```
 
 Commands map onto these as follows: `get_app_snapshot → AppSnapshot`; `register_repository(path) → RepositorySummary`; `remove_repository(id)`; `open_repository(id)` marks it recent; `set_repository_tab(id, tab)`; `open_in_editor(id, path?, line?)`; `reveal_in_finder(id, path?)`; `discover_projects(root_path, projects_relative_path?) → WorkspacePreview`; `create_workspace(name, mode, selected entries) → Workspace`; `update_workspace_membership(workspace_id, entries) → Workspace`; `refresh_repository(id) → RepositorySummary`; `list_changes(id) → ChangesResult`; `get_diff(id, DiffSelector) → DiffResult`; `list_commits(ListCommitsRequest) → CommitPage`; `get_commit(id, commit_id, parent_index?) → CommitDetail`; `list_refs(id) → RefsResult`. Every result carries the repository ID so a late response for a previously selected repository can be discarded by the frontend.
@@ -833,7 +835,7 @@ Milestones use working-software exit gates rather than fixed calendar promises. 
 - [x] Prove SQLite workspace/settings persistence, migrations, and backup.
 - [x] Exercise repository notifications against staged and unstaged changes (integration test observes an unstaged edit with no `.git` change).
 
-M0 landed on 1 October 2026 with 58 Rust tests and 3 frontend tests. Known M0 simplifications to revisit in v0.1: diff output is not virtualized, commit details show metadata only (no changed-file list), the Branches tab is a placeholder, and the periodic refresh runs regardless of dashboard visibility.
+M0 landed on 1 October 2026 with 58 Rust tests and 3 frontend tests. Known M0 simplifications to revisit in v0.1: diff output is not virtualized, commit details show metadata only (no changed-file list), the Branches tab is a placeholder, and the periodic refresh runs regardless of dashboard visibility. The first three were resolved after 0.1.0 (diffs over 1,000 rows are windowed with fixed-height rows).
 
 **Exit gate:** a packaged app opens a local repository, shows its current changes and history, displays a selected diff, and refreshes after an external edit without modifying Git state.
 
@@ -844,8 +846,8 @@ M0 landed on 1 October 2026 with 58 Rust tests and 3 frontend tests. Known M0 si
 - [ ] Let the user choose which discovered repositories to track and manage membership independently of their IDE.
 - [ ] Aggregate status table, unique changed-file counts, dirty/conflicted/stale filters, partial-error handling.
 - [ ] Changes list with staged/unstaged diffs, untracked previews, conflict and binary/large-file states.
-- [ ] Paginated commit history, message/hash filtering, metadata, changed files, and per-file commit patches.
-- [ ] Read-only branch/tag lists and ref-scoped history selection.
+- [x] Paginated commit history, message/hash filtering, metadata, changed files, and per-file commit patches.
+- [x] Read-only branch/tag lists and ref-scoped history selection.
 - [ ] Debounced tracking, bounded subprocesses, manual refresh, wake/activation reconciliation.
 - [ ] Repository/workspace command palette, copy hashes/paths, Open in editor, Reveal in Finder.
 - [ ] SQLite snapshot backup of settings/workspaces (export manifest is v0.2); no note vault, account, FTS index, or model required.

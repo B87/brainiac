@@ -8,6 +8,8 @@ import {
   type DiffSelector,
   errorMessage,
   ipc,
+  type RefEntry,
+  type RefsResult,
   type RepositorySummary,
   type RepositoryTab,
 } from "../lib/ipc";
@@ -16,6 +18,7 @@ import ChangesList from "./ChangesList";
 import CommitDetails from "./CommitDetails";
 import DiffView from "./DiffView";
 import HistoryList from "./HistoryList";
+import RefsList from "./RefsList";
 
 type Props = {
   repository: RepositorySummary;
@@ -57,11 +60,16 @@ export default function RepositoryView({
     null,
   );
   const [historyLoading, setHistoryLoading] = useState(false);
+  /** Branch or tag shown in History; null means HEAD. */
+  const [historyRef, setHistoryRef] = useState<RefEntry | null>(null);
+  const [refs, setRefs] = useState<RefsResult | null>(null);
+  const [refFilter, setRefFilter] = useState("");
 
   // One stale-guard per data source, so a slow diff cannot clobber a newer one.
   const changesLatest = useRef(createLatest()).current;
   const diffLatest = useRef(createLatest()).current;
   const historyLatest = useRef(createLatest()).current;
+  const refsLatest = useRef(createLatest()).current;
 
   const loadChanges = useCallback(() => {
     void changesLatest.run(
@@ -111,7 +119,7 @@ export default function RepositoryView({
         () =>
           ipc.listCommits({
             repository_id: repository.id,
-            ref: null,
+            ref: historyRef?.full_name ?? null,
             filter: filter || null,
             cursor,
             limit: null,
@@ -127,8 +135,19 @@ export default function RepositoryView({
         },
       );
     },
-    [repository.id, filter, historyLatest, onError],
+    [repository.id, filter, historyRef, historyLatest, onError],
   );
+
+  const loadRefs = useCallback(() => {
+    void refsLatest.run(
+      () => ipc.listRefs(repository.id),
+      (result) => {
+        if (result.repository_id !== repository.id) return;
+        setRefs(result);
+      },
+      (e) => onError(errorMessage(e)),
+    );
+  }, [repository.id, refsLatest, onError]);
 
   // Initial load and reload on backend change events.
   // biome-ignore lint/correctness/useExhaustiveDependencies: changeTick deliberately triggers a reload after backend events.
@@ -152,6 +171,23 @@ export default function RepositoryView({
     const t = setTimeout(() => loadHistory(null, true), filter ? 300 : 0);
     return () => clearTimeout(t);
   }, [tab, filter, loadHistory, changeTick]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: changeTick refreshes refs after backend events.
+  useEffect(() => {
+    if (tab === "refs") loadRefs();
+  }, [tab, loadRefs, changeTick]);
+
+  const showRefHistory = (ref: RefEntry | null) => {
+    setHistoryRef(ref);
+    setSelectedCommit(null);
+    setPages([]);
+    changeTab("history");
+  };
+
+  const openInEditor = (path: string) =>
+    void ipc
+      .openInEditor(repository.id, path)
+      .catch((e) => onError(errorMessage(e)));
 
   const changeTab = (next: RepositoryTab) => {
     setTab(next);
@@ -189,56 +225,81 @@ export default function RepositoryView({
             onChange={(e) => setFilter(e.target.value)}
           />
         )}
+        {tab === "refs" && (
+          <input
+            className="selectable ml-auto w-64 rounded-md border px-2 py-0.5"
+            placeholder="Filter branches and tags"
+            value={refFilter}
+            onChange={(e) => setRefFilter(e.target.value)}
+          />
+        )}
       </div>
-      <div className="flex min-h-0 flex-1">
-        <div className="flex w-80 shrink-0 flex-col overflow-y-auto border-r">
-          {tab === "changes" && (
-            <ChangesList
-              changes={changes}
-              selectedKey={selectedEntry}
-              onSelect={(e) => setSelectedEntry(entryKey(e))}
-            />
-          )}
-          {tab === "history" && (
-            <HistoryList
-              commits={commits}
-              anchor={pages[0]?.anchor_commit_id ?? null}
-              refName={pages[0]?.ref ?? "HEAD"}
-              selectedId={selectedCommit?.id ?? null}
-              loading={historyLoading}
-              hasMore={!!nextCursor}
-              filterActive={!!filter}
-              onSelect={setSelectedCommit}
-              onLoadMore={() => nextCursor && loadHistory(nextCursor, false)}
-            />
-          )}
-          {tab === "refs" && (
-            <div className="muted p-3">Branches and tags arrive in v0.1.</div>
-          )}
+      {tab === "refs" ? (
+        <div className="flex min-h-0 flex-1 flex-col">
+          <RefsList
+            refs={refs}
+            filter={refFilter}
+            activeRef={historyRef?.full_name ?? null}
+            onSelect={showRefHistory}
+          />
         </div>
-        <div className="flex min-w-0 flex-1 flex-col overflow-auto">
-          {tab === "changes" && (
-            <DiffView
-              diff={diff}
-              loading={diffLoading}
-              empty={
-                changes
-                  ? changes.entries.length === 0
-                    ? "Working tree clean."
-                    : "Select a file to see its diff."
-                  : "Loading…"
-              }
-              onOpenInEditor={(path) =>
-                void ipc
-                  .openInEditor(repository.id, path)
-                  .catch((e) => onError(errorMessage(e)))
-              }
-            />
-          )}
-          {tab === "history" && <CommitDetails commit={selectedCommit} />}
-          {tab === "refs" && null}
+      ) : (
+        <div className="flex min-h-0 flex-1">
+          <div className="flex w-80 shrink-0 flex-col overflow-y-auto border-r">
+            {tab === "changes" && (
+              <ChangesList
+                changes={changes}
+                selectedKey={selectedEntry}
+                onSelect={(e) => setSelectedEntry(entryKey(e))}
+              />
+            )}
+            {tab === "history" && (
+              <HistoryList
+                commits={commits}
+                anchor={pages[0]?.anchor_commit_id ?? null}
+                refName={historyRef?.name ?? "HEAD"}
+                selectedId={selectedCommit?.id ?? null}
+                loading={historyLoading}
+                hasMore={!!nextCursor}
+                filterActive={!!filter}
+                onSelect={setSelectedCommit}
+                onLoadMore={() => nextCursor && loadHistory(nextCursor, false)}
+                onShowHead={historyRef ? () => showRefHistory(null) : undefined}
+              />
+            )}
+          </div>
+          <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+            {tab === "changes" && (
+              <DiffView
+                diff={diff}
+                loading={diffLoading}
+                empty={
+                  changes
+                    ? changes.entries.length === 0
+                      ? "Working tree clean."
+                      : "Select a file to see its diff."
+                    : "Loading…"
+                }
+                onOpenInEditor={openInEditor}
+              />
+            )}
+            {tab === "history" &&
+              (selectedCommit ? (
+                <CommitDetails
+                  key={selectedCommit.id}
+                  repositoryId={repository.id}
+                  commit={selectedCommit}
+                  onError={onError}
+                  onOpenInEditor={openInEditor}
+                />
+              ) : (
+                <div className="muted p-4">
+                  Select a commit to see its details.
+                </div>
+              ))}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

@@ -283,6 +283,7 @@ async fn history_pages_are_anchored_and_diffs_are_bounded() {
             DiffSelector::Commit {
                 commit_id: second.id.clone(),
                 path: "a.txt".into(),
+                old_path: None,
                 parent_index: 0,
             },
         )
@@ -309,6 +310,7 @@ async fn history_pages_are_anchored_and_diffs_are_bounded() {
             DiffSelector::Commit {
                 commit_id: root.id.clone(),
                 path: "a.txt".into(),
+                old_path: None,
                 parent_index: 0,
             },
         )
@@ -343,6 +345,7 @@ async fn history_pages_are_anchored_and_diffs_are_bounded() {
             DiffSelector::Commit {
                 commit_id: "--output=/tmp/x".into(),
                 path: "a.txt".into(),
+                old_path: None,
                 parent_index: 0,
             },
         )
@@ -357,6 +360,265 @@ async fn history_pages_are_anchored_and_diffs_are_bounded() {
         )
         .await;
     assert_eq!(d.unwrap_err().code, ErrorCode::Validation);
+}
+
+#[tokio::test]
+async fn commit_details_list_files_and_compare_with_the_chosen_parent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    write(&repo, "a.txt", "one\ntwo\n");
+    write(&repo, "old.txt", "alpha\nbeta\ngamma\ndelta\nepsilon\n");
+    write(&repo, "gone.txt", "bye\n");
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-q", "-m", "root"]);
+    let root_id = git(&repo, &["rev-parse", "HEAD"]);
+
+    // A commit that modifies, renames (with an edit), deletes, and adds a binary.
+    write(&repo, "a.txt", "one\nTWO\nthree\n");
+    git(&repo, &["mv", "old.txt", "new.txt"]);
+    write(
+        &repo,
+        "new.txt",
+        "alpha\nbeta\ngamma\ndelta\nepsilon\nzeta\n",
+    );
+    git(&repo, &["rm", "-q", "gone.txt"]);
+    std::fs::write(repo.join("bin.dat"), [0u8, 1, 2, 0, 3]).unwrap();
+    git(&repo, &["add", "-A"]);
+    git(
+        &repo,
+        &[
+            "commit",
+            "-q",
+            "-m",
+            "mixed changes",
+            "-m",
+            "Body line one.\n\nBody line two.",
+        ],
+    );
+    let mixed_id = git(&repo, &["rev-parse", "HEAD"]);
+
+    // A merge commit: `feature` adds f.txt while `main` adds m.txt.
+    git(&repo, &["checkout", "-q", "-b", "feature"]);
+    write(&repo, "f.txt", "feature\n");
+    git(&repo, &["add", "f.txt"]);
+    git(&repo, &["commit", "-q", "-m", "feature work"]);
+    git(&repo, &["checkout", "-q", "main"]);
+    write(&repo, "m.txt", "main\n");
+    git(&repo, &["add", "m.txt"]);
+    git(&repo, &["commit", "-q", "-m", "main work"]);
+    git(
+        &repo,
+        &["merge", "-q", "--no-ff", "-m", "merge feature", "feature"],
+    );
+    let merge_id = git(&repo, &["rev-parse", "HEAD"]);
+
+    let (service, _events) = service_for(tmp.path()).await;
+    let summary = service.register(&repo).await.unwrap();
+    let id = summary.id.clone();
+
+    let d = service.commit(&id, &mixed_id, None).await.unwrap();
+    assert_eq!(d.repository_id, id);
+    assert_eq!(d.summary.subject, "mixed changes");
+    assert_eq!(d.body, "Body line one.\n\nBody line two.");
+    assert_eq!(d.committer_name, "Test");
+    assert_eq!(d.compared_parent_index, 0);
+    let find = |path: &str| d.files.iter().find(|f| f.path == path).unwrap();
+    assert_eq!(find("a.txt").kind, ChangeKind::Modified);
+    assert_eq!(
+        (find("a.txt").additions, find("a.txt").deletions),
+        (Some(2), Some(1))
+    );
+    assert_eq!(find("new.txt").kind, ChangeKind::Renamed);
+    assert_eq!(find("new.txt").old_path.as_deref(), Some("old.txt"));
+    assert_eq!(find("new.txt").additions, Some(1));
+    assert_eq!(find("gone.txt").kind, ChangeKind::Deleted);
+    assert!(find("bin.dat").is_binary);
+    assert_eq!(d.files.len(), 4);
+
+    // The renamed file's patch pairs both paths instead of showing a full add.
+    let patch = service
+        .diff(
+            &id,
+            DiffSelector::Commit {
+                commit_id: mixed_id.clone(),
+                path: "new.txt".into(),
+                old_path: Some("old.txt".into()),
+                parent_index: 0,
+            },
+        )
+        .await
+        .unwrap();
+    match patch.content {
+        DiffContent::Text {
+            old_path,
+            new_path,
+            hunks,
+            ..
+        } => {
+            assert_eq!(old_path.as_deref(), Some("old.txt"));
+            assert_eq!(new_path.as_deref(), Some("new.txt"));
+            let adds: Vec<_> = hunks
+                .iter()
+                .flat_map(|h| h.lines.iter())
+                .filter(|l| l.kind == DiffLineKind::Add)
+                .collect();
+            assert_eq!(adds.len(), 1);
+            assert_eq!(adds[0].text, "zeta");
+        }
+        other => panic!("{other:?}"),
+    }
+    let deleted = service
+        .diff(
+            &id,
+            DiffSelector::Commit {
+                commit_id: mixed_id.clone(),
+                path: "gone.txt".into(),
+                old_path: None,
+                parent_index: 0,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(deleted.content, DiffContent::Text { ref hunks, ref new_path, .. } if new_path.is_none() && hunks[0].lines[0].kind == DiffLineKind::Delete)
+    );
+
+    // The root commit compares with the empty tree.
+    let root = service.commit(&id, &root_id, None).await.unwrap();
+    assert!(root.summary.parent_ids.is_empty());
+    assert_eq!(root.files.len(), 3);
+    assert!(root.files.iter().all(|f| f.kind == ChangeKind::Added));
+    assert_eq!(
+        service
+            .commit(&id, &root_id, Some(1))
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Validation
+    );
+
+    // A merge compares with its first parent by default and with the second on request.
+    let first = service.commit(&id, &merge_id, None).await.unwrap();
+    assert_eq!(first.summary.parent_ids.len(), 2);
+    let paths = |d: &CommitDetail| d.files.iter().map(|f| f.path.clone()).collect::<Vec<_>>();
+    assert_eq!(paths(&first), vec!["f.txt"]);
+    let second = service.commit(&id, &merge_id, Some(1)).await.unwrap();
+    assert_eq!(second.compared_parent_index, 1);
+    assert_eq!(paths(&second), vec!["m.txt"]);
+    let patch = service
+        .diff(
+            &id,
+            DiffSelector::Commit {
+                commit_id: merge_id.clone(),
+                path: "m.txt".into(),
+                old_path: None,
+                parent_index: 1,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(patch.content, DiffContent::Text { ref hunks, .. } if hunks.len() == 1));
+    assert_eq!(
+        service
+            .commit(&id, &merge_id, Some(2))
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Validation
+    );
+    assert_eq!(
+        service
+            .commit(&id, "--output=x", None)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Validation
+    );
+}
+
+#[tokio::test]
+async fn refs_list_branches_remotes_and_tags_and_scope_history() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    fixture_repo(&repo);
+    git(&repo, &["tag", "-a", "v1.0", "-m", "first release"]);
+    git(&repo, &["tag", "light"]);
+    git(&repo, &["branch", "feature", "HEAD~1"]);
+    // A remote-tracking ref and its symbolic HEAD, without any network access.
+    git(
+        &repo,
+        &[
+            "config",
+            "remote.origin.url",
+            "https://example.com/project.git",
+        ],
+    );
+    git(
+        &repo,
+        &[
+            "config",
+            "remote.origin.fetch",
+            "+refs/heads/*:refs/remotes/origin/*",
+        ],
+    );
+    git(&repo, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    git(
+        &repo,
+        &[
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/main",
+        ],
+    );
+    git(&repo, &["config", "branch.main.remote", "origin"]);
+    git(&repo, &["config", "branch.main.merge", "refs/heads/main"]);
+    let head = git(&repo, &["rev-parse", "HEAD"]);
+    let first = git(&repo, &["rev-parse", "HEAD~1"]);
+
+    let (service, _events) = service_for(tmp.path()).await;
+    let summary = service.register(&repo).await.unwrap();
+    let refs = service.refs(&summary.id).await.unwrap();
+    assert_eq!(refs.repository_id, summary.id);
+    let names: Vec<&str> = refs.refs.iter().map(|r| r.full_name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec![
+            "refs/heads/feature",
+            "refs/heads/main",
+            "refs/remotes/origin/main",
+            "refs/tags/light",
+            "refs/tags/v1.0",
+        ]
+    );
+    let by = |full: &str| refs.refs.iter().find(|r| r.full_name == full).unwrap();
+    let main = by("refs/heads/main");
+    assert!(main.is_head);
+    assert_eq!(main.kind, RefKind::LocalBranch);
+    assert_eq!(main.upstream.as_deref(), Some("origin/main"));
+    assert!(!by("refs/heads/feature").is_head);
+    assert_eq!(by("refs/remotes/origin/main").name, "origin/main");
+    assert_eq!(by("refs/remotes/origin/main").kind, RefKind::RemoteBranch);
+    // The annotated tag is peeled to the commit it marks.
+    assert_eq!(by("refs/tags/v1.0").target_id, head);
+    assert_eq!(by("refs/tags/v1.0").kind, RefKind::Tag);
+
+    // Selecting a ref scopes history to it without checking it out.
+    let page = service
+        .commits(ListCommitsRequest {
+            repository_id: summary.id.clone(),
+            ref_name: Some("refs/heads/feature".into()),
+            filter: None,
+            cursor: None,
+            limit: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.anchor_commit_id, first);
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(git(&repo, &["symbolic-ref", "--short", "HEAD"]), "main");
 }
 
 #[tokio::test]
@@ -403,6 +665,41 @@ async fn registration_persists_across_reopen_and_refresh_emits_events() {
         porcelain.starts_with("1 .M "),
         "unexpected status: {porcelain}"
     );
+}
+
+#[tokio::test]
+async fn loading_changes_reports_a_change_only_when_status_differs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    fixture_repo(&repo);
+    let (service, events) = service_for(tmp.path()).await;
+    let summary = service.register(&repo).await.unwrap();
+    let last_changed = || events.lock().unwrap().last().map(|e| e.changed);
+
+    // The view reloads on changed events and itself calls `changes`, so an
+    // unchanged repository must not report a change or the two would loop.
+    service.changes(&summary.id).await.unwrap();
+    service.changes(&summary.id).await.unwrap();
+    assert_eq!(last_changed(), Some(false));
+
+    write(&repo, "a.txt", "edited\n");
+    service.changes(&summary.id).await.unwrap();
+    assert_eq!(last_changed(), Some(true));
+    service.changes(&summary.id).await.unwrap();
+    assert_eq!(last_changed(), Some(false));
+
+    // Timer polls follow the same rule; manual and watcher refreshes always report a change.
+    service
+        .refresh(&summary.id, ChangeOrigin::Timer)
+        .await
+        .unwrap();
+    assert_eq!(last_changed(), Some(false));
+    service
+        .refresh(&summary.id, ChangeOrigin::Refresh)
+        .await
+        .unwrap();
+    assert_eq!(last_changed(), Some(true));
 }
 
 #[tokio::test]

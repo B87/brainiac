@@ -7,8 +7,8 @@ use std::sync::Arc;
 use tauri::State;
 
 use crate::models::{
-    AppResult, AppSnapshot, ChangesResult, CommitPage, DiffResult, DiffSelector,
-    ListCommitsRequest, RepositorySummary, RepositoryTab,
+    AppResult, AppSnapshot, ChangesResult, CommitDetail, CommitPage, DiffResult, DiffSelector,
+    ListCommitsRequest, RefsResult, RepositorySummary, RepositoryTab,
 };
 use crate::watcher::RepositoryWatcher;
 use crate::workspaces::RepositoryService;
@@ -95,6 +95,26 @@ pub async fn list_commits(
     service: State<'_, Service>,
 ) -> AppResult<CommitPage> {
     service.commits(request).await
+}
+
+#[tauri::command]
+pub async fn get_commit(
+    repository_id: String,
+    commit_id: String,
+    parent_index: Option<u32>,
+    service: State<'_, Service>,
+) -> AppResult<CommitDetail> {
+    service
+        .commit(&repository_id, &commit_id, parent_index)
+        .await
+}
+
+#[tauri::command]
+pub async fn list_refs(
+    repository_id: String,
+    service: State<'_, Service>,
+) -> AppResult<RefsResult> {
+    service.refs(&repository_id).await
 }
 
 #[tauri::command]

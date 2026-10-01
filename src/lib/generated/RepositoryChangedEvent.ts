@@ -4,4 +4,10 @@ import type { ChangeOrigin } from "./ChangeOrigin";
 /**
  * Emitted as the `repository_changed` event after a status observation is committed.
  */
-export type RepositoryChangedEvent = { repository_id: string, snapshot_version: number, origin: ChangeOrigin, };
+export type RepositoryChangedEvent = { repository_id: string, snapshot_version: number, origin: ChangeOrigin, 
+/**
+ * False when the observation matched the previous one, so open views can
+ * skip reloading. Reloading on every event would loop: loading the
+ * Changes tab itself refreshes status and emits this event.
+ */
+changed: boolean, };

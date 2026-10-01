@@ -118,6 +118,8 @@ pub fn run() {
             commands::list_changes,
             commands::get_diff,
             commands::list_commits,
+            commands::get_commit,
+            commands::list_refs,
             commands::open_in_editor,
             commands::reveal_in_finder,
         ])

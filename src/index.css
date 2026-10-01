@@ -109,11 +109,19 @@ body,
 .diff-del {
   background: var(--diff-del);
 }
+/* Diff rows have a fixed height so long patches can be windowed (lib/virtual.ts). */
+.diff-row {
+  display: flex;
+  height: 18px;
+  line-height: 18px;
+  white-space: pre;
+}
 .diff-gutter {
+  flex-shrink: 0;
+  width: 5em;
   color: var(--gutter);
   text-align: right;
   padding: 0 6px;
-  min-width: 3.5em;
 }
 
 kbd {

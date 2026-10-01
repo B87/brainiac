@@ -368,9 +368,11 @@ pub enum DiffSelector {
         path: String,
     },
     /// `parent_index` 0 compares with the first parent (or the empty tree for a root commit).
+    /// `old_path` is the pre-rename path, so Git can pair a renamed file with its source.
     Commit {
         commit_id: String,
         path: String,
+        old_path: Option<String>,
         parent_index: u32,
     },
 }
@@ -508,6 +510,74 @@ pub struct CommitPage {
     pub next_cursor: Option<String>,
 }
 
+/// One file touched by a commit, relative to the compared parent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CommitFile {
+    pub path: String,
+    pub old_path: Option<String>,
+    pub kind: ChangeKind,
+    /// Line counts; absent for binary files.
+    #[ts(type = "number | null")]
+    pub additions: Option<u64>,
+    #[ts(type = "number | null")]
+    pub deletions: Option<u64>,
+    pub is_binary: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CommitDetail {
+    pub repository_id: String,
+    /// `flatten` inlines the summary fields, so the JSON (and the TypeScript
+    /// type) is `CommitSummary` plus the fields below rather than a nested object.
+    #[serde(flatten)]
+    pub summary: CommitSummary,
+    /// Message text after the subject line; empty when there is none.
+    pub body: String,
+    pub committer_name: String,
+    pub committer_email: String,
+    /// Index into `parent_ids` the file list compares against (0 for a root commit).
+    pub compared_parent_index: u32,
+    pub files: Vec<CommitFile>,
+}
+
+// ---------------------------------------------------------------------------
+// Refs
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum RefKind {
+    LocalBranch,
+    RemoteBranch,
+    Tag,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RefEntry {
+    /// Short name as Git abbreviates it: `main`, `origin/main`, `v1.2`.
+    pub name: String,
+    /// Full ref name, `refs/heads/main`; pass this as `ListCommitsRequest.ref`.
+    pub full_name: String,
+    pub kind: RefKind,
+    /// The commit the ref points at (annotated tags are peeled to their commit).
+    pub target_id: String,
+    /// True for the branch HEAD has checked out.
+    pub is_head: bool,
+    /// Configured upstream of a local branch, short form.
+    pub upstream: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RefsResult {
+    pub repository_id: String,
+    pub refs: Vec<RefEntry>,
+}
+
 // ---------------------------------------------------------------------------
 // Workspaces (types only in M0; behavior arrives in v0.1)
 // ---------------------------------------------------------------------------
@@ -591,6 +661,10 @@ pub struct RepositoryChangedEvent {
     #[ts(type = "number")]
     pub snapshot_version: u64,
     pub origin: ChangeOrigin,
+    /// False when the observation matched the previous one, so open views can
+    /// skip reloading. Reloading on every event would loop: loading the
+    /// Changes tab itself refreshes status and emits this event.
+    pub changed: bool,
 }
 
 /// Emitted as the `menu` event when a native menu item is activated.

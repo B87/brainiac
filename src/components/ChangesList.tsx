@@ -14,7 +14,7 @@ const GROUPS: Array<{ key: ChangeEntry["group"]; label: string }> = [
   { key: "untracked", label: "Untracked" },
 ];
 
-const KIND_LETTER: Record<ChangeEntry["kind"], string> = {
+export const KIND_LETTER: Record<ChangeEntry["kind"], string> = {
   added: "A",
   modified: "M",
   deleted: "D",
@@ -76,7 +76,7 @@ export default function ChangesList({ changes, selectedKey, onSelect }: Props) {
   );
 }
 
-function kindColor(kind: ChangeEntry["kind"]): string {
+export function kindColor(kind: ChangeEntry["kind"]): string {
   switch (kind) {
     case "added":
     case "untracked":

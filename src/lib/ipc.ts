@@ -7,26 +7,33 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AppError } from "./generated/AppError";
 import type { AppSnapshot } from "./generated/AppSnapshot";
 import type { ChangesResult } from "./generated/ChangesResult";
+import type { CommitDetail } from "./generated/CommitDetail";
 import type { CommitPage } from "./generated/CommitPage";
 import type { DiffResult } from "./generated/DiffResult";
 import type { DiffSelector } from "./generated/DiffSelector";
 import type { ListCommitsRequest } from "./generated/ListCommitsRequest";
 import type { MenuEvent } from "./generated/MenuEvent";
+import type { RefsResult } from "./generated/RefsResult";
 import type { RepositoryChangedEvent } from "./generated/RepositoryChangedEvent";
 import type { RepositorySummary } from "./generated/RepositorySummary";
 import type { RepositoryTab } from "./generated/RepositoryTab";
 
 export type { ChangeEntry } from "./generated/ChangeEntry";
+export type { CommitFile } from "./generated/CommitFile";
 export type { CommitSummary } from "./generated/CommitSummary";
 export type { DiffContent } from "./generated/DiffContent";
+export type { DiffLine } from "./generated/DiffLine";
 export type { Hunk } from "./generated/Hunk";
+export type { RefEntry } from "./generated/RefEntry";
 export type {
   AppError,
   AppSnapshot,
   ChangesResult,
+  CommitDetail,
   CommitPage,
   DiffResult,
   DiffSelector,
+  RefsResult,
   RepositorySummary,
   RepositoryTab,
 };
@@ -59,6 +66,14 @@ export const ipc = {
     invoke<DiffResult>("get_diff", { repositoryId, selector }),
   listCommits: (request: ListCommitsRequest) =>
     invoke<CommitPage>("list_commits", { request }),
+  getCommit: (repositoryId: string, commitId: string, parentIndex?: number) =>
+    invoke<CommitDetail>("get_commit", {
+      repositoryId,
+      commitId,
+      parentIndex: parentIndex ?? null,
+    }),
+  listRefs: (repositoryId: string) =>
+    invoke<RefsResult>("list_refs", { repositoryId }),
   openInEditor: (repositoryId: string, path?: string, line?: number) =>
     invoke<void>("open_in_editor", {
       repositoryId,
