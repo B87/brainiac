@@ -56,12 +56,15 @@ Store it in the repository secrets:
 
 ```sh
 gh secret set TAURI_SIGNING_PRIVATE_KEY < ~/.tauri/brainiac.key
-gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD --body ""
 ```
 
-The key was generated without a password (`--ci`). If you want one, regenerate
-with `pnpm tauri signer generate -w ~/.tauri/brainiac.key -f`, update the public
-key in `tauri.conf.json`, and set the password secret.
+The key was generated without a password (`--ci`), so do **not** create a
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` secret: the workflow then passes an empty
+password, which is what the key expects. (`gh secret set --body ""` does not
+store an empty value; it reads from stdin instead, and the build fails with
+"Wrong password for that key".) If you want a password, regenerate with
+`pnpm tauri signer generate -w ~/.tauri/brainiac.key -f -p <password>`, update
+the public key in `tauri.conf.json`, and set the password secret.
 
 ### 3. Apple Developer signing (optional, recommended later)
 
