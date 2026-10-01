@@ -1,20 +1,25 @@
 #!/usr/bin/env bash
-# Verifies that package.json, src-tauri/tauri.conf.json and src-tauri/Cargo.toml
-# agree on the app version, and optionally that it equals the given version.
+# Prints the app version, which is declared only in src-tauri/Cargo.toml (Tauri
+# reads it from there when tauri.conf.json has no "version"). Fails if a second
+# declaration reappears in package.json or tauri.conf.json, or, given an
+# argument, if the version differs from it.
 # Usage: scripts/check-version.sh [expected-version]
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-pkg=$(node -p "require('./package.json').version")
-conf=$(node -p "require('./src-tauri/tauri.conf.json').version")
-cargo=$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/Cargo.toml | head -n1)
-
-if ! [[ "$pkg" == "$conf" && "$pkg" == "$cargo" ]]; then
-  echo "version mismatch: package.json=$pkg tauri.conf.json=$conf Cargo.toml=$cargo" >&2
+for file in package.json src-tauri/tauri.conf.json; do
+  if [[ "$(node -p "require('./$file').version ?? ''")" != "" ]]; then
+    echo "$file declares a version; remove it, src-tauri/Cargo.toml is the only source" >&2
+    exit 1
+  fi
+done
+version=$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/Cargo.toml | head -n1)
+if [[ -z "$version" ]]; then
+  echo "no version found in src-tauri/Cargo.toml" >&2
   exit 1
 fi
-if [[ $# -ge 1 && "$pkg" != "$1" ]]; then
-  echo "version is $pkg but expected $1" >&2
+if [[ $# -ge 1 && "$version" != "$1" ]]; then
+  echo "version is $version but expected $1" >&2
   exit 1
 fi
-echo "$pkg"
+echo "$version"

@@ -6,11 +6,12 @@ update themselves. This page is the whole process, including the one-time setup.
 
 ## How it fits together
 
-1. `scripts/release.sh X.Y.Z` bumps the version in `package.json`,
-   `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml`, commits, tags
-   `vX.Y.Z` and pushes.
-2. `.github/workflows/release.yml` wakes on the tag, checks that the tag and the
-   manifests agree, builds a universal macOS bundle, signs the updater artifact,
+1. `scripts/release.sh X.Y.Z` bumps the version in `src-tauri/Cargo.toml`
+   (the only place it is declared; Tauri reads it from there), turns the
+   `## [Unreleased]` section of `CHANGELOG.md` into `## [X.Y.Z] - <date>`,
+   updates the comparison links, commits, tags `vX.Y.Z` and pushes.
+2. `.github/workflows/release.yml` wakes on the tag, checks that the tag and
+   `Cargo.toml` agree, builds a universal macOS bundle, signs the updater artifact,
    and opens a **draft** release containing:
    - `Brainiac_X.Y.Z_universal.dmg` for people installing by hand,
    - `Brainiac.app.tar.gz` and `Brainiac.app.tar.gz.sig` for the in-app updater,
@@ -87,14 +88,16 @@ starts signing and notarizing automatically:
 
 ## Cutting a release
 
-1. Move the entries under `## [Unreleased]` in `CHANGELOG.md` into a new
-   `## [X.Y.Z] - YYYY-MM-DD` section and add the comparison link at the bottom.
-   Commit that on `main`.
+1. Make sure `## [Unreleased]` in `CHANGELOG.md` describes the release: one
+   short line per user-visible change, and optionally a one-sentence summary as
+   its first line (the in-app update banner shows the first line). Leave the
+   heading as Unreleased; the release script renames it. It refuses to release
+   an empty section.
 2. Run the full check suite: `pnpm check`.
 3. Cut it:
 
    ```sh
-   scripts/release.sh X.Y.Z --dry-run   # shows the version bump without committing
+   scripts/release.sh X.Y.Z --dry-run   # shows the bump and changelog edit without committing
    scripts/release.sh X.Y.Z             # commit, tag, push
    gh run watch                          # follow the build (about 10 minutes)
    ```

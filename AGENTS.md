@@ -24,7 +24,7 @@ Read these parts of `SPEC.md` for v0.1 work: sections 2, 3, 4, 5, 6, 7, 14, 15, 
 - Keep business logic out of Tauri command handlers so it is testable with `cargo test` without a WebView.
 - Git test fixtures are built by the tests themselves (`git init` in a temporary directory), not checked in.
 - The updater signing private key lives outside the repository (`~/.tauri/brainiac.key`, CI secret `TAURI_SIGNING_PRIVATE_KEY`). Never read it into a file in the repo or print it. Only the public key belongs in `src-tauri/tauri.conf.json`.
-- The app version is declared in three places (`package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`) and `scripts/check-version.sh` enforces that they agree. Bump them only through `scripts/release.sh`.
+- The app version is declared only in `src-tauri/Cargo.toml`; Tauri reads it from there. Do not add a `version` to `package.json` or `tauri.conf.json` (`scripts/check-version.sh` fails if one appears). Bump it only through `scripts/release.sh`.
 
 ## Commands
 
@@ -34,6 +34,6 @@ Read these parts of `SPEC.md` for v0.1 work: sections 2, 3, 4, 5, 6, 7, 14, 15, 
 - Rust: `pnpm format:rust` to format; `pnpm format:rust:check`, `pnpm lint:rust`, and `pnpm test:rust` for individual checks. Rust tests also regenerate TypeScript bindings; commit them with the corresponding Rust changes.
 - `pnpm typecheck` and `pnpm test` for frontend types and tests; `pnpm build` for the frontend build only.
 - `pnpm run` lists available scripts.
-- Releases: `pnpm release X.Y.Z` (tag + push, CI builds a draft), then `pnpm release:publish vX.Y.Z`. These wrap the scripts in `scripts/`; `pnpm version:check` verifies version agreement. Process in `docs/RELEASING.md`. Every user-visible change gets a line under `## [Unreleased]` in `CHANGELOG.md`.
+- Releases: `pnpm release X.Y.Z` (tag + push, CI builds a draft), then `pnpm release:publish vX.Y.Z`. These wrap the scripts in `scripts/`; `pnpm version:check` verifies version agreement. Process in `docs/RELEASING.md`. Every user-visible change gets one short line under `## [Unreleased]` in `CHANGELOG.md`, saying what the user notices, not how it was done; internal changes get none. Do not create version sections by hand: `scripts/release.sh` turns Unreleased into the release's section and updates the links.
 
 The maintainer is new to Rust. When introducing a Rust concept for the first time in a change (ownership, lifetimes, traits, `Result`/`?`, `Arc<Mutex<_>>`), add a one-line comment explaining why it is used there.
