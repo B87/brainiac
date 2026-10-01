@@ -2,7 +2,7 @@
  * Guards against stale async responses. Each `run` call gets a sequence
  * number; results whose sequence is no longer the latest are dropped, so a
  * slow diff for a previously selected file never overwrites the current one
- * (SPEC §7: "discard obsolete requests after selection switches").
+ * (SPEC.md, Changes and diffs: "discard obsolete requests after selection switches").
  */
 export function createLatest() {
   let seq = 0;

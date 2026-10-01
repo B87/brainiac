@@ -1,4 +1,4 @@
-//! The workspace activity feed, as the service offers it (SPEC §7, Workspace
+//! The workspace activity feed, as the service offers it (SPEC.md, Workspace
 //! activity). `crate::activity::ActivityTracker` records and filters events;
 //! this module supplies checkouts and settings, shows notifications, and
 //! sends the morning digest.

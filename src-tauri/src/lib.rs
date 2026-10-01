@@ -103,7 +103,7 @@ pub fn run() {
                 }
             });
 
-            // Opt-in auto-fetch and the morning digest (SPEC §7).
+            // Opt-in auto-fetch and the morning digest (SPEC.md, Workspaces and repositories).
             let schedule_service = Arc::clone(&service);
             tauri::async_runtime::spawn(async move {
                 let mut ticker = tokio::time::interval(SCHEDULE_TICK);

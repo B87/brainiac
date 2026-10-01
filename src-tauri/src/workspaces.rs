@@ -31,12 +31,12 @@ use crate::models::{
 };
 pub use membership::WorkspaceChange;
 
-/// Default page size and hard cap for history requests (SPEC §7).
+/// Default page size and hard cap for history requests (SPEC.md, Workspaces and repositories).
 const DEFAULT_PAGE: u32 = 100;
 const MAX_PAGE: u32 = 500;
 /// Observations older than this many refresh intervals are labeled stale.
 const STALE_MULTIPLIER: u64 = 2;
-/// Concurrent `git status` jobs (SPEC §5: start with two, tune after measurement).
+/// Concurrent `git status` jobs (docs/architecture.md, Concurrency: start with two, tune after measurement).
 const STATUS_CONCURRENCY: usize = 2;
 
 pub type Emitter = Arc<dyn Fn(RepositoryChangedEvent) + Send + Sync>;
@@ -415,7 +415,7 @@ impl RepositoryService {
     }
 
     /// Request a background refresh. Requests for a repository that is already
-    /// refreshing collapse into a single pending follow-up (SPEC §5).
+    /// refreshing collapse into a single pending follow-up (docs/architecture.md, Concurrency and lifecycle).
     pub fn request_refresh(self: &Arc<Self>, id: &str, origin: ChangeOrigin) {
         {
             let mut slots = self.slots.lock().expect("slots");
@@ -629,7 +629,7 @@ impl RepositoryService {
     // Editor and Finder
     // -----------------------------------------------------------------------
 
-    /// Launch the configured editor with a fixed argument template (SPEC §15).
+    /// Launch the configured editor with a fixed argument template (docs/architecture.md, Security).
     pub async fn open_in_editor(
         &self,
         id: &str,

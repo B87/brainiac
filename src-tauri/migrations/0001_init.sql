@@ -37,7 +37,7 @@ CREATE TABLE repositories (
   last_tab        TEXT,
   status_json     TEXT,
   error_json      TEXT,
-  -- Outcome of Brainiac's own fetches (SPEC §7, Fetching).
+  -- Outcome of Brainiac's own fetches (SPEC.md, Fetching).
   last_fetch_at         TEXT,
   last_fetch_error_json TEXT,
   UNIQUE (display_path)
@@ -46,7 +46,7 @@ CREATE INDEX repositories_canonical_root ON repositories (canonical_root);
 
 -- discovery_root and discovery_path are set for discovered workspaces only;
 -- a NULL discovery_path means the discovery root itself is scanned. The
--- remaining columns are activity settings (SPEC §7, Workspace activity);
+-- remaining columns are activity settings (SPEC.md, Workspace activity);
 -- watched patterns are JSON arrays of strings, and last_digest_on is the
 -- local date (YYYY-MM-DD) of the last morning digest check.
 CREATE TABLE workspaces (

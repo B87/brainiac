@@ -3,7 +3,7 @@
 //!
 //! Callers never touch the connection directly. They send a closure to the
 //! worker (`Db::call`) and await its result, which keeps all database access
-//! serialized and off the async executor threads (SPEC §5).
+//! serialized and off the async executor threads (docs/architecture.md, Concurrency and lifecycle).
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -157,7 +157,7 @@ fn write_backup(conn: &Connection, dest: &Path) -> AppResult<()> {
     Ok(())
 }
 
-/// Snapshot an existing database before applying new migrations (SPEC §8).
+/// Snapshot an existing database before applying new migrations (docs/roadmap.md, Backup and restore).
 fn backup_before_migration_if_needed(conn: &Connection, db_path: &Path) -> AppResult<()> {
     let current = schema_version(conn)? as usize;
     if current == 0 || current >= MIGRATIONS.len() {

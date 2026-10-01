@@ -1,4 +1,4 @@
-//! The workspace activity feed (SPEC §7, Workspace activity).
+//! The workspace activity feed (SPEC.md, Workspace activity).
 //!
 //! `ActivityTracker` turns moves of watched remote-tracking branches and tags
 //! into events. It is keyed by the shared Git directory (`Checkout::store`),

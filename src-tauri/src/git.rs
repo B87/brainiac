@@ -19,7 +19,7 @@ use crate::models::{
     RefKind, StatusSnapshot, UpstreamState,
 };
 
-/// Minimum supported Git version (SPEC §3).
+/// Minimum supported Git version (docs/architecture.md, Decisions).
 pub const MIN_GIT_VERSION: (u32, u32) = (2, 30);
 
 /// Hard cap on bytes read from any subprocess; larger output is cut and the
@@ -36,7 +36,7 @@ const AHEAD_BEHIND_ATOM: (u32, u32) = (2, 41);
 /// tags, and objects: no automatic cleanup, pruning, commit-graph writes, or
 /// hooks (the `reference-transaction` hook runs on ref updates). Per-remote
 /// settings such as `remote.<name>.prune` override `-c fetch.prune`, so
-/// `FETCH_FLAGS` repeats the pruning choice on the command line. SPEC §7, Fetching.
+/// `FETCH_FLAGS` repeats the pruning choice on the command line. SPEC.md, Fetching.
 const FETCH_CONFIG: &[&str] = &[
     "-c",
     "gc.auto=0",
@@ -974,7 +974,7 @@ impl GitService {
     }
 
     // -----------------------------------------------------------------------
-    // Fetching (SPEC §7, Fetching): the only command that writes to a repository
+    // Fetching (SPEC.md, Fetching): the only command that writes to a repository
     // -----------------------------------------------------------------------
 
     /// Names of the configured remotes.
@@ -1106,7 +1106,7 @@ impl GitService {
     }
 
     // -----------------------------------------------------------------------
-    // Activity (SPEC §7, Workspace activity)
+    // Activity (SPEC.md, Workspace activity)
     // -----------------------------------------------------------------------
 
     /// Tips of remote-tracking branches and tags as `(full name, commit id)`,
@@ -1396,7 +1396,7 @@ fn missing_remote_ref(stderr: &str) -> Option<String> {
 }
 
 /// The lock file that shows another Git process is changing the repository,
-/// if any (SPEC §7, Fetching).
+/// if any (SPEC.md, Fetching).
 pub fn busy_lock(git_dir: &Path, common_git_dir: &Path, remote: &str) -> Option<PathBuf> {
     for dir in [git_dir, common_git_dir] {
         for name in LOCK_FILES {

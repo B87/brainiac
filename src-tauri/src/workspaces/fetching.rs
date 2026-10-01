@@ -1,4 +1,4 @@
-//! Fetch now and auto-fetch, as the service offers them (SPEC §7, Fetching).
+//! Fetch now and auto-fetch, as the service offers them (SPEC.md, Fetching).
 //! `crate::fetcher::Fetcher` decides how a fetch runs; this module picks what
 //! to fetch, schedules auto-fetches, and refreshes the checkouts afterwards.
 

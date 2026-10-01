@@ -1,4 +1,4 @@
-//! Fetching (SPEC §7, Fetching): the one operation that writes to a
+//! Fetching (SPEC.md, Fetching): the one operation that writes to a
 //! repository, and only to remote-tracking refs, tags, and objects.
 //!
 //! `Fetcher` owns everything that decides how a fetch runs: which remote and

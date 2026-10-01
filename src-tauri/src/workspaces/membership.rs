@@ -1,4 +1,4 @@
-//! Workspaces: discovery previews, creation, membership changes, and pins (SPEC §7).
+//! Workspaces: discovery previews, creation, membership changes, and pins (SPEC.md, Workspaces and repositories).
 //!
 //! This is a child module of `workspaces`, so the `impl RepositoryService`
 //! block below can use the service's private fields (`db`, `git`) directly:

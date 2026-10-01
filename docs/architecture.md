@@ -1,0 +1,291 @@
+# Architecture
+
+How Brainiac is built. This document matches the code: a change that makes it wrong updates it in the same commit. What the app does is in [`SPEC.md`](../SPEC.md); plans for later releases are in [`roadmap.md`](roadmap.md).
+
+## Technology stack
+
+Rust owns application behavior and persistence. The UI remains a web frontend inside Tauri's system WebView; using Rust does not require implementing the frontend in Rust/WASM. [Tauri overview](https://v2.tauri.app/)
+
+| Layer | Proposed technology | Responsibility |
+| --- | --- | --- |
+| Desktop shell | **Tauri v2** | Windows, menus, application lifecycle, IPC, packaging |
+| Backend | **Rust**, stable toolchain | Domain services, safe file operations, indexing, integrations |
+| Frontend | **React + TypeScript + Vite** | Editor, navigation, task views, dashboard |
+| Styling | **Tailwind CSS** and application design tokens | Consistent density, spacing, theme, focus states |
+| Markdown editor, v0.2 | **TipTap + its Markdown extension**, with source editing fallback | Rich editing of a defined Markdown subset |
+| Source editor, v0.2 | **CodeMirror 6** | Edit Markdown that cannot safely round-trip through the rich editor |
+| Database | **SQLite through `rusqlite`**, bundled SQLite | Tasks, settings, metadata, transactions, FTS5 |
+| Async orchestration | **Tokio**, through Tauri's async runtime | Queues, timers, HTTP, cancellation, process orchestration |
+| File watching | **`notify`** | Vault changes and repository invalidation |
+| Markdown parsing, v0.2 | **`pulldown-cmark`** | Backend extraction of headings, text, and links |
+| Serialization/errors | **`serde`, `serde_json`, `thiserror`** | IPC DTOs, configuration, structured errors |
+| Identity/content versions | **`uuid`, `sha2`** | Stable IDs and SHA-256 content hashes |
+| Git inspection, v0.1 | **System Git CLI invoked from Rust** | Status, discovery, history, refs, file contents, and diffs |
+| Local inference, later | **Ollama via `reqwest`** | Embeddings and streamed generation |
+| Vector storage, later | **`sqlite-vec` Rust binding** | Local nearest-neighbor retrieval |
+| Diagnostics | **`tracing`** | Local structured logs and timings |
+
+Use `rusqlite` with `bundled` to control the SQLite version and `backup` for consistent database snapshots. v0.1 uses SQLite for workspaces, repository registration, pins, and settings. Introduce note/task schemas and verify FTS5 in v0.2; these must not block the Git MVP. Frontend code receives domain commands rather than direct SQL access. [rusqlite documentation](https://github.com/rusqlite/rusqlite)
+
+Commit `Cargo.lock` and the frontend package lockfile. Pin a tested Rust toolchain and compatible Tauri v2 dependency set at bootstrap; record updates deliberately. Exact crate and frontend versions are implementation decisions, not guessed constraints in this document.
+
+## Backend
+
+Start with one Cargo package and a few Rust modules organized by feature. Keep business logic independent of Tauri so it can be tested without launching a WebView. Additional packages and layered directories are unnecessary for the initial release.
+
+```mermaid
+flowchart TD
+    Main[Main WebView] --> IPC[Tauri commands]
+    Capture[Quick capture WebView, v0.3] --> IPC
+    IPC --> Services[Rust domain services]
+    Services --> Files[Markdown files, v0.2]
+    Services --> DB[SQLite worker]
+    Watch[notify watchers] --> Queue[Debounced work queues]
+    Queue --> Services
+    Services --> Git[Git subprocesses, v0.1]
+    Services --> AI[Ollama, v0.4+]
+    DB --> Search[FTS5, v0.2; vectors, v0.4]
+    Services --> Events[Committed change events]
+    Events --> Main
+    Events --> Capture
+```
+
+### Project layout for the first release
+
+The top-level `src/` contains the web frontend; `src-tauri/` contains a normal Cargo project plus Tauri configuration. This split follows the standard Tauri scaffold. The Rust module names below are our application choices, not framework requirements. [Tauri project structure](https://v2.tauri.app/start/project-structure/)
+
+```text
+brainiac/
+  SPEC.md                      What the app does
+  docs/                        architecture.md, roadmap.md, RELEASING.md
+  package.json                 Frontend dependencies and scripts
+  index.html                   Frontend entry document
+  src/                         React/TypeScript frontend
+    main.tsx                   Mount the React app
+    App.tsx                    Main layout
+    components/                Repository table, changes, history, diff, palette
+    lib/                       Typed IPC client
+  src-tauri/
+    Cargo.toml                 Rust package metadata and dependencies
+    Cargo.lock                 Exact resolved Rust dependencies
+    build.rs                   Tauri build integration
+    tauri.conf.json             Application/window/bundle configuration
+    capabilities/              WebView permissions
+    icons/                     Application icons
+    migrations/                Ordered SQL migrations
+    src/
+      main.rs                  Small desktop entry point calling lib.rs
+      lib.rs                   Tauri setup, shared state, command registration
+      commands.rs              Thin IPC handlers calling application modules
+      models.rs                Entities, DTOs, structured errors
+      db.rs                    SQLite worker, migrations, backup
+      workspaces.rs            Repository registration, membership, workspace import
+      git.rs                   Git discovery, status, refs, history, diffs, fetch
+      watcher.rs               Repository notifications and refresh scheduling
+      fetcher.rs               How a fetch runs: remote, refspecs, locks, concurrency, backoff
+      activity.rs              Ref tracking per Git directory, events, per-workspace feeds, team pulse
+      workspaces/              Membership, and the service glue for the feed and fetching
+    tests/                     Integration tests; unit tests can live in modules
+```
+
+Create modules as their behavior is implemented; the scaffold does not need empty placeholders for every file. Add `notes.rs`, `tasks.rs`, and `search.rs` in v0.2; `imports.rs` in v0.3; then AI modules at their milestones. The initial project does not need an editor or content-ingestion dependencies.
+
+In Rust, a **package** is described by `Cargo.toml`; a **crate** is a compilation unit, such as its library or executable; a **module** organizes code within a crate. Tauri's scaffold has a small desktop binary (`main.rs`) that delegates to the application library (`lib.rs`). This is scaffold reuse, not a separate backend service.
+
+Files become modules through declarations such as `mod notes;` in `lib.rs`. A directory does not automatically become a package. When a module grows, split it into submodules: for example, `notes.rs` can become a module root at `notes/mod.rs` with `notes/save.rs` and `notes/recovery.rs`. Add that structure when the code needs it.
+
+### Concurrency and lifecycle
+
+- Keep database connections owned by a dedicated blocking database worker. Commands communicate through bounded queues and response channels.
+- Filesystem parsing, hashing, and other blocking work run on bounded workers, never the UI thread or an async executor thread directly.
+- Use one serialized write pipeline per note and optimistic versions for task updates.
+- Coalesce watcher events by resource. One active job and one pending refresh per resource prevent unbounded queues.
+- Start with two concurrent Git status jobs and one embedding job; adjust after measurement.
+- On sleep, suspend timers; on wake and application activation, reconcile stale state.
+- On quit, flush accepted saves and draft checkpoints, cancel jobs, close the database, and unregister shortcuts. If flushing fails, preserve the draft and offer retry or quit with recovery.
+- Support a single application instance. Before v0.3, closing the last window quits after flushing. In v0.3, closing the window may keep capture available in the menu bar; `Cmd+Q` still quits.
+
+## Storage
+
+### Sources of truth
+
+| Data | Authoritative store | Rebuildable? |
+| --- | --- | --- |
+| Saved note body and frontmatter | Markdown files in the selected vault | Search metadata can be rebuilt from files |
+| Imported source snapshots and provenance | Markdown frontmatter/body and any retained original files in the vault | Source cache can be rebuilt; originals must be backed up |
+| Pending import jobs and uncommitted previews | SQLite plus managed staging files where needed | Requires recovery until a note is committed |
+| Tasks, planned dates, deadlines, associations | SQLite | Requires backup/export |
+| Imported-note identities without embedded IDs | SQLite | Requires backup to preserve exact associations |
+| Pins, workspace membership, settings | SQLite | Requires backup/export |
+| Search text cache, backlinks, repository snapshots | SQLite derived tables | Yes |
+| Chunks and embeddings | SQLite derived tables | Yes, from files and model configuration |
+| Unsaved editor recovery | Local draft journal | Recovery data, not the saved note |
+
+This ownership table covers the full roadmap. In v0.1, persist workspace membership, repository registration, pins, and settings; cache Git observations with timestamps; keep the activity feed's ref tips and events. Note/task/import stores are introduced at their later milestones.
+
+SQLite therefore holds both authoritative application data and derived indexes. Deleting the database is not a safe way to rebuild search.
+
+Use Tauri's application data directory for the database, recovery journal, and managed backups. The user chooses the Markdown vault; its location is not hard-coded. Keep paths inside the vault relative so relocating the vault does not invalidate every record.
+
+### Data model
+
+Tables of later releases are in `docs/roadmap.md` and are not created before their release. IDs are UUID strings and timestamps are UTC instants. The schema is `src-tauri/migrations/0001_init.sql`.
+
+| Entity | Essential fields and constraints | Release |
+| --- | --- | --- |
+| `pins` | `entity_type`, `entity_id`, `position`; repository/workspace pins in v0.1, note pins in v0.2; unique entity | v0.1 |
+| `settings` | `key`, `value_json`, `version` | v0.1 |
+| `workspaces` | `id`, `name`, `discovery_mode` (`discovered`, `manual`), `root_repository_id?`, `discovery_root?`, `discovery_path?`; activity settings: watched branch and tag patterns, `auto_fetch`, `notify_moves`, `morning_digest`, `warn_conflicts`, `last_digest_on?` | v0.1 |
+| `workspace_members` | `id`, `workspace_id`, `display_name`, `canonical_path`, `origin` (`discovered`, `manual`), `repository_id?` (absent for non-Git folders); unique path per workspace, so one repository can belong to several workspaces | v0.1 |
+| `repositories` | `id`, `canonical_root`, `git_dir`, `common_git_dir`, `last_opened_at?` (drives the Recent list), `last_checked_at`, cached status/error as JSON, `last_fetch_at?` and `last_fetch_error?` of Brainiac's own fetches | v0.1 |
+| `ref_baselines` | `git_store` (a `common_git_dir`), `watched_json`, `taken_at`; which watched patterns the stored tips cover, derived and rebuildable | v0.1 |
+| `ref_tips` | `git_store`, `ref_name`, `target_id`; the last seen tip of each watched remote-tracking branch and tag, derived and rebuildable | v0.1 |
+| `activity_events` | `id`, `git_store`, `kind` (`advanced`, `rewritten`, `created`, `tagged`), `ref_name` (full), `match_name` (what patterns match), `old_id?`, `new_id`, `observed_at`, `seen_at?`, detail JSON (commits, authors, overlapping paths, drift); pruned after 90 days | v0.1 |
+
+Use foreign keys, WAL mode, a bounded busy timeout, and explicit transactions. Repository status is a cache with an observation time, never an authoritative copy of Git state.
+
+## Git
+
+Invoke the system Git binary with argument arrays and timeouts, using machine-readable output such as `git status --porcelain=v2 --branch -z`. Parse NUL-delimited paths and distinguish staged versus unstaged states. [Git status documentation](https://git-scm.com/docs/git-status)
+
+Run Git without a pager, with optional locks disabled for inspection, and with external diff/textconv helpers disabled for patch/content operations. Validate revision/path inputs, separate path arguments with `--`, and never interpolate them into a shell. Do not execute repository hooks, imported tasks, or custom shell actions.
+
+Use the CLI first for compatibility with the user's installed Git. Hide it behind a `GitService` boundary; `git2` or `gix` can be evaluated later if measured bottlenecks justify another implementation.
+
+### Fetch invocation
+
+Fetching (`SPEC.md`, Fetching) is the only command that writes to a repository. Every fetch runs, with explicit refspecs that are each checked to write only `refs/remotes/<remote>/` or `refs/tags/`:
+
+```text
+git -c gc.auto=0 -c maintenance.auto=false -c fetch.prune=false -c fetch.pruneTags=false
+    -c fetch.writeCommitGraph=false -c core.hooksPath=/dev/null
+    fetch --refmap= --no-prune --no-prune-tags --no-auto-gc --no-auto-maintenance
+          --no-recurse-submodules --no-write-fetch-head --quiet <remote> <refspecs>
+```
+
+- Command-line options beat per-remote configuration such as `remote.<name>.prune`; the empty `--refmap` stops Git from also applying the configured `remote.<name>.fetch` refspecs to what it fetched.
+- The environment sets `GIT_TERMINAL_PROMPT=0`, `GCM_INTERACTIVE=never`, empty `GIT_ASKPASS`/`SSH_ASKPASS`, and, unless the user configured `core.sshCommand`, `GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=15"`.
+- Timeout 60 seconds. Git is stopped with SIGTERM, which lets it remove its lock files, and only killed if it is still running three seconds later.
+- `crate::fetcher::Fetcher` owns remote and refspec choice, lock checks, concurrency, outcome recording, and backoff; `GitService::fetch` owns the command line.
+
+## IPC
+
+The app exposes repository and workspace registration, Git queries, fetching, the activity feed, settings and pins, and application snapshots. Commands of later releases are in `docs/roadmap.md`.
+
+Commands are thin adapters over Rust services. Use `#[tauri::command]`, serializable request/response DTOs, and a typed TypeScript client. Generate DTO types from Rust or verify shared schemas in CI; do not assume Tauri automatically creates complete TypeScript bindings. [Tauri command documentation](https://v2.tauri.app/develop/calling-rust/)
+
+| Command | Important input/output |
+| --- | --- |
+| `get_app_snapshot` | Repositories, workspaces, pins, recents, settings, and the snapshot version |
+| `register_repository` / `create_workspace` / `discover_repositories` / `update_workspace_membership` / `refresh_repository` | v0.1: validated registration, discovered/manual workspace configuration, discovered candidates, selected membership, timestamped status |
+| `list_repositories` / `list_changes` / `get_diff` | v0.1: workspace/filter scope, repository ID, diff kind and safe file selector; bounded results |
+| `list_commits` / `get_commit` / `list_refs` | v0.1: repository/ref scope, pagination cursor or commit ID; history/details/ref DTOs |
+| `fetch_repository` | v0.1: repository ID; fetch outcome with the refs that moved |
+| `get_workspace_activity` / `get_team_pulse` / `mark_activity_seen` / `update_activity_settings` | v0.1: workspace ID; feed and freshness; team pulse; seen markers; watched refs and notification settings |
+
+Errors expose stable codes: `VALIDATION`, `NOT_FOUND`, `CONFLICT`, `PERMISSION_DENIED`, `IO`, `DB`, `DEPENDENCY_UNAVAILABLE`, `TIMEOUT`, and `CANCELLED`. Include a user-facing message and retryability, keeping low-level diagnostics in local logs.
+
+### Types and conventions
+
+The request and response types are defined once, in `src-tauri/src/models.rs`, and exported by `ts-rs` to `src/lib/generated/` (the documentation comments travel with them). Change a shape there, describe any behavior change in `SPEC.md`, and regenerate with `cargo test`.
+
+- IDs are UUID strings; timestamps are RFC 3339 UTC strings; enum values are `snake_case` strings.
+- Optional fields serialize as `null`, so TypeScript sees `T | null`.
+- Paths inside a repository are repository-relative with forward slashes, exactly as Git reports them.
+- History cursors are opaque strings encoding the anchor commit and offset; a cursor from another anchor is rejected with `VALIDATION`.
+- `RepositoryChangedEvent.changed` is false when a timer/wake poll or a `list_changes` call observed the same status as before; watcher, manual refresh, fetch, and registration events are always changed.
+
+Commands map onto these as follows: `get_app_snapshot → AppSnapshot`; `register_repository(path) → RepositorySummary`; `remove_repository(id)`; `open_repository(id)` marks it recent; `set_repository_tab(id, tab)`; `open_in_editor(id, path?, line?)`; `reveal_in_finder(id, path?)`; `discover_repositories(folder_path, discovery_path?) → WorkspacePreview`; `create_workspace(CreateWorkspaceRequest) → Workspace`; `update_workspace_membership(UpdateWorkspaceMembershipRequest) → Workspace`; `rename_workspace(workspace_id, name) → Workspace`; `remove_workspace(workspace_id)` also deletes its pin and keeps member registrations; `set_pinned(entity_type, entity_id, pinned)`; `refresh_repository(id) → RepositorySummary`; `list_changes(id) → ChangesResult`; `get_diff(id, DiffSelector, DiffOptions?) → DiffResult`; `list_commits(ListCommitsRequest) → CommitPage`; `get_commit(id, commit_id, parent_index?) → CommitDetail`; `list_refs(id) → RefsResult`; `fetch_repository(id) → FetchResult` fails with `CONFLICT` when another Git process holds a lock and `PERMISSION_DENIED` when the remote needs sign-in; `get_workspace_activity(workspace_id) → WorkspaceActivity`; `get_team_pulse(workspace_id) → TeamPulse`; `mark_activity_seen(workspace_id, event_ids?)` marks the given events, or all of the workspace's, as seen; `update_activity_settings(workspace_id, ActivitySettings) → Workspace`. Every result carries the repository ID so a late response for a previously selected repository can be discarded by the frontend.
+
+Events are `repository_changed` and `menu`; later releases add `note_changed`, `note_missing`, `task_changed`, and `index_status_changed`. Scope payloads to the authorized window. Do not broadcast note contents through global events. Commands return definitive state even if an event is missed. [Tauri frontend events](https://v2.tauri.app/develop/calling-frontend/)
+
+## Security, privacy, and distribution
+
+Tauri capabilities constrain which windows can access core/plugin APIs. Define separate main and capture capabilities, explicitly select them in configuration, and avoid permissions shared unintentionally across windows. [Tauri capabilities](https://v2.tauri.app/security/capabilities/)
+
+- Keep generic filesystem, SQL, HTTP, and shell execution unavailable to JavaScript. Rust services implement narrow operations.
+- Custom commands validate caller window and operation authorization; plugin capabilities do not replace backend checks on custom filesystem/process commands.
+- Validate vault-relative paths and reject traversal, collisions, and symlink escapes. In v0.2, keep vault traversal inside its selected root. In v0.1, constrain repository file previews to registered repository roots and distinguish symlinks from regular files.
+- Load packaged UI assets only. Apply a restrictive production CSP and sanitize rendered Markdown; raw note HTML must not execute scripts.
+- Allow local images inside the vault through a scoped asset mechanism. Block remote image fetching by default to avoid unintended requests.
+- Open approved `http`/`https` links externally; never treat a note link as a shell command.
+- Invoke Git/editor executables with fixed argument arrays and bounded execution. Imported workspace content never supplies arbitrary executable code.
+- Keep credentials in macOS Keychain when remote integrations arrive. Logs exclude note bodies, model prompts, tokens, and credentials. Fetching uses Git's own credential configuration and never asks for or stores credentials itself.
+- macOS notifications (`tauri-plugin-notification`) are sent from Rust only, for workspaces that turned them on; the WebView gets no notification permission.
+- No telemetry or remote inference by default. Local storage is ordinary plaintext; application-level encryption is future scope.
+
+Proposed support target is macOS 13+ on Apple Silicon, validated against the selected Tauri dependencies. Intel support requires its own build and test pass before being claimed. Distribute a direct-download `.app`/DMG initially; App Store sandboxing is a separate decision. [Tauri macOS bundles](https://v2.tauri.app/distribute/macos-application-bundle/)
+
+Sign and notarize builds before distribution to other users. Verify packaged builds on a clean supported Mac. Releases are tag-driven GitHub releases built by CI (`docs/RELEASING.md`), and the app updates itself from the latest release through the Tauri updater: artifacts are signed with a minisign key held outside the repository, the public key is embedded in `tauri.conf.json`, and the app checks silently after launch plus on demand from "Check for Updates…". Apple Developer signing and notarization are optional in the workflow and switched on by adding the secrets. [Tauri macOS signing](https://v2.tauri.app/distribute/sign/macos/), [Tauri updater](https://v2.tauri.app/plugin/updater/)
+
+## Quality and verification
+
+These are initial targets to measure, not framework guarantees. Use a release build on a reference Apple Silicon Mac with 16 GiB RAM; record its exact model and OS in benchmark results.
+
+| Measurement | Initial target |
+| --- | --- |
+| Warm launch to interactive UI | Under 2 seconds; repository refresh continues in background |
+| Open a 100 KiB indexed note, v0.2 | p95 under 150 ms |
+| Keyword results, v0.2, 10,000 notes / ~100 MiB text | p95 under 150 ms, excluding typing debounce |
+| Normal note save visible in search, v0.2 | Within 2 seconds |
+| Local note edit reflected in an idle editor, v0.2 | Within 2 seconds when watcher delivery succeeds |
+| Selected text diff / first 100 history records, v0.1 | p95 under 500 ms on representative repos, with visible loading beyond that |
+| Local Git change reflected in viewer, v0.1 | Within 2 seconds after event delivery on representative repos; stale state visible otherwise |
+| Quick-capture activation, v0.3 | p95 under 250 ms with warm window |
+| Idle CPU with dashboard/AI inactive | Under 1% averaged over five minutes |
+| Core app memory, AI runtime excluded | Initial budget under 250 MiB, measured across app/WebView processes |
+
+Benchmark a 20-repository workspace in v0.1, including at least one large real-world repository. Determine repository refresh and watcher limits from that fixture rather than imposing an arbitrary repository size threshold.
+
+### Required verification
+
+Apply checks at the milestone that introduces the behavior. v0.1 is gated by Git/viewer/workspace persistence and macOS smoke tests; note/editor/import/AI tests belong to their later releases.
+
+- Rust unit tests for task transitions, date behavior, path validation, query compilation, and parsing.
+- Temporary-directory integration tests for atomic saves, observed conflicts, external replacement/rename/delete, missing vaults, and write failures.
+- Migration/backup/restore tests that preserve tasks and associations and independently rebuild search.
+- Editor fixtures verifying rich-mode fidelity and source-mode fallback; dirty-buffer recovery after an interrupted save.
+- Git fixtures for unstaged edits without `.git` changes, simultaneous staged/unstaged edits, untracked files, renames, conflicts, detached HEAD, empty repositories, linked worktrees, ignored directories, and subprocess timeout. Verify root/merge commit diffs, ref-scoped history pagination, binary/oversized diff handling, unusual filenames, rapid selection changes, and partial multi-repository failure. Inspection must not modify working files, refs, or index contents; a fetch (tested against a local bare remote) changes only remote-tracking refs and tags. Activity fixtures cover a baseline, a fast-forward, a force-push, a new tag, and an overlap with working-tree changes.
+- Async tests for event bursts, superseded indexing jobs, cancellation, and window snapshot recovery.
+- Manual macOS smoke tests for shortcuts, menus, focus, Spaces, appearance/accessibility settings, and packaged application behavior.
+- Frontend component/browser tests can mock IPC. They do not replace actual WebView smoke tests: Tauri's WebDriver documentation does not offer macOS desktop support. [Tauri WebDriver limitations](https://v2.tauri.app/develop/tests/webdriver/)
+
+CI should run Rust formatting, Clippy, Rust tests, frontend type checks/tests, and a macOS release build. Add dependency/license review before public distribution. Keep tests focused on behavior that could lose data or break the core workflows.
+
+## Decisions
+
+Decisions already made. Add new ones at the end with a date; do not edit an accepted one, write a new entry that replaces it.
+
+### Bootstrap choices
+
+- **Rust ↔ TypeScript types: `ts-rs`.** Every DTO in `models.rs` derives `serde::Serialize`/`Deserialize` and `ts_rs::TS`. A Rust test (`cargo test`) exports the generated `.ts` files into `src/lib/generated/`, which is committed. The hand-written IPC client in `src/lib/ipc.ts` wraps each `invoke` call with these types. CI fails if the exported files differ from the committed ones. `tauri-specta` was considered and rejected for now because its Tauri v2 line is still a release candidate; it can replace the hand-written wrappers later without changing the DTOs.
+- **Package manager: `pnpm`** (already installed). **Rust toolchain: stable via `rustup`**, pinned in `rust-toolchain.toml`.
+- **Minimum Git: 2.30.** The hard floor for `--porcelain=v2` is 2.11; 2.30 is a conservative floor. Detect the version at startup and show the setup message below it.
+- **Open in editor default: VS Code's `code` CLI**, invoked as `code <path>` for a repository root and `code -g <file>:<line>` for a file. The executable and argument template are a setting so another editor can be configured; no editor detection beyond checking the configured executable exists.
+- **Backup scope in v0.1: SQLite snapshots only** (before migrations and once per active day). The export/restore manifest with vault files is v0.2.
+- **Open source from day one.** Proposed license: `MIT OR Apache-2.0`, the Rust ecosystem convention; confirm before the first public push. Git test fixtures are created by the tests themselves in temporary directories, so no real repository or workspace file is committed.
+
+### Established direction
+
+- macOS first, Rust backend, Tauri v2 desktop shell.
+- Local Markdown is authoritative for saved notes.
+- External content enters through a shared import pipeline as source-preserving Inbox notes.
+- SQLite stores authoritative tasks/application data and rebuildable search caches.
+- Keyword and vector search coexist; optional local AI follows usable retrieval.
+- Multi-repository workspace support is part of the product roadmap.
+- Workspaces impose no folder layout: they are built by manual selection or by discovering repositories inside a user-chosen folder, which may itself be a root repository.
+- Open source from day one: the repository holds no company-specific paths, workspace files, or credentials, and test fixtures are synthetic.
+
+### Proposed defaults
+
+- React/TypeScript frontend, TipTap with a mandatory source fallback.
+- User priority: Git viewer and single/multi-repository tracking in v0.1; notes/tasks/keyword search in v0.2; external imports and global capture in v0.3.
+- No vault required in v0.1; one vault introduced in v0.2. Use local Git CLI inspection before evaluating Rust Git libraries.
+- Direct-download macOS distribution, Apple Silicon first.
+- `ts-rs` for shared types, `pnpm`, Git 2.30+, VS Code `code` CLI as the default editor, SQLite-snapshot-only backup in v0.1.
+
+### Later decisions
+
+- **1 Oct 2026 — Fetching is the one allowed write.** Fetch now and opt-in, per-workspace auto-fetch (off by default) may update remote-tracking refs and tags with the hardened invocation above; nothing else writes to a repository.
+- **2 Oct 2026 — Activity is tracked per Git directory** (`common_git_dir`), with baselines that remember the patterns they cover and per-workspace filtering on read.
+- **2 Oct 2026 — Migrations folded into `0001_init.sql`** before any public release that needs an upgrade path; from the next release on, migrations are only appended.

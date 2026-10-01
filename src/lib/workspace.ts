@@ -1,4 +1,4 @@
-/** How a workspace's members are laid out in the sidebar and dashboard (SPEC §7). */
+/** How a workspace's members are laid out in the sidebar and dashboard (SPEC.md, Workspaces and repositories). */
 import type { RepositorySummary, Workspace, WorkspaceMember } from "./ipc";
 
 export type WorkspaceLayout = {

@@ -1,5 +1,5 @@
 /**
- * Fixed-row-height windowing for long lists such as diffs (SPEC §7:
+ * Fixed-row-height windowing for long lists such as diffs (SPEC.md, Changes and diffs:
  * "virtualize long output"). Short lists render in full so text selection
  * and copy keep working across the whole patch.
  */

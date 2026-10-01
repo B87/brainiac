@@ -1,5 +1,5 @@
 /**
- * Patch presentation computed in the frontend (SPEC §7, Changes and diffs):
+ * Patch presentation computed in the frontend (SPEC.md, Changes and diffs):
  * pairing removed and added lines, split rows, and changed-word highlights.
  */
 import type { DiffLine, Hunk } from "./ipc";

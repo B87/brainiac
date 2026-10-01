@@ -2,7 +2,7 @@
 
 A keyboard-oriented macOS desktop app for programmers: a Git workspace tracker today, a personal second brain over time. Rust backend, Tauri v2 shell, React + TypeScript frontend. Everything runs locally; the app reads your repositories and, only when you ask it to, fetches.
 
-**Status:** early development. The current release line (v0.1) is a read-only Git viewer and multi-repository tracker. See [`SPEC.md`](SPEC.md) for the full specification and roadmap.
+**Status:** early development. The current release line (v0.1) is a read-only Git viewer and multi-repository tracker. See [`SPEC.md`](SPEC.md) for what it does, [`docs/architecture.md`](docs/architecture.md) for how it is built, and [`docs/roadmap.md`](docs/roadmap.md) for what comes next.
 
 ## What works now
 

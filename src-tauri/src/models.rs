@@ -12,7 +12,7 @@ use ts_rs::TS;
 // Errors
 // ---------------------------------------------------------------------------
 
-/// Stable error codes shared with the frontend (SPEC §14).
+/// Stable error codes shared with the frontend (docs/architecture.md, IPC).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 #[ts(export)]
@@ -642,7 +642,7 @@ pub struct RefsResult {
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
 pub enum DiscoveryMode {
-    /// Members were found inside a chosen folder (SPEC §7).
+    /// Members were found inside a chosen folder (SPEC.md, Workspaces and repositories).
     Discovered,
     /// Members were picked one by one.
     Manual,
@@ -774,7 +774,7 @@ pub struct UpdateWorkspaceMembershipRequest {
 // Activity and fetching
 // ---------------------------------------------------------------------------
 
-/// Per-workspace activity configuration (SPEC §7, Workspace activity).
+/// Per-workspace activity configuration (SPEC.md, Workspace activity).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct ActivitySettings {

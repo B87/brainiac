@@ -3,7 +3,7 @@
 //! `notify` delivers raw events on its own thread. We map each event to the
 //! most specific registered repository, drop noise from `.git/objects` and
 //! lock files, and forward the repository id to a debounce loop that
-//! requests one coalesced refresh per repository (SPEC §7, refresh strategy).
+//! requests one coalesced refresh per repository (SPEC.md, Refresh strategy).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -17,7 +17,7 @@ use tokio::time::Instant;
 use crate::models::{AppError, AppResult, ChangeOrigin};
 use crate::workspaces::RepositoryService;
 
-/// Debounce window for repository invalidation (SPEC §7: ~500 ms).
+/// Debounce window for repository invalidation (SPEC.md, Refresh strategy: ~500 ms).
 pub const DEBOUNCE: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Clone)]

@@ -3,7 +3,7 @@ import type { AppSnapshot, RepositorySummary } from "../lib/ipc";
 import { totals } from "../lib/workspace";
 import type { View } from "./Sidebar";
 
-/** Shortcuts that work in each view (SPEC §4, Keyboard defaults). */
+/** Shortcuts that work in each view (SPEC.md, Keyboard defaults). */
 function hints(view: View): Array<[string, string]> {
   if (view.kind === "repository")
     return [

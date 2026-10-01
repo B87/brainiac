@@ -1,5 +1,5 @@
 /**
- * Window-level keyboard shortcuts (SPEC §4, Keyboard defaults). Lists react to
+ * Window-level keyboard shortcuts (SPEC.md, Keyboard defaults). Lists react to
  * J/K and the arrow keys without being clicked first.
  *
  * One listener dispatches to every mounted `useKeys` registration in

@@ -1,7 +1,7 @@
 /**
  * Loading one patch: the selected comparison, the ignore-whitespace
  * preference, and stale-response handling in one place. While a new patch
- * loads, the previous one stays available (SPEC §4, refresh behavior).
+ * loads, the previous one stays available (SPEC.md, Git navigation and interactions).
  */
 import { useEffect, useRef, useState } from "react";
 import { type DiffResult, type DiffSelector, errorMessage, ipc } from "./ipc";
