@@ -54,7 +54,8 @@ node -e '
   }
 ' "$version"
 # Only the first `version =` line is the package version; dependency pins come later.
-sed -i '' "0,/^version = \".*\"/s//version = \"$version\"/" src-tauri/Cargo.toml
+# perl rather than sed: the first-match address `0,/re/` is GNU-only and BSD sed ignores it.
+perl -0pi -e 's/^version = "[^"]*"/version = "'"$version"'"/m' src-tauri/Cargo.toml
 # Refresh Cargo.lock's entry for this crate without touching dependency versions.
 cargo update --workspace --offline --manifest-path src-tauri/Cargo.toml --quiet
 scripts/check-version.sh "$version" >/dev/null
