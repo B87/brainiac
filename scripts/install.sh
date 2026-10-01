@@ -81,7 +81,7 @@ if [[ -z "$mount_point" || ! -d "$mount_point/$APP" ]]; then
   exit 1
 fi
 
-if pgrep -xq Brainiac; then
+if pgrep -xqi brainiac; then
   echo "Quitting the running Brainiac..."
   osascript -e 'tell application "Brainiac" to quit' >/dev/null 2>&1 || pkill -x Brainiac || true
   sleep 1
