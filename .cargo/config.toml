@@ -1,0 +1,5 @@
+# Cargo reads this file from the working directory upwards, so it applies whether
+# cargo runs from the repo root (CI) or from src-tauri/ (local). The path is
+# relative to this file's directory.
+[env]
+TS_RS_EXPORT_DIR = { value = "src/lib/generated", relative = true }

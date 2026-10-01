@@ -1,0 +1,49 @@
+{
+  "name": "brainiac",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "lint": "biome lint .",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "check": "pnpm version:check && pnpm format:rust:check && pnpm lint:rust && pnpm test:rust && pnpm check:web && pnpm typecheck && pnpm test",
+    "check:web": "biome check .",
+    "check:fix": "biome check --write .",
+    "format:rust": "cargo fmt --manifest-path src-tauri/Cargo.toml",
+    "format:rust:check": "cargo fmt --manifest-path src-tauri/Cargo.toml -- --check",
+    "lint:rust": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings",
+    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "tauri": "tauri",
+    "version:check": "scripts/check-version.sh",
+    "release": "scripts/release.sh",
+    "release:publish": "scripts/publish-release.sh"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2",
+    "@tauri-apps/plugin-opener": "^2",
+    "@tauri-apps/plugin-process": "^2.4.0",
+    "@tauri-apps/plugin-updater": "^2.13.1",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.15",
+    "@tailwindcss/vite": "^4",
+    "@tauri-apps/cli": "^2",
+    "@types/node": "^26.6.3",
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.6",
+    "@vitejs/plugin-react": "^5.2.0",
+    "tailwindcss": "^4",
+    "typescript": "~5.9",
+    "vite": "^7",
+    "vitest": "^3"
+  }
+}

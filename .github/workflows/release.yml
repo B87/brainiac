@@ -1,0 +1,93 @@
+name: Release
+
+# Runs when scripts/release.sh pushes a `vX.Y.Z` tag. Builds a universal macOS
+# bundle, signs the updater artifact with the minisign key from the repository
+# secrets, and opens a DRAFT GitHub release holding the .dmg, the
+# .app.tar.gz + .sig pair used by the in-app updater, and latest.json.
+# Publish the draft with scripts/publish-release.sh once you have checked it.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-14
+    env:
+      # `secrets` cannot be used in `if:`; mirror presence into env first.
+      HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag must match the version in the manifests
+        run: scripts/check-version.sh "${GITHUB_REF_NAME#v}"
+
+      - name: Extract release notes from CHANGELOG.md
+        id: notes
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          notes=$(awk -v ver="$version" '
+            /^## \[/ { printing = index($0, "[" ver "]") > 0; next }
+            /^\[[^]]+\]: / { next }   # skip link reference definitions at the bottom
+            printing { print }
+          ' CHANGELOG.md)
+          if [[ -z "$notes" ]]; then
+            echo "CHANGELOG.md has no section for $version" >&2
+            exit 1
+          fi
+          {
+            echo "body<<NOTES_EOF"
+            echo "$notes"
+            echo "NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Install Rust (version from rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # Apple Developer signing + notarization is optional. Without it the app
+      # is ad-hoc signed and first-time users must right-click > Open.
+      - name: Enable Apple code signing (only when secrets are configured)
+        if: env.HAS_APPLE_CERT == 'true'
+        run: |
+          {
+            echo "APPLE_CERTIFICATE=${{ secrets.APPLE_CERTIFICATE }}"
+            echo "APPLE_CERTIFICATE_PASSWORD=${{ secrets.APPLE_CERTIFICATE_PASSWORD }}"
+            echo "APPLE_SIGNING_IDENTITY=${{ secrets.APPLE_SIGNING_IDENTITY }}"
+            echo "APPLE_ID=${{ secrets.APPLE_ID }}"
+            echo "APPLE_PASSWORD=${{ secrets.APPLE_PASSWORD }}"
+            echo "APPLE_TEAM_ID=${{ secrets.APPLE_TEAM_ID }}"
+          } >> "$GITHUB_ENV"
+
+      - name: Build, sign and upload to a draft release
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Minisign key pair generated with `pnpm tauri signer generate`.
+          # The matching public key lives in src-tauri/tauri.conf.json.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: Brainiac ${{ github.ref_name }}
+          releaseBody: ${{ steps.notes.outputs.body }}
+          releaseDraft: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          uploadUpdaterJson: true
+          args: --target universal-apple-darwin
