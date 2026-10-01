@@ -1,14 +1,16 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
-  "description": "Capability for the main window: core IPC, native folder picker, opening paths in Finder, in-app updates.",
+  "description": "Capability for the main window: core IPC, dragging the window by its title area, native folder picker and confirmations, opening paths in Finder, in-app updates.",
   "windows": [
     "main"
   ],
   "permissions": [
     "core:default",
     "core:event:default",
+    "core:window:allow-start-dragging",
     "dialog:allow-open",
+    "dialog:allow-ask",
     "opener:default",
     "updater:default",
     "process:allow-restart"

@@ -13,9 +13,10 @@ use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
 use crate::models::{
-    AppError, AppResult, ChangeCounts, ChangeEntry, ChangeGroup, ChangeKind, CommitDetail,
-    CommitFile, CommitSummary, DiffContent, DiffLimits, DiffLine, DiffLineKind, DiffSelector,
-    HeadKind, HeadState, Hunk, NonTextKind, RefEntry, RefKind, StatusSnapshot, UpstreamState,
+    ActivityCommit, AppError, AppResult, ChangeCounts, ChangeEntry, ChangeGroup, ChangeKind,
+    CommitDetail, CommitFile, CommitSummary, DiffContent, DiffLimits, DiffLine, DiffLineKind,
+    DiffOptions, DiffSelector, ErrorCode, HeadKind, HeadState, Hunk, NonTextKind, RefEntry,
+    RefKind, StatusSnapshot, UpstreamState,
 };
 
 /// Minimum supported Git version (SPEC §3).
@@ -27,6 +28,71 @@ const MAX_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 
 /// Field and record separators used in custom `git log` formats.
 const FIELD_SEP: char = '\u{1f}';
+
+/// First Git version with the `%(ahead-behind:<base>)` ref-filter atom.
+const AHEAD_BEHIND_ATOM: (u32, u32) = (2, 41);
+
+/// Configuration that makes a fetch touch nothing but remote-tracking refs,
+/// tags, and objects: no automatic cleanup, pruning, commit-graph writes, or
+/// hooks (the `reference-transaction` hook runs on ref updates). Per-remote
+/// settings such as `remote.<name>.prune` override `-c fetch.prune`, so
+/// `FETCH_FLAGS` repeats the pruning choice on the command line. SPEC §7, Fetching.
+const FETCH_CONFIG: &[&str] = &[
+    "-c",
+    "gc.auto=0",
+    "-c",
+    "maintenance.auto=false",
+    "-c",
+    "fetch.prune=false",
+    "-c",
+    "fetch.pruneTags=false",
+    "-c",
+    "fetch.writeCommitGraph=false",
+    "-c",
+    "core.hooksPath=/dev/null",
+];
+
+/// Command-line options of every fetch; these beat any configuration. An
+/// empty `--refmap` stops Git from also applying the configured
+/// `remote.<name>.fetch` refspecs to what it fetched, so only the explicit,
+/// checked refspecs decide which refs are written.
+const FETCH_FLAGS: &[&str] = &[
+    "--refmap=",
+    "--no-prune",
+    "--no-prune-tags",
+    "--no-auto-gc",
+    "--no-auto-maintenance",
+    "--no-recurse-submodules",
+    "--no-write-fetch-head",
+    "--quiet",
+];
+
+/// Lock files that mean another Git process is changing the repository.
+const LOCK_FILES: &[&str] = &[
+    "index.lock",
+    "HEAD.lock",
+    "packed-refs.lock",
+    "shallow.lock",
+    "reftable/tables.list.lock",
+];
+
+/// How long a Git process gets to clean up its lock files after SIGTERM.
+const TERMINATE_GRACE: Duration = Duration::from_secs(3);
+
+/// What one finished Git process produced.
+struct Output {
+    stdout: Vec<u8>,
+    truncated: bool,
+    stderr: String,
+    /// Exit code; `None` when a signal ended the process.
+    code: Option<i32>,
+}
+
+impl Output {
+    fn success(&self) -> bool {
+        self.code == Some(0)
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct GitService {
@@ -49,6 +115,73 @@ pub struct ResolvedRepository {
 impl ResolvedRepository {
     pub fn is_linked_worktree(&self) -> bool {
         self.git_dir != self.common_git_dir
+    }
+}
+
+/// A registered checkout as the fetcher and the activity tracker see it.
+/// Several checkouts (a main checkout and its linked worktrees) can share one
+/// Git directory, and with it the refs; `store()` is that shared identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Checkout {
+    pub repository_id: String,
+    /// Folder name, for display.
+    pub name: String,
+    pub root: PathBuf,
+    pub git_dir: PathBuf,
+    pub common_git_dir: PathBuf,
+}
+
+impl Checkout {
+    /// Key of the shared Git directory: refs, fetches, and activity belong to it.
+    pub fn store(&self) -> String {
+        self.common_git_dir.display().to_string()
+    }
+
+    /// The main checkout, rather than a linked worktree.
+    pub fn is_main(&self) -> bool {
+        self.git_dir == self.common_git_dir
+    }
+}
+
+/// What a full ref name is, given the configured remotes (whose names may
+/// contain `/`, so the longest matching remote wins).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefName<'a> {
+    RemoteBranch { remote: &'a str, branch: &'a str },
+    Tag(&'a str),
+    Other,
+}
+
+impl<'a> RefName<'a> {
+    /// `'a` ties the returned slices to both the ref name and the remote names.
+    pub fn parse(full: &'a str, remotes: &'a [String]) -> Self {
+        if let Some(tag) = full.strip_prefix("refs/tags/") {
+            return RefName::Tag(tag);
+        }
+        let Some(rest) = full.strip_prefix("refs/remotes/") else {
+            return RefName::Other;
+        };
+        remotes
+            .iter()
+            .filter_map(|r| {
+                rest.strip_prefix(r.as_str())
+                    .and_then(|b| b.strip_prefix('/'))
+                    .map(|branch| (r.as_str(), branch))
+            })
+            .max_by_key(|(r, _)| r.len())
+            .filter(|(_, branch)| !branch.is_empty() && *branch != "HEAD")
+            .map_or(RefName::Other, |(remote, branch)| RefName::RemoteBranch {
+                remote,
+                branch,
+            })
+    }
+
+    /// Short display name: `origin/main` or the tag name.
+    pub fn short(full: &str) -> &str {
+        full.strip_prefix("refs/remotes/")
+            .or_else(|| full.strip_prefix("refs/tags/"))
+            .or_else(|| full.strip_prefix("refs/heads/"))
+            .unwrap_or(full)
     }
 }
 
@@ -141,8 +274,29 @@ impl GitService {
         args: &[&str],
         max_bytes: usize,
     ) -> AppResult<(Vec<u8>, bool)> {
+        let out = self.exec(cwd, args, max_bytes, &[], self.timeout).await?;
+        if out.success() || out.truncated {
+            Ok((out.stdout, out.truncated))
+        } else {
+            Err(classify_git_error(args, &out.stderr))
+        }
+    }
+
+    /// Spawn Git with extra environment variables and a timeout. Only spawn,
+    /// read, and timeout failures are errors; a non-zero exit is reported in `Output`.
+    async fn exec(
+        &self,
+        cwd: Option<&Path>,
+        args: &[&str],
+        max_bytes: usize,
+        envs: &[(&str, &str)],
+        timeout: Duration,
+    ) -> AppResult<Output> {
         let mut cmd = self.command(cwd);
         cmd.args(args);
+        for (key, value) in envs {
+            cmd.env(key, value);
+        }
         let mut child = cmd.spawn().map_err(|e| {
             AppError::dependency("Could not start Git.")
                 .with_details(format!("{}: {e}", self.binary.display()))
@@ -174,7 +328,7 @@ impl GitService {
             err
         };
 
-        let result = tokio::time::timeout(self.timeout, async {
+        let result = tokio::time::timeout(timeout, async {
             let (read, err) = tokio::join!(read_all, read_err);
             let (out, truncated) = read?;
             if truncated {
@@ -187,24 +341,22 @@ impl GitService {
 
         match result {
             Err(_) => {
-                let _ = child.kill().await;
+                terminate(&mut child).await;
                 Err(AppError::timeout(format!(
                     "Git did not answer within {} seconds.",
-                    self.timeout.as_secs()
+                    timeout.as_secs()
                 ))
                 .with_details(format!("git {}", args.join(" "))))
             }
             Ok(Err(e)) => {
                 Err(AppError::io("Reading Git output failed.").with_details(e.to_string()))
             }
-            Ok(Ok((out, truncated, err, status))) => {
-                if status.success() || truncated {
-                    Ok((out, truncated))
-                } else {
-                    let stderr = String::from_utf8_lossy(&err).trim().to_string();
-                    Err(classify_git_error(args, &stderr))
-                }
-            }
+            Ok(Ok((stdout, truncated, err, status))) => Ok(Output {
+                stdout,
+                truncated,
+                stderr: String::from_utf8_lossy(&err).trim().to_string(),
+                code: status.code(),
+            }),
         }
     }
 
@@ -256,8 +408,10 @@ impl GitService {
         let git_dir = lines.next().unwrap_or_default();
         let common = lines.next().unwrap_or_default();
         let root = canonicalize(Path::new(root)).await?;
-        let git_dir = canonicalize(&absolute_in(&root, git_dir)).await?;
-        let common_git_dir = canonicalize(&absolute_in(&root, common)).await?;
+        // Git prints relative metadata paths (such as `--git-common-dir` from a
+        // subfolder, `../.git`) relative to the directory it ran in, not the root.
+        let git_dir = canonicalize(&absolute_in(path, git_dir)).await?;
+        let common_git_dir = canonicalize(&absolute_in(path, common)).await?;
         Ok(ResolvedRepository {
             root,
             git_dir,
@@ -346,7 +500,7 @@ impl GitService {
         anchor: &str,
         offset: u32,
         limit: u32,
-        filter: Option<&str>,
+        query: &LogQuery<'_>,
     ) -> AppResult<Vec<CommitSummary>> {
         validate_revision(anchor)?;
         let format = format!(
@@ -357,11 +511,28 @@ impl GitService {
         let count = format!("--max-count={}", limit + 1);
         let mut args: Vec<&str> = vec!["log", "-z", &format, &skip, &count];
         let grep;
-        if let Some(f) = filter.map(str::trim).filter(|f| !f.is_empty()) {
-            grep = format!("--grep={f}");
-            args.extend(["--regexp-ignore-case", "--fixed-strings", &grep]);
+        let author;
+        let exclude;
+        let filter = query.filter.map(str::trim).filter(|f| !f.is_empty());
+        let by = query.author.map(str::trim).filter(|a| !a.is_empty());
+        if filter.is_some() || by.is_some() {
+            args.extend(["--regexp-ignore-case", "--fixed-strings"]);
         }
-        args.extend(["--end-of-options", anchor, "--"]);
+        if let Some(f) = filter {
+            grep = format!("--grep={f}");
+            args.push(&grep);
+        }
+        if let Some(a) = by {
+            author = format!("--author={a}");
+            args.push(&author);
+        }
+        args.extend(["--end-of-options", anchor]);
+        if let Some(x) = query.exclude {
+            validate_revision(x)?;
+            exclude = format!("^{x}");
+            args.push(&exclude);
+        }
+        args.push("--");
         let out = self.run_raw(Some(root), &args).await?;
         Ok(parse_log(&out))
     }
@@ -388,10 +559,12 @@ impl GitService {
         if !reachable {
             return Ok(Vec::new());
         }
-        self.log(root, &id, 0, 1, None).await.map(|mut v| {
-            v.truncate(1);
-            v
-        })
+        self.log(root, &id, 0, 1, &LogQuery::default())
+            .await
+            .map(|mut v| {
+                v.truncate(1);
+                v
+            })
     }
 
     /// Full parent ids of a commit, in order (empty for a root commit).
@@ -483,10 +656,122 @@ impl GitService {
     // Refs
     // -----------------------------------------------------------------------
 
+    /// Local branches, remote-tracking branches, and tags, sorted by full name,
+    /// plus the default branch they are compared with (full name), if any.
+    pub async fn list_refs_with_base(
+        &self,
+        root: &Path,
+    ) -> AppResult<(Vec<RefEntry>, Option<String>)> {
+        let mut refs = self.list_refs(root).await?;
+        let Some(base) = self.default_base(root, &refs).await else {
+            return Ok((refs, None));
+        };
+        let counts = self.base_counts(root, &refs, &base).await?;
+        for r in &mut refs {
+            if r.kind == RefKind::Tag || r.full_name == base {
+                continue;
+            }
+            if let Some(&(ahead, behind)) = counts.get(&r.full_name) {
+                r.base_ahead = Some(ahead);
+                r.base_behind = Some(behind);
+            }
+        }
+        Ok((refs, Some(base)))
+    }
+
+    /// The repository's default branch: the target of `<remote>/HEAD`, else the
+    /// remote's `main` or `master`, else a local `main` or `master`. The remote
+    /// is `origin` when it exists, else the first one listed.
+    async fn default_base(&self, root: &Path, refs: &[RefEntry]) -> Option<String> {
+        let has = |name: &str| refs.iter().any(|r| r.full_name == name);
+        // Ask Git for the remote names: they may contain `/`, so they cannot
+        // be read off the ref names.
+        let remotes = self.remotes(root).await.unwrap_or_default();
+        let remote = remotes
+            .iter()
+            .find(|r| *r == "origin")
+            .or_else(|| remotes.first())
+            .cloned();
+        if let Some(remote) = &remote {
+            let head = format!("refs/remotes/{remote}/HEAD");
+            if let Ok(out) = self
+                .run_raw(Some(root), &["symbolic-ref", "--quiet", &head])
+                .await
+            {
+                let target = String::from_utf8_lossy(&out).trim().to_string();
+                if has(&target) {
+                    return Some(target);
+                }
+            }
+            for name in ["main", "master"] {
+                let full = format!("refs/remotes/{remote}/{name}");
+                if has(&full) {
+                    return Some(full);
+                }
+            }
+        }
+        ["refs/heads/main", "refs/heads/master"]
+            .into_iter()
+            .find(|n| has(n))
+            .map(str::to_string)
+    }
+
+    /// Ahead/behind counts of every branch against `base`, keyed by full name.
+    async fn base_counts(
+        &self,
+        root: &Path,
+        refs: &[RefEntry],
+        base: &str,
+    ) -> AppResult<std::collections::HashMap<String, (u32, u32)>> {
+        let mut counts = std::collections::HashMap::new();
+        let modern = parse_version(&self.version)
+            .is_some_and(|(major, minor, _)| (major, minor) >= AHEAD_BEHIND_ATOM);
+        if modern {
+            let format = format!("--format=%(refname)%1f%(ahead-behind:{base})");
+            let out = self
+                .run_raw(
+                    Some(root),
+                    &["for-each-ref", &format, "refs/heads", "refs/remotes"],
+                )
+                .await?;
+            for line in String::from_utf8_lossy(&out).lines() {
+                if let Some((name, ab)) = line.split_once(FIELD_SEP) {
+                    let mut it = ab.split_whitespace().map(|n| n.parse::<u32>().ok());
+                    if let (Some(Some(a)), Some(Some(b))) = (it.next(), it.next()) {
+                        counts.insert(name.to_string(), (a, b));
+                    }
+                }
+            }
+        } else {
+            // Older Git: one `rev-list` per local branch, capped to keep the tab responsive.
+            for r in refs
+                .iter()
+                .filter(|r| r.kind == RefKind::LocalBranch && r.full_name != base)
+                .take(100)
+            {
+                let range = format!("{}...{base}", r.full_name);
+                let out = self
+                    .run_raw(
+                        Some(root),
+                        &["rev-list", "--left-right", "--count", &range, "--"],
+                    )
+                    .await?;
+                let text = String::from_utf8_lossy(&out);
+                let mut it = text.split_whitespace().map(|n| n.parse::<u32>().ok());
+                if let (Some(Some(a)), Some(Some(b))) = (it.next(), it.next()) {
+                    counts.insert(r.full_name.clone(), (a, b));
+                }
+            }
+        }
+        Ok(counts)
+    }
+
     /// Local branches, remote-tracking branches, and tags, sorted by full name.
     pub async fn list_refs(&self, root: &Path) -> AppResult<Vec<RefEntry>> {
         // `%1f` is for-each-ref's hex escape for the field separator.
-        let format = "--format=%(refname)%1f%(refname:short)%1f%(objectname)%1f%(*objectname)%1f%(HEAD)%1f%(upstream:short)%1f%(symref)";
+        // Fields 7 to 11 describe the tip commit; the `*` variants peel annotated tags.
+        let format = "--format=%(refname)%1f%(refname:short)%1f%(objectname)%1f%(*objectname)%1f%(HEAD)%1f%(upstream:short)%1f%(symref)\
+            %1f%(subject)%1f%(*subject)%1f%(committerdate:iso-strict)%1f%(*committerdate:iso-strict)%1f%(upstream:track,nobracket)";
         let out = self
             .run_raw(
                 Some(root),
@@ -511,29 +796,40 @@ impl GitService {
         root: &Path,
         selector: &DiffSelector,
         limits: &DiffLimits,
+        options: DiffOptions,
     ) -> AppResult<DiffContent> {
         let path = selector.path();
         validate_repo_path(path)?;
         let max_bytes = limits.max_bytes as usize;
-        let common = [
+        let mut common = vec![
             "--no-ext-diff",
             "--no-textconv",
             "--no-color",
             "--unified=3",
             "--find-renames",
         ];
+        if options.ignore_whitespace {
+            common.push("--ignore-all-space");
+        }
         let (raw, truncated) = match selector {
             DiffSelector::WorktreeVsIndex { .. } => {
                 let mut args = vec!["diff"];
-                args.extend(common);
+                args.extend(common.iter().copied());
                 args.extend(["--", path]);
                 self.run_bounded(Some(root), &args, max_bytes.saturating_mul(2))
                     .await?
             }
             DiffSelector::IndexVsHead { .. } => {
                 let mut args = vec!["diff", "--cached"];
-                args.extend(common);
+                args.extend(common.iter().copied());
                 args.extend(["--", path]);
+                self.run_bounded(Some(root), &args, max_bytes.saturating_mul(2))
+                    .await?
+            }
+            DiffSelector::WorktreeVsHead { .. } => {
+                let mut args = vec!["diff"];
+                args.extend(common.iter().copied());
+                args.extend(["HEAD", "--", path]);
                 self.run_bounded(Some(root), &args, max_bytes.saturating_mul(2))
                     .await?
             }
@@ -550,7 +846,7 @@ impl GitService {
                 let parents = self.commit_parents(root, commit_id).await?;
                 let base = compare_base(&parents, *parent_index)?;
                 let mut args = vec!["diff-tree", "-r", "-p", "--no-commit-id"];
-                args.extend(common);
+                args.extend(common.iter().copied());
                 // `--root` compares a root commit with the empty tree.
                 match base {
                     Some(parent) => args.extend(["--end-of-options", parent, commit_id]),
@@ -652,11 +948,613 @@ impl GitService {
             total_lines: Some(total),
         })
     }
+
+    // -----------------------------------------------------------------------
+    // Working-tree line counts
+    // -----------------------------------------------------------------------
+
+    /// `--numstat` for the index (`staged`) and the working tree (`unstaged`),
+    /// keyed by path. Binary files map to `(None, None)`.
+    pub async fn change_stats(&self, root: &Path) -> AppResult<(NumStats, NumStats)> {
+        let base = [
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--numstat",
+            "-z",
+            "--find-renames",
+        ];
+        let mut staged = vec!["diff", "--cached"];
+        staged.extend(base);
+        let mut unstaged = vec!["diff"];
+        unstaged.extend(base);
+        let staged = self.run_raw(Some(root), &staged).await?;
+        let unstaged = self.run_raw(Some(root), &unstaged).await?;
+        Ok((parse_numstat(&staged), parse_numstat(&unstaged)))
+    }
+
+    // -----------------------------------------------------------------------
+    // Fetching (SPEC §7, Fetching): the only command that writes to a repository
+    // -----------------------------------------------------------------------
+
+    /// Names of the configured remotes.
+    pub async fn remotes(&self, root: &Path) -> AppResult<Vec<String>> {
+        let out = self.run_raw(Some(root), &["remote"]).await?;
+        Ok(String::from_utf8_lossy(&out)
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect())
+    }
+
+    /// The checked-out branch's short name; `None` for a detached HEAD.
+    pub async fn head_branch(&self, root: &Path) -> Option<String> {
+        let out = self
+            .run_raw(Some(root), &["symbolic-ref", "--quiet", "--short", "HEAD"])
+            .await
+            .ok()?;
+        Some(String::from_utf8_lossy(&out).trim().to_string()).filter(|b| !b.is_empty())
+    }
+
+    /// One configuration value, or `None` when it is not set.
+    pub async fn config_value(&self, root: &Path, key: &str) -> Option<String> {
+        let out = self
+            .run_raw(Some(root), &["config", "--get", key])
+            .await
+            .ok()?;
+        Some(String::from_utf8_lossy(&out).trim().to_string()).filter(|v| !v.is_empty())
+    }
+
+    /// The remote's configured fetch refspecs that only write remote-tracking
+    /// refs or tags. Anything else (a mirror refspec such as
+    /// `+refs/heads/*:refs/heads/*` would rewrite local branches) is dropped;
+    /// when nothing usable is left, the standard mapping is used.
+    pub async fn safe_fetch_refspecs(&self, root: &Path, remote: &str) -> AppResult<Vec<String>> {
+        validate_revision(remote)?;
+        let key = format!("remote.{remote}.fetch");
+        let configured = match self
+            .run_raw(Some(root), &["config", "--get-all", &key])
+            .await
+        {
+            Ok(out) => String::from_utf8_lossy(&out)
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(str::to_string)
+                .collect(),
+            // `git config` exits 1 when the key is not set.
+            Err(_) => Vec::new(),
+        };
+        let mut safe: Vec<String> = configured
+            .into_iter()
+            .filter(|r| refspec_is_safe(r, remote))
+            .collect();
+        if !safe.iter().any(|r| !r.starts_with('^')) {
+            safe = vec![format!("+refs/heads/*:refs/remotes/{remote}/*")];
+        }
+        Ok(safe)
+    }
+
+    /// Fetch `remote` with the hardened invocation and explicit refspecs, each
+    /// of which must write only remote-tracking refs or tags. Prompts are
+    /// impossible: Git cannot ask for a password, Git Credential Manager is
+    /// told not to open windows, and SSH runs in batch mode unless the user
+    /// configured their own `core.sshCommand`. A refspec for a branch the remote
+    /// no longer has would fail the whole fetch, so it is dropped and the fetch
+    /// retried; the dropped sources are returned.
+    pub async fn fetch(
+        &self,
+        root: &Path,
+        remote: &str,
+        refspecs: &[String],
+        timeout: Duration,
+    ) -> AppResult<Vec<String>> {
+        validate_revision(remote)?;
+        if refspecs.is_empty() {
+            return Err(AppError::validation("Nothing to fetch."));
+        }
+        for r in refspecs {
+            if !refspec_is_safe(r, remote) {
+                return Err(AppError::validation(format!(
+                    "Refusing a refspec that could change more than remote-tracking refs: {r:?}"
+                )));
+            }
+        }
+        let custom_ssh = std::env::var_os("GIT_SSH_COMMAND").is_some()
+            || std::env::var_os("GIT_SSH").is_some()
+            || self.config_value(root, "core.sshCommand").await.is_some();
+        let mut envs: Vec<(&str, &str)> = vec![
+            ("GIT_ASKPASS", ""),
+            ("SSH_ASKPASS", ""),
+            ("GCM_INTERACTIVE", "never"),
+        ];
+        if !custom_ssh {
+            envs.push((
+                "GIT_SSH_COMMAND",
+                "ssh -o BatchMode=yes -o ConnectTimeout=15",
+            ));
+        }
+        let mut specs: Vec<String> = refspecs.to_vec();
+        let mut skipped = Vec::new();
+        loop {
+            let mut args: Vec<&str> = FETCH_CONFIG.to_vec();
+            args.push("fetch");
+            args.extend(FETCH_FLAGS);
+            args.push(remote);
+            args.extend(specs.iter().map(String::as_str));
+            let out = self
+                .exec(Some(root), &args, MAX_OUTPUT_BYTES, &envs, timeout)
+                .await?;
+            if out.success() {
+                return Ok(skipped);
+            }
+            // Only plain names can be missing; globs simply match nothing.
+            let missing = missing_remote_ref(&out.stderr);
+            let before = specs.len();
+            if let Some(gone) = &missing {
+                specs.retain(|s| refspec_source(s) != Some(gone.as_str()));
+            }
+            if missing.is_none() || specs.len() == before {
+                return Err(classify_fetch_error(remote, &out.stderr));
+            }
+            skipped.extend(missing);
+            if specs.iter().all(|s| s.starts_with('^')) {
+                return Ok(skipped);
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Activity (SPEC §7, Workspace activity)
+    // -----------------------------------------------------------------------
+
+    /// Tips of remote-tracking branches and tags as `(full name, commit id)`,
+    /// annotated tags peeled to their commit. Symbolic refs are skipped.
+    pub async fn remote_and_tag_tips(&self, root: &Path) -> AppResult<Vec<(String, String)>> {
+        let out = self
+            .run_raw(
+                Some(root),
+                &[
+                    "for-each-ref",
+                    "--format=%(refname)%1f%(objectname)%1f%(*objectname)%1f%(symref)",
+                    "refs/remotes",
+                    "refs/tags",
+                ],
+            )
+            .await?;
+        Ok(parse_tips(&out))
+    }
+
+    /// Whether `ancestor` is reachable from `descendant`. Git exits 1 for
+    /// "no"; any other failure (such as a commit that no longer exists) is an
+    /// error, not a "no".
+    pub async fn is_ancestor(
+        &self,
+        root: &Path,
+        ancestor: &str,
+        descendant: &str,
+    ) -> AppResult<bool> {
+        validate_revision(ancestor)?;
+        validate_revision(descendant)?;
+        let args = [
+            "merge-base",
+            "--is-ancestor",
+            "--end-of-options",
+            ancestor,
+            descendant,
+        ];
+        let out = self
+            .exec(Some(root), &args, MAX_OUTPUT_BYTES, &[], self.timeout)
+            .await?;
+        match out.code {
+            Some(0) => Ok(true),
+            Some(1) => Ok(false),
+            _ => Err(classify_git_error(&args, &out.stderr)),
+        }
+    }
+
+    /// Number of commits reachable from `include` but from none of `exclude`.
+    pub async fn count_commits(
+        &self,
+        root: &Path,
+        include: &str,
+        exclude: &[&str],
+    ) -> AppResult<u32> {
+        let revs = range_args(include, exclude)?;
+        let mut args = vec!["rev-list", "--count", "--end-of-options"];
+        args.extend(revs.iter().map(String::as_str));
+        args.push("--");
+        let out = self.run_raw(Some(root), &args).await?;
+        Ok(String::from_utf8_lossy(&out).trim().parse().unwrap_or(0))
+    }
+
+    /// Newest commits of a range, at most `limit`.
+    pub async fn range_commits(
+        &self,
+        root: &Path,
+        include: &str,
+        exclude: &[&str],
+        limit: u32,
+    ) -> AppResult<Vec<ActivityCommit>> {
+        let revs = range_args(include, exclude)?;
+        let format = format!("--format=%H{s}%h{s}%P{s}%an{s}%cI{s}%s", s = FIELD_SEP);
+        let count = format!("--max-count={limit}");
+        let mut args = vec!["log", "-z", &format, &count, "--end-of-options"];
+        args.extend(revs.iter().map(String::as_str));
+        args.push("--");
+        let out = self.run_raw(Some(root), &args).await?;
+        Ok(parse_activity_commits(&out))
+    }
+
+    /// Commit count, merge count, and authors (most commits first) of a range,
+    /// looking at no more than 5,000 commits.
+    pub async fn range_stats(
+        &self,
+        root: &Path,
+        include: &str,
+        exclude: &[&str],
+    ) -> AppResult<RangeStats> {
+        let revs = range_args(include, exclude)?;
+        let format = format!("--format=%an{FIELD_SEP}%P");
+        let mut args = vec!["log", &format, "--max-count=5000", "--end-of-options"];
+        args.extend(revs.iter().map(String::as_str));
+        args.push("--");
+        let out = self.run_raw(Some(root), &args).await?;
+        Ok(parse_range_stats(&out))
+    }
+
+    /// Paths that differ between two commits, at most `limit`.
+    pub async fn changed_paths(
+        &self,
+        root: &Path,
+        old: &str,
+        new: &str,
+        limit: usize,
+    ) -> AppResult<Vec<String>> {
+        validate_revision(old)?;
+        validate_revision(new)?;
+        let (out, _) = self
+            .run_bounded(
+                Some(root),
+                &[
+                    "diff",
+                    "--name-only",
+                    "-z",
+                    "--no-renames",
+                    "--no-ext-diff",
+                    "--end-of-options",
+                    old,
+                    new,
+                    "--",
+                ],
+                1024 * 1024,
+            )
+            .await?;
+        Ok(out
+            .split(|&b| b == 0)
+            .filter(|p| !p.is_empty())
+            .take(limit)
+            .map(|p| String::from_utf8_lossy(p).into_owned())
+            .collect())
+    }
+
+    /// The newest tag reachable from the parent of `commit`, if any.
+    pub async fn previous_tag(&self, root: &Path, commit: &str) -> Option<String> {
+        validate_revision(commit).ok()?;
+        let parent = format!("{commit}^");
+        let out = self
+            .run_raw(
+                Some(root),
+                &[
+                    "describe",
+                    "--tags",
+                    "--abbrev=0",
+                    "--end-of-options",
+                    &parent,
+                ],
+            )
+            .await
+            .ok()?;
+        Some(String::from_utf8_lossy(&out).trim().to_string()).filter(|t| !t.is_empty())
+    }
+
+    /// Author name and whether it is a merge, for every commit reachable from
+    /// `refs` and committed after `since` (at most 10,000).
+    pub async fn commits_since(
+        &self,
+        root: &Path,
+        refs: &[String],
+        since: &str,
+    ) -> AppResult<Vec<(String, bool)>> {
+        if refs.is_empty() {
+            return Ok(Vec::new());
+        }
+        for r in refs {
+            validate_revision(r)?;
+        }
+        let since = format!("--since={since}");
+        let format = format!("--format=%an{FIELD_SEP}%P");
+        let mut args = vec![
+            "log",
+            &format,
+            &since,
+            "--max-count=10000",
+            "--end-of-options",
+        ];
+        args.extend(refs.iter().map(String::as_str));
+        args.push("--");
+        let out = self.run_raw(Some(root), &args).await?;
+        Ok(String::from_utf8_lossy(&out)
+            .lines()
+            .filter_map(|l| l.split_once(FIELD_SEP))
+            .map(|(author, parents)| (author.to_string(), parents.split_whitespace().count() > 1))
+            .collect())
+    }
+
+    /// Tags with their creation dates (tagger date, or the commit date for
+    /// lightweight tags), as `(short name, RFC 3339)`.
+    pub async fn tag_dates(&self, root: &Path) -> AppResult<Vec<(String, String)>> {
+        let out = self
+            .run_raw(
+                Some(root),
+                &[
+                    "for-each-ref",
+                    "--format=%(refname:short)%1f%(creatordate:iso-strict)",
+                    "refs/tags",
+                ],
+            )
+            .await?;
+        Ok(String::from_utf8_lossy(&out)
+            .lines()
+            .filter_map(|l| l.split_once(FIELD_SEP))
+            .map(|(n, d)| (n.to_string(), d.to_string()))
+            .collect())
+    }
+}
+
+/// `path -> (additions, deletions)`; both `None` for a binary file.
+pub type NumStats = std::collections::HashMap<String, (Option<u64>, Option<u64>)>;
+
+/// Filters for `GitService::log`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LogQuery<'a> {
+    /// Substring of the message (case-insensitive).
+    pub filter: Option<&'a str>,
+    /// Substring of the author's name or email (case-insensitive).
+    pub author: Option<&'a str>,
+    /// Revision whose history is left out.
+    pub exclude: Option<&'a str>,
+}
+
+/// Commit counts and authors of a commit range.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RangeStats {
+    pub commits: u32,
+    pub merges: u32,
+    /// Most commits first.
+    pub authors: Vec<String>,
+}
+
+/// `include` followed by `^exclude` for each excluded revision, validated.
+fn range_args(include: &str, exclude: &[&str]) -> AppResult<Vec<String>> {
+    validate_revision(include)?;
+    let mut revs = vec![include.to_string()];
+    for x in exclude {
+        validate_revision(x)?;
+        revs.push(format!("^{x}"));
+    }
+    Ok(revs)
+}
+
+/// Whether a refspec writes only remote-tracking refs of `remote` or tags.
+/// Negative refspecs (`^refs/heads/x`) only exclude and are always safe.
+pub fn refspec_is_safe(spec: &str, remote: &str) -> bool {
+    if spec.contains(['\0', '\n', ' ']) || spec.starts_with('-') {
+        return false;
+    }
+    if let Some(neg) = spec.strip_prefix('^') {
+        return neg.starts_with("refs/") && !neg.contains(':');
+    }
+    let spec = spec.strip_prefix('+').unwrap_or(spec);
+    let Some((src, dst)) = spec.split_once(':') else {
+        // No destination: only FETCH_HEAD, which `--no-write-fetch-head` skips.
+        return false;
+    };
+    !src.is_empty()
+        && !dst.contains("..")
+        && (dst.starts_with(&format!("refs/remotes/{remote}/")) || dst.starts_with("refs/tags/"))
+}
+
+/// The source side of a refspec, without `+`: `refs/heads/main`.
+fn refspec_source(spec: &str) -> Option<&str> {
+    let spec = spec.strip_prefix('+').unwrap_or(spec);
+    spec.split_once(':').map(|(src, _)| src)
+}
+
+/// The ref named by "couldn't find remote ref X", as a full `refs/heads/` name.
+fn missing_remote_ref(stderr: &str) -> Option<String> {
+    let rest = stderr
+        .lines()
+        .find_map(|l| l.split_once("couldn't find remote ref ").map(|(_, r)| r))?;
+    let name = rest.trim();
+    Some(if name.starts_with("refs/") {
+        name.to_string()
+    } else {
+        format!("refs/heads/{name}")
+    })
+}
+
+/// The lock file that shows another Git process is changing the repository,
+/// if any (SPEC §7, Fetching).
+pub fn busy_lock(git_dir: &Path, common_git_dir: &Path, remote: &str) -> Option<PathBuf> {
+    for dir in [git_dir, common_git_dir] {
+        for name in LOCK_FILES {
+            let p = dir.join(name);
+            if p.exists() {
+                return Some(p);
+            }
+        }
+    }
+    let refs = common_git_dir.join("refs");
+    find_lock(&refs.join("remotes").join(remote), 12).or_else(|| find_lock(&refs.join("tags"), 12))
+}
+
+fn find_lock(dir: &Path, depth: u32) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_some_and(|e| e == "lock") {
+            return Some(path);
+        }
+        if depth > 0 && path.is_dir() {
+            if let Some(found) = find_lock(&path, depth - 1) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+/// Turn a failed fetch into an error that names the recovery step. Patterns
+/// are whole phrases Git prints, so a "401" inside a URL is not mistaken for
+/// an HTTP status.
+pub fn classify_fetch_error(remote: &str, stderr: &str) -> AppError {
+    let lower = stderr.to_ascii_lowercase();
+    let details = format!("git fetch {remote}\n{stderr}");
+    let any = |needles: &[&str]| needles.iter().any(|n| lower.contains(n));
+    let lock = lower.contains("cannot lock ref")
+        || (lower.contains("unable to create '") && lower.contains(".lock'"));
+    if any(&[
+        "could not read username",
+        "could not read password",
+        "terminal prompts disabled",
+        "authentication failed",
+        "permission denied (publickey",
+        "host key verification failed",
+        "repository not found",
+        "returned error: 401",
+        "returned error: 403",
+        "access denied",
+    ]) {
+        AppError::new(
+            ErrorCode::PermissionDenied,
+            format!("Fetching from {remote} needs sign-in. Fetch once from a terminal or your editor so Git can store the credentials, then try again."),
+        )
+        .with_details(details)
+    } else if lock {
+        AppError::new(
+            ErrorCode::Conflict,
+            "Another Git command is using this repository. Try again in a moment.",
+        )
+        .with_details(details)
+    } else if any(&[
+        "could not resolve host",
+        "network is unreachable",
+        "connection timed out",
+        "operation timed out",
+        "connection refused",
+        "unable to access",
+        "could not read from remote repository",
+    ]) {
+        AppError::io(format!(
+            "Could not reach {remote}. Check the network or VPN, then try again."
+        ))
+        .with_details(details)
+    } else if any(&["does not appear to be a git repository", "no such remote"]) {
+        AppError::validation(format!("{remote} is not a usable remote.")).with_details(details)
+    } else {
+        AppError::io(format!("Fetching from {remote} failed.")).with_details(details)
+    }
+}
+
+/// Parse the `remote_and_tag_tips` format.
+pub fn parse_tips(bytes: &[u8]) -> Vec<(String, String)> {
+    String::from_utf8_lossy(bytes)
+        .lines()
+        .filter_map(|line| {
+            let f: Vec<&str> = line.split(FIELD_SEP).collect();
+            if f.len() < 4 || !f[3].is_empty() {
+                return None;
+            }
+            let target = if f[2].is_empty() { f[1] } else { f[2] };
+            Some((f[0].to_string(), target.to_string()))
+        })
+        .collect()
+}
+
+/// Parse `git log -z` in the `range_commits` format.
+pub fn parse_activity_commits(bytes: &[u8]) -> Vec<ActivityCommit> {
+    bytes
+        .split(|&b| b == 0)
+        .filter(|r| !r.is_empty())
+        .filter_map(|record| {
+            let text = String::from_utf8_lossy(record);
+            let f: Vec<&str> = text.trim_matches('\n').split(FIELD_SEP).collect();
+            if f.len() < 6 {
+                return None;
+            }
+            Some(ActivityCommit {
+                id: f[0].to_string(),
+                short_id: f[1].to_string(),
+                is_merge: f[2].split_whitespace().count() > 1,
+                author_name: f[3].to_string(),
+                committed_at: f[4].to_string(),
+                subject: f[5..].join(&FIELD_SEP.to_string()),
+            })
+        })
+        .collect()
+}
+
+/// Parse `git log --format=%an<US>%P` into counts and authors by commit count.
+pub fn parse_range_stats(bytes: &[u8]) -> RangeStats {
+    let mut stats = RangeStats::default();
+    let mut by_author: Vec<(String, u32)> = Vec::new();
+    for line in String::from_utf8_lossy(bytes).lines() {
+        let Some((author, parents)) = line.split_once(FIELD_SEP) else {
+            continue;
+        };
+        stats.commits += 1;
+        if parents.split_whitespace().count() > 1 {
+            stats.merges += 1;
+        }
+        match by_author.iter_mut().find(|(a, _)| a == author) {
+            Some((_, n)) => *n += 1,
+            None => by_author.push((author.to_string(), 1)),
+        }
+    }
+    // A stable sort keeps first-seen (newest) order among equal counts.
+    by_author.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+    stats.authors = by_author.into_iter().map(|(a, _)| a).collect();
+    stats
 }
 
 // ---------------------------------------------------------------------------
 // Helpers and parsers (pure functions; unit-tested below)
 // ---------------------------------------------------------------------------
+
+/// Stop a Git process that ran out of time. SIGTERM first, which Git catches
+/// to remove its lock files; SIGKILL only if it is still running after a grace
+/// period. A SIGKILLed fetch could leave `*.lock` files that block the user's
+/// own Git commands.
+async fn terminate(child: &mut tokio::process::Child) {
+    if let Some(pid) = child.id() {
+        let _ = Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await;
+        if tokio::time::timeout(TERMINATE_GRACE, child.wait())
+            .await
+            .is_ok()
+        {
+            return;
+        }
+    }
+    let _ = child.kill().await;
+}
 
 async fn canonicalize(path: &Path) -> AppResult<PathBuf> {
     tokio::fs::canonicalize(path).await.map_err(|e| {
@@ -852,6 +1750,8 @@ pub fn parse_status_v2(bytes: &[u8]) -> AppResult<StatusSnapshot> {
                         path: path.to_string(),
                         old_path: old_path.clone(),
                         is_submodule,
+                        additions: None,
+                        deletions: None,
                     });
                 }
                 if y != '.' {
@@ -862,6 +1762,8 @@ pub fn parse_status_v2(bytes: &[u8]) -> AppResult<StatusSnapshot> {
                         path: path.to_string(),
                         old_path: None,
                         is_submodule,
+                        additions: None,
+                        deletions: None,
                     });
                 }
             }
@@ -878,6 +1780,8 @@ pub fn parse_status_v2(bytes: &[u8]) -> AppResult<StatusSnapshot> {
                         path: path.to_string(),
                         old_path: None,
                         is_submodule: parts[1].starts_with('S'),
+                        additions: None,
+                        deletions: None,
                     });
                 }
             }
@@ -890,6 +1794,8 @@ pub fn parse_status_v2(bytes: &[u8]) -> AppResult<StatusSnapshot> {
                     path: rest.to_string(),
                     old_path: None,
                     is_submodule: false,
+                    additions: None,
+                    deletions: None,
                 });
             }
             _ => {}
@@ -1229,17 +2135,50 @@ pub fn parse_refs(bytes: &[u8]) -> Vec<RefEntry> {
             } else {
                 return None;
             };
+            let field = |i: usize| f.get(i).copied().unwrap_or("");
+            // Annotated tags point at a tag object; the `*` field is the commit behind it.
+            let peeled = !f[3].is_empty();
+            let upstream = Some(f[5].to_string()).filter(|u| !u.is_empty());
+            let (ahead, behind) = match &upstream {
+                Some(_) => parse_track(field(11)),
+                None => (None, None),
+            };
             Some(RefEntry {
                 name: f[1].to_string(),
                 full_name: f[0].to_string(),
                 kind,
-                // Annotated tags point at a tag object; `*objectname` is the commit behind it.
-                target_id: if f[3].is_empty() { f[2] } else { f[3] }.to_string(),
+                target_id: if peeled { f[3] } else { f[2] }.to_string(),
                 is_head: f[4] == "*",
-                upstream: Some(f[5].to_string()).filter(|u| !u.is_empty()),
+                upstream,
+                subject: field(if peeled { 8 } else { 7 }).to_string(),
+                committed_at: Some(field(if peeled { 10 } else { 9 }).to_string())
+                    .filter(|d| !d.is_empty()),
+                ahead,
+                behind,
+                base_ahead: None,
+                base_behind: None,
             })
         })
         .collect()
+}
+
+/// Parse `%(upstream:track,nobracket)`: empty when in sync, `ahead 1, behind 2`,
+/// or `gone` when the upstream ref no longer exists (both counts then unknown).
+fn parse_track(track: &str) -> (Option<u32>, Option<u32>) {
+    if track.trim() == "gone" {
+        return (None, None);
+    }
+    let mut ahead = 0;
+    let mut behind = 0;
+    for part in track.split(',') {
+        let mut words = part.split_whitespace();
+        match (words.next(), words.next().and_then(|n| n.parse().ok())) {
+            (Some("ahead"), Some(n)) => ahead = n,
+            (Some("behind"), Some(n)) => behind = n,
+            _ => {}
+        }
+    }
+    (Some(ahead), Some(behind))
 }
 
 fn parse_range(s: &str) -> (u64, u64) {
@@ -1472,6 +2411,115 @@ mod tests {
         assert_eq!(
             (refs[2].kind, refs[2].target_id.as_str()),
             (RefKind::Tag, "c0")
+        );
+        assert_eq!((refs[0].ahead, refs[0].behind), (Some(0), Some(0)));
+        assert_eq!((refs[1].ahead, refs[1].behind), (None, None));
+    }
+
+    #[test]
+    fn parses_ref_tip_and_tracking() {
+        let s = FIELD_SEP;
+        let raw = format!(
+            "refs/heads/topic{s}topic{s}c2{s}{s} {s}origin/topic{s}{s}Add x{s}{s}2026-01-02T03:04:05+00:00{s}{s}ahead 2, behind 1\n\
+             refs/heads/old{s}old{s}c3{s}{s} {s}origin/old{s}{s}Old{s}{s}2026-01-01T00:00:00+00:00{s}{s}gone\n\
+             refs/tags/v2{s}v2{s}t2{s}c4{s} {s}{s}{s}Release notes{s}Tip subject{s}2026-02-01T00:00:00+00:00{s}2026-01-31T00:00:00+00:00{s}\n"
+        );
+        let refs = parse_refs(raw.as_bytes());
+        assert_eq!(refs[0].subject, "Add x");
+        assert_eq!(
+            refs[0].committed_at.as_deref(),
+            Some("2026-01-02T03:04:05+00:00")
+        );
+        assert_eq!((refs[0].ahead, refs[0].behind), (Some(2), Some(1)));
+        assert_eq!((refs[1].ahead, refs[1].behind), (None, None));
+        // Annotated tags report the tagged commit, not the tag object.
+        assert_eq!(refs[2].subject, "Tip subject");
+        assert_eq!(
+            refs[2].committed_at.as_deref(),
+            Some("2026-01-31T00:00:00+00:00")
+        );
+    }
+
+    #[test]
+    fn ref_names_use_the_real_remote_names() {
+        let remotes = vec!["origin".to_string(), "team/upstream".to_string()];
+        assert_eq!(
+            RefName::parse("refs/remotes/team/upstream/main", &remotes),
+            RefName::RemoteBranch {
+                remote: "team/upstream",
+                branch: "main"
+            }
+        );
+        assert_eq!(
+            RefName::parse("refs/remotes/origin/release/1.0", &remotes),
+            RefName::RemoteBranch {
+                remote: "origin",
+                branch: "release/1.0"
+            }
+        );
+        assert_eq!(
+            RefName::parse("refs/remotes/origin/HEAD", &remotes),
+            RefName::Other
+        );
+        assert_eq!(RefName::parse("refs/tags/v1", &remotes), RefName::Tag("v1"));
+    }
+
+    #[test]
+    fn refspecs_must_stay_in_remote_tracking_refs() {
+        assert!(refspec_is_safe(
+            "+refs/heads/*:refs/remotes/origin/*",
+            "origin"
+        ));
+        assert!(refspec_is_safe("refs/tags/*:refs/tags/*", "origin"));
+        assert!(refspec_is_safe("^refs/heads/wip/*", "origin"));
+        assert!(!refspec_is_safe("+refs/heads/*:refs/heads/*", "origin"));
+        assert!(!refspec_is_safe(
+            "+refs/heads/*:refs/remotes/other/*",
+            "origin"
+        ));
+        assert!(!refspec_is_safe("refs/heads/main", "origin"));
+        assert!(!refspec_is_safe("--upload-pack=x", "origin"));
+    }
+
+    #[test]
+    fn finds_the_missing_remote_ref() {
+        assert_eq!(
+            missing_remote_ref("fatal: couldn't find remote ref refs/heads/master"),
+            Some("refs/heads/master".into())
+        );
+        assert_eq!(
+            missing_remote_ref("fatal: couldn't find remote ref develop\n"),
+            Some("refs/heads/develop".into())
+        );
+        assert_eq!(missing_remote_ref("fatal: other"), None);
+    }
+
+    #[test]
+    fn classifies_fetch_errors_by_whole_phrases() {
+        let code = |stderr: &str| classify_fetch_error("origin", stderr).code;
+        assert_eq!(
+            code("fatal: unable to access 'https://h/x/': The requested URL returned error: 403"),
+            ErrorCode::PermissionDenied
+        );
+        assert_eq!(
+            code("fatal: unable to access 'https://h/svc-4031.git/': Could not resolve host: h"),
+            ErrorCode::Io
+        );
+        assert_eq!(
+            code("error: cannot lock ref 'refs/remotes/origin/main': is at abc but expected def"),
+            ErrorCode::Conflict
+        );
+        assert_eq!(
+            code("fatal: Unable to create '/r/.git/packed-refs.lock': File exists."),
+            ErrorCode::Conflict
+        );
+        assert_eq!(
+            code("fatal: unable to create temporary file: No space left on device"),
+            ErrorCode::Io
+        );
+        assert_eq!(
+            code("fatal: Authentication failed for 'https://h/x/'"),
+            ErrorCode::PermissionDenied
         );
     }
 

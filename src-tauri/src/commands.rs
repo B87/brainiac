@@ -6,12 +6,15 @@ use std::sync::Arc;
 
 use tauri::State;
 
+use crate::db::RepositoryRow;
 use crate::models::{
-    AppResult, AppSnapshot, ChangesResult, CommitDetail, CommitPage, DiffResult, DiffSelector,
-    ListCommitsRequest, RefsResult, RepositorySummary, RepositoryTab,
+    ActivitySettings, AppResult, AppSnapshot, ChangesResult, CommitDetail, CommitPage,
+    CreateWorkspaceRequest, DiffOptions, DiffResult, DiffSelector, FetchResult, ListCommitsRequest,
+    PinEntityType, RefsResult, RepositorySummary, RepositoryTab, UpdateWorkspaceMembershipRequest,
+    Workspace, WorkspaceActivity, WorkspacePreview,
 };
 use crate::watcher::RepositoryWatcher;
-use crate::workspaces::RepositoryService;
+use crate::workspaces::{RepositoryService, WorkspaceChange};
 
 pub type Service = Arc<RepositoryService>;
 
@@ -28,6 +31,13 @@ pub async fn register_repository(
 ) -> AppResult<RepositorySummary> {
     let summary = service.register(&PathBuf::from(path)).await?;
     let row = service.row(&summary.id).await?;
+    watch(&watcher, &row);
+    Ok(summary)
+}
+
+/// Start watching a newly registered repository. A watcher failure is logged,
+/// not returned: the repository still works with timer and manual refreshes.
+fn watch(watcher: &RepositoryWatcher, row: &RepositoryRow) {
     if let Err(e) = watcher.watch(
         &row.id,
         &PathBuf::from(&row.canonical_root),
@@ -35,7 +45,14 @@ pub async fn register_repository(
     ) {
         tracing::warn!(repository = %row.display_path, error = %e, "could not watch repository");
     }
-    Ok(summary)
+}
+
+/// Watch the repositories a workspace change registered and return the workspace.
+fn watch_new(watcher: &RepositoryWatcher, change: WorkspaceChange) -> Workspace {
+    for row in &change.new_repositories {
+        watch(watcher, row);
+    }
+    change.workspace
 }
 
 #[tauri::command]
@@ -84,9 +101,12 @@ pub async fn list_changes(
 pub async fn get_diff(
     repository_id: String,
     selector: DiffSelector,
+    options: Option<DiffOptions>,
     service: State<'_, Service>,
 ) -> AppResult<DiffResult> {
-    service.diff(&repository_id, selector).await
+    service
+        .diff(&repository_id, selector, options.unwrap_or_default())
+        .await
 }
 
 #[tauri::command]
@@ -147,4 +167,97 @@ pub async fn reveal_in_finder(
         crate::models::AppError::io("Could not reveal the item in Finder.")
             .with_details(e.to_string())
     })
+}
+
+#[tauri::command]
+pub async fn discover_repositories(
+    folder_path: String,
+    discovery_path: Option<String>,
+    service: State<'_, Service>,
+) -> AppResult<WorkspacePreview> {
+    service
+        .discover_repositories(&folder_path, discovery_path.as_deref())
+        .await
+}
+
+#[tauri::command]
+pub async fn create_workspace(
+    request: CreateWorkspaceRequest,
+    service: State<'_, Service>,
+    watcher: State<'_, RepositoryWatcher>,
+) -> AppResult<Workspace> {
+    let change = service.create_workspace(request).await?;
+    Ok(watch_new(&watcher, change))
+}
+
+#[tauri::command]
+pub async fn update_workspace_membership(
+    request: UpdateWorkspaceMembershipRequest,
+    service: State<'_, Service>,
+    watcher: State<'_, RepositoryWatcher>,
+) -> AppResult<Workspace> {
+    let change = service.update_workspace_membership(request).await?;
+    Ok(watch_new(&watcher, change))
+}
+
+#[tauri::command]
+pub async fn rename_workspace(
+    workspace_id: String,
+    name: String,
+    service: State<'_, Service>,
+) -> AppResult<Workspace> {
+    service.rename_workspace(&workspace_id, &name).await
+}
+
+#[tauri::command]
+pub async fn remove_workspace(workspace_id: String, service: State<'_, Service>) -> AppResult<()> {
+    service.remove_workspace(&workspace_id).await
+}
+
+#[tauri::command]
+pub async fn set_pinned(
+    entity_type: PinEntityType,
+    entity_id: String,
+    pinned: bool,
+    service: State<'_, Service>,
+) -> AppResult<()> {
+    service.set_pinned(entity_type, &entity_id, pinned).await
+}
+
+#[tauri::command]
+pub async fn fetch_repository(
+    repository_id: String,
+    service: State<'_, Service>,
+) -> AppResult<FetchResult> {
+    service.fetch(&repository_id, false).await
+}
+
+#[tauri::command]
+pub async fn get_workspace_activity(
+    workspace_id: String,
+    service: State<'_, Service>,
+) -> AppResult<WorkspaceActivity> {
+    service.workspace_activity(&workspace_id).await
+}
+
+#[tauri::command]
+pub async fn mark_activity_seen(
+    workspace_id: String,
+    event_ids: Option<Vec<String>>,
+    service: State<'_, Service>,
+) -> AppResult<()> {
+    service
+        .mark_activity_seen(&workspace_id, event_ids.as_deref())
+        .await
+}
+
+#[tauri::command]
+pub async fn update_activity_settings(
+    workspace_id: String,
+    settings: ActivitySettings,
+    service: State<'_, Service>,
+) -> AppResult<Workspace> {
+    service
+        .update_activity_settings(&workspace_id, settings)
+        .await
 }

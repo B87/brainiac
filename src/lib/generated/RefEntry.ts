@@ -21,4 +21,29 @@ is_head: boolean,
 /**
  * Configured upstream of a local branch, short form.
  */
-upstream: string | null, };
+upstream: string | null, 
+/**
+ * Subject of the commit the ref points at.
+ */
+subject: string, 
+/**
+ * Committer date of that commit.
+ */
+committed_at: string | null, 
+/**
+ * Commits on the branch but not on its upstream, from local refs; absent
+ * without an upstream or when the upstream ref is gone.
+ */
+ahead: number | null, 
+/**
+ * Commits on the upstream but not on the branch.
+ */
+behind: number | null, 
+/**
+ * Commits on this ref but not on `RefsResult::base`; absent for tags and the base itself.
+ */
+base_ahead: number | null, 
+/**
+ * Commits on the base but not on this ref.
+ */
+base_behind: number | null, };

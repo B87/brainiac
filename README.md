@@ -1,6 +1,6 @@
 # Brainiac
 
-A keyboard-oriented macOS desktop app for programmers: a Git workspace tracker today, a personal second brain over time. Rust backend, Tauri v2 shell, React + TypeScript frontend. Everything runs locally; the app only ever reads your repositories.
+A keyboard-oriented macOS desktop app for programmers: a Git workspace tracker today, a personal second brain over time. Rust backend, Tauri v2 shell, React + TypeScript frontend. Everything runs locally; the app reads your repositories and, only when you ask it to, fetches.
 
 **Status:** early development. The current release line (v0.1) is a read-only Git viewer and multi-repository tracker. See [`SPEC.md`](SPEC.md) for the full specification and roadmap.
 
@@ -10,9 +10,10 @@ A keyboard-oriented macOS desktop app for programmers: a Git workspace tracker t
 - Inspect staged and unstaged diffs with line numbers, bounded output, and binary / submodule / symlink / LFS detection.
 - Browse paginated commit history anchored to a fixed commit, with message and hash filtering.
 - Changes on disk are picked up by filesystem watchers and coalesced refreshes; nothing is polled per keystroke.
+- Workspace Activity: see what was merged or tagged on your team's watched branches since you last looked, with warnings when it touches files you are changing.
 - Registrations, pins, and settings persist in SQLite with daily snapshot backups.
 
-Brainiac never runs `checkout`, `commit`, `stash`, `fetch`, hooks, or anything from a workspace file. Inspection only.
+Brainiac never runs `checkout`, `commit`, `stash`, `pull`, hooks, or anything from a workspace file. The one write it can make is a fetch, which updates remote-tracking branches and tags only: when you press Fetch now, or on a schedule for a workspace where you turned auto-fetch on (off by default).
 
 ## Install
 

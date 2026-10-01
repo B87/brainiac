@@ -1,37 +1,54 @@
 import { useEffect, useRef, useState } from "react";
+import { absoluteTime, relativeTime } from "../lib/format";
 import {
   type CommitDetail,
   type CommitFile,
   type CommitSummary,
-  type DiffResult,
   errorMessage,
   ipc,
 } from "../lib/ipc";
+import { usePref } from "../lib/prefs";
+import {
+  barWidths,
+  decorations,
+  groupFilesByDir,
+  KIND_LETTER,
+  kindTone,
+  plural,
+  splitPath,
+} from "../lib/repo";
 import { createLatest } from "../lib/stale";
-import { KIND_LETTER, kindColor } from "./ChangesList";
+import { useDiff } from "../lib/useDiff";
 import DiffView from "./DiffView";
+import { Avatar } from "./HistoryTab";
+import { CopyIcon, FolderIcon, SidebarIcon } from "./icons";
 
 type Props = {
   repositoryId: string;
   /** Render with `key={commit.id}` so state resets when the selection changes. */
   commit: CommitSummary;
   onError: (message: string | null) => void;
-  onOpenInEditor: (path: string) => void;
+  onOpenInEditor: (path: string, line?: number) => void;
+  /** Jump to another commit, such as a parent, when it is in the loaded list. */
+  onSelectCommit: (id: string) => void;
 };
+
+/** Message lines shown before "Show full message". */
+const BODY_PREVIEW_LINES = 3;
 
 export default function CommitDetails({
   repositoryId,
   commit,
   onError,
   onOpenInEditor,
+  onSelectCommit,
 }: Props) {
   const [parentIndex, setParentIndex] = useState(0);
   const [detail, setDetail] = useState<CommitDetail | null>(null);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
-  const [diff, setDiff] = useState<DiffResult | null>(null);
-  const [diffLoading, setDiffLoading] = useState(false);
+  const [fullBody, setFullBody] = useState(false);
+  const [showFiles, setShowFiles] = usePref("brainiac.history.files", true);
   const detailLatest = useRef(createLatest()).current;
-  const diffLatest = useRef(createLatest()).current;
 
   useEffect(() => {
     void detailLatest.run(
@@ -43,7 +60,7 @@ export default function CommitDetails({
         setSelectedPath((current) =>
           current && d.files.some((f) => f.path === current)
             ? current
-            : (d.files[0]?.path ?? null),
+            : (groupFilesByDir(d.files)[0]?.files[0]?.path ?? null),
         );
       },
       (e) => onError(errorMessage(e)),
@@ -52,33 +69,25 @@ export default function CommitDetails({
 
   const selectedFile =
     detail?.files.find((f) => f.path === selectedPath) ?? null;
-  useEffect(() => {
-    if (!detail || !selectedFile) {
-      diffLatest.cancel();
-      setDiff(null);
-      setDiffLoading(false);
-      return;
-    }
-    setDiffLoading(true);
-    void diffLatest.run(
-      () =>
-        ipc.getDiff(repositoryId, {
+  const {
+    diff,
+    loading: diffLoading,
+    ignoreWhitespace,
+    setIgnoreWhitespace,
+  } = useDiff(
+    repositoryId,
+    detail && selectedFile
+      ? {
           kind: "commit",
           commit_id: detail.id,
           path: selectedFile.path,
           old_path: selectedFile.old_path,
           parent_index: detail.compared_parent_index,
-        }),
-      (result) => {
-        setDiff(result);
-        setDiffLoading(false);
-      },
-      (e) => {
-        setDiffLoading(false);
-        onError(errorMessage(e));
-      },
-    );
-  }, [repositoryId, detail, selectedFile, diffLatest, onError]);
+        }
+      : null,
+    detail,
+    onError,
+  );
 
   const copy = (text: string) => void navigator.clipboard?.writeText(text);
   const isMerge = commit.parent_ids.length > 1;
@@ -86,172 +95,290 @@ export default function CommitDetails({
     detail &&
     (detail.committer_name !== commit.author_name ||
       detail.committer_email !== commit.author_email);
+  const bodyLines = detail?.body.trim() ? detail.body.trim().split("\n") : [];
+  const hiddenLines = fullBody
+    ? 0
+    : Math.max(0, bodyLines.length - BODY_PREVIEW_LINES);
+  const comparedParent = commit.parent_ids[parentIndex];
+  // Files in the order the tree shows them, for the stepper and [ ] keys.
+  const files = detail
+    ? groupFilesByDir(detail.files).flatMap((g) => g.files)
+    : [];
+  const fileIndex = files.findIndex((f) => f.path === selectedPath);
+  const stepFile = (delta: number) => {
+    const next = files[fileIndex + delta];
+    if (next) setSelectedPath(next.path);
+  };
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="selectable max-h-[50%] shrink-0 overflow-y-auto border-b p-4">
-        <h2 className="mb-2 text-base font-semibold">{commit.subject}</h2>
-        {detail?.body && (
-          <p className="mb-3 whitespace-pre-wrap">{detail.body}</p>
-        )}
-        <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
-          <dt className="muted">Commit</dt>
-          <dd className="mono flex items-center gap-2">
-            {commit.id}
-            <button
-              type="button"
-              className="rounded border px-1 text-[11px]"
-              onClick={() => copy(commit.id)}
-            >
-              Copy
-            </button>
-          </dd>
-          <dt className="muted">Author</dt>
-          <dd>
-            {commit.author_name} &lt;{commit.author_email}&gt; ·{" "}
-            {new Date(commit.authored_at).toLocaleString()}
-          </dd>
-          <dt className="muted">Committer</dt>
-          <dd>
-            {committerDiffers && (
-              <>
-                {detail.committer_name} &lt;{detail.committer_email}&gt; ·{" "}
-              </>
-            )}
-            {new Date(commit.committed_at).toLocaleString()}
-          </dd>
-          <dt className="muted">{isMerge ? "Compare with" : "Parent"}</dt>
-          <dd className="mono flex flex-wrap items-center gap-1">
-            {commit.parent_ids.length === 0 && (
-              <span className="muted font-sans">none (root commit)</span>
-            )}
-            {!isMerge &&
-              commit.parent_ids.map((p) => (
-                <span key={p}>{p.slice(0, 10)}</span>
-              ))}
-            {isMerge &&
-              commit.parent_ids.map((p, i) => (
+      <div className="flex max-h-[45%] shrink-0 flex-col gap-2.5 overflow-y-auto border-b px-[22px] pt-4 pb-3.5">
+        <div className="flex items-start gap-4">
+          <h1 className="selectable m-0 flex-1 text-[17px] leading-snug font-semibold">
+            {commit.subject}
+          </h1>
+          <button
+            type="button"
+            className="btn btn-sm mono bg-control text-fg"
+            title={`Copy ${commit.id}`}
+            onClick={() => copy(commit.id)}
+          >
+            {commit.short_id}
+            <CopyIcon size={12} />
+          </button>
+        </div>
+        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[12px] text-fg-2">
+          <Avatar name={commit.author_name} size={20} />
+          <span className="text-fg" title={commit.author_email}>
+            {commit.author_name}
+          </span>
+          <span>committed {relativeTime(commit.committed_at)}</span>
+          <span className="text-muted">
+            {absoluteTime(commit.committed_at)}
+          </span>
+          {committerDiffers && (
+            <span className="text-muted">by {detail.committer_name}</span>
+          )}
+          <Sep />
+          {commit.parent_ids.length === 0 && (
+            <span className="text-muted">Root commit</span>
+          )}
+          {!isMerge &&
+            commit.parent_ids.map((p) => (
+              <span key={p} className="flex items-center gap-2">
+                <span className="text-muted">Parent</span>
                 <button
                   type="button"
-                  key={p}
-                  className="row border py-0"
-                  aria-pressed={i === parentIndex}
-                  title={`Show changes relative to parent ${i + 1}`}
-                  onClick={() => setParentIndex(i)}
+                  className="mono text-link hover:underline"
+                  title="Select this commit when it is in the list"
+                  onClick={() => onSelectCommit(p)}
                 >
-                  <span className="font-sans">Parent {i + 1}</span>
-                  {p.slice(0, 10)}
+                  {p.slice(0, 7)}
                 </button>
-              ))}
-          </dd>
-          {commit.decorations.length > 0 && (
-            <>
-              <dt className="muted">Refs</dt>
-              <dd className="mono">{commit.decorations.join(", ")}</dd>
-            </>
+              </span>
+            ))}
+          {isMerge && (
+            <span className="flex items-center gap-1.5">
+              <span className="text-muted">Compare with</span>
+              <span className="seg" role="tablist" aria-label="Compared parent">
+                {commit.parent_ids.map((p, i) => (
+                  <button
+                    type="button"
+                    role="tab"
+                    key={p}
+                    aria-selected={i === parentIndex}
+                    title={`Show changes relative to parent ${i + 1}`}
+                    onClick={() => setParentIndex(i)}
+                  >
+                    Parent {i + 1}
+                    <span className="mono text-[11px]">{p.slice(0, 7)}</span>
+                  </button>
+                ))}
+              </span>
+            </span>
           )}
-        </dl>
-        <FileList
-          detail={detail}
-          parentIndex={parentIndex}
-          selectedPath={selectedPath}
-          onSelect={setSelectedPath}
-        />
+          {commit.decorations.length > 0 && <Sep />}
+          {decorations(commit).map((d) => (
+            <span key={d.label} className="deco" data-tone={d.tone}>
+              {d.label}
+            </span>
+          ))}
+        </div>
+        {bodyLines.length > 0 && (
+          <div className="selectable max-w-[760px] text-[12.5px] leading-normal whitespace-pre-wrap text-fg-3">
+            {bodyLines
+              .slice(0, fullBody ? undefined : BODY_PREVIEW_LINES)
+              .join("\n")}
+          </div>
+        )}
+        {(hiddenLines > 0 || fullBody) &&
+          bodyLines.length > BODY_PREVIEW_LINES && (
+            <button
+              type="button"
+              className="self-start text-[12px] text-link hover:underline"
+              onClick={() => setFullBody(!fullBody)}
+            >
+              {fullBody
+                ? "Show less"
+                : `Show full message (${plural(hiddenLines, "more line")})`}
+            </button>
+          )}
       </div>
-      <DiffView
-        diff={diff}
-        loading={diffLoading}
-        empty={
-          !detail
-            ? "Loading…"
-            : detail.files.length === 0
-              ? "This commit changes no files relative to the compared parent."
-              : "Select a file to see its patch."
-        }
-        openLabel="Open current file"
-        onOpenInEditor={onOpenInEditor}
-      />
+
+      <div className="flex min-h-0 flex-1">
+        {showFiles && (
+          <FileTree
+            detail={detail}
+            parentIndex={parentIndex}
+            selectedPath={selectedPath}
+            onSelect={setSelectedPath}
+            onHide={() => setShowFiles(false)}
+          />
+        )}
+        <div className="flex min-w-0 flex-1 flex-col">
+          <DiffView
+            diff={diff}
+            loading={diffLoading}
+            historical
+            ignoreWhitespace={ignoreWhitespace}
+            onIgnoreWhitespace={setIgnoreWhitespace}
+            stepper={
+              files.length > 0 && fileIndex >= 0
+                ? {
+                    index: fileIndex,
+                    total: files.length,
+                    onPrev: () => stepFile(-1),
+                    onNext: () => stepFile(1),
+                  }
+                : undefined
+            }
+            extra={
+              !showFiles && (
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() => setShowFiles(true)}
+                >
+                  <SidebarIcon size={13} />
+                  Show files
+                </button>
+              )
+            }
+            meta={
+              comparedParent
+                ? `vs parent ${comparedParent.slice(0, 7)}`
+                : "vs empty tree"
+            }
+            empty={
+              !detail
+                ? "Loading…"
+                : detail.files.length === 0
+                  ? "This commit changes no files relative to the compared parent."
+                  : "Select a file to see its patch."
+            }
+            onOpenInEditor={onOpenInEditor}
+          />
+        </div>
+      </div>
     </div>
   );
 }
 
-function FileList({
+function Sep() {
+  return <span className="text-faint">|</span>;
+}
+
+function FileTree({
   detail,
   parentIndex,
   selectedPath,
   onSelect,
+  onHide,
 }: {
   detail: CommitDetail | null;
   parentIndex: number;
   selectedPath: string | null;
   onSelect: (path: string) => void;
+  onHide: () => void;
 }) {
-  if (!detail || detail.compared_parent_index !== parentIndex)
-    return <div className="muted mt-4">Loading changed files…</div>;
-  const additions = detail.files.reduce((n, f) => n + (f.additions ?? 0), 0);
-  const deletions = detail.files.reduce((n, f) => n + (f.deletions ?? 0), 0);
+  const ready = detail && detail.compared_parent_index === parentIndex;
+  const additions = detail?.files.reduce((n, f) => n + (f.additions ?? 0), 0);
+  const deletions = detail?.files.reduce((n, f) => n + (f.deletions ?? 0), 0);
   return (
-    <div className="mt-4">
-      <div className="muted mb-1 text-[11px] font-semibold uppercase tracking-wide">
-        {detail.files.length} {detail.files.length === 1 ? "file" : "files"}{" "}
-        changed
-        <span className="ml-2 font-normal normal-case">
-          <span className="text-emerald-600 dark:text-emerald-400">
-            +{additions}
-          </span>{" "}
-          <span className="text-red-600 dark:text-red-400">−{deletions}</span>
-        </span>
+    <div className="flex w-64 shrink-0 flex-col border-r bg-panel-2">
+      <div className="flex h-9 shrink-0 items-center gap-2 border-b pr-1.5 pl-3 text-[12px]">
+        {ready ? (
+          <>
+            <span className="font-semibold">
+              {plural(detail.files.length, "file")}
+            </span>
+            <span className="text-add">+{additions}</span>
+            <span className="text-del">−{deletions}</span>
+          </>
+        ) : (
+          <span className="text-muted">Loading files…</span>
+        )}
+        <span className="flex-1" />
+        <button
+          type="button"
+          className="btn btn-sm btn-ghost w-6 px-0"
+          aria-label="Hide file list"
+          title="Hide file list, giving the patch the full width"
+          onClick={onHide}
+        >
+          <SidebarIcon size={13} />
+        </button>
       </div>
-      {detail.files.map((f) => (
-        <FileRow
-          key={f.path}
-          file={f}
-          selected={f.path === selectedPath}
-          onSelect={() => onSelect(f.path)}
-        />
-      ))}
+      <div className="min-h-0 flex-1 overflow-y-auto py-1.5">
+        {ready &&
+          groupFilesByDir(detail.files).map((g) => (
+            <div key={g.dir}>
+              {g.dir && (
+                <div
+                  className="flex h-[26px] items-center gap-[7px] px-3 text-[12.5px] text-fg-2"
+                  title={g.dir}
+                >
+                  <FolderIcon size={13} className="shrink-0 text-muted" />
+                  <span className="truncate">{g.dir}</span>
+                </div>
+              )}
+              {g.files.map((f) => (
+                <FileRow
+                  key={f.path}
+                  file={f}
+                  nested={!!g.dir}
+                  selected={f.path === selectedPath}
+                  onSelect={() => onSelect(f.path)}
+                />
+              ))}
+            </div>
+          ))}
+      </div>
     </div>
   );
 }
 
 function FileRow({
   file,
+  nested,
   selected,
   onSelect,
 }: {
   file: CommitFile;
+  nested: boolean;
   selected: boolean;
   onSelect: () => void;
 }) {
+  const tone = kindTone(file.kind);
+  const bar = barWidths(file.additions, file.deletions);
+  const stats = file.is_binary
+    ? "binary"
+    : `+${file.additions ?? 0} −${file.deletions ?? 0}`;
   return (
     <button
       type="button"
-      className="row w-full text-left"
-      aria-pressed={selected}
+      className={`list-row h-[26px] items-center gap-[7px] pr-3 text-[12.5px] ${nested ? "pl-[25px]" : "pl-[9px]"}`}
+      aria-current={selected}
       onClick={onSelect}
-      title={file.old_path ? `${file.old_path} → ${file.path}` : file.path}
+      title={`${file.old_path ? `${file.old_path} → ${file.path}` : file.path} (${stats})`}
     >
-      <span className={`mono w-4 shrink-0 text-center ${kindColor(file.kind)}`}>
+      <span
+        className="mono w-[13px] shrink-0 text-center text-[11px] font-semibold"
+        style={{ color: `var(--k-${tone}-fg)` }}
+      >
         {KIND_LETTER[file.kind]}
       </span>
-      <span className="mono truncate">
-        {file.old_path && <span className="muted">{file.old_path} → </span>}
-        {file.path}
+      <span className="min-w-0 flex-1 truncate">
+        {splitPath(file.path).name}
       </span>
-      <span className="mono ml-auto shrink-0 text-[11px]">
-        {file.is_binary ? (
-          <span className="badge muted border">binary</span>
-        ) : (
-          <>
-            <span className="text-emerald-600 dark:text-emerald-400">
-              +{file.additions ?? 0}
-            </span>{" "}
-            <span className="text-red-600 dark:text-red-400">
-              −{file.deletions ?? 0}
-            </span>
-          </>
-        )}
-      </span>
+      {file.is_binary ? (
+        <span className="text-[11px] text-muted">binary</span>
+      ) : (
+        <span className="change-bar" aria-hidden="true">
+          <span className="a" style={{ width: `${bar.add}%` }} />
+          <span className="d" style={{ width: `${bar.del}%` }} />
+        </span>
+      )}
     </button>
   );
 }

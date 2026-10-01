@@ -1,7 +1,7 @@
 # Brainiac — Product & Technical Specification
 
 **Status:** implementation-ready for M0/v0.1 — Git-first roadmap (v0.1 open questions resolved 1 October 2026)  
-**Updated:** 1 October 2026  
+**Updated:** 1 October 2026 (fetching and workspace activity added to v0.1)  
 **Target:** macOS desktop application, Rust backend, Tauri v2 shell
 
 This specification consolidates the supplied project discussion and replaces its Go/Wails architecture with Rust/Tauri v2. Requirements describe intended behavior; proposed defaults and technical spikes remain open to revision. No application code has been implemented yet.
@@ -45,7 +45,9 @@ The product can eventually include PR and CI status, calendar context, recurring
 | Repository overview | v0.1 | Branch, dirty/conflict state, file counts, local upstream comparison, stale/error state |
 | Changes and diff viewer | v0.1 | Staged/unstaged changes, untracked preview, unified text diffs |
 | Commit history and details | v0.1 | Paginated history, commit metadata, changed files, per-file patches |
-| Branches and tags | v0.1 | Read-only lists and history selection |
+| Branches and tags | v0.1 | Read-only lists and history selection, comparison with the default branch |
+| Fetching | v0.1 | Explicit Fetch now and opt-in, per-workspace auto-fetch of watched branches (off by default); updates remote-tracking refs only |
+| Workspace activity | v0.1 | Feed of watched branches and tags that moved, unread state, conflict-risk and drift warnings, team pulse, optional macOS notifications |
 | Tracking and refresh | v0.1 | Watchers, bounded jobs, manual refresh, wake/activation reconciliation |
 | Command palette | v0.1 | Repository/workspace switching and viewer commands |
 | Notes, task hub, Inbox, Today | v0.2 | One Markdown vault, safe editing, dates, context associations |
@@ -56,9 +58,9 @@ The product can eventually include PR and CI status, calendar context, recurring
 | Authenticated import adapters | v0.3.x | Selected Jira issues/mail messages; provider choice and video transcript acquisition validated separately |
 | Semantic search | v0.4 | Optional local embeddings and hybrid retrieval |
 | Grounded AI answers | v0.5 | Citation-backed local RAG |
-| Remote PR/CI tracking, Git mutations, sync, plugins | Later | Separate features after local viewing is useful |
+| Remote PR/CI tracking, other Git mutations, sync, plugins | Later | Separate features after local viewing is useful |
 
-v0.1 requires a usable local Git binary. Detect it on startup and provide a clear setup message when absent; do not silently install developer tools. Core Git viewing works offline and requires no Markdown vault, Ollama instance, remote-service account, or elevated macOS permissions. Ahead/behind information reflects existing local refs and may be stale relative to the remote server.
+v0.1 requires a usable local Git binary. Detect it on startup and provide a clear setup message when absent; do not silently install developer tools. Core Git viewing works offline and requires no Markdown vault, Ollama instance, remote-service account, or elevated macOS permissions. Ahead/behind information reflects existing local refs and may be stale relative to the remote server until someone fetches: the user, their editor, or Brainiac's Fetch now and opt-in auto-fetch (section 7, Fetching). Fetching is the only operation that writes to a repository, and it touches remote-tracking refs and objects only.
 
 ## 3. Technology stack
 
@@ -113,35 +115,34 @@ TipTap's Markdown support documents limitations. Treat fidelity as a release gat
 Use a quiet macOS layout: system font, light/dark appearance, native menu bar, standard window controls, visible keyboard focus, and readable text without translucency. Start directly in the Git workspace; do not show empty Brain, Tasks, or Inbox views before v0.2.
 
 ```text
-┌──────────────────────────────────────────────────────────────────────────────┐
-│ Brainiac                 Repository / workspace switcher               ⌘K   │
-├──────────────────┬───────────────────────────────────┬───────────────────────┤
-│ All repositories │ Workspace overview                │ Selected repository   │
-│                  │ or                                │                       │
-│ Workspaces       │ Repository viewer                 │ Branch / HEAD         │
-│   Work           │ ┌ Changes · History · Branches ┐   │ Upstream comparison   │
-│   Personal       │ │ File/commit list             │   │ Last refresh          │
-│                  │ │ Selected diff/details        │   │ Open in editor        │
-│ Repositories     │ └──────────────────────────────┘   │ Reveal in Finder      │
-│   api            │                                   │                       │
-│   frontend       │                                   │                       │
-│ Pinned / Recent  │                                   │                       │
-├──────────────────┴───────────────────────────────────┴───────────────────────┤
-│ Refreshing / Up to date / Stale / Error              Last checked timestamp   │
+┌──────────────────┬───────────────────────────────────────────────────────────┐
+│ ● ● ●            │ [repo ▾ ⌘K] Changes · History · Branches & tags   main → │
+│                  │             origin/main  Fetch  ⟳  Finder  Open in editor   │
+│ All repositories ├───────────────────────────────────────────────────────────┤
+│ Workspaces       │ File / commit / ref list   │ Diff, commit details, or ref │
+│   Work    7 new  │                            │ history preview              │
+│     product ROOT │                            │                              │
+│     services/    │                            │                              │
+│       billing    │                            │                              │
+│   Personal       │                            │                              │
+│ Pinned / Recent  │                            │                              │
+│ + Add …      ⌘O  │                            │                              │
+├──────────────────┴───────────────────────────────────────────────────────────┤
+│ Up to date / Stale / Error · path   J K  [ ]  N P  keys · Git version · Checked │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-The sidebar switches scope. The center shows either an aggregate repository table or a selected repository's viewer. Inside the viewer, show a file/commit list beside the diff/detail surface. The optional inspector presents context and actions without reducing diff readability; collapse it on smaller windows.
+The sidebar switches scope and shares the window's title bar area with the traffic lights. The center shows either a dashboard (All repositories or one workspace) or a selected repository's viewer. A dashboard is a table of repositories with a side panel for the selected row: branch, upstream, last commit, a peek at its changed files, and Open repository, Open in editor, and Reveal in Finder. The repository viewer's header carries the repository switcher, the tabs, the current branch with its upstream comparison and when it was last fetched, Fetch now, Refresh, Reveal in Finder, and Open in editor; there is no separate inspector, so diffs keep the full width. A workspace dashboard has two tabs, Overview (the table) and Activity (section 7, Workspace activity); the sidebar shows a workspace's unread activity count next to its name. The status bar lists the keyboard shortcuts of the current view.
 
 ### Git navigation and interactions — v0.1
 
 | View | Behavior |
 | --- | --- |
 | All repositories | Registered repositories, deduplicated across workspaces, filtered by name/path, dirty, conflicted, or stale/error state |
-| Workspace | Its member repositories and aggregate counts; click a row to open the repository viewer |
-| Changes | Staged, unstaged, untracked, and conflicted entries; selecting a tracked file opens its applicable diff |
-| History | Paginated commit list for HEAD or a selected ref; selecting a commit opens metadata, changed files, and patches |
-| Branches and tags | Read-only local/remote-tracking refs and tags; select a ref to view its history without checking it out |
+| Workspace | Overview: its member repositories and aggregate counts; click a row to open the repository viewer. Activity: what moved on the watched branches |
+| Changes | Staged, unstaged, untracked, and conflicted entries with line counts; selecting a tracked file opens its applicable diff |
+| History | Paginated commit list for HEAD or a selected ref, with author on every row; selecting a commit opens metadata, changed files, and patches |
+| Branches and tags | Read-only local/remote-tracking refs and tags, sorted by recent activity or name, compared with the default branch; select a ref to view its history without checking it out |
 | Pinned / Recent | Fast access to repositories and workspaces |
 
 - **Onboarding:** add a repository, create a workspace by picking repositories or by discovering the repositories inside a chosen folder, and choose which discovered repositories to track. Preview resolution errors and let valid entries proceed.
@@ -150,7 +151,10 @@ The sidebar switches scope. The center shows either an aggregate repository tabl
 - **Inspect changes:** select staged/unstaged files and inspect added/deleted lines. A file changed in both places has distinct index and working-tree comparisons.
 - **Inspect history:** select a commit, read its message, inspect its files/patches, and copy its hash. Preserve repository identity on every history result.
 - **Open code:** open a repository or selected current file in the configured editor; reveal its folder in Finder.
-- **Refresh:** update the selected repository or workspace without losing navigation/selection unnecessarily.
+- **Refresh:** update the selected repository or workspace without losing navigation/selection unnecessarily. While new data loads, keep showing the previous content with a thin progress line; skeleton rows appear only on a first load.
+- **Fetch:** bring remote-tracking refs up to date with Fetch now, or let a workspace auto-fetch its watched branches (section 7, Fetching).
+- **Keep up with the team:** see what was merged or released on the watched branches of a workspace since the last look (section 7, Workspace activity).
+- **Accessible status:** state is never conveyed by color alone (a conflicted repository's dot carries "!", a missing one is a dashed ring, labels spell out counts), and text meets WCAG AA contrast (4.5:1) in both appearances.
 
 Repository name/path filtering and commit-message/hash filtering belong to the Git viewer. They do not depend on the future FTS5 knowledge index. History filtering searches Git history lazily; label the selected ref scope and do not imply results span other repositories.
 
@@ -167,6 +171,11 @@ Today shows open tasks planned for today, due today, or overdue, with completed 
 | `Cmd+K` | Repository/workspace palette in v0.1; knowledge search added in v0.2 |
 | `Cmd+O` | Add/open a local repository |
 | `Cmd+R` | Refresh selected repository or workspace |
+| `Cmd+1` … `Cmd+3` | Repository tabs: Changes, History, Branches & tags |
+| `J` / `K` (or arrow keys) | Next / previous row in the focused list, without clicking it first |
+| `[` / `]` | Previous / next file in a commit or the changes list |
+| `N` / `P` | Next / previous hunk in the shown diff |
+| `/` | Focus the filter of the current list |
 | `Cmd+,` | Settings |
 | `Escape` | Dismiss palette or inspector; later preserve capture/editor drafts |
 | `Cmd+N`, v0.2 | New note |
@@ -226,8 +235,11 @@ brainiac/
       models.rs                Entities, DTOs, structured errors
       db.rs                    SQLite worker, migrations, backup
       workspaces.rs            Repository registration, membership, workspace import
-      git.rs                   Git discovery, status, refs, history, diffs
+      git.rs                   Git discovery, status, refs, history, diffs, fetch
       watcher.rs               Repository notifications and refresh scheduling
+      fetcher.rs               How a fetch runs: remote, refspecs, locks, concurrency, backoff
+      activity.rs              Ref tracking per Git directory, events, per-workspace feeds, team pulse
+      workspaces/              Membership, and the service glue for the feed and fetching
     tests/                     Integration tests; unit tests can live in modules
 ```
 
@@ -264,7 +276,7 @@ Files become modules through declarations such as `mod notes;` in `lib.rs`. A di
 | Chunks and embeddings | SQLite derived tables | Yes, from files and model configuration |
 | Unsaved editor recovery | Local draft journal | Recovery data, not the saved note |
 
-This ownership table covers the full roadmap. In v0.1, persist workspace membership, repository registration, pins, and settings; cache Git observations with timestamps. Note/task/import stores are introduced at their later milestones.
+This ownership table covers the full roadmap. In v0.1, persist workspace membership, repository registration, pins, and settings; cache Git observations with timestamps; keep the activity feed's ref tips and events. Note/task/import stores are introduced at their later milestones.
 
 SQLite therefore holds both authoritative application data and derived indexes. Deleting the database is not a safe way to rebuild search.
 
@@ -296,9 +308,12 @@ The implementation converts this model into versioned SQL migrations at the indi
 | `search_documents` | FTS5 rows: entity type/ID plus title and searchable body | v0.2 |
 | `note_sources` | `note_id`, source type, canonical URL/provider ID, source time, import time, content scope, source hash; derived from note provenance | v0.3 |
 | `import_jobs` | `id`, input reference, adapter, state, staged payload reference, error, result note ID, idempotency key | v0.3 |
-| `workspaces` | `id`, `name`, `discovery_mode` (`discovered`, `manual`), `root_repository_id?`, `discovery_root?`, `discovery_path?` | v0.1 |
+| `workspaces` | `id`, `name`, `discovery_mode` (`discovered`, `manual`), `root_repository_id?`, `discovery_root?`, `discovery_path?`; activity settings: watched branch and tag patterns, `auto_fetch`, `notify_moves`, `morning_digest`, `warn_conflicts`, `last_digest_on?` | v0.1 |
 | `workspace_members` | `id`, `workspace_id`, `display_name`, `canonical_path`, `origin` (`discovered`, `manual`), `repository_id?` (absent for non-Git folders); unique path per workspace, so one repository can belong to several workspaces | v0.1 |
-| `repositories` | `id`, `canonical_root`, `git_dir`, `common_git_dir`, `last_opened_at?` (drives the Recent list), `last_checked_at`, cached status/error as JSON | v0.1 |
+| `repositories` | `id`, `canonical_root`, `git_dir`, `common_git_dir`, `last_opened_at?` (drives the Recent list), `last_checked_at`, cached status/error as JSON, `last_fetch_at?` and `last_fetch_error?` of Brainiac's own fetches | v0.1 |
+| `ref_baselines` | `git_store` (a `common_git_dir`), `watched_json`, `taken_at`; which watched patterns the stored tips cover, derived and rebuildable | v0.1 |
+| `ref_tips` | `git_store`, `ref_name`, `target_id`; the last seen tip of each watched remote-tracking branch and tag, derived and rebuildable | v0.1 |
+| `activity_events` | `id`, `git_store`, `kind` (`advanced`, `rewritten`, `created`, `tagged`), `ref_name` (full), `match_name` (what patterns match), `old_id?`, `new_id`, `observed_at`, `seen_at?`, detail JSON (commits, authors, overlapping paths, drift); pruned after 90 days | v0.1 |
 | `note_links` | `source_note_id`, `target_note_id?`, `raw_target`, source location; unresolved links retained | v0.2 |
 | `note_repository_links` | `note_id`, `repository_id` | v0.2 |
 | `embedding_profiles` | `id`, provider/model identity, dimensions, distance metric, chunker version | v0.4 |
@@ -380,8 +395,9 @@ A registered repository opens directly; workspace membership is optional. Keep t
 
 #### Changes and diffs
 
-- Group staged, unstaged, untracked, and conflicted files. Show paths, change kinds, and rename source/destination.
-- For tracked text, display a unified diff with line numbers, additions/deletions, and context. Separate HEAD-to-index and index-to-working-tree comparisons; the same file can appear in both groups.
+- Group staged, unstaged, untracked, and conflicted files. Show paths, change kinds, rename source/destination, and added/removed line counts with a small change bar (`git diff --numstat` for the index and the working tree). Groups fold; long folder names are shortened in the middle so the file name always shows.
+- For tracked text, display a unified diff with line numbers, additions/deletions, and context. Separate HEAD-to-index and index-to-working-tree comparisons; the same file can appear in both groups. The comparison switch shows each side's counts and offers **Both** (HEAD to working tree, one combined patch).
+- Every patch view offers Unified/Split layouts, changed-word highlights inside a modified line pair (computed in the frontend), **Ignore whitespace** (`git diff -w`), hunk position with previous/next hunk jumps, and a hunk header that stays pinned while scrolling.
 - Untracked files use a bounded, read-only text preview labeled untracked. Conflicted files show conflict status and current contents; conflict resolution is later scope.
 - Binary files, submodule changes, Git LFS pointers, symlinks, and oversized patches receive explicit summaries rather than misleading text diffs. Do not download LFS objects or traverse submodules automatically.
 - Initial display limits: 1 MiB or 10,000 patch lines per file, whichever comes first. Mark truncation and offer Open in editor; never silently omit remaining content.
@@ -394,7 +410,8 @@ Git supplies comparisons of working tree, index, and commits; disable external d
 
 - Default history is the current HEAD's reachable commits, newest/topologically ordered. Load 100 records per page, anchored to the selected ref's resolved commit ID so new commits do not shift an in-progress traversal unexpectedly.
 - Show commit hash, subject, author, authored/committed time, parent IDs, and branch/tag decorations. Display full message in commit details.
-- Offer ref selection and commit-message/hash filtering. Queries remain scoped to the selected repository/ref; indicate loading and cancellation.
+- Offer ref selection and commit-message/hash filtering; an `author:` token in the filter limits by author (`git log --author`). Queries remain scoped to the selected repository/ref; indicate loading and cancellation.
+- Each row shows the author's initials and name; the day heading stays pinned while scrolling. The commit's file list can be hidden to give the patch the full width, shows a +/− bar per file, and a file stepper ("1 / 7", `[` and `]`) moves through files.
 - Selecting a commit loads its changed-file list; selecting a file loads its patch. Compare a normal commit with its parent, a root commit with an empty tree, and a merge commit with its first parent by default. Label the chosen parent and permit selecting another parent.
 - Copy commit hash and relative file path. Display removed files and rename history correctly; opening a historical path is separate from opening its current working-tree file.
 - A graphical branch-lane visualization and blame are future additions. A useful history list and parent links are sufficient for v0.1.
@@ -405,9 +422,13 @@ Use Git's history/object commands behind structured Rust DTOs rather than parsin
 
 List local branches, remote-tracking branches, and tags, marking the current branch and upstream where present. Selecting a ref changes the history view without checking out the branch. Resolve refs to object IDs in Rust before comparison/history queries. [Git ref enumeration](https://git-scm.com/docs/git-for-each-ref)
 
+- Sort by recent activity (default) or name. Branches whose tip is older than three months fold into their own group; remote-tracking branches fold per remote; tags sort newest version first. Long names keep their start and end, shortened in the middle.
+- Compare every branch with the repository's default branch: the remote's `HEAD` target (such as `origin/main`), else a local `main` or `master`. Show "ahead/behind main" next to the upstream comparison (`%(ahead-behind:<base>)` on Git 2.41+, `git rev-list --left-right --count` otherwise).
+- The selected ref's side panel separates "commits not on main" from the shared history.
+
 ### Multi-repository dashboard
 
-Show repository name/path, branch or detached HEAD, staged/unstaged/untracked/conflicted file counts, last refresh, and error/stale status. Count unique changed paths separately from staged/unstaged groups so a doubly modified file is not counted as two files. Provide workspace totals, filters for dirty/conflicted/stale repositories, sorting by name or latest observed commit time, and Refresh all. One repository failure must not block the others. Deduplicate the All repositories view while allowing one repository to belong to several workspaces. Ahead/behind appears only when an upstream exists and reflects local refs; automatic network fetch is outside this release.
+Show repository name/path, branch or detached HEAD, staged/unstaged/untracked/conflicted file counts, last refresh, and error/stale status. Count unique changed paths separately from staged/unstaged groups so a doubly modified file is not counted as two files. Provide workspace totals, filters for dirty/conflicted/stale repositories, sorting by name or latest observed commit time, and Refresh all. One repository failure must not block the others. Deduplicate the All repositories view while allowing one repository to belong to several workspaces. Ahead/behind appears only when an upstream exists and reflects local refs as of the last fetch, which the dashboard shows per repository.
 
 Invoke the system Git binary with argument arrays and timeouts, using machine-readable output such as `git status --porcelain=v2 --branch -z`. Parse NUL-delimited paths and distinguish staged versus unstaged states. [Git status documentation](https://git-scm.com/docs/git-status)
 
@@ -426,7 +447,44 @@ Watching `.git/HEAD`, refs, and index alone misses changes to unstaged working f
 - If status exceeds a proposed 5-second timeout, preserve the last snapshot with a warning and retry option.
 - Batch/coalesce event bursts; never run a status command per keystroke or per watcher callback.
 
-v0.1 actions are inspect status/diffs/history/refs, copy hashes/paths, refresh, reveal in Finder, and open in editor. Knowledge/task associations arrive in v0.2. v0.1 performs no automatic network fetches or Git write operations. Branch checkout, commit, stash, pull, and automatic dev-server startup remain future, explicit actions.
+v0.1 actions are inspect status/diffs/history/refs, copy hashes/paths, refresh, fetch, reveal in Finder, and open in editor. Knowledge/task associations arrive in v0.2. Fetching (below) is the only operation that writes to a repository, and automatic fetching happens only for workspaces that opted in. Branch checkout, commit, stash, pull, and automatic dev-server startup remain future, explicit actions.
+
+### Fetching
+
+Fetching updates remote-tracking refs (`refs/remotes/...`), the objects they need, and tags that point into the fetched history. It never touches the working tree, the index, local branches, `HEAD`, or the stash, so it cannot change anything the user is working on. It is still a write to `.git`, so it happens in exactly two cases:
+
+- **Fetch now:** an explicit action on a repository (header button, menu) or on a workspace (every member). It fetches the remote of the current branch's upstream, else `origin`, else the only remote, with the remote's configured refspecs, keeping only those whose destination is under `refs/remotes/<remote>/` or `refs/tags/` (a mirror refspec such as `+refs/heads/*:refs/heads/*` is dropped). When none is left, the standard `+refs/heads/*:refs/remotes/<remote>/*` is used.
+- **Auto-fetch:** a per-workspace setting, **off by default**. While Brainiac runs, each Git directory that an auto-fetching workspace contains fetches only that workspace's watched branch patterns (`+refs/heads/<pattern>:refs/remotes/<remote>/<pattern>`), at most every 15 minutes (a global setting), backing off exponentially after failures up to 6 hours.
+
+Both use the same hardened invocation, always with explicit refspecs: `git -c gc.auto=0 -c maintenance.auto=false -c fetch.prune=false -c fetch.pruneTags=false -c fetch.writeCommitGraph=false -c core.hooksPath=/dev/null fetch --refmap= --no-prune --no-prune-tags --no-auto-gc --no-auto-maintenance --no-recurse-submodules --no-write-fetch-head --quiet <remote> <refspecs>`, with a 60-second timeout. Command-line options beat per-remote configuration such as `remote.<name>.prune`, and the empty `--refmap` stops Git from also applying the configured refspecs to what it fetched. Every refspec is checked before it is used. That means no automatic cleanup, no pruning, no hooks, no submodule recursion, and no ref written outside remote-tracking refs and tags.
+
+- **Credentials:** a background process cannot answer prompts. Git runs with `GIT_TERMINAL_PROMPT=0` and `GCM_INTERACTIVE=never`; when the user has not configured `core.sshCommand`, SSH runs with `BatchMode=yes`. Credential helpers such as the macOS keychain keep working. Authentication failures are reported as "needs sign-in" with the recovery step (fetch once from a terminal or editor), never as a prompt. Hardware keys and password-manager SSH agents may still ask for approval on each fetch; the auto-fetch setting says so.
+- **Deleted branches:** when the remote no longer has a branch an explicit refspec names, the fetch is retried without it instead of failing.
+- **Other Git processes:** before fetching, look for lock files (`index.lock`, `HEAD.lock`, `packed-refs.lock`, `shallow.lock`, the reftable lock, and `*.lock` under the remote's refs and the tags). A fresh lock means "busy": nothing is recorded and auto-fetch retries on its next turn, waiting a full interval after three busy attempts in a row. A lock older than ten minutes is a leftover that also blocks the user's own Git commands; it is reported as an error that names the file.
+- **Timeouts:** Git is stopped with SIGTERM, which lets it remove its lock files, and only killed if it is still running three seconds later.
+- **Concurrency:** at most two fetches run at once, and a Git directory never has two fetches in flight, even when a checkout and its linked worktree are both registered.
+- **Freshness:** a repository's "last fetched" time is the later of Brainiac's own last fetch and the modification time of `FETCH_HEAD` (written by the user's own fetches). The activity feed warns when a watched repository has not been fetched for two days.
+- After a fetch every checkout of the Git directory is refreshed as after a watcher event, which updates ahead/behind and the activity feed.
+
+### Workspace activity
+
+The Activity tab of a workspace answers "what did the team merge or release since I last looked?". It reads local refs only; news arrives when a fetch (the user's, their editor's, or Brainiac's) moves remote-tracking refs.
+
+- **Watched refs** are per workspace: branch names or patterns matched against remote-tracking branches without their remote prefix (`main`, `develop`, `release/*`), and tag patterns (`v*`). `*` matches any run of characters; branch patterns become fetch refspecs, so they may contain one `*` at most. `?`, `[`, `]`, `:`, `^`, `~`, `\`, and spaces are rejected. Defaults: branches `main`, `master`, `develop`; tags `v*`.
+- **Tracking is per Git directory** (`common_git_dir`), so a checkout and its linked worktrees share one set of tips and one feed. One tracking pass runs per Git directory at a time; it follows each status observation and is skipped cheaply when neither the ref files (their modification times) nor the watched patterns changed.
+- A pass compares the tips of the refs any containing workspace watches with the stored baseline. The baseline remembers which patterns it covered: refs that start matching later (the first observation, a new pattern, a second workspace) join it silently. Saving activity settings or changing a workspace's members takes a pass right away, so branches created afterwards still arrive as news. Each moved ref becomes one event, at most twenty per pass (the rest join the baseline):
+  - **advanced:** the old tip is an ancestor of the new one; record the commit and merge counts, up to five newest commits, and the authors.
+  - **rewritten:** history was replaced (force-push), or the old tip no longer exists; record how many commits were replaced and added. Shown in red.
+  - **created:** a watched branch appeared.
+  - **tagged:** a new tag matching a tag pattern, with the number of commits since the previous tag.
+- Details are best effort: when they cannot be read, the event is recorded without them and the tips still advance, so one bad ref cannot stop the feed.
+- **Conflict risk:** paths changed by an advanced range (`git diff --name-only old new`, bounded) that the user also changes in the working tree are listed on the event.
+- **Drift:** when the current branch is behind its upstream after the move, or behind the watched branch it was forked from (the watched branch with the fewest commits unique to `HEAD`), the event says by how much.
+- **Each workspace sees what it watches:** the feed, the unread count, Mark all as seen, and notifications use the workspace's own patterns, even when another workspace watching the same repository has more. Seen state belongs to the event, so an event both workspaces show is seen in both.
+- **Unread:** the tab shows a divider between unread and seen events, Mark seen per event and Mark all as seen, and the sidebar shows the workspace's unread count.
+- **Team pulse:** commits, merges, and releases on the watched refs in the last seven days, and the most active authors, counted from local refs.
+- **Let me know:** optional per workspace, all off except the conflict-risk warning: a macOS notification when a watched branch moves (at most one per repository and workspace per hour), a morning digest at 09:00 local time when there are unread events, and the conflict-risk warning on events.
+- Events older than 90 days are pruned. Removing the last checkout of a Git directory deletes its tips and events; a Git directory no workspace watches loses its baseline, so watching it again starts silently.
 
 ## 8. Safe note editing and indexing — v0.2
 
@@ -656,6 +714,8 @@ Commands are thin adapters over Rust services. Use `#[tauri::command]`, serializ
 | `register_repository` / `create_workspace` / `discover_repositories` / `update_workspace_membership` / `refresh_repository` | v0.1: validated registration, discovered/manual workspace configuration, discovered candidates, selected membership, timestamped status |
 | `list_repositories` / `list_changes` / `get_diff` | v0.1: workspace/filter scope, repository ID, diff kind and safe file selector; bounded results |
 | `list_commits` / `get_commit` / `list_refs` | v0.1: repository/ref scope, pagination cursor or commit ID; history/details/ref DTOs |
+| `fetch_repository` | v0.1: repository ID; fetch outcome with the refs that moved |
+| `get_workspace_activity` / `mark_activity_seen` / `update_activity_settings` | v0.1: workspace ID; feed, freshness and pulse; seen markers; watched refs and notification settings |
 | `configure_shortcut` | v0.3: validated binding and registration result |
 | `semantic_search` / `ask_brain` / `cancel_job` | v0.4+: profile/request IDs, results or response channel |
 
@@ -683,6 +743,8 @@ type Settings = {
   refresh_interval_seconds: number;       // default 60
   status_timeout_seconds: number;         // default 5
   diff_limits: { max_bytes: number; max_lines: number }; // default 1 MiB, 10000
+  auto_fetch_interval_minutes: number;    // default 15, minimum 5
+  fetch_timeout_seconds: number;          // default 60
 };
 
 type Pin = { entity_type: "repository" | "workspace"; entity_id: string; position: number };
@@ -700,6 +762,8 @@ type RepositorySummary = {
   upstream?: UpstreamState;
   error?: AppError;
   last_tab?: "changes" | "history" | "refs";
+  last_fetch_at?: string;                 // later of Brainiac's last fetch and FETCH_HEAD's mtime
+  fetch_error?: AppError;                 // outcome of Brainiac's last fetch, cleared by a successful one
 };
 type HeadState = { kind: "branch" | "detached" | "unborn"; branch?: string; commit_id?: string };
 type UpstreamState = { ref: string; ahead: number; behind: number };
@@ -707,12 +771,16 @@ type ChangeCounts = { staged: number; unstaged: number; untracked: number; confl
 
 type ChangeGroup = "staged" | "unstaged" | "untracked" | "conflicted";
 type ChangeKind = "added" | "modified" | "deleted" | "renamed" | "copied" | "type_changed" | "unmerged" | "untracked";
-type ChangeEntry = { group: ChangeGroup; kind: ChangeKind; path: string; old_path?: string; is_submodule: boolean };
+type ChangeEntry = {
+  group: ChangeGroup; kind: ChangeKind; path: string; old_path?: string; is_submodule: boolean;
+  additions?: number; deletions?: number; // list_changes only, from --numstat; absent for untracked and binary files
+};
 type ChangesResult = { repository_id: string; observed_at: string; entries: ChangeEntry[] };
 
 type DiffSelector =
   | { kind: "index_vs_head"; path: string }
   | { kind: "worktree_vs_index"; path: string }
+  | { kind: "worktree_vs_head"; path: string }   // "Both": staged and unstaged changes as one patch
   | { kind: "untracked_preview"; path: string }
   | { kind: "commit"; commit_id: string; path: string; old_path?: string; parent_index: number }; // 0 = first parent; old_path pairs a rename
 type DiffResult = {
@@ -724,7 +792,12 @@ type DiffResult = {
 type Hunk = { header: string; old_start: number; old_lines: number; new_start: number; new_lines: number; lines: DiffLine[] };
 type DiffLine = { kind: "context" | "add" | "delete"; old_no?: number; new_no?: number; text: string };
 
-type ListCommitsRequest = { repository_id: string; ref?: string; filter?: string; cursor?: string; limit?: number }; // limit default 100, max 500
+type DiffOptions = { ignore_whitespace: boolean };
+type ListCommitsRequest = {
+  repository_id: string; ref?: string; filter?: string; cursor?: string; limit?: number; // limit default 100, max 500
+  author?: string;                         // substring of author name or email
+  exclude?: string;                        // ref whose history is left out, e.g. "commits on topic not on main"
+};
 type CommitPage = { repository_id: string; ref: string; anchor_commit_id: string; items: CommitSummary[]; next_cursor?: string };
 // cursor is an opaque string the backend encodes as { anchor_commit_id, offset }; a cursor from another anchor is rejected with VALIDATION
 type CommitSummary = {
@@ -739,8 +812,13 @@ type CommitDetail = CommitSummary & {
 };
 type CommitFile = { path: string; old_path?: string; kind: ChangeKind; additions?: number; deletions?: number; is_binary: boolean };
 
-type RefEntry = { name: string; full_name: string; kind: "local_branch" | "remote_branch" | "tag"; target_id: string; is_head: boolean; upstream?: string };
-type RefsResult = { repository_id: string; refs: RefEntry[] };
+type RefEntry = {
+  name: string; full_name: string; kind: "local_branch" | "remote_branch" | "tag"; target_id: string; is_head: boolean; upstream?: string;
+  subject: string; committed_at?: string;  // tip commit, annotated tags peeled
+  ahead?: number; behind?: number;         // vs upstream from local refs; absent without one or when it is gone
+  base_ahead?: number; base_behind?: number; // vs RefsResult.base; absent for tags and for the base itself
+};
+type RefsResult = { repository_id: string; base?: string; refs: RefEntry[] }; // base: default branch, e.g. "origin/main" 
 
 type Workspace = {
   id: string; name: string;
@@ -749,6 +827,16 @@ type Workspace = {
   discovery_root?: string;                // discovered only: canonical path of the selected folder
   discovery_path?: string;                // discovered only: scanned folder relative to discovery_root; absent = discovery_root
   members: WorkspaceMember[];
+  activity: ActivitySettings;
+  unseen_activity: number;                // unread activity events across members
+};
+type ActivitySettings = {
+  watched_branches: string[];             // names or globs, without the remote; default ["main", "master", "develop"]
+  watched_tags: string[];                 // globs; default ["v*"]
+  auto_fetch: boolean;                    // default false
+  notify_moves: boolean;                  // default false
+  morning_digest: boolean;                // default false
+  warn_conflicts: boolean;                // default true
 };
 type WorkspaceMember = {
   origin: "discovered" | "manual";
@@ -756,19 +844,61 @@ type WorkspaceMember = {
   repository_id?: string;                 // absent for non-Git folders; equals root_repository_id for the root
   status: "ok" | "missing" | "not_git";
 };
+type WorkspacePreviewEntry = {
+  display_name: string; configured_path: string; resolved_path?: string;
+  status: "ok" | "missing" | "not_git" | "unsupported" | "duplicate" | "nested";
+  repository_root?: string; existing_repository_id?: string; message?: string;
+};
 type WorkspacePreview = {
   name: string; discovery_mode: Workspace["discovery_mode"];
-  entries: { display_name: string; configured_path: string; resolved_path?: string;
-             status: "ok" | "missing" | "not_git" | "unsupported" | "duplicate" | "nested";
-             repository_root?: string; existing_repository_id?: string; message?: string }[];
-  candidates?: WorkspacePreview["entries"];   // discovered but not yet included
+  entries: WorkspacePreviewEntry[];       // root first, then discovery-folder children by name; skipped ones carry a message
+  candidates?: WorkspacePreviewEntry[];   // discovered but not yet included
+};
+type CreateWorkspaceRequest = {
+  name: string; discovery_mode: Workspace["discovery_mode"];
+  discovery_root?: string;                // discovered only: the selected folder
+  discovery_path?: string;                // discovered only: scanned folder relative to discovery_root
+  paths: string[];                        // absolute folders to track; discovery_root, when a repository, becomes the root
+};
+type UpdateWorkspaceMembershipRequest = {
+  workspace_id: string;
+  add: string[];                          // absolute folders; origin is discovered inside the discovery folder, manual elsewhere
+  remove: string[];                       // member canonical_path values; repository registrations are kept
 };
 
-type RepositoryChangedEvent = { repository_id: string; snapshot_version: number; origin: "watcher" | "refresh" | "timer" | "wake" | "registration"; changed: boolean };
+type ActivityKind = "advanced" | "rewritten" | "created" | "tagged";
+type ActivityCommit = { id: string; short_id: string; subject: string; author_name: string; committed_at: string; is_merge: boolean };
+type ActivityItem = {
+  id: string; repository_id: string; repository_name: string; // a checkout of the event's Git directory
+  kind: ActivityKind; ref_name: string;   // short: "origin/main", or the tag name
+  full_ref: string;                       // "refs/remotes/origin/main", "refs/tags/v1"
+  old_id?: string; new_id: string; observed_at: string; seen: boolean;
+} & ActivityDetail;
+type ActivityDetail = {                   // stored with the event; fields default to empty
+  commits: ActivityCommit[];              // newest first, at most 5
+  total_commits: number; merges: number; replaced: number; // replaced: rewritten only
+  authors: string[];
+  conflict_paths: string[];               // incoming paths also changed in the working tree
+  drift?: { branch: string; base: string; behind: number };
+  previous_tag?: string; commits_since_previous_tag?: number; // tagged only
+};
+type RepositoryFreshness = { repository_id: string; name: string; last_fetch_at?: string; fetch_error?: AppError };
+type PulseAuthor = { name: string; commits: number };
+type TeamPulse = { since: string; commits: number; merges: number; releases: number; authors: PulseAuthor[]; repositories: string[] };
+type WorkspaceActivity = {
+  workspace_id: string; settings: ActivitySettings;
+  items: ActivityItem[];                  // newest first, unread before seen, at most 200
+  unseen: number;
+  freshness: RepositoryFreshness[];       // oldest fetch first
+  pulse: TeamPulse;
+};
+type FetchResult = { repository_id: string; remote: string; fetched_at: string; moved: string[] }; // moved: refs whose tips changed
+
+type RepositoryChangedEvent = { repository_id: string; snapshot_version: number; origin: "watcher" | "refresh" | "timer" | "wake" | "registration" | "fetch"; changed: boolean };
 // changed is false when a timer/wake poll or a list_changes call observed the same status as before; watcher, manual refresh, and registration events are always changed
 ```
 
-Commands map onto these as follows: `get_app_snapshot → AppSnapshot`; `register_repository(path) → RepositorySummary`; `remove_repository(id)`; `open_repository(id)` marks it recent; `set_repository_tab(id, tab)`; `open_in_editor(id, path?, line?)`; `reveal_in_finder(id, path?)`; `discover_repositories(folder_path, discovery_path?) → WorkspacePreview`; `create_workspace(name, mode, selected entries) → Workspace`; `update_workspace_membership(workspace_id, entries) → Workspace`; `refresh_repository(id) → RepositorySummary`; `list_changes(id) → ChangesResult`; `get_diff(id, DiffSelector) → DiffResult`; `list_commits(ListCommitsRequest) → CommitPage`; `get_commit(id, commit_id, parent_index?) → CommitDetail`; `list_refs(id) → RefsResult`. Every result carries the repository ID so a late response for a previously selected repository can be discarded by the frontend.
+Commands map onto these as follows: `get_app_snapshot → AppSnapshot`; `register_repository(path) → RepositorySummary`; `remove_repository(id)`; `open_repository(id)` marks it recent; `set_repository_tab(id, tab)`; `open_in_editor(id, path?, line?)`; `reveal_in_finder(id, path?)`; `discover_repositories(folder_path, discovery_path?) → WorkspacePreview`; `create_workspace(CreateWorkspaceRequest) → Workspace`; `update_workspace_membership(UpdateWorkspaceMembershipRequest) → Workspace`; `rename_workspace(workspace_id, name) → Workspace`; `remove_workspace(workspace_id)` also deletes its pin and keeps member registrations; `set_pinned(entity_type, entity_id, pinned)`; `refresh_repository(id) → RepositorySummary`; `list_changes(id) → ChangesResult`; `get_diff(id, DiffSelector, DiffOptions?) → DiffResult`; `list_commits(ListCommitsRequest) → CommitPage`; `get_commit(id, commit_id, parent_index?) → CommitDetail`; `list_refs(id) → RefsResult`; `fetch_repository(id) → FetchResult` fails with `CONFLICT` when another Git process holds a lock and `PERMISSION_DENIED` when the remote needs sign-in; `get_workspace_activity(workspace_id) → WorkspaceActivity`; `mark_activity_seen(workspace_id, event_ids?)` marks the given events, or all of the workspace's, as seen; `update_activity_settings(workspace_id, ActivitySettings) → Workspace`. Every result carries the repository ID so a late response for a previously selected repository can be discarded by the frontend.
 
 Committed notifications include `note_changed`, `note_missing`, `task_changed`, `repository_changed`, and `index_status_changed`. Scope payloads to the authorized window. Do not broadcast note contents through global events. Commands return definitive state even if an event is missed. [Tauri frontend events](https://v2.tauri.app/develop/calling-frontend/)
 
@@ -783,7 +913,8 @@ Tauri capabilities constrain which windows can access core/plugin APIs. Define s
 - Allow local images inside the vault through a scoped asset mechanism. Block remote image fetching by default to avoid unintended requests.
 - Open approved `http`/`https` links externally; never treat a note link as a shell command.
 - Invoke Git/editor executables with fixed argument arrays and bounded execution. Imported workspace content never supplies arbitrary executable code.
-- Keep credentials in macOS Keychain when remote integrations arrive. Logs exclude note bodies, model prompts, tokens, and credentials.
+- Keep credentials in macOS Keychain when remote integrations arrive. Logs exclude note bodies, model prompts, tokens, and credentials. Fetching uses Git's own credential configuration and never asks for or stores credentials itself.
+- macOS notifications (`tauri-plugin-notification`) are sent from Rust only, for workspaces that turned them on; the WebView gets no notification permission.
 - No telemetry or remote inference by default. Local storage is ordinary plaintext; application-level encryption is future scope.
 
 Proposed support target is macOS 13+ on Apple Silicon, validated against the selected Tauri dependencies. Intel support requires its own build and test pass before being claimed. Distribute a direct-download `.app`/DMG initially; App Store sandboxing is a separate decision. [Tauri macOS bundles](https://v2.tauri.app/distribute/macos-application-bundle/)
@@ -817,7 +948,7 @@ Apply checks at the milestone that introduces the behavior. v0.1 is gated by Git
 - Temporary-directory integration tests for atomic saves, observed conflicts, external replacement/rename/delete, missing vaults, and write failures.
 - Migration/backup/restore tests that preserve tasks and associations and independently rebuild search.
 - Editor fixtures verifying rich-mode fidelity and source-mode fallback; dirty-buffer recovery after an interrupted save.
-- Git fixtures for unstaged edits without `.git` changes, simultaneous staged/unstaged edits, untracked files, renames, conflicts, detached HEAD, empty repositories, linked worktrees, ignored directories, and subprocess timeout. Verify root/merge commit diffs, ref-scoped history pagination, binary/oversized diff handling, unusual filenames, rapid selection changes, and partial multi-repository failure. Inspection must not modify working files, refs, or index contents.
+- Git fixtures for unstaged edits without `.git` changes, simultaneous staged/unstaged edits, untracked files, renames, conflicts, detached HEAD, empty repositories, linked worktrees, ignored directories, and subprocess timeout. Verify root/merge commit diffs, ref-scoped history pagination, binary/oversized diff handling, unusual filenames, rapid selection changes, and partial multi-repository failure. Inspection must not modify working files, refs, or index contents; a fetch (tested against a local bare remote) changes only remote-tracking refs and tags. Activity fixtures cover a baseline, a fast-forward, a force-push, a new tag, and an overlap with working-tree changes.
 - Async tests for event bursts, superseded indexing jobs, cancellation, and window snapshot recovery.
 - Manual macOS smoke tests for shortcuts, menus, focus, Spaces, appearance/accessibility settings, and packaged application behavior.
 - Frontend component/browser tests can mock IPC. They do not replace actual WebView smoke tests: Tauri's WebDriver documentation does not offer macOS desktop support. [Tauri WebDriver limitations](https://v2.tauri.app/develop/tests/webdriver/)
@@ -853,9 +984,12 @@ M0 landed on 1 October 2026 with 58 Rust tests and 3 frontend tests. Known M0 si
 - [x] Read-only branch/tag lists and ref-scoped history selection.
 - [ ] Debounced tracking, bounded subprocesses, manual refresh, wake/activation reconciliation.
 - [ ] Repository/workspace command palette, copy hashes/paths, Open in editor, Reveal in Finder.
+- [ ] Fetch now and opt-in per-workspace auto-fetch of watched branches, with lock detection, backoff, and non-interactive credentials.
+- [ ] Workspace Activity tab: watched refs, advanced/rewritten/created/tagged events, unread state, conflict-risk and drift warnings, team pulse, fetch freshness, optional notifications and morning digest.
+- [ ] Viewer refinements: line counts in Changes, Both comparison, ignore whitespace, split layout, word highlights, hunk navigation, author filter, comparison with the default branch, keyboard shortcuts, AA contrast.
 - [ ] SQLite snapshot backup of settings/workspaces (export manifest is v0.2); no note vault, account, FTS index, or model required.
 
-**Exit gate:** use the app for a week with a standalone repository, a manual workspace, and a discovered workspace whose folder is itself a repository. Identify dirty/conflicted repos, inspect staged and unstaged patches, navigate history and refs, observe external changes, retain registrations after restart, and recover from one slow/missing repo while the rest remain usable. Confirm viewing does not alter working files, refs, or the index.
+**Exit gate:** use the app for a week with a standalone repository, a manual workspace, and a discovered workspace whose folder is itself a repository. Identify dirty/conflicted repos, inspect staged and unstaged patches, navigate history and refs, observe external changes, see a teammate's merge in the Activity tab after a fetch, retain registrations after restart, and recover from one slow/missing repo while the rest remain usable. Confirm viewing does not alter working files, refs, or the index, and that fetching changes only remote-tracking refs and tags.
 
 **Topology acceptance:** select a folder once and discover the repositories directly inside its discovery folder, both when the discovery folder is the selected folder and when it is a subfolder, and both when the selected folder is a repository and when it is not. Root and member changes remain separately attributed even when the root ignores the discovery folder. Adding/removing a child is detected, plain child folders do not become false repositories, and repeated discovery/manual selection does not duplicate registrations. Include independent nested repos, a linked worktree, and an actual submodule in fixtures.
 

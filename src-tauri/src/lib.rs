@@ -1,7 +1,9 @@
 //! Tauri setup: shared state, native menu, background loops, command registration.
 
+pub mod activity;
 pub mod commands;
 pub mod db;
+pub mod fetcher;
 pub mod git;
 pub mod models;
 pub mod watcher;
@@ -22,6 +24,8 @@ pub const EVENT_MENU: &str = "menu";
 
 /// Minimum age of an observation before focus/wake triggers a refresh.
 const ACTIVATION_MIN_AGE: Duration = Duration::from_secs(10);
+/// How often auto-fetch and the morning digest check whether something is due.
+const SCHEDULE_TICK: Duration = Duration::from_secs(60);
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -33,6 +37,7 @@ pub fn run() {
         // Self-update from GitHub releases; `process` provides the relaunch after install.
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let handle = app.handle().clone();
 
@@ -58,6 +63,13 @@ pub fn run() {
                 }
             });
             let service = Arc::new(RepositoryService::new(db, git, settings.clone(), emitter));
+            let notify_handle = handle.clone();
+            service.set_notifier(Arc::new(move |title: String, body: String| {
+                use tauri_plugin_notification::NotificationExt;
+                if let Err(e) = notify_handle.notification().builder().title(title).body(body).show() {
+                    tracing::warn!(error = %e, "could not show a notification");
+                }
+            }));
             app.manage(Arc::clone(&service));
 
             // --- Watcher and background loops --------------------------------
@@ -88,6 +100,17 @@ pub fn run() {
                 loop {
                     ticker.tick().await;
                     let _ = timer_service.request_refresh_all(ChangeOrigin::Timer, interval / 2).await;
+                }
+            });
+
+            // Opt-in auto-fetch and the morning digest (SPEC §7).
+            let schedule_service = Arc::clone(&service);
+            tauri::async_runtime::spawn(async move {
+                let mut ticker = tokio::time::interval(SCHEDULE_TICK);
+                loop {
+                    ticker.tick().await;
+                    schedule_service.auto_fetch_tick().await;
+                    schedule_service.digest_tick().await;
                 }
             });
 
@@ -122,6 +145,16 @@ pub fn run() {
             commands::list_refs,
             commands::open_in_editor,
             commands::reveal_in_finder,
+            commands::discover_repositories,
+            commands::create_workspace,
+            commands::update_workspace_membership,
+            commands::rename_workspace,
+            commands::remove_workspace,
+            commands::set_pinned,
+            commands::fetch_repository,
+            commands::get_workspace_activity,
+            commands::mark_activity_seen,
+            commands::update_activity_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Brainiac");
@@ -141,15 +174,16 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
     let open = MenuItem::with_id(
         app,
         "open_repository",
-        "Open Repository…",
+        "Add Repository or Workspace…",
         true,
         Some("CmdOrCtrl+O"),
     )?;
     let refresh = MenuItem::with_id(app, "refresh", "Refresh", true, Some("CmdOrCtrl+R"))?;
+    let fetch = MenuItem::with_id(app, "fetch", "Fetch Now", true, None::<&str>)?;
     let palette = MenuItem::with_id(
         app,
         "palette",
-        "Switch Repository…",
+        "Switch Repository or Workspace…",
         true,
         Some("CmdOrCtrl+K"),
     )?;
@@ -211,6 +245,7 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
         true,
         &[
             &refresh,
+            &fetch,
             &palette,
             &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::fullscreen(app, None)?,

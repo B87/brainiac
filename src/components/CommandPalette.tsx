@@ -1,21 +1,34 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { shortPath } from "../lib/format";
 import type { AppSnapshot } from "../lib/ipc";
+import { repoTone } from "../lib/repo";
+import { FetchIcon, FolderIcon, GridIcon, PlusIcon, SearchIcon } from "./icons";
+import type { View } from "./Sidebar";
 
 type Props = {
   snapshot: AppSnapshot;
   onClose: () => void;
-  onSelect: (id: string) => void;
-  onAdd: () => void;
+  onView: (view: View) => void;
+  onOpenRepository: () => void;
+  onNewWorkspace: () => void;
+  onFetch: () => void;
 };
 
-type Item = { id: string; label: string; hint: string; action: () => void };
+type Item = {
+  id: string;
+  label: string;
+  hint: string;
+  icon: React.ReactNode;
+  action: () => void;
+};
 
 export default function CommandPalette({
   snapshot,
   onClose,
-  onSelect,
-  onAdd,
+  onView,
+  onOpenRepository,
+  onNewWorkspace,
+  onFetch,
 }: Props) {
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
@@ -23,27 +36,72 @@ export default function CommandPalette({
 
   const items = useMemo<Item[]>(() => {
     const q = query.trim().toLowerCase();
+    const match = (...fields: string[]) =>
+      !q || fields.some((f) => f.toLowerCase().includes(q));
+    const workspaces: Item[] = snapshot.workspaces
+      .filter((w) => match(w.name, w.discovery_root ?? ""))
+      .map((w) => ({
+        id: `w:${w.id}`,
+        label: w.name,
+        hint: `workspace · ${w.members.length}`,
+        icon: <GridIcon size={13} />,
+        action: () => onView({ kind: "workspace", id: w.id }),
+      }));
+    const activity: Item[] = snapshot.workspaces
+      .filter((w) => match(`${w.name} activity`))
+      .map((w) => ({
+        id: `a:${w.id}`,
+        label: `${w.name} · Activity`,
+        hint: w.unseen_activity ? `${w.unseen_activity} new` : "",
+        icon: <GridIcon size={13} />,
+        action: () => onView({ kind: "workspace", id: w.id, tab: "activity" }),
+      }));
     const repos: Item[] = snapshot.repositories
-      .filter(
-        (r) =>
-          !q ||
-          r.name.toLowerCase().includes(q) ||
-          r.display_path.toLowerCase().includes(q),
-      )
+      .filter((r) => match(r.name, r.display_path))
       .map((r) => ({
-        id: r.id,
+        id: `r:${r.id}`,
         label: r.name,
         hint: shortPath(r.display_path),
-        action: () => onSelect(r.id),
+        icon: <span className="dot" data-state={repoTone(r)} />,
+        action: () => onView({ kind: "repository", id: r.id }),
       }));
-    const add: Item = {
-      id: "__add",
-      label: "Open Repository…",
-      hint: "⌘O",
-      action: onAdd,
-    };
-    return !q || "open repository".includes(q) ? [...repos, add] : repos;
-  }, [snapshot, query, onSelect, onAdd]);
+    const actions: Item[] = [
+      {
+        id: "all",
+        label: "All repositories",
+        hint: "",
+        icon: <GridIcon size={13} />,
+        action: () => onView({ kind: "all" }),
+      },
+      {
+        id: "open",
+        label: "Open Repository…",
+        hint: "⌘O",
+        icon: <FolderIcon size={13} />,
+        action: onOpenRepository,
+      },
+      {
+        id: "new",
+        label: "New Workspace…",
+        hint: "",
+        icon: <PlusIcon size={13} />,
+        action: onNewWorkspace,
+      },
+      {
+        id: "fetch",
+        label: "Fetch Now",
+        hint: "remote-tracking refs only",
+        icon: <FetchIcon size={13} />,
+        action: onFetch,
+      },
+    ].filter((a) => match(a.label));
+    return [
+      ...repos,
+      ...workspaces,
+      ...(query.trim() ? activity : []),
+      ...actions,
+    ];
+  }, [snapshot, query, onView, onOpenRepository, onNewWorkspace, onFetch]);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -60,7 +118,7 @@ export default function CommandPalette({
   };
 
   return (
-    <div className="absolute inset-0 z-10 flex items-start justify-center bg-black/20 pt-24">
+    <div className="absolute inset-0 z-30 flex items-start justify-center bg-black/25 pt-24">
       <button
         type="button"
         aria-label="Close command palette"
@@ -71,36 +129,40 @@ export default function CommandPalette({
       <div
         role="dialog"
         aria-modal="true"
-        aria-label="Switch repository"
+        aria-label="Switch repository or workspace"
         tabIndex={-1}
-        className="pane relative w-[480px] rounded-lg border shadow-xl"
+        className="relative w-[520px] rounded-xl border border-control-line bg-header shadow-2xl"
         onKeyDown={onKeyDown}
       >
-        <input
-          ref={inputRef}
-          className="selectable w-full rounded-t-lg border-b bg-transparent px-3 py-2 outline-none"
-          placeholder="Switch repository…"
-          value={query}
-          onChange={(e) => {
-            setQuery(e.target.value);
-            setIndex(0);
-          }}
-        />
-        <div className="max-h-80 overflow-y-auto p-1">
+        <div className="flex items-center gap-2 border-b px-3.5 text-muted">
+          <SearchIcon size={14} />
+          <input
+            ref={inputRef}
+            className="selectable h-11 flex-1 bg-transparent text-[14px] outline-none"
+            placeholder="Switch repository or workspace…"
+            value={query}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              setIndex(0);
+            }}
+          />
+        </div>
+        <div className="max-h-96 overflow-y-auto p-1.5">
           {items.length === 0 && (
-            <div className="muted px-2 py-1">No matches.</div>
+            <div className="px-2 py-1 text-muted">No matches.</div>
           )}
           {items.map((it, i) => (
             <button
               type="button"
               key={it.id}
-              className="row w-full text-left"
-              aria-pressed={i === index}
+              className="menu-item h-8"
+              aria-current={i === index}
               onMouseEnter={() => setIndex(i)}
               onClick={it.action}
             >
+              <span className="flex w-4 justify-center">{it.icon}</span>
               <span className="truncate">{it.label}</span>
-              <span className="muted ml-auto truncate text-[11px]">
+              <span className="muted-in-menu ml-auto truncate text-[11px] text-muted">
                 {it.hint}
               </span>
             </button>

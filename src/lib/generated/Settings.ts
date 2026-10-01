@@ -2,4 +2,8 @@
 import type { DiffLimits } from "./DiffLimits";
 import type { EditorSettings } from "./EditorSettings";
 
-export type Settings = { editor: EditorSettings, refresh_interval_seconds: number, status_timeout_seconds: number, diff_limits: DiffLimits, };
+export type Settings = { editor: EditorSettings, refresh_interval_seconds: number, status_timeout_seconds: number, diff_limits: DiffLimits, 
+/**
+ * Minutes between automatic fetches of a workspace's watched branches (minimum 5).
+ */
+auto_fetch_interval_minutes: number, fetch_timeout_seconds: number, };

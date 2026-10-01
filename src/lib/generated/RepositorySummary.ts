@@ -14,4 +14,12 @@ name: string, canonical_root: string,
 /**
  * The path as registered; differs from `canonical_root` for linked worktrees.
  */
-display_path: string, state: RepositoryState, last_checked_at: string | null, last_commit_at: string | null, head: HeadState | null, counts: ChangeCounts | null, upstream: UpstreamState | null, error: AppError | null, last_tab: RepositoryTab | null, };
+display_path: string, state: RepositoryState, last_checked_at: string | null, last_commit_at: string | null, head: HeadState | null, counts: ChangeCounts | null, upstream: UpstreamState | null, error: AppError | null, last_tab: RepositoryTab | null, 
+/**
+ * Later of Brainiac's last fetch and the modification time of `FETCH_HEAD`.
+ */
+last_fetch_at: string | null, 
+/**
+ * Outcome of Brainiac's last fetch; cleared by a successful one.
+ */
+fetch_error: AppError | null, };

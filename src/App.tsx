@@ -1,10 +1,10 @@
-import { open } from "@tauri-apps/plugin-dialog";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { ask, open } from "@tauri-apps/plugin-dialog";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import AddDialog, { type AddMode } from "./components/AddDialog";
 import CommandPalette from "./components/CommandPalette";
-import Inspector from "./components/Inspector";
-import OverviewTable from "./components/OverviewTable";
+import Dashboard, { type Discovered } from "./components/Dashboard";
 import RepositoryView from "./components/RepositoryView";
-import Sidebar from "./components/Sidebar";
+import Sidebar, { type View } from "./components/Sidebar";
 import StatusBar from "./components/StatusBar";
 import UpdateBanner from "./components/UpdateBanner";
 import {
@@ -13,19 +13,29 @@ import {
   ipc,
   onMenu,
   onRepositoryChanged,
+  type PinEntityType,
+  type Workspace,
 } from "./lib/ipc";
+import { plural } from "./lib/repo";
+import { workspaceRepositories } from "./lib/workspace";
 
 export default function App() {
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [view, setView] = useState<View>({ kind: "all" });
   const [banner, setBanner] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [addMode, setAddMode] = useState<AddMode | null>(null);
+  const [discovered, setDiscovered] = useState<Discovered | null>(null);
   /** Bumped when the selected repository changes on disk; views re-fetch on it. */
   const [changeTick, setChangeTick] = useState(0);
   /** Bumped from the "Check for Updates…" menu item. */
   const [updateTick, setUpdateTick] = useState(0);
-  const selectedRef = useRef<string | null>(null);
-  selectedRef.current = selectedId;
+  /** Repositories with a fetch running. */
+  const [fetching, setFetching] = useState<ReadonlySet<string>>(new Set());
+  /** Short-lived outcome shown in the status bar, such as "2 refs updated". */
+  const [notice, setNotice] = useState<string | null>(null);
+  const viewRef = useRef(view);
+  viewRef.current = view;
 
   const reloadSnapshot = useCallback(async () => {
     try {
@@ -39,49 +49,121 @@ export default function App() {
     }
   }, []);
 
-  const selectRepository = useCallback((id: string | null) => {
-    setSelectedId(id);
-    if (id) void ipc.openRepository(id).catch(() => {});
+  const showView = useCallback((next: View) => {
+    setView(next);
+    setPaletteOpen(false);
+    if (next.kind === "repository")
+      void ipc.openRepository(next.id).catch(() => {});
   }, []);
 
-  const addRepository = useCallback(async () => {
+  const openRepositoryPicker = useCallback(async () => {
     try {
       const dir = await open({
         directory: true,
         multiple: false,
         title: "Open Repository",
       });
-      if (!dir) return;
+      if (typeof dir !== "string") return;
       const summary = await ipc.registerRepository(dir);
       await reloadSnapshot();
-      selectRepository(summary.id);
+      showView({ kind: "repository", id: summary.id });
       setBanner(null);
     } catch (e) {
       setBanner(errorMessage(e));
     }
-  }, [reloadSnapshot, selectRepository]);
+  }, [reloadSnapshot, showView]);
+
+  const byId = useMemo(
+    () => new Map((snapshot?.repositories ?? []).map((r) => [r.id, r])),
+    [snapshot],
+  );
+  const workspace =
+    view.kind === "workspace"
+      ? (snapshot?.workspaces.find((w) => w.id === view.id) ?? null)
+      : null;
+  const selected =
+    view.kind === "repository" ? (byId.get(view.id) ?? null) : null;
+
+  // Fall back to the overview when the shown repository or workspace is removed.
+  useEffect(() => {
+    if (!snapshot) return;
+    if (
+      (view.kind === "workspace" && !workspace) ||
+      (view.kind === "repository" && !selected)
+    )
+      setView({ kind: "all" });
+  }, [snapshot, view, workspace, selected]);
+
+  /** Repositories the main area covers, for refresh and the status bar. */
+  const scope = useMemo(() => {
+    if (!snapshot) return [];
+    if (selected) return [selected];
+    if (workspace) return workspaceRepositories(workspace, byId);
+    return snapshot.repositories;
+  }, [snapshot, selected, workspace, byId]);
 
   const refresh = useCallback(async () => {
     try {
-      const id = selectedRef.current;
-      if (id) {
-        await ipc.refreshRepository(id);
-      } else if (snapshot) {
-        await Promise.allSettled(
-          snapshot.repositories.map((r) => ipc.refreshRepository(r.id)),
-        );
-      }
+      await Promise.allSettled(scope.map((r) => ipc.refreshRepository(r.id)));
       await reloadSnapshot();
     } catch (e) {
       setBanner(errorMessage(e));
     }
-  }, [snapshot, reloadSnapshot]);
+  }, [scope, reloadSnapshot]);
 
-  const removeRepository = useCallback(
-    async (id: string) => {
+  const fetchRepositories = useCallback(
+    async (ids: string[]) => {
+      const todo = ids.filter((id) => !fetching.has(id));
+      if (!todo.length) return;
+      setFetching((prev) => new Set([...prev, ...todo]));
+      const results = await Promise.allSettled(
+        todo.map((id) =>
+          ipc.fetchRepository(id).finally(() =>
+            setFetching((prev) => {
+              const next = new Set(prev);
+              next.delete(id);
+              return next;
+            }),
+          ),
+        ),
+      );
+      const moved = results.flatMap((r) =>
+        r.status === "fulfilled" ? r.value.moved : [],
+      );
+      const failed = results.flatMap((r) =>
+        r.status === "rejected" ? [r.reason] : [],
+      );
+      const what =
+        todo.length === 1 ? "Fetched" : `Fetched ${todo.length} repositories`;
+      setNotice(
+        failed.length === todo.length
+          ? null
+          : moved.length
+            ? `${what}: ${plural(moved.length, "ref")} updated`
+            : `${what}: already up to date`,
+      );
+      if (failed.length)
+        setBanner(
+          failed.length === 1
+            ? errorMessage(failed[0])
+            : `${failed.length} fetches failed. First: ${errorMessage(failed[0])}`,
+        );
+      await reloadSnapshot();
+    },
+    [fetching, reloadSnapshot],
+  );
+
+  // A fetch notice fades after a few seconds.
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(null), 5000);
+    return () => clearTimeout(t);
+  }, [notice]);
+
+  const guard = useCallback(
+    async (task: () => Promise<unknown>) => {
       try {
-        await ipc.removeRepository(id);
-        if (selectedRef.current === id) setSelectedId(null);
+        await task();
         await reloadSnapshot();
       } catch (e) {
         setBanner(errorMessage(e));
@@ -90,9 +172,88 @@ export default function App() {
     [reloadSnapshot],
   );
 
+  const removeRepository = useCallback(
+    async (id: string) => {
+      const repo = byId.get(id);
+      const confirmed = await ask(
+        `Remove “${repo?.name ?? "this repository"}” from Brainiac? It also leaves every workspace. Files on disk are not touched.`,
+        { title: "Remove Repository", kind: "warning", okLabel: "Remove" },
+      );
+      if (confirmed) await guard(() => ipc.removeRepository(id));
+    },
+    [byId, guard],
+  );
+
+  const togglePin = useCallback(
+    (entityType: PinEntityType, id: string) => {
+      const pinned = !!snapshot?.pins.some(
+        (p) => p.entity_type === entityType && p.entity_id === id,
+      );
+      void guard(() => ipc.setPinned(entityType, id, !pinned));
+    },
+    [snapshot, guard],
+  );
+
+  /** Lists repositories in a discovered workspace's folder that it does not track yet. */
+  const rescan = useCallback(async (ws: Workspace, explicit: boolean) => {
+    if (ws.discovery_mode !== "discovered" || !ws.discovery_root) return;
+    try {
+      const preview = await ipc.discoverRepositories(
+        ws.discovery_root,
+        ws.discovery_path ?? undefined,
+      );
+      const members = new Set(ws.members.map((m) => m.canonical_path));
+      const untracked = preview.entries.filter(
+        (e) => !members.has(e.resolved_path ?? e.configured_path),
+      );
+      const result: Discovered = {
+        workspaceId: ws.id,
+        repositories: untracked
+          .filter((e) => e.status === "ok")
+          .map((e) => ({
+            name: e.display_name,
+            path: e.resolved_path ?? e.configured_path,
+          })),
+        skipped: untracked.filter(
+          (e) =>
+            e.status === "not_git" ||
+            e.status === "unsupported" ||
+            e.status === "nested",
+        ).length,
+      };
+      // A background scan only speaks up when there is something to track.
+      if (explicit || result.repositories.length) setDiscovered(result);
+    } catch (e) {
+      if (explicit) setBanner(errorMessage(e));
+    }
+  }, []);
+
+  // Check for new repositories whenever a discovered workspace is opened.
+  const workspaceId = workspace?.id;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: only opening a different workspace triggers the scan.
+  useEffect(() => {
+    setDiscovered(null);
+    if (workspace) void rescan(workspace, false);
+  }, [workspaceId]);
+
+  const deleteWorkspace = useCallback(
+    async (ws: Workspace) => {
+      const confirmed = await ask(
+        `Delete the workspace “${ws.name}”? Its repositories stay registered, and files on disk are not touched.`,
+        { title: "Delete Workspace", kind: "warning", okLabel: "Delete" },
+      );
+      if (confirmed) await guard(() => ipc.removeWorkspace(ws.id));
+    },
+    [guard],
+  );
+
   // Keep the latest callbacks reachable from long-lived event listeners.
-  const actions = useRef({ addRepository, refresh });
-  actions.current = { addRepository, refresh };
+  const fetchScope = () =>
+    void fetchRepositories(
+      scope.filter((r) => r.state !== "missing").map((r) => r.id),
+    );
+  const actions = useRef({ refresh, fetchScope });
+  actions.current = { refresh, fetchScope };
 
   useEffect(() => {
     void reloadSnapshot();
@@ -104,7 +265,8 @@ export default function App() {
     let pending = false;
     void onRepositoryChanged((e) => {
       // Only real changes reload the open view; unchanged polls just refresh the snapshot.
-      if (e.changed && e.repository_id === selectedRef.current)
+      const v = viewRef.current;
+      if (e.changed && v.kind === "repository" && e.repository_id === v.id)
         setChangeTick((t) => t + 1);
       if (!pending) {
         pending = true;
@@ -115,8 +277,9 @@ export default function App() {
       }
     }).then((u) => (disposed ? u() : unlisteners.push(u)));
     void onMenu((e) => {
-      if (e.id === "open_repository") void actions.current.addRepository();
+      if (e.id === "open_repository") setAddMode({ kind: "choose" });
       if (e.id === "refresh") void actions.current.refresh();
+      if (e.id === "fetch") actions.current.fetchScope();
       if (e.id === "palette") setPaletteOpen(true);
       if (e.id === "check_updates") setUpdateTick((t) => t + 1);
     }).then((u) => (disposed ? u() : unlisteners.push(u)));
@@ -126,74 +289,171 @@ export default function App() {
     };
   }, [reloadSnapshot]);
 
-  const selected =
-    snapshot?.repositories.find((r) => r.id === selectedId) ?? null;
+  const isPinned = (type: PinEntityType, id: string) =>
+    !!snapshot?.pins.some((p) => p.entity_type === type && p.entity_id === id);
 
   return (
     <div className="flex h-full flex-col">
-      <UpdateBanner manualTick={updateTick} />
-      {snapshot && !snapshot.git.available && (
-        <div className="border-b border-amber-300 bg-amber-50 px-3 py-2 text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-100">
-          {snapshot.git.message ?? "Git is not available."}
-        </div>
-      )}
-      {banner && (
-        <div className="flex items-center gap-3 border-b border-red-300 bg-red-50 px-3 py-2 text-red-900 dark:border-red-800 dark:bg-red-950 dark:text-red-100">
-          <span className="flex-1 selectable">{banner}</span>
-          <button
-            type="button"
-            className="rounded border px-2 py-0.5"
-            onClick={() => setBanner(null)}
-          >
-            Dismiss
-          </button>
-        </div>
-      )}
       <div className="flex min-h-0 flex-1">
         <Sidebar
           snapshot={snapshot}
-          selectedId={selectedId}
-          onSelect={selectRepository}
-          onAdd={addRepository}
-          onPalette={() => setPaletteOpen(true)}
+          view={view}
+          onView={showView}
+          onAdd={() => setAddMode({ kind: "choose" })}
         />
-        <main className="pane flex min-w-0 flex-1 flex-col border-l">
-          {selected ? (
+        <main className="flex min-w-0 flex-1 flex-col bg-app">
+          <UpdateBanner manualTick={updateTick} />
+          {snapshot && !snapshot.git.available && (
+            <div className="border-b border-amber-300 bg-amber-50 px-3 py-2 text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-100">
+              {snapshot.git.message ?? "Git is not available."}
+            </div>
+          )}
+          {banner && (
+            <div className="flex items-center gap-3 border-b border-red-300 bg-red-50 px-3 py-2 text-red-900 dark:border-red-800 dark:bg-red-950 dark:text-red-100">
+              <span className="selectable flex-1">{banner}</span>
+              <button
+                type="button"
+                className="rounded border px-2 py-0.5"
+                onClick={() => setBanner(null)}
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+          {!snapshot ? (
+            <div className="p-6 text-muted">Loading…</div>
+          ) : selected ? (
             <RepositoryView
-              key={selected.id}
+              key={`${selected.id}:${JSON.stringify(view.kind === "repository" ? (view.focus ?? null) : null)}`}
               repository={selected}
               changeTick={changeTick}
+              pinned={isPinned("repository", selected.id)}
+              focus={view.kind === "repository" ? view.focus : undefined}
+              fetching={fetching.has(selected.id)}
+              onFetch={() => void fetchRepositories([selected.id])}
+              onTogglePin={() => togglePin("repository", selected.id)}
+              onPalette={() => setPaletteOpen(true)}
+              onRefresh={() => void refresh()}
+              onRemove={() => void removeRepository(selected.id)}
               onError={setBanner}
             />
           ) : (
-            <OverviewTable
+            <Dashboard
+              key={workspace?.id ?? "all"}
               snapshot={snapshot}
-              onSelect={selectRepository}
-              onAdd={addRepository}
+              workspace={workspace}
+              pinned={!!workspace && isPinned("workspace", workspace.id)}
+              discovered={discovered}
+              onOpen={(id) =>
+                showView({
+                  kind: "repository",
+                  id,
+                  workspaceId: workspace?.id,
+                })
+              }
+              onPalette={() => setPaletteOpen(true)}
+              onRefreshAll={() => void refresh()}
+              onAdd={() => setAddMode({ kind: "choose" })}
+              onAddToWorkspace={() =>
+                workspace && setAddMode({ kind: "members", workspace })
+              }
+              onRescan={() => workspace && void rescan(workspace, true)}
+              onTrack={(paths) => {
+                if (!workspace) return;
+                setDiscovered(null);
+                void guard(() =>
+                  ipc.updateWorkspaceMembership({
+                    workspace_id: workspace.id,
+                    add: paths,
+                    remove: [],
+                  }),
+                );
+              }}
+              onDismissDiscovered={() => setDiscovered(null)}
+              onRemoveMember={(path) =>
+                workspace &&
+                void guard(() =>
+                  ipc.updateWorkspaceMembership({
+                    workspace_id: workspace.id,
+                    add: [],
+                    remove: [path],
+                  }),
+                )
+              }
+              onRename={(name) =>
+                workspace &&
+                void guard(() => ipc.renameWorkspace(workspace.id, name))
+              }
+              onDeleteWorkspace={() =>
+                workspace && void deleteWorkspace(workspace)
+              }
+              onTogglePin={() =>
+                workspace && togglePin("workspace", workspace.id)
+              }
+              tab={
+                view.kind === "workspace"
+                  ? (view.tab ?? "overview")
+                  : "overview"
+              }
+              onTab={(tab) =>
+                workspace &&
+                setView({ kind: "workspace", id: workspace.id, tab })
+              }
+              fetching={fetching}
+              onFetch={(ids) => void fetchRepositories(ids)}
+              onOpenFocused={(id, focus) =>
+                showView({
+                  kind: "repository",
+                  id,
+                  workspaceId: workspace?.id,
+                  focus,
+                })
+              }
+              onChanged={() => void reloadSnapshot()}
+              onError={setBanner}
             />
           )}
         </main>
-        {selected && (
-          <Inspector
-            repository={selected}
-            onRefresh={refresh}
-            onRemove={() => removeRepository(selected.id)}
-            onError={setBanner}
-          />
-        )}
       </div>
-      <StatusBar snapshot={snapshot} selected={selected} />
+      <StatusBar
+        snapshot={snapshot}
+        scope={scope}
+        selected={selected}
+        view={view}
+        notice={notice}
+        onRetry={() => void refresh()}
+      />
       {paletteOpen && snapshot && (
         <CommandPalette
           snapshot={snapshot}
           onClose={() => setPaletteOpen(false)}
-          onSelect={(id) => {
+          onView={showView}
+          onOpenRepository={() => {
             setPaletteOpen(false);
-            selectRepository(id);
+            void openRepositoryPicker();
           }}
-          onAdd={() => {
+          onNewWorkspace={() => {
             setPaletteOpen(false);
-            void addRepository();
+            setAddMode({ kind: "choose" });
+          }}
+          onFetch={() => {
+            setPaletteOpen(false);
+            fetchScope();
+          }}
+        />
+      )}
+      {addMode && snapshot && (
+        <AddDialog
+          snapshot={snapshot}
+          mode={addMode}
+          onClose={() => setAddMode(null)}
+          onOpenRepository={() => void openRepositoryPicker()}
+          onDone={(ws) => {
+            setAddMode(null);
+            setDiscovered(null);
+            void reloadSnapshot().then(() =>
+              showView({ kind: "workspace", id: ws.id }),
+            );
           }}
         />
       )}

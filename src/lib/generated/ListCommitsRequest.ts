@@ -12,4 +12,13 @@ filter: string | null, cursor: string | null,
 /**
  * Default 100, maximum 500.
  */
-limit: number | null, };
+limit: number | null, 
+/**
+ * Substring of the author's name or email (case-insensitive).
+ */
+author: string | null, 
+/**
+ * Ref whose history is left out: `ref` = topic, `exclude` = main lists
+ * the commits on topic that are not on main.
+ */
+exclude: string | null, };

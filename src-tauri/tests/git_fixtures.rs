@@ -175,6 +175,7 @@ async fn empty_repository_has_unborn_head_and_empty_history() {
                 path: "x.txt".into(),
             },
             &limits,
+            DiffOptions::default(),
         )
         .await
         .unwrap();
@@ -206,6 +207,8 @@ async fn history_pages_are_anchored_and_diffs_are_bounded() {
             filter: None,
             cursor: None,
             limit: Some(3),
+            author: None,
+            exclude: None,
         })
         .await
         .unwrap();
@@ -225,6 +228,8 @@ async fn history_pages_are_anchored_and_diffs_are_bounded() {
             filter: None,
             cursor: Some(cursor),
             limit: Some(3),
+            author: None,
+            exclude: None,
         })
         .await
         .unwrap();
@@ -237,6 +242,8 @@ async fn history_pages_are_anchored_and_diffs_are_bounded() {
             filter: None,
             cursor: page2.next_cursor.clone(),
             limit: Some(3),
+            author: None,
+            exclude: None,
         })
         .await
         .unwrap();
@@ -251,6 +258,8 @@ async fn history_pages_are_anchored_and_diffs_are_bounded() {
             filter: Some("number 2".into()),
             cursor: None,
             limit: None,
+            author: None,
+            exclude: None,
         })
         .await
         .unwrap();
@@ -262,6 +271,8 @@ async fn history_pages_are_anchored_and_diffs_are_bounded() {
             filter: Some(page1.items[1].short_id.clone()),
             cursor: None,
             limit: None,
+            author: None,
+            exclude: None,
         })
         .await
         .unwrap();
@@ -286,6 +297,7 @@ async fn history_pages_are_anchored_and_diffs_are_bounded() {
                 old_path: None,
                 parent_index: 0,
             },
+            DiffOptions::default(),
         )
         .await
         .unwrap();
@@ -313,6 +325,7 @@ async fn history_pages_are_anchored_and_diffs_are_bounded() {
                 old_path: None,
                 parent_index: 0,
             },
+            DiffOptions::default(),
         )
         .await
         .unwrap();
@@ -326,6 +339,7 @@ async fn history_pages_are_anchored_and_diffs_are_bounded() {
             DiffSelector::WorktreeVsIndex {
                 path: "a.txt".into(),
             },
+            DiffOptions::default(),
         )
         .await
         .unwrap();
@@ -348,6 +362,7 @@ async fn history_pages_are_anchored_and_diffs_are_bounded() {
                 old_path: None,
                 parent_index: 0,
             },
+            DiffOptions::default(),
         )
         .await;
     assert_eq!(d.unwrap_err().code, ErrorCode::Validation);
@@ -357,6 +372,7 @@ async fn history_pages_are_anchored_and_diffs_are_bounded() {
             DiffSelector::WorktreeVsIndex {
                 path: "../escape".into(),
             },
+            DiffOptions::default(),
         )
         .await;
     assert_eq!(d.unwrap_err().code, ErrorCode::Validation);
@@ -447,6 +463,7 @@ async fn commit_details_list_files_and_compare_with_the_chosen_parent() {
                 old_path: Some("old.txt".into()),
                 parent_index: 0,
             },
+            DiffOptions::default(),
         )
         .await
         .unwrap();
@@ -478,6 +495,7 @@ async fn commit_details_list_files_and_compare_with_the_chosen_parent() {
                 old_path: None,
                 parent_index: 0,
             },
+            DiffOptions::default(),
         )
         .await
         .unwrap();
@@ -516,6 +534,7 @@ async fn commit_details_list_files_and_compare_with_the_chosen_parent() {
                 old_path: None,
                 parent_index: 1,
             },
+            DiffOptions::default(),
         )
         .await
         .unwrap();
@@ -613,6 +632,8 @@ async fn refs_list_branches_remotes_and_tags_and_scope_history() {
             filter: None,
             cursor: None,
             limit: None,
+            author: None,
+            exclude: None,
         })
         .await
         .unwrap();

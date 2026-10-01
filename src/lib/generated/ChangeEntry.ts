@@ -2,4 +2,10 @@
 import type { ChangeGroup } from "./ChangeGroup";
 import type { ChangeKind } from "./ChangeKind";
 
-export type ChangeEntry = { group: ChangeGroup, kind: ChangeKind, path: string, old_path: string | null, is_submodule: boolean, };
+export type ChangeEntry = { group: ChangeGroup, kind: ChangeKind, path: string, old_path: string | null, is_submodule: boolean, 
+/**
+ * Line counts from `--numstat`, filled in by `list_changes` only; absent
+ * for untracked and binary files. `serde(default)` lets cached status
+ * JSON written before these fields existed still load.
+ */
+additions: number | null, deletions: number | null, };

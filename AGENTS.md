@@ -20,7 +20,7 @@ Read these parts of `SPEC.md` for v0.1 work: sections 2, 3, 4, 5, 6, 7, 14, 15, 
 ## Hard rules
 
 - This is a public, general-purpose project. Never commit paths, repository names, workspace files, or settings from the maintainer's machine or employer. Examples and fixtures use generic names.
-- The app never writes to a repository: no checkout, commit, stash, fetch, hook execution, or index changes. Inspection only.
+- The app never writes to a repository: no checkout, commit, stash, pull, hook execution, or index changes. The one exception is fetching, and only as SPEC section 7 "Fetching" defines it: the explicit Fetch now action and opt-in per-workspace auto-fetch (off by default), with the hardened invocation that updates remote-tracking refs and tags only. Everything else is inspection.
 - Keep business logic out of Tauri command handlers so it is testable with `cargo test` without a WebView.
 - Git test fixtures are built by the tests themselves (`git init` in a temporary directory), not checked in.
 - The updater signing private key lives outside the repository (`~/.tauri/brainiac.key`, CI secret `TAURI_SIGNING_PRIVATE_KEY`). Never read it into a file in the repo or print it. Only the public key belongs in `src-tauri/tauri.conf.json`.

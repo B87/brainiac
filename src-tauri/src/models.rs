@@ -144,6 +144,11 @@ pub struct Settings {
     #[ts(type = "number")]
     pub status_timeout_seconds: u64,
     pub diff_limits: DiffLimits,
+    /// Minutes between automatic fetches of a workspace's watched branches (minimum 5).
+    #[ts(type = "number")]
+    pub auto_fetch_interval_minutes: u64,
+    #[ts(type = "number")]
+    pub fetch_timeout_seconds: u64,
 }
 
 impl Default for Settings {
@@ -160,6 +165,8 @@ impl Default for Settings {
                 max_bytes: 1024 * 1024,
                 max_lines: 10_000,
             },
+            auto_fetch_interval_minutes: 15,
+            fetch_timeout_seconds: 60,
         }
     }
 }
@@ -293,6 +300,10 @@ pub struct RepositorySummary {
     pub upstream: Option<UpstreamState>,
     pub error: Option<AppError>,
     pub last_tab: Option<RepositoryTab>,
+    /// Later of Brainiac's last fetch and the modification time of `FETCH_HEAD`.
+    pub last_fetch_at: Option<String>,
+    /// Outcome of Brainiac's last fetch; cleared by a successful one.
+    pub fetch_error: Option<AppError>,
 }
 
 /// The cached result of one `git status` observation (stored as JSON in SQLite).
@@ -342,6 +353,15 @@ pub struct ChangeEntry {
     pub path: String,
     pub old_path: Option<String>,
     pub is_submodule: bool,
+    /// Line counts from `--numstat`, filled in by `list_changes` only; absent
+    /// for untracked and binary files. `serde(default)` lets cached status
+    /// JSON written before these fields existed still load.
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub additions: Option<u64>,
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub deletions: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -364,6 +384,10 @@ pub enum DiffSelector {
     WorktreeVsIndex {
         path: String,
     },
+    /// Staged and unstaged changes together: HEAD against the working tree.
+    WorktreeVsHead {
+        path: String,
+    },
     UntrackedPreview {
         path: String,
     },
@@ -382,6 +406,7 @@ impl DiffSelector {
         match self {
             DiffSelector::IndexVsHead { path }
             | DiffSelector::WorktreeVsIndex { path }
+            | DiffSelector::WorktreeVsHead { path }
             | DiffSelector::UntrackedPreview { path }
             | DiffSelector::Commit { path, .. } => path,
         }
@@ -455,6 +480,15 @@ pub enum DiffContent {
     },
 }
 
+/// How a patch is computed, independent of which patch is shown.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DiffOptions {
+    /// `git diff -w`: ignore whitespace when comparing lines.
+    #[serde(default)]
+    pub ignore_whitespace: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct DiffResult {
@@ -480,6 +514,13 @@ pub struct ListCommitsRequest {
     pub cursor: Option<String>,
     /// Default 100, maximum 500.
     pub limit: Option<u32>,
+    /// Substring of the author's name or email (case-insensitive).
+    #[serde(default)]
+    pub author: Option<String>,
+    /// Ref whose history is left out: `ref` = topic, `exclude` = main lists
+    /// the commits on topic that are not on main.
+    #[serde(default)]
+    pub exclude: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -569,17 +610,32 @@ pub struct RefEntry {
     pub is_head: bool,
     /// Configured upstream of a local branch, short form.
     pub upstream: Option<String>,
+    /// Subject of the commit the ref points at.
+    pub subject: String,
+    /// Committer date of that commit.
+    pub committed_at: Option<String>,
+    /// Commits on the branch but not on its upstream, from local refs; absent
+    /// without an upstream or when the upstream ref is gone.
+    pub ahead: Option<u32>,
+    /// Commits on the upstream but not on the branch.
+    pub behind: Option<u32>,
+    /// Commits on this ref but not on `RefsResult::base`; absent for tags and the base itself.
+    pub base_ahead: Option<u32>,
+    /// Commits on the base but not on this ref.
+    pub base_behind: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct RefsResult {
     pub repository_id: String,
+    /// The default branch refs are compared with, short form (`origin/main`).
+    pub base: Option<String>,
     pub refs: Vec<RefEntry>,
 }
 
 // ---------------------------------------------------------------------------
-// Workspaces (types only in M0; behavior arrives in v0.1)
+// Workspaces
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -634,6 +690,251 @@ pub struct Workspace {
     /// Folder scanned for repositories, relative to `discovery_root`; absent means the root itself.
     pub discovery_path: Option<String>,
     pub members: Vec<WorkspaceMember>,
+    pub activity: ActivitySettings,
+    /// Unread activity events across the members.
+    pub unseen_activity: u32,
+}
+
+/// How a folder looked when a discovery preview was taken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum PreviewStatus {
+    /// A Git working-tree root that can be tracked.
+    Ok,
+    /// The folder does not exist (for example a discovery folder that was removed).
+    Missing,
+    /// A plain folder, or a folder that belongs to an enclosing repository.
+    NotGit,
+    /// Skipped on purpose (a symbolic link) or Git could not inspect it.
+    Unsupported,
+    /// Resolves to a repository already listed in the same preview.
+    Duplicate,
+    /// The selected folder sits inside another repository without being its root.
+    Nested,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct WorkspacePreviewEntry {
+    /// Folder name.
+    pub display_name: String,
+    /// The path as found during discovery.
+    pub configured_path: String,
+    /// Canonical path, when the folder exists.
+    pub resolved_path: Option<String>,
+    pub status: PreviewStatus,
+    /// Working-tree root Git reported, for `ok` and `nested` entries.
+    pub repository_root: Option<String>,
+    /// Set when this repository is already registered.
+    pub existing_repository_id: Option<String>,
+    /// Why the entry cannot be tracked, for any status other than `ok`.
+    pub message: Option<String>,
+}
+
+/// Result of `discover_repositories`: what a workspace created from a folder would contain.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct WorkspacePreview {
+    /// Suggested workspace name: the selected folder's name.
+    pub name: String,
+    pub discovery_mode: DiscoveryMode,
+    /// The root (when the folder is a repository) first, then every child folder
+    /// of the discovery folder sorted by name, including skipped ones with a message.
+    pub entries: Vec<WorkspacePreviewEntry>,
+    /// Reserved for Rescan of an existing workspace; `discover_repositories` leaves it empty.
+    pub candidates: Option<Vec<WorkspacePreviewEntry>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CreateWorkspaceRequest {
+    pub name: String,
+    pub discovery_mode: DiscoveryMode,
+    /// Discovered workspaces only: the selected folder (absolute).
+    pub discovery_root: Option<String>,
+    /// Discovered workspaces only: scanned folder relative to `discovery_root`.
+    pub discovery_path: Option<String>,
+    /// Absolute folders to track. A path equal to `discovery_root` that is a
+    /// repository becomes the workspace root.
+    pub paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct UpdateWorkspaceMembershipRequest {
+    pub workspace_id: String,
+    /// Absolute folders to add as members.
+    pub add: Vec<String>,
+    /// `canonical_path` values of members to drop. Repository registrations are kept.
+    pub remove: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Activity and fetching
+// ---------------------------------------------------------------------------
+
+/// Per-workspace activity configuration (SPEC §7, Workspace activity).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ActivitySettings {
+    /// Branch names or globs, matched without the remote prefix.
+    pub watched_branches: Vec<String>,
+    /// Tag globs.
+    pub watched_tags: Vec<String>,
+    /// Fetch the watched branches on a schedule. Off by default.
+    pub auto_fetch: bool,
+    /// macOS notification when a watched branch moves.
+    pub notify_moves: bool,
+    /// Notification at 09:00 when there are unread events.
+    pub morning_digest: bool,
+    /// Show incoming paths that the working tree also changes.
+    pub warn_conflicts: bool,
+}
+
+impl Default for ActivitySettings {
+    fn default() -> Self {
+        Self {
+            watched_branches: vec!["main".into(), "master".into(), "develop".into()],
+            watched_tags: vec!["v*".into()],
+            auto_fetch: false,
+            notify_moves: false,
+            morning_digest: false,
+            warn_conflicts: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ActivityKind {
+    /// The old tip is an ancestor of the new one.
+    Advanced,
+    /// History was replaced (force-push).
+    Rewritten,
+    /// A watched branch appeared.
+    Created,
+    /// A watched tag appeared.
+    Tagged,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ActivityCommit {
+    pub id: String,
+    pub short_id: String,
+    pub subject: String,
+    pub author_name: String,
+    pub committed_at: String,
+    pub is_merge: bool,
+}
+
+/// The current branch fell behind a watched branch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ActivityDrift {
+    /// The checked-out branch.
+    pub branch: String,
+    /// The watched ref it is compared with, such as `origin/develop`.
+    pub base: String,
+    pub behind: u32,
+}
+
+/// What was recorded about one moved ref, stored as JSON with the event and
+/// sent inline in `ActivityItem`. `serde(default)` keeps older stored rows
+/// readable when fields are added; a failed lookup leaves a field empty.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(default)]
+#[ts(export)]
+pub struct ActivityDetail {
+    /// Newest first, at most five.
+    pub commits: Vec<ActivityCommit>,
+    pub total_commits: u32,
+    pub merges: u32,
+    /// Commits that a rewrite removed from the branch.
+    pub replaced: u32,
+    pub authors: Vec<String>,
+    /// Incoming paths that the working tree also changes.
+    pub conflict_paths: Vec<String>,
+    pub drift: Option<ActivityDrift>,
+    pub previous_tag: Option<String>,
+    pub commits_since_previous_tag: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ActivityItem {
+    pub id: String,
+    /// A checkout of the repository the event belongs to.
+    pub repository_id: String,
+    pub repository_name: String,
+    pub kind: ActivityKind,
+    /// Short name for display: `origin/main`, or the tag name.
+    pub ref_name: String,
+    /// Full name: `refs/remotes/origin/main` or `refs/tags/v1`.
+    pub full_ref: String,
+    pub old_id: Option<String>,
+    pub new_id: String,
+    /// When Brainiac noticed the move.
+    pub observed_at: String,
+    pub seen: bool,
+    /// Inlined: the JSON and TypeScript type are flat.
+    #[serde(flatten)]
+    pub detail: ActivityDetail,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RepositoryFreshness {
+    pub repository_id: String,
+    pub name: String,
+    pub last_fetch_at: Option<String>,
+    pub fetch_error: Option<AppError>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PulseAuthor {
+    pub name: String,
+    pub commits: u32,
+}
+
+/// Activity on the watched refs over the last seven days, from local refs.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct TeamPulse {
+    pub since: String,
+    pub commits: u32,
+    pub merges: u32,
+    pub releases: u32,
+    /// Most active first.
+    pub authors: Vec<PulseAuthor>,
+    /// Names of the repositories with the most commits, most active first.
+    pub repositories: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct WorkspaceActivity {
+    pub workspace_id: String,
+    pub settings: ActivitySettings,
+    /// Unread first, then seen; newest first within each; at most 200.
+    pub items: Vec<ActivityItem>,
+    pub unseen: u32,
+    /// Oldest fetch first.
+    pub freshness: Vec<RepositoryFreshness>,
+    pub pulse: TeamPulse,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct FetchResult {
+    pub repository_id: String,
+    pub remote: String,
+    pub fetched_at: String,
+    /// Refs whose tips changed, such as `origin/main` or `v1.2`.
+    pub moved: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -649,6 +950,7 @@ pub enum ChangeOrigin {
     Timer,
     Wake,
     Registration,
+    Fetch,
 }
 
 /// Emitted as the `repository_changed` event after a status observation is committed.

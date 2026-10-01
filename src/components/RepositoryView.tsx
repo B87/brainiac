@@ -1,11 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { relativeTime, shortPath } from "../lib/format";
 import {
-  type ChangeEntry,
   type ChangesResult,
-  type CommitPage,
-  type CommitSummary,
-  type DiffResult,
-  type DiffSelector,
   errorMessage,
   ipc,
   type RefEntry,
@@ -13,319 +9,418 @@ import {
   type RepositorySummary,
   type RepositoryTab,
 } from "../lib/ipc";
+import { useKeys } from "../lib/keys";
+import {
+  headLabel,
+  repoTone,
+  TONE_LABEL,
+  upstreamLabel,
+  upstreamTarget,
+} from "../lib/repo";
 import { createLatest } from "../lib/stale";
-import ChangesList from "./ChangesList";
-import CommitDetails from "./CommitDetails";
-import DiffView from "./DiffView";
-import HistoryList from "./HistoryList";
-import RefsList from "./RefsList";
+import BranchesTab from "./BranchesTab";
+import ChangesTab from "./ChangesTab";
+import HistoryTab, { type HistoryScope } from "./HistoryTab";
+import {
+  BranchIcon,
+  ChevronDown,
+  ExternalIcon,
+  FetchIcon,
+  FolderIcon,
+  MoreIcon,
+  RefreshIcon,
+} from "./icons";
+import Popover from "./Popover";
+
+/** Where the viewer opens, for links from the activity feed. */
+export type RepoFocus = {
+  tab: RepositoryTab;
+  ref?: HistoryScope | null;
+  commitId?: string | null;
+};
 
 type Props = {
   repository: RepositorySummary;
   /** Increments when the backend reports this repository changed. */
   changeTick: number;
+  pinned: boolean;
+  /** Initial tab, ref, and commit; otherwise the last tab used. */
+  focus?: RepoFocus;
+  /** A fetch of this repository is running. */
+  fetching: boolean;
+  onFetch: () => void;
+  onTogglePin: () => void;
+  onPalette: () => void;
+  onRefresh: () => void;
+  onRemove: () => void;
   onError: (message: string | null) => void;
 };
-
-export function selectorFor(entry: ChangeEntry): DiffSelector {
-  switch (entry.group) {
-    case "staged":
-      return { kind: "index_vs_head", path: entry.path };
-    case "untracked":
-      return { kind: "untracked_preview", path: entry.path };
-    default:
-      return { kind: "worktree_vs_index", path: entry.path };
-  }
-}
-
-export function entryKey(e: ChangeEntry): string {
-  return `${e.group}:${e.path}`;
-}
 
 export default function RepositoryView({
   repository,
   changeTick,
+  pinned,
+  focus,
+  fetching,
+  onFetch,
+  onTogglePin,
+  onPalette,
+  onRefresh,
+  onRemove,
   onError,
 }: Props) {
   const [tab, setTab] = useState<RepositoryTab>(
-    repository.last_tab ?? "changes",
+    focus?.tab ?? repository.last_tab ?? "changes",
   );
   const [changes, setChanges] = useState<ChangesResult | null>(null);
-  const [selectedEntry, setSelectedEntry] = useState<string | null>(null);
-  const [diff, setDiff] = useState<DiffResult | null>(null);
-  const [diffLoading, setDiffLoading] = useState(false);
-  const [pages, setPages] = useState<CommitPage[]>([]);
-  const [filter, setFilter] = useState("");
-  const [selectedCommit, setSelectedCommit] = useState<CommitSummary | null>(
-    null,
-  );
-  const [historyLoading, setHistoryLoading] = useState(false);
+  const [changesLoading, setChangesLoading] = useState(false);
   /** Branch or tag shown in History; null means HEAD. */
-  const [historyRef, setHistoryRef] = useState<RefEntry | null>(null);
+  const [historyRef, setHistoryRef] = useState<HistoryScope | null>(
+    focus?.ref ?? null,
+  );
   const [refs, setRefs] = useState<RefsResult | null>(null);
-  const [refFilter, setRefFilter] = useState("");
+  const [menuOpen, setMenuOpen] = useState(false);
 
-  // One stale-guard per data source, so a slow diff cannot clobber a newer one.
+  // One stale-guard per data source, so a slow response cannot clobber a newer one.
   const changesLatest = useRef(createLatest()).current;
-  const diffLatest = useRef(createLatest()).current;
-  const historyLatest = useRef(createLatest()).current;
   const refsLatest = useRef(createLatest()).current;
+  const unavailable =
+    repository.state === "missing" ||
+    (repository.state === "error" && !repository.counts);
 
   const loadChanges = useCallback(() => {
+    setChangesLoading(true);
     void changesLatest.run(
       () => ipc.listChanges(repository.id),
       (result) => {
-        if (result.repository_id !== repository.id) return;
-        setChanges(result);
-        setSelectedEntry((current) =>
-          current && result.entries.some((e) => entryKey(e) === current)
-            ? current
-            : null,
-        );
+        setChangesLoading(false);
+        if (result.repository_id === repository.id) setChanges(result);
       },
-      (e) => onError(errorMessage(e)),
+      (e) => {
+        setChangesLoading(false);
+        onError(errorMessage(e));
+      },
     );
   }, [repository.id, changesLatest, onError]);
-
-  const loadDiff = useCallback(
-    (entry: ChangeEntry | null) => {
-      if (!entry) {
-        diffLatest.cancel();
-        setDiff(null);
-        setDiffLoading(false);
-        return;
-      }
-      setDiffLoading(true);
-      void diffLatest.run(
-        () => ipc.getDiff(repository.id, selectorFor(entry)),
-        (result) => {
-          if (result.repository_id !== repository.id) return;
-          setDiff(result);
-          setDiffLoading(false);
-        },
-        (e) => {
-          setDiffLoading(false);
-          onError(errorMessage(e));
-        },
-      );
-    },
-    [repository.id, diffLatest, onError],
-  );
-
-  const loadHistory = useCallback(
-    (cursor: string | null, replace: boolean) => {
-      setHistoryLoading(true);
-      void historyLatest.run(
-        () =>
-          ipc.listCommits({
-            repository_id: repository.id,
-            ref: historyRef?.full_name ?? null,
-            filter: filter || null,
-            cursor,
-            limit: null,
-          }),
-        (page) => {
-          if (page.repository_id !== repository.id) return;
-          setPages((prev) => (replace ? [page] : [...prev, page]));
-          setHistoryLoading(false);
-        },
-        (e) => {
-          setHistoryLoading(false);
-          onError(errorMessage(e));
-        },
-      );
-    },
-    [repository.id, filter, historyRef, historyLatest, onError],
-  );
 
   const loadRefs = useCallback(() => {
     void refsLatest.run(
       () => ipc.listRefs(repository.id),
       (result) => {
-        if (result.repository_id !== repository.id) return;
-        setRefs(result);
+        if (result.repository_id === repository.id) setRefs(result);
       },
       (e) => onError(errorMessage(e)),
     );
   }, [repository.id, refsLatest, onError]);
 
-  // Initial load and reload on backend change events.
   // biome-ignore lint/correctness/useExhaustiveDependencies: changeTick deliberately triggers a reload after backend events.
   useEffect(() => {
-    loadChanges();
-  }, [loadChanges, changeTick]);
-
-  // Re-validate the displayed working-tree diff when the repository changes.
-  const selected = useMemo(
-    () => changes?.entries.find((e) => entryKey(e) === selectedEntry) ?? null,
-    [changes, selectedEntry],
-  );
-  // biome-ignore lint/correctness/useExhaustiveDependencies: changeTick revalidates the diff even when the selected path is unchanged.
-  useEffect(() => {
-    loadDiff(selected);
-  }, [selected, loadDiff, changeTick]);
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: changeTick refreshes history after backend events.
-  useEffect(() => {
-    if (tab !== "history") return;
-    const t = setTimeout(() => loadHistory(null, true), filter ? 300 : 0);
-    return () => clearTimeout(t);
-  }, [tab, filter, loadHistory, changeTick]);
+    if (!unavailable) loadChanges();
+  }, [loadChanges, changeTick, unavailable]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: changeTick refreshes refs after backend events.
   useEffect(() => {
-    if (tab === "refs") loadRefs();
-  }, [tab, loadRefs, changeTick]);
-
-  const showRefHistory = (ref: RefEntry | null) => {
-    setHistoryRef(ref);
-    setSelectedCommit(null);
-    setPages([]);
-    changeTab("history");
-  };
-
-  const openInEditor = (path: string) =>
-    void ipc
-      .openInEditor(repository.id, path)
-      .catch((e) => onError(errorMessage(e)));
+    if (tab === "refs" && !unavailable) loadRefs();
+  }, [tab, loadRefs, changeTick, unavailable]);
 
   const changeTab = (next: RepositoryTab) => {
     setTab(next);
     void ipc.setRepositoryTab(repository.id, next).catch(() => {});
   };
 
-  const commits = useMemo(() => pages.flatMap((p) => p.items), [pages]);
-  const nextCursor = pages.length ? pages[pages.length - 1].next_cursor : null;
+  const showRefHistory = (ref: RefEntry | null) => {
+    setHistoryRef(ref);
+    changeTab("history");
+  };
+
+  useKeys({
+    "mod+1": () => changeTab("changes"),
+    "mod+2": () => changeTab("history"),
+    "mod+3": () => changeTab("refs"),
+  });
+
+  const run = (p: Promise<unknown>) =>
+    void p.catch((e) => onError(errorMessage(e)));
+  const openInEditor = (path?: string, line?: number) =>
+    run(ipc.openInEditor(repository.id, path, line));
+
+  const changeCount =
+    changes?.counts.unique_paths ?? repository.counts?.unique_paths;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex items-center gap-1 border-b px-2 py-1">
-        <span className="mr-2 font-semibold">{repository.name}</span>
-        <Tab
-          label="Changes"
-          count={changes?.counts.unique_paths}
-          active={tab === "changes"}
-          onClick={() => changeTab("changes")}
-        />
-        <Tab
-          label="History"
-          active={tab === "history"}
-          onClick={() => changeTab("history")}
-        />
-        <Tab
-          label="Branches"
-          active={tab === "refs"}
-          onClick={() => changeTab("refs")}
-        />
-        {tab === "history" && (
-          <input
-            className="selectable ml-auto w-64 rounded-md border px-2 py-0.5"
-            placeholder="Filter commits by message or hash"
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-          />
-        )}
-        {tab === "refs" && (
-          <input
-            className="selectable ml-auto w-64 rounded-md border px-2 py-0.5"
-            placeholder="Filter branches and tags"
-            value={refFilter}
-            onChange={(e) => setRefFilter(e.target.value)}
-          />
-        )}
-      </div>
-      {tab === "refs" ? (
-        <div className="flex min-h-0 flex-1 flex-col">
-          <RefsList
-            refs={refs}
-            filter={refFilter}
-            activeRef={historyRef?.full_name ?? null}
-            onSelect={showRefHistory}
-          />
+      <header
+        data-tauri-drag-region
+        className="flex h-12 shrink-0 items-center gap-3 border-b bg-header pr-3 pl-4"
+      >
+        <button
+          type="button"
+          className="btn bg-control pr-2 pl-2.5 text-fg"
+          aria-label="Switch repository"
+          title="Switch repository or workspace (⌘K)"
+          onClick={onPalette}
+        >
+          <span className="font-semibold">{repository.name}</span>
+          <ChevronDown size={11} className="text-muted" />
+          <span className="kbd">⌘K</span>
+        </button>
+        <div role="tablist" aria-label="Repository views" className="seg">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "changes"}
+            onClick={() => changeTab("changes")}
+          >
+            Changes
+            {!!changeCount && (
+              <span className="rounded-lg bg-dirty px-1.5 text-[11px] font-semibold text-app">
+                {changeCount}
+              </span>
+            )}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "history"}
+            onClick={() => changeTab("history")}
+          >
+            History
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "refs"}
+            onClick={() => changeTab("refs")}
+          >
+            Branches &amp; tags
+          </button>
         </div>
+        <div data-tauri-drag-region className="h-full flex-1" />
+        <BranchPill repository={repository} />
+        <button
+          type="button"
+          className="btn"
+          disabled={fetching || unavailable}
+          title={fetchTitle(repository)}
+          onClick={onFetch}
+        >
+          <FetchIcon size={13} className={fetching ? "animate-pulse" : ""} />
+          {fetching ? "Fetching…" : "Fetch"}
+          {repository.fetch_error && !fetching && (
+            <span className="text-conflict" title="Last fetch failed">
+              !
+            </span>
+          )}
+        </button>
+        <button
+          type="button"
+          className="btn icon-btn"
+          aria-label="Refresh"
+          title="Refresh (⌘R)"
+          onClick={onRefresh}
+        >
+          <RefreshIcon />
+        </button>
+        <button
+          type="button"
+          className="btn icon-btn"
+          aria-label="Reveal in Finder"
+          title="Reveal in Finder"
+          onClick={() => run(ipc.revealInFinder(repository.id))}
+        >
+          <FolderIcon />
+        </button>
+        <button
+          type="button"
+          className="btn btn-primary"
+          onClick={() => openInEditor()}
+        >
+          <ExternalIcon size={13} />
+          Open in editor
+        </button>
+        <div className="relative">
+          <button
+            type="button"
+            className="btn btn-ghost icon-btn"
+            aria-label="More actions"
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            onClick={() => setMenuOpen(!menuOpen)}
+          >
+            <MoreIcon />
+          </button>
+          {menuOpen && (
+            <Popover align="right" onClose={() => setMenuOpen(false)}>
+              <MenuButton
+                onClick={() => {
+                  setMenuOpen(false);
+                  onTogglePin();
+                }}
+              >
+                {pinned ? "Unpin" : "Pin to sidebar"}
+              </MenuButton>
+              <MenuButton
+                onClick={() => {
+                  setMenuOpen(false);
+                  void navigator.clipboard?.writeText(repository.display_path);
+                }}
+              >
+                Copy path
+              </MenuButton>
+              <div className="menu-sep" />
+              <MenuButton
+                onClick={() => {
+                  setMenuOpen(false);
+                  onRemove();
+                }}
+              >
+                Remove from Brainiac…
+              </MenuButton>
+            </Popover>
+          )}
+        </div>
+      </header>
+
+      {unavailable ? (
+        <Unavailable
+          repository={repository}
+          onRemove={onRemove}
+          onRefresh={onRefresh}
+        />
+      ) : tab === "changes" ? (
+        <ChangesTab
+          repositoryId={repository.id}
+          changes={changes}
+          refreshing={changesLoading}
+          onError={onError}
+          onOpenInEditor={openInEditor}
+        />
+      ) : tab === "history" ? (
+        <HistoryTab
+          repositoryId={repository.id}
+          headName={headLabel(repository)}
+          historyRef={historyRef}
+          onHistoryRef={setHistoryRef}
+          initialCommitId={focus?.commitId ?? null}
+          refs={refs}
+          onNeedRefs={loadRefs}
+          changeTick={changeTick}
+          onError={onError}
+          onOpenInEditor={openInEditor}
+        />
       ) : (
-        <div className="flex min-h-0 flex-1">
-          <div className="flex w-80 shrink-0 flex-col overflow-y-auto border-r">
-            {tab === "changes" && (
-              <ChangesList
-                changes={changes}
-                selectedKey={selectedEntry}
-                onSelect={(e) => setSelectedEntry(entryKey(e))}
-              />
-            )}
-            {tab === "history" && (
-              <HistoryList
-                commits={commits}
-                anchor={pages[0]?.anchor_commit_id ?? null}
-                refName={historyRef?.name ?? "HEAD"}
-                selectedId={selectedCommit?.id ?? null}
-                loading={historyLoading}
-                hasMore={!!nextCursor}
-                filterActive={!!filter}
-                onSelect={setSelectedCommit}
-                onLoadMore={() => nextCursor && loadHistory(nextCursor, false)}
-                onShowHead={historyRef ? () => showRefHistory(null) : undefined}
-              />
-            )}
-          </div>
-          <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-            {tab === "changes" && (
-              <DiffView
-                diff={diff}
-                loading={diffLoading}
-                empty={
-                  changes
-                    ? changes.entries.length === 0
-                      ? "Working tree clean."
-                      : "Select a file to see its diff."
-                    : "Loading…"
-                }
-                onOpenInEditor={openInEditor}
-              />
-            )}
-            {tab === "history" &&
-              (selectedCommit ? (
-                <CommitDetails
-                  key={selectedCommit.id}
-                  repositoryId={repository.id}
-                  commit={selectedCommit}
-                  onError={onError}
-                  onOpenInEditor={openInEditor}
-                />
-              ) : (
-                <div className="muted p-4">
-                  Select a commit to see its details.
-                </div>
-              ))}
-          </div>
-        </div>
+        <BranchesTab
+          repositoryId={repository.id}
+          refs={refs}
+          onShowHistory={showRefHistory}
+          onError={onError}
+        />
       )}
     </div>
   );
 }
 
-function Tab({
-  label,
-  count,
-  active,
+export function MenuButton({
   onClick,
+  children,
 }: {
-  label: string;
-  count?: number;
-  active: boolean;
   onClick: () => void;
+  children: React.ReactNode;
 }) {
   return (
     <button
       type="button"
-      className={`rounded-md px-2 py-0.5 ${active ? "selected-bg" : ""}`}
-      aria-pressed={active}
+      role="menuitem"
+      className="menu-item"
       onClick={onClick}
     >
-      {label}
-      {count !== undefined && count > 0 && (
-        <span className="muted ml-1">{count}</span>
-      )}
+      {children}
     </button>
   );
+}
+
+/** Current branch, its upstream, and the local ahead/behind comparison. */
+function BranchPill({ repository: r }: { repository: RepositorySummary }) {
+  const up = upstreamLabel(r);
+  const branch = headLabel(r);
+  const target = r.upstream ? upstreamTarget(r.upstream.ref, branch) : null;
+  return (
+    <div
+      className="mono flex h-[30px] max-w-[min(560px,38vw)] min-w-0 items-center gap-2 rounded-[7px] border border-control-line px-2.5 text-[12px]"
+      title={
+        r.upstream
+          ? `${branch} → ${r.upstream.ref}${up ? ` · ${up}` : ""}\nAs of the last fetch, ${relativeTime(r.last_fetch_at)}.`
+          : `${branch}\nNo upstream configured`
+      }
+    >
+      <BranchIcon size={13} className="shrink-0 text-fg-2" />
+      <span className="min-w-0 truncate">{branch}</span>
+      {target && (
+        <span className="hidden max-w-[180px] shrink-0 truncate text-muted xl:inline">
+          → {target}
+        </span>
+      )}
+      {up && (
+        <span
+          className={`shrink-0 whitespace-nowrap ${up === "in sync" ? "text-clean" : "text-link"}`}
+        >
+          {up}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function Unavailable({
+  repository: r,
+  onRemove,
+  onRefresh,
+}: {
+  repository: RepositorySummary;
+  onRemove: () => void;
+  onRefresh: () => void;
+}) {
+  return (
+    <div className="flex flex-1 flex-col items-start gap-3 p-8">
+      <div className="flex items-center gap-2 text-lg font-semibold">
+        <span className="dot" data-state={repoTone(r)} />
+        {TONE_LABEL[repoTone(r)]}
+      </div>
+      <p className="selectable m-0 max-w-xl text-fg-2">
+        {r.state === "missing" ? (
+          <>
+            Nothing found at{" "}
+            <span className="mono">{shortPath(r.display_path)}</span>. The
+            registration is kept; move the folder back or remove the
+            registration. Your files are never touched.
+          </>
+        ) : (
+          (r.error?.message ?? "This repository could not be read.")
+        )}
+      </p>
+      {r.error?.details && (
+        <pre className="selectable m-0 max-w-full overflow-auto rounded-md bg-panel p-3 text-[11.5px] whitespace-pre-wrap text-muted">
+          {r.error.details}
+        </pre>
+      )}
+      <div className="flex gap-2">
+        <button type="button" className="btn" onClick={onRefresh}>
+          Check again
+        </button>
+        <button type="button" className="btn" onClick={onRemove}>
+          Remove from Brainiac…
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function fetchTitle(r: RepositorySummary): string {
+  const when = r.last_fetch_at
+    ? `Last fetched ${relativeTime(r.last_fetch_at)}.`
+    : "Not fetched yet.";
+  const failed = r.fetch_error
+    ? `\nLast fetch failed: ${r.fetch_error.message}`
+    : "";
+  return `Fetch the remote: updates remote-tracking branches and tags only, never your files or branches. ${when}${failed}`;
 }

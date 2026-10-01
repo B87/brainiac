@@ -1,4 +1,7 @@
 //! Repository registration, cached observations, and coalesced refresh jobs.
+//! Workspace discovery and membership live in the `membership` child module.
+//! `feed` and `fetching` connect the service to `ActivityTracker` and
+//! `Fetcher`, which own the activity feed and fetching.
 //!
 //! `RepositoryService` is the application core for v0.1. It depends on
 //! `GitService` and `Db` but not on Tauri: change events go through an
@@ -13,12 +16,20 @@ use std::time::Duration;
 use tokio::sync::Semaphore;
 
 use crate::db::{self, Db, RepositoryRow};
-use crate::git::GitService;
+
+mod feed;
+mod fetching;
+mod membership;
+use crate::activity::ActivityTracker;
+use crate::fetcher::Fetcher;
+use crate::git::{GitService, LogQuery};
 use crate::models::{
-    now_rfc3339, AppError, AppResult, AppSnapshot, ChangeOrigin, ChangesResult, CommitDetail,
-    CommitPage, DiffResult, DiffSelector, GitInfo, ListCommitsRequest, RefsResult,
-    RepositoryChangedEvent, RepositoryState, RepositorySummary, RepositoryTab, Settings,
+    now_rfc3339, AppError, AppResult, AppSnapshot, ChangeGroup, ChangeOrigin, ChangesResult,
+    CommitDetail, CommitPage, DiffOptions, DiffResult, DiffSelector, GitInfo, ListCommitsRequest,
+    RefsResult, RepositoryChangedEvent, RepositoryState, RepositorySummary, RepositoryTab,
+    Settings,
 };
+pub use membership::WorkspaceChange;
 
 /// Default page size and hard cap for history requests (SPEC §7).
 const DEFAULT_PAGE: u32 = 100;
@@ -29,6 +40,10 @@ const STALE_MULTIPLIER: u64 = 2;
 const STATUS_CONCURRENCY: usize = 2;
 
 pub type Emitter = Arc<dyn Fn(RepositoryChangedEvent) + Send + Sync>;
+
+/// Shows a macOS notification with a title and body. Injected like `Emitter`
+/// so the service stays independent of Tauri; tests leave it unset.
+pub type Notifier = Arc<dyn Fn(String, String) + Send + Sync>;
 
 /// Per-repository refresh bookkeeping: at most one running job and one pending request.
 #[derive(Default)]
@@ -46,6 +61,9 @@ pub struct RepositoryService {
     emitter: Emitter,
     slots: Mutex<HashMap<String, RefreshSlot>>,
     status_jobs: Arc<Semaphore>,
+    notifier: Mutex<Option<Notifier>>,
+    fetcher: Fetcher,
+    tracker: ActivityTracker,
 }
 
 impl RepositoryService {
@@ -79,6 +97,8 @@ impl RepositoryService {
             ),
         };
         Self {
+            fetcher: Fetcher::new(db.clone()),
+            tracker: ActivityTracker::new(db.clone()),
             db,
             git,
             git_info,
@@ -87,6 +107,20 @@ impl RepositoryService {
             emitter,
             slots: Mutex::new(HashMap::new()),
             status_jobs: Arc::new(Semaphore::new(STATUS_CONCURRENCY)),
+            notifier: Mutex::new(None),
+        }
+    }
+
+    /// Install the function that shows macOS notifications.
+    pub fn set_notifier(&self, notifier: Notifier) {
+        *self.notifier.lock().expect("notifier lock") = Some(notifier);
+    }
+
+    fn notify(&self, title: String, body: String) {
+        // Clone the `Arc` out so the lock is not held while the notification is shown.
+        let notifier = self.notifier.lock().expect("notifier lock").clone();
+        if let Some(n) = notifier {
+            n(title, body);
         }
     }
 
@@ -162,6 +196,8 @@ impl RepositoryService {
                     last_tab: None,
                     status: None,
                     error: None,
+                    last_fetch_at: None,
+                    last_fetch_error: None,
                 };
                 let id = row.id.clone();
                 self.db
@@ -236,6 +272,7 @@ impl RepositoryService {
 
     pub async fn snapshot(&self) -> AppResult<AppSnapshot> {
         let repositories = self.list().await?;
+        let workspaces = self.workspaces().await?;
         let (pins, recent) = self
             .db
             .call(|conn| Ok((db::list_pins(conn)?, db::recent_repository_ids(conn, 10)?)))
@@ -244,7 +281,7 @@ impl RepositoryService {
             snapshot_version: self.snapshot_version(),
             git: self.git_info.clone(),
             repositories,
-            workspaces: Vec::new(),
+            workspaces,
             pins,
             recent_repository_ids: recent,
             settings: self.settings(),
@@ -288,6 +325,12 @@ impl RepositoryService {
             upstream: row.status.as_ref().and_then(|s| s.upstream.clone()),
             error: row.error.clone(),
             last_tab: row.last_tab,
+            last_fetch_at: crate::fetcher::last_fetch_at(
+                row.last_fetch_at.as_deref(),
+                Path::new(&row.git_dir),
+                Path::new(&row.common_git_dir),
+            ),
+            fetch_error: row.last_fetch_error.clone(),
         }
     }
 
@@ -318,12 +361,16 @@ impl RepositoryService {
         force_changed: bool,
     ) -> AppResult<RepositorySummary> {
         let row = self.row(id).await?;
-        let _permit = self.status_jobs.acquire().await.map_err(|_| {
-            AppError::new(crate::models::ErrorCode::Cancelled, "Refresh cancelled.")
-        })?;
-        let outcome = match self.git() {
-            Ok(git) => git.status(Path::new(&row.canonical_root)).await,
-            Err(e) => Err(e),
+        let outcome = {
+            // Only `git status` counts against the status job limit; ref
+            // tracking below has its own per-repository serialization.
+            let _permit = self.status_jobs.acquire().await.map_err(|_| {
+                AppError::new(crate::models::ErrorCode::Cancelled, "Refresh cancelled.")
+            })?;
+            match self.git() {
+                Ok(git) => git.status(Path::new(&row.canonical_root)).await,
+                Err(e) => Err(e),
+            }
         };
         let checked_at = now_rfc3339();
         let previous = row.status.as_ref().map(without_timestamp);
@@ -345,7 +392,14 @@ impl RepositoryService {
                 })
                 .await?;
         }
+        // Turn moved watched refs into activity events before announcing the
+        // change, so the snapshot that follows already counts them.
+        let new_events = match &status {
+            Some(s) => self.track(&row, s).await > 0,
+            None => false,
+        };
         let changed = force_changed
+            || new_events
             || previous != status.as_ref().map(without_timestamp)
             || row.error != error;
         let version = self.bump_version();
@@ -426,24 +480,50 @@ impl RepositoryService {
         self.observe(id, ChangeOrigin::Refresh, false).await?;
         let row = self.row(id).await?;
         match (row.status, row.error) {
-            (Some(s), None) => Ok(ChangesResult {
-                repository_id: id.to_string(),
-                observed_at: s.observed_at,
-                head: s.head,
-                counts: s.counts,
-                entries: s.entries,
-            }),
+            (Some(s), None) => {
+                let mut entries = s.entries;
+                // Line counts are a nicety: a failure leaves them empty.
+                if let Ok((staged, unstaged)) = self
+                    .git()?
+                    .change_stats(Path::new(&row.canonical_root))
+                    .await
+                {
+                    for e in &mut entries {
+                        let stats = match e.group {
+                            ChangeGroup::Staged => &staged,
+                            ChangeGroup::Unstaged => &unstaged,
+                            _ => continue,
+                        };
+                        if let Some(&(adds, dels)) = stats.get(&e.path) {
+                            e.additions = adds;
+                            e.deletions = dels;
+                        }
+                    }
+                }
+                Ok(ChangesResult {
+                    repository_id: id.to_string(),
+                    observed_at: s.observed_at,
+                    head: s.head,
+                    counts: s.counts,
+                    entries,
+                })
+            }
             (_, Some(e)) => Err(e),
             (None, None) => Err(AppError::io("No status observation is available yet.")),
         }
     }
 
-    pub async fn diff(&self, id: &str, selector: DiffSelector) -> AppResult<DiffResult> {
+    pub async fn diff(
+        &self,
+        id: &str,
+        selector: DiffSelector,
+        options: DiffOptions,
+    ) -> AppResult<DiffResult> {
         let row = self.row(id).await?;
         let limits = self.settings().diff_limits;
         let content = self
             .git()?
-            .diff(Path::new(&row.canonical_root), &selector, &limits)
+            .diff(Path::new(&row.canonical_root), &selector, &limits, options)
             .await?;
         Ok(DiffResult {
             repository_id: id.to_string(),
@@ -474,12 +554,18 @@ impl RepositoryService {
 
     pub async fn refs(&self, id: &str) -> AppResult<RefsResult> {
         let row = self.row(id).await?;
-        let refs = self
+        let (refs, base) = self
             .git()?
-            .list_refs(Path::new(&row.canonical_root))
+            .list_refs_with_base(Path::new(&row.canonical_root))
             .await?;
+        let base = base.and_then(|full| {
+            refs.iter()
+                .find(|r| r.full_name == full)
+                .map(|r| r.name.clone())
+        });
         Ok(RefsResult {
             repository_id: id.to_string(),
+            base,
             refs,
         })
     }
@@ -513,8 +599,13 @@ impl RepositoryService {
             .as_deref()
             .map(str::trim)
             .filter(|f| !f.is_empty());
-        let mut items = git.log(&root, &anchor, offset, limit, filter).await?;
-        if items.is_empty() && offset == 0 {
+        let query = LogQuery {
+            filter,
+            author: request.author.as_deref(),
+            exclude: request.exclude.as_deref().filter(|x| !x.is_empty()),
+        };
+        let mut items = git.log(&root, &anchor, offset, limit, &query).await?;
+        if items.is_empty() && offset == 0 && query.author.is_none() && query.exclude.is_none() {
             if let Some(f) = filter {
                 items = git.log_by_hash_prefix(&root, &anchor, f).await?;
             }
