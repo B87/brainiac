@@ -11,6 +11,8 @@ into the release's section.
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-10-02
+
 - Locate… points a repository whose folder moved at its new place, keeping its workspaces, pin, and activity; Rescan suggests the move when a member was renamed.
 - After going back to an older version, Brainiac says its data was saved by a newer version and where the snapshots are, instead of running on it.
 
@@ -92,7 +94,8 @@ First public build: a read-only Git viewer and multi-repository tracker for macO
 - The Branches tab is a placeholder.
 - Not signed with an Apple Developer certificate; the first launch needs right-click > Open (see the README).
 
-[Unreleased]: https://github.com/B87/brainiac/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/B87/brainiac/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/B87/brainiac/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/B87/brainiac/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/B87/brainiac/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/B87/brainiac/releases/tag/v0.1.0
