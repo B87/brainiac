@@ -136,6 +136,7 @@ Repository name/path filtering and commit-message/hash filtering belong to the G
 | `Cmd+N`, v0.2 | New note; in a repository's Notes tab, a new note linked to it |
 | `Cmd+Shift+N`, v0.2 | New task |
 | `Cmd+S`, v0.2 | Save the note now |
+| `Cmd+Shift+E`, v0.2 | Switch the note editor between Live Preview and Source |
 | `Option+Cmd+0`, v0.2 | Show or hide the context panel in Notes |
 | `Space`, v0.2 | Mark the selected task done or not done |
 | `J` / `K` (or arrow keys) | Next / previous row in the focused list, without clicking it first |
@@ -340,14 +341,17 @@ The Activity tab of a workspace answers "what did the team merge or release sinc
 
 ### Editing
 
-A note is edited as its Markdown text, styled as it is typed, so a save contains exactly what the user typed and nothing Brainiac reformatted. There is no separate rich mode: a rich editor that converts Markdown to a document and back rewrote or lost content in testing (HTML, wikilinks, footnotes, nested code fences, list numbering, `snake_case` escaped).
+A note is edited as its Markdown text, so a save contains exactly what the user typed and nothing Brainiac reformatted. A rich editor that converts Markdown to a document and back rewrote or lost content in testing (HTML, wikilinks, footnotes, nested code fences, list numbering, `snake_case` escaped); Brainiac draws its formatting over the text instead, and drawing never changes it.
 
-- Headings show at their size; bold, italic, strikethrough, inline code, quotes, and fenced code are styled; Markdown markup (`#`, `**`, `` ` ``, link targets) stays visible but dimmed.
-- Links and wikilinks are styled as links and open with `Cmd`+click; a link to another note opens it in Brainiac, a web link opens in the browser.
+- **Live Preview**, the default, shows the note formatted. Headings show at their size; bold, italic, strikethrough, inline code, quotes, and fenced code are styled; Markdown markup (`#`, `**`, `` ` ``, link targets) is hidden except on the line being edited, where it reappears so it can be changed. Bullets, checkboxes, and horizontal rules are drawn as such, and links show only their text.
+- Images stored in the vault show below their line in Live Preview. A web image shows as its link, so opening a note makes no network request.
+- **Source** shows the same text with every mark visible, dimmed. `Cmd+Shift+E` or the toggle in the note header switches between them, keeping the cursor and scroll position; the choice applies to every note and is remembered.
+- Links and wikilinks open with `Cmd`+click; a link to another note opens it in Brainiac, a web link opens in the browser.
 - Clicking a checkbox toggles `[ ]` and `[x]` in the text.
+- Copying copies the Markdown, including markup Live Preview hides, and undo steps through text changes in both modes.
 - Frontmatter shows as a dimmed block at the top of the note and is edited as text, so unknown keys are preserved.
-- Tables, HTML, and syntax Brainiac does not style (callouts, footnotes, math) show as plain text and are saved as written.
-- Opening a note without editing never rewrites it. A save changes only what was edited: line endings, a missing final newline, and the rest of the note stay as they were. A fixture suite checks this for headings, lists, checkboxes, tables, fenced code, links, images, frontmatter, HTML, unknown syntax, CRLF line endings, and a missing final newline.
+- Tables, HTML, and syntax Brainiac does not render (callouts, footnotes, math) show as plain text in both modes and are saved as written.
+- Opening a note without editing never rewrites it, in either mode. A save changes only what was edited: line endings, a missing final newline, and the rest of the note stay as they were. A fixture suite checks this for headings, lists, checkboxes, tables, fenced code, links, images, frontmatter, HTML, unknown syntax, CRLF line endings, and a missing final newline.
 - Notes save by themselves after 750 ms without typing; `Cmd+S` saves at once. The header shows Saving, Saved, Save failed, or Changed on disk accurately, and switching views keeps an unsaved draft.
 
 ### Note identity
