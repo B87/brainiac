@@ -340,12 +340,14 @@ The Activity tab of a workspace answers "what did the team merge or release sinc
 
 ### Editing
 
-The rich editor must prove it keeps notes intact before it ships. Fidelity is a release gate: a fixture suite round-trips headings, lists, checkboxes, tables, fenced code, links, images, frontmatter, HTML, and unknown syntax. [TipTap Markdown documentation](https://tiptap.dev/docs/editor/markdown)
+A note is edited as its Markdown text, styled as it is typed, so a save contains exactly what the user typed and nothing Brainiac reformatted. There is no separate rich mode: a rich editor that converts Markdown to a document and back rewrote or lost content in testing (HTML, wikilinks, footnotes, nested code fences, list numbering, `snake_case` escaped).
 
-- Frontmatter stays separate from the document and unknown keys are preserved.
-- Opening a note without editing never rewrites it.
-- A note with constructs the rich editor would change opens in source mode, which preserves the original text. Rich and Source are a toggle in the editor's header.
-- If the rich editor cannot pass the fixture suite, v0.2 ships with source editing and a preview, and rich editing follows when it passes.
+- Headings show at their size; bold, italic, strikethrough, inline code, quotes, and fenced code are styled; Markdown markup (`#`, `**`, `` ` ``, link targets) stays visible but dimmed.
+- Links and wikilinks are styled as links and open with `Cmd`+click; a link to another note opens it in Brainiac, a web link opens in the browser.
+- Clicking a checkbox toggles `[ ]` and `[x]` in the text.
+- Frontmatter shows as a dimmed block at the top of the note and is edited as text, so unknown keys are preserved.
+- Tables, HTML, and syntax Brainiac does not style (callouts, footnotes, math) show as plain text and are saved as written.
+- Opening a note without editing never rewrites it. A save changes only what was edited: line endings, a missing final newline, and the rest of the note stay as they were. A fixture suite checks this for headings, lists, checkboxes, tables, fenced code, links, images, frontmatter, HTML, unknown syntax, CRLF line endings, and a missing final newline.
 - Notes save by themselves after 750 ms without typing; `Cmd+S` saves at once. The header shows Saving, Saved, Save failed, or Changed on disk accurately, and switching views keeps an unsaved draft.
 
 ### Note identity

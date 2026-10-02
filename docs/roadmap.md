@@ -46,7 +46,8 @@ M0 landed on 1 October 2026 with 58 Rust tests and 3 frontend tests. Known M0 si
 ### v0.2 — Knowledge, tasks, and code context
 
 - [ ] Vault onboarding, scan/reconciliation, folder navigation, pinned/recent notes.
-- [ ] Editor fidelity spike; note CRUD, auto-save, source fallback, conflicts, trash, draft/history recovery.
+- [x] Editor fidelity spike (S1): TipTap's Markdown round trip rewrote or lost content, so notes are edited as styled Markdown text in CodeMirror 6.
+- [ ] Note editor with styled Markdown; note CRUD, auto-save, conflicts, trash, draft/history recovery.
 - [ ] Tasks with status, planned dates, deadlines, linked note and linked repository; tasks not yet sorted are marked as such.
 - [ ] Today, Tasks, Notes alongside the existing Workspaces/Git views; tasks to sort appear as a folded line in Today and a filter in Tasks.
 - [ ] FTS5 note/task ingestion, ranked keyword search, safe snippets, rebuild status.
@@ -106,12 +107,11 @@ Remote services require their own authentication, rate-limit, cache, error, and 
 
 | Unknown | Resolution method | Needed before |
 | --- | --- | --- |
-| Rich-editor Markdown fidelity | Round-trip fixture suite on existing notes | v0.2 editor commitment |
-| Actual note languages and syntax extensions | Sample a representative vault; document unsupported constructs | v0.2 compatibility claim |
+| Syntax in vaults brought from other tools | No existing vault to sample: a fixture vault covers CommonMark, GFM, wikilinks, and common Obsidian syntax (callouts, footnotes, embeds), which is kept as text; document what Brainiac does not style | v0.2 compatibility claim |
 | macOS minimum and Intel requirement | Verify target hardware, dependencies, and packaged builds | Release distribution |
 | Real-world workspace size and Git cost | Benchmark representative workspace/repositories | v0.1 watcher tuning |
 | Quick-capture focus behavior | macOS/Spaces/fullscreen prototype | v0.3 |
-| Vault size and note sizes | Count notes, largest file, and full-ingest time on a real vault | v0.2 batch sizes and revision budget |
+| Vault size and note sizes | Generate vaults of 1,000 and 10,000 notes with a realistic spread of sizes and time a full ingest; check against the real vault after a month of use | v0.2 batch sizes and revision budget |
 | Snapshot size and retention | Measure `brainiac.db` and `history.db` on a real vault after a month | v0.2 backup defaults |
 | Restore onto another Mac | Fixture: vault and snapshot restored where paths and repository locations differ | v0.2 restore |
 | Embedding model and dimensions | Local retrieval evaluation, model availability and license review | v0.4 schema/profile selection |
