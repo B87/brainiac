@@ -12,6 +12,7 @@ into the release's section.
 ## [Unreleased]
 
 - Locate… points a repository whose folder moved at its new place, keeping its workspaces, pin, and activity; Rescan suggests the move when a member was renamed.
+- After going back to an older version, Brainiac says its data was saved by a newer version and where the snapshots are, instead of running on it.
 
 ## [0.1.2] - 2026-10-02
 
