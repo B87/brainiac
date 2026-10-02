@@ -50,6 +50,7 @@ M0 landed on 1 October 2026 with 58 Rust tests and 3 frontend tests. Known M0 si
 - [ ] Note editor with styled Markdown; note CRUD, auto-save, conflicts, trash, draft/history recovery.
 - [ ] Tasks with status, planned dates, deadlines, linked note and linked repository; tasks not yet sorted are marked as such.
 - [ ] Today, Tasks, Notes alongside the existing Workspaces/Git views; tasks to sort appear as a folded line in Today and a filter in Tasks.
+- [x] Search tokenizer spike (S2): `unicode61` for note and task text, `trigram` only for titles and paths; every query word matches as a prefix.
 - [ ] FTS5 note/task ingestion, ranked keyword search, safe snippets, rebuild status.
 - [ ] Note/repository associations, Markdown links and wikilinks, backlinks, unresolved targets.
 - [ ] Storage split into `brainiac.db`, `index.db`, and `history.db`; migration `0002` tested against a 0.1.3 database.

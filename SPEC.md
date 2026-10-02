@@ -401,8 +401,9 @@ A note is edited as its Markdown text, styled as it is typed, so a save contains
 `Cmd+K` searches repositories, workspaces, notes, and tasks together, grouped by kind, with repositories first. Notes and tasks are searched by keyword; no AI model is needed.
 
 - Searches note titles, note text including code blocks, and task titles and descriptions. Search becomes complete when the vault scan finishes; until then it says **Indexing notes: N of M. Results may be incomplete.**
-- Input is literal text. Quoted phrases and prefix matching of the last word work; a malformed quote never shows an error.
-- Title matches rank higher, and titles and paths also match by substring, so code identifiers such as `fetch_with_backoff` are found.
+- Input is literal text: it is never read as search syntax, and a malformed quote or stray symbol never shows an error. Each word also matches words that start with it, so `migrat` finds *migration* and `async run` finds *async runtime*; a quoted phrase matches its words in order. Case and accents are ignored, so `cafe` finds *cafè*.
+- Code identifiers are found whole or by their parts: `fetch_with_backoff` and `backoff` both find `fetch_with_backoff`, and `tokio::spawn`, `src/main.rs`, and `v0.2` match as written.
+- Title matches rank higher, and titles and paths also match any part of a word, so `Backoff` finds a note named `fetchWithBackoff.md`. In note text, a word inside a camelCase identifier or inside unspaced Chinese or Japanese text is found only from its start.
 - Scope buttons filter to Repositories, Notes, or Tasks. Each group shows its first results and **Show all N**. Snippets highlight the matched words.
 - The palette says **No matches** (offering a looser search when a quoted phrase found nothing), **Indexing incomplete**, or **Search unavailable** (with **Rebuild Index**; repository names still match) and never confuses them.
 - Results update as the query changes; an older query's results never replace a newer one's.
