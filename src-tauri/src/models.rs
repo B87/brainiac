@@ -1282,6 +1282,8 @@ pub enum RevisionReason {
     AppSave,
     ExternalChange,
     Restore,
+    /// Saved by an agent through agent access (SPEC.md, section 9).
+    Agent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -1615,6 +1617,8 @@ pub enum NoteChangeOrigin {
     External,
     /// Trashed or restored.
     Trash,
+    /// Saved or created by an agent through agent access (SPEC.md, section 9).
+    Agent,
 }
 
 /// Emitted as `note_changed`; carries no note text.

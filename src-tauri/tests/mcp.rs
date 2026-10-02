@@ -10,7 +10,10 @@ use std::time::Duration;
 
 use brainiac_lib::git::GitService;
 use brainiac_lib::mcp::{AgentServer, SOCKET_ENV};
-use brainiac_lib::models::{AgentAccess, Settings, TaskFields, TaskStatus};
+use brainiac_lib::models::{
+    AgentAccess, NoteChangeOrigin, RevisionReason, Settings, TaskFields, TaskStatus,
+};
+use brainiac_lib::notes::KnowledgeEvent;
 use brainiac_lib::tasks::TaskService;
 use brainiac_lib::workspaces::RepositoryService;
 use common::Harness;
@@ -417,4 +420,325 @@ async fn a_stale_socket_is_replaced_and_a_missing_app_is_reported() {
     assert!(output.stdout.is_empty(), "stdout carries only the protocol");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("Brainiac is not running"), "{stderr}");
+}
+
+// ---------------------------------------------------------------------------
+// Read and write
+// ---------------------------------------------------------------------------
+
+const WRITE_TOOLS: &[&str] = &[
+    "complete_task",
+    "create_note",
+    "create_task",
+    "edit_note",
+    "link_repository",
+    "unlink_repository",
+    "update_task",
+];
+
+#[tokio::test(flavor = "multi_thread")]
+async fn write_tools_are_listed_and_callable_only_in_read_and_write() {
+    let h = Harness::new(false).await;
+    let server = server(&h, AgentAccess::ReadOnly).await;
+    let (client, agent) = connect(&server).await;
+    let err = call(&client, "create_task", json!({"title": "x"}))
+        .await
+        .unwrap_err();
+    assert!(err.starts_with("PERMISSION_DENIED"), "{err}");
+    assert!(err.contains("read only"), "{err}");
+
+    server.set_access(AgentAccess::ReadWrite);
+    tokio::time::timeout(Duration::from_secs(5), agent.notified.notified())
+        .await
+        .unwrap();
+    let mut all: Vec<&str> = READ_TOOLS.iter().chain(WRITE_TOOLS).copied().collect();
+    all.sort();
+    assert_eq!(tool_names(&client).await, all);
+    let task = call(&client, "create_task", json!({"title": "x"}))
+        .await
+        .unwrap();
+    assert_eq!(task["to_sort"], true);
+    client.cancel().await.unwrap();
+}
+
+/// The roadmap's exit gate, without the UI: find a note, create and complete
+/// a task, and link the note to a repository; the app hears every change.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_plans_and_completes_work_and_the_app_hears_it() {
+    let h = Harness::new(false).await;
+    h.write("Parser.md", "# Parser\nRewrite the tokenizer.\n");
+    h.scan().await;
+    let repo = h.register_repository("parser").await;
+    let server = server(&h, AgentAccess::ReadWrite).await;
+    let (client, _) = connect(&server).await;
+
+    let found = call(&client, "search", json!({"query": "tokenizer"}))
+        .await
+        .unwrap();
+    let note = found["notes"][0]["id"].as_str().unwrap().to_string();
+    let linked = call(
+        &client,
+        "link_repository",
+        json!({"path": "Parser.md", "repository_id": repo}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(linked["note_id"], note.as_str());
+    let context = h.notes.context(&note).await.unwrap();
+    assert_eq!(context.repositories[0].repository_id, repo);
+
+    let task = call(
+        &client,
+        "create_task",
+        json!({
+            "title": "Rewrite the tokenizer",
+            "planned_date": "2026-10-03",
+            "note_id": note,
+            "repository_id": repo,
+        }),
+    )
+    .await
+    .unwrap();
+    let task_id = task["id"].as_str().unwrap().to_string();
+    assert_eq!(task["repository"]["name"], "parser");
+    assert_eq!(task["note"]["path"], "Parser.md");
+    let version = task["version"].as_i64().unwrap();
+
+    let done = call(
+        &client,
+        "complete_task",
+        json!({"task_id": task_id, "expected_version": version}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(done["status"], "done");
+    assert!(done["completed_at"].is_string());
+    let stored = h.tasks.get(&task_id).await.unwrap();
+    assert_eq!(stored.status, TaskStatus::Done);
+    assert!(h.saw(|e| matches!(e, KnowledgeEvent::TaskChanged(t)
+        if t.task_id == task_id && t.version == Some(stored.version))));
+
+    // The version is spent: completing again from the old read is a conflict.
+    let err = call(
+        &client,
+        "complete_task",
+        json!({"task_id": task_id, "expected_version": version}),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.starts_with("CONFLICT"), "{err}");
+    assert!(
+        err.contains(&format!("current version is {}", stored.version)),
+        "{err}"
+    );
+
+    let unlinked = call(
+        &client,
+        "unlink_repository",
+        json!({"note_id": note, "repository_id": repo}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(unlinked["linked"], false);
+    assert!(h
+        .notes
+        .context(&note)
+        .await
+        .unwrap()
+        .repositories
+        .is_empty());
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn update_task_changes_only_the_fields_it_names() {
+    let h = Harness::new(false).await;
+    let repo = h.register_repository("api").await;
+    let server = server(&h, AgentAccess::ReadWrite).await;
+    let (client, _) = connect(&server).await;
+    let task = call(
+        &client,
+        "create_task",
+        json!({"title": "Ship", "description": "carefully", "planned_date": "2026-10-05",
+               "due_date": "2026-10-09", "repository_id": repo}),
+    )
+    .await
+    .unwrap();
+    let updated = call(
+        &client,
+        "update_task",
+        json!({"task_id": task["id"], "expected_version": task["version"],
+               "status": "in_progress", "planned_date": null}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(updated["status"], "in_progress");
+    assert!(updated.get("planned_date").is_none(), "null clears it");
+    assert_eq!(updated["due_date"], "2026-10-09", "omitted stays");
+    assert_eq!(updated["description"], "carefully");
+    assert_eq!(updated["repository"]["id"], repo.as_str());
+    assert_eq!(
+        updated["to_sort"].as_bool(),
+        None,
+        "a dated task stays sorted"
+    );
+
+    let err = call(
+        &client,
+        "update_task",
+        json!({"task_id": task["id"], "expected_version": task["version"], "title": "Late"}),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.starts_with("CONFLICT"), "{err}");
+    assert_eq!(
+        h.tasks
+            .get(task["id"].as_str().unwrap())
+            .await
+            .unwrap()
+            .title,
+        "Ship"
+    );
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_creates_a_note_with_its_text() {
+    let h = Harness::new(false).await;
+    let repo = h.register_repository("parser").await;
+    let server = server(&h, AgentAccess::ReadWrite).await;
+    let (client, _) = connect(&server).await;
+
+    let note = call(
+        &client,
+        "create_note",
+        json!({"title": "Parser decisions", "folder": "Projects",
+               "text": "We keep the hand-written lexer.\n", "repository_id": repo}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(note["path"], "Projects/Parser decisions.md");
+    let id = note["id"].as_str().unwrap().to_string();
+    let text = h.read("Projects/Parser decisions.md");
+    assert_eq!(
+        text,
+        format!(
+            "---\nbrainiac_id: {id}\n---\n# Parser decisions\n\nWe keep the hand-written lexer.\n"
+        )
+    );
+    let read = call(&client, "read_note", json!({"note_id": id}))
+        .await
+        .unwrap();
+    assert_eq!(read["version"], note["version"]);
+    assert_eq!(read["repositories"][0]["id"], repo.as_str());
+    assert!(h.saw(|e| matches!(e, KnowledgeEvent::NoteChanged(n)
+        if n.note_id == id && n.origin == NoteChangeOrigin::Agent)));
+
+    // Its own heading and frontmatter stay; another note's identity does not.
+    let copy = call(
+        &client,
+        "create_note",
+        json!({"title": "Copy", "text": "---\ntags: [x]\nbrainiac_id: someone-else\n---\n## Own heading\n"}),
+    )
+    .await
+    .unwrap();
+    let copy_id = copy["id"].as_str().unwrap();
+    assert_eq!(
+        h.read("Copy.md"),
+        format!("---\ntags: [x]\nbrainiac_id: {copy_id}\n---\n## Own heading\n")
+    );
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_edit_is_versioned_kept_in_history_and_leaves_the_users_draft_alone() {
+    let h = Harness::new(false).await;
+    h.write(
+        "Plan.md",
+        "---\nbrainiac_id: plan-1\n---\n# Plan\n- ship the parser\n- write docs\n",
+    );
+    h.scan().await;
+    let server = server(&h, AgentAccess::ReadWrite).await;
+    let (client, _) = connect(&server).await;
+    let read = call(&client, "read_note", json!({"path": "Plan.md"}))
+        .await
+        .unwrap();
+    let (id, v1) = (
+        read["id"].as_str().unwrap().to_string(),
+        read["version"].as_str().unwrap().to_string(),
+    );
+    // The user has unsaved edits open in the app.
+    h.notes
+        .keep_draft(&id, &v1, "# Plan\n- my unsaved idea\n".into())
+        .await
+        .unwrap();
+
+    // Text that is not in the note, or is in it twice, changes nothing.
+    for (old, why) in [("- deploy", "not in the note"), ("- ", "2 times")] {
+        let err = call(
+            &client,
+            "edit_note",
+            json!({"note_id": id, "expected_version": v1,
+                   "edits": [{"old_text": old, "new_text": "x"}]}),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.starts_with("VALIDATION") && err.contains(why), "{err}");
+    }
+
+    let edited = call(
+        &client,
+        "edit_note",
+        json!({"note_id": id, "expected_version": v1,
+               "edits": [{"old_text": "- write docs", "new_text": "- write docs\n- tag v0.3"}]}),
+    )
+    .await
+    .unwrap();
+    let v2 = edited["version"].as_str().unwrap().to_string();
+    assert!(h.read("Plan.md").ends_with("- write docs\n- tag v0.3\n"));
+    assert!(h.saw(|e| matches!(e, KnowledgeEvent::NoteChanged(n)
+        if n.note_id == id && n.origin == NoteChangeOrigin::Agent && n.version.as_deref() == Some(v2.as_str()))));
+
+    // A stale version is a conflict that names the current one.
+    let err = call(
+        &client,
+        "edit_note",
+        json!({"note_id": id, "expected_version": v1, "text": "# Plan\nnothing\n"}),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.starts_with("CONFLICT") && err.contains(&v2), "{err}");
+
+    // Whole text without the frontmatter keeps the note's identity.
+    call(
+        &client,
+        "edit_note",
+        json!({"path": "Plan.md", "expected_version": v2, "text": "# Plan\nall done\n"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        h.read("Plan.md"),
+        "---\nbrainiac_id: plan-1\n---\n# Plan\nall done\n"
+    );
+
+    // Each agent save is its own revision, holding the text before it.
+    let revisions = h.notes.revisions(&id).await.unwrap();
+    assert_eq!(revisions.len(), 2, "{revisions:?}");
+    assert!(revisions.iter().all(|r| r.reason == RevisionReason::Agent));
+    let mut texts = Vec::new();
+    for r in &revisions {
+        texts.push(h.notes.revision_text(&r.id).await.unwrap());
+    }
+    assert!(texts
+        .iter()
+        .any(|t| t.ends_with("- ship the parser\n- write docs\n")));
+    assert!(texts.iter().any(|t| t.ends_with("- tag v0.3\n")));
+
+    // The user's draft is untouched, and now a conflict for the app to show.
+    let content = h.notes.read(&id).await.unwrap();
+    let draft = content.draft.expect("the draft is kept");
+    assert_eq!(draft.text, "# Plan\n- my unsaved idea\n");
+    assert_eq!(draft.base_version, v1);
+    client.cancel().await.unwrap();
 }

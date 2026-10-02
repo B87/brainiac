@@ -138,6 +138,7 @@ const REASON: Record<NoteRevision["reason"], string> = {
   app_save: "Saved in Brainiac",
   external_change: "Changed outside Brainiac",
   restore: "Before restoring a version",
+  agent: "Changed by an agent",
 };
 
 /** Earlier versions of a note, kept outside the vault, and restoring one. */

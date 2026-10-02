@@ -20,15 +20,24 @@ use serde::{Deserialize, Serialize};
 
 use super::AgentServer;
 use crate::models::{
-    AgentAccess, AppError, AppResult, NoteSummary, RepositorySummary, SearchKind, SearchRequest,
-    Task, TaskFilter, TaskStatus, TextPart,
+    AgentAccess, AppError, AppResult, CreateNoteRequest, ErrorCode, NoteSummary, RepositorySummary,
+    SearchKind, SearchRequest, Task, TaskFields, TaskFilter, TaskStatus, TextPart,
+    UpdateTaskRequest,
 };
 
 /// What the server tells every agent when it connects.
 const INSTRUCTIONS: &str = include_str!("instructions.md");
 
 /// Tools that change something; listed only in Read and write.
-const WRITE_TOOLS: &[&str] = &[];
+const WRITE_TOOLS: &[&str] = &[
+    "create_note",
+    "edit_note",
+    "create_task",
+    "update_task",
+    "complete_task",
+    "link_repository",
+    "unlink_repository",
+];
 
 /// One agent's connection. `Clone` is cheap: the server is shared.
 #[derive(Clone)]
@@ -515,16 +524,7 @@ impl Connection {
         annotations(read_only_hint = true)
     )]
     async fn read_note(&self, Parameters(args): Parameters<NoteArgs>) -> Reply {
-        let id = match (args.note_id, args.path) {
-            (Some(id), None) => id,
-            (None, Some(path)) => self
-                .server
-                .notes
-                .note_id_at(&path)
-                .await
-                .map_err(|e| failure(&e))?,
-            _ => return Err("VALIDATION: Give either note_id or path.".into()),
-        };
+        let id = self.note_id(args.note_id, args.path).await?;
         let content = self.server.notes.read(&id).await.map_err(|e| failure(&e))?;
         let context = self
             .server
@@ -774,4 +774,394 @@ impl Connection {
             suggested_notes: notes.suggested.into_iter().map(NoteOut::from).collect(),
         }))
     }
+
+    // -----------------------------------------------------------------------
+    // Write tools: Read and write only (WRITE_TOOLS)
+    // -----------------------------------------------------------------------
+
+    #[tool(
+        name = "create_note",
+        description = "Create a note in the vault with Markdown text. Brainiac names the file after the title, adds a `# title` heading unless the text starts with a heading, and gives the note its ID. Optionally link it to a repository.",
+        annotations(read_only_hint = false, destructive_hint = false)
+    )]
+    async fn create_note(&self, Parameters(args): Parameters<CreateNoteArgs>) -> Reply {
+        let request = CreateNoteRequest {
+            folder: args.folder,
+            title: Some(args.title),
+            repository_id: args.repository_id,
+        };
+        let note = self
+            .server
+            .notes
+            .create_for_agent(request, &args.text)
+            .await
+            .map_err(|e| failure(&e))?;
+        let content = self
+            .server
+            .notes
+            .read(&note.id)
+            .await
+            .map_err(|e| failure(&e))?;
+        #[derive(Serialize)]
+        struct Out {
+            #[serde(flatten)]
+            note: NoteOut,
+            version: String,
+        }
+        reply(Ok(Out {
+            note: note.into(),
+            version: content.version,
+        }))
+    }
+
+    #[tool(
+        name = "edit_note",
+        description = "Change a note's Markdown. Name the version you read; give either `edits` (exact text replacements, each matching once) or the whole new `text`. The previous text is kept in the note's history, where the user can restore it.",
+        annotations(read_only_hint = false, destructive_hint = false)
+    )]
+    async fn edit_note(&self, Parameters(args): Parameters<EditNoteArgs>) -> Reply {
+        let id = self.note_id(args.note_id, args.path).await?;
+        let text = match (args.text, args.edits) {
+            (Some(text), None) => text,
+            (None, Some(edits)) if !edits.is_empty() => {
+                let current = self.server.notes.read(&id).await.map_err(|e| failure(&e))?;
+                if current.version != args.expected_version {
+                    return Err(self.note_conflict(&id).await);
+                }
+                let mut text = current
+                    .text
+                    .ok_or("VALIDATION: This note is not editable text.")?;
+                for (i, edit) in edits.iter().enumerate() {
+                    match text.matches(edit.old_text.as_str()).count() {
+                        1 => text = text.replacen(&edit.old_text, &edit.new_text, 1),
+                        0 => return Err(format!("VALIDATION: edits[{i}].old_text is not in the note. Nothing was changed.")),
+                        n => return Err(format!("VALIDATION: edits[{i}].old_text is in the note {n} times; include more of the text around it. Nothing was changed.")),
+                    }
+                }
+                text
+            }
+            _ => return Err("VALIDATION: Give either text or a non-empty list of edits.".into()),
+        };
+        match self
+            .server
+            .notes
+            .save_for_agent(&id, &args.expected_version, &text)
+            .await
+        {
+            Ok(saved) => {
+                #[derive(Serialize)]
+                struct Out {
+                    #[serde(flatten)]
+                    note: NoteOut,
+                    version: String,
+                }
+                reply(Ok(Out {
+                    note: saved.note.into(),
+                    version: saved.version,
+                }))
+            }
+            Err(e) if e.code == ErrorCode::Conflict => Err(self.note_conflict(&id).await),
+            Err(e) => Err(failure(&e)),
+        }
+    }
+
+    #[tool(
+        name = "create_task",
+        description = "Create a task. Without a planned date or deadline it waits in the user's To sort list unless `sorted` is true.",
+        annotations(read_only_hint = false, destructive_hint = false)
+    )]
+    async fn create_task(&self, Parameters(args): Parameters<CreateTaskArgs>) -> Reply {
+        let fields = TaskFields {
+            title: args.title,
+            description: args.description.unwrap_or_default(),
+            status: args.status.map_or(TaskStatus::Todo, TaskStatus::from),
+            planned_date: args.planned_date,
+            due_date: args.due_date,
+            note_id: args.note_id,
+            repository_id: args.repository_id,
+            sorted: args.sorted.unwrap_or(false),
+        };
+        let task = self
+            .server
+            .tasks
+            .create(fields)
+            .await
+            .map_err(|e| failure(&e))?;
+        let names = self.repository_names().await;
+        reply(Ok(task_out(task, &names)))
+    }
+
+    #[tool(
+        name = "update_task",
+        description = "Change some of a task's fields, naming the version you read. Fields you omit stay as they are; null clears a date, the note, or the repository.",
+        annotations(read_only_hint = false, destructive_hint = false)
+    )]
+    async fn update_task(&self, Parameters(args): Parameters<UpdateTaskArgs>) -> Reply {
+        let current = self
+            .server
+            .tasks
+            .get(&args.task_id)
+            .await
+            .map_err(|e| failure(&e))?;
+        if current.version != args.expected_version {
+            return Err(task_conflict(current.version));
+        }
+        let mut fields = fields_of(&current);
+        if let Some(title) = args.title {
+            fields.title = title;
+        }
+        if let Some(description) = args.description {
+            fields.description = description;
+        }
+        if let Some(status) = args.status {
+            fields.status = status.into();
+        }
+        if let Some(planned) = args.planned_date {
+            fields.planned_date = planned;
+        }
+        if let Some(due) = args.due_date {
+            fields.due_date = due;
+        }
+        if let Some(note) = args.note_id {
+            fields.note_id = note;
+        }
+        if let Some(repository) = args.repository_id {
+            fields.repository_id = repository;
+        }
+        if let Some(sorted) = args.sorted {
+            fields.sorted = sorted;
+        }
+        self.save_task(args.task_id, args.expected_version, fields)
+            .await
+    }
+
+    #[tool(
+        name = "complete_task",
+        description = "Mark a task done, naming the version you read.",
+        annotations(read_only_hint = false, destructive_hint = false)
+    )]
+    async fn complete_task(&self, Parameters(args): Parameters<CompleteTaskArgs>) -> Reply {
+        let current = self
+            .server
+            .tasks
+            .get(&args.task_id)
+            .await
+            .map_err(|e| failure(&e))?;
+        if current.version != args.expected_version {
+            return Err(task_conflict(current.version));
+        }
+        let mut fields = fields_of(&current);
+        fields.status = TaskStatus::Done;
+        self.save_task(args.task_id, args.expected_version, fields)
+            .await
+    }
+
+    #[tool(
+        name = "link_repository",
+        description = "Link a note to a registered repository, so the note shows in the repository's Notes and the repository in the note's context.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true
+        )
+    )]
+    async fn link_repository(&self, Parameters(args): Parameters<LinkArgs>) -> Reply {
+        let id = self.note_id(args.note_id, args.path).await?;
+        self.server
+            .notes
+            .link_repository(&id, &args.repository_id)
+            .await
+            .map_err(|e| failure(&e))?;
+        reply(Ok(
+            serde_json::json!({ "note_id": id, "repository_id": args.repository_id, "linked": true }),
+        ))
+    }
+
+    #[tool(
+        name = "unlink_repository",
+        description = "Remove the link between a note and a repository. The note and the repository stay as they are.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true
+        )
+    )]
+    async fn unlink_repository(&self, Parameters(args): Parameters<LinkArgs>) -> Reply {
+        let id = self.note_id(args.note_id, args.path).await?;
+        self.server
+            .notes
+            .unlink_repository(&id, &args.repository_id)
+            .await
+            .map_err(|e| failure(&e))?;
+        reply(Ok(
+            serde_json::json!({ "note_id": id, "repository_id": args.repository_id, "linked": false }),
+        ))
+    }
+}
+
+impl Connection {
+    /// A note named by ID or by path.
+    async fn note_id(&self, id: Option<String>, path: Option<String>) -> Result<String, String> {
+        match (id, path) {
+            (Some(id), None) => Ok(id),
+            (None, Some(path)) => self
+                .server
+                .notes
+                .note_id_at(&path)
+                .await
+                .map_err(|e| failure(&e)),
+            _ => Err("VALIDATION: Give either note_id or path.".into()),
+        }
+    }
+
+    /// A note's conflict, with the version to read again.
+    async fn note_conflict(&self, id: &str) -> String {
+        let current = self
+            .server
+            .notes
+            .read(id)
+            .await
+            .map(|c| format!(" Its current version is {}.", c.version))
+            .unwrap_or_default();
+        format!("CONFLICT: The note changed since you read it. Read it again and reapply your change; nothing was saved.{current}")
+    }
+
+    async fn save_task(&self, task_id: String, expected_version: i64, fields: TaskFields) -> Reply {
+        let request = UpdateTaskRequest {
+            task_id,
+            expected_version,
+            fields,
+        };
+        match self.server.tasks.update(request).await {
+            Ok(task) => {
+                let names = self.repository_names().await;
+                reply(Ok(task_out(task, &names)))
+            }
+            Err(e) if e.code == ErrorCode::Conflict => Err(format!(
+                "CONFLICT: The task changed since you read it. Read it again with get_task and reapply your change; nothing was saved. ({})",
+                e.message
+            )),
+            Err(e) => Err(failure(&e)),
+        }
+    }
+}
+
+fn task_conflict(current: i64) -> String {
+    format!("CONFLICT: The task changed since you read it; its current version is {current}. Read it again with get_task and reapply your change; nothing was saved.")
+}
+
+/// A task's fields as they are, to change some of them.
+fn fields_of(task: &Task) -> TaskFields {
+    TaskFields {
+        title: task.title.clone(),
+        description: task.description.clone(),
+        status: task.status,
+        planned_date: task.planned_date.clone(),
+        due_date: task.due_date.clone(),
+        note_id: task.note.as_ref().map(|n| n.id.clone()),
+        repository_id: task.repository_id.clone(),
+        // As the app does: a task not to sort stays sorted.
+        sorted: !task.to_sort,
+    }
+}
+
+/// Distinguishes a field that is absent (`None`) from one set to null
+/// (`Some(None)`): absent keeps the value, null clears it.
+fn present<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct CreateNoteArgs {
+    /// The note's title, also its file name.
+    title: String,
+    /// The note's Markdown.
+    text: String,
+    /// A folder inside the vault, such as `Projects`; the top folder when omitted.
+    folder: Option<String>,
+    /// Link the new note to this repository.
+    repository_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct TextEdit {
+    /// Exact text now in the note; it must appear exactly once.
+    old_text: String,
+    new_text: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct EditNoteArgs {
+    /// The note's ID.
+    note_id: Option<String>,
+    /// Or its path: inside the vault or absolute.
+    path: Option<String>,
+    /// The version read_note returned.
+    expected_version: String,
+    /// Replacements applied in order.
+    edits: Option<Vec<TextEdit>>,
+    /// Or the note's whole new Markdown.
+    text: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct CreateTaskArgs {
+    title: String,
+    /// A short plain-text description; longer material belongs in a linked note.
+    description: Option<String>,
+    /// `todo` when omitted.
+    status: Option<StatusArg>,
+    /// `YYYY-MM-DD`: the day the user plans to work on it.
+    planned_date: Option<String>,
+    /// `YYYY-MM-DD`: the deadline.
+    due_date: Option<String>,
+    /// Link the task to this note.
+    note_id: Option<String>,
+    /// Link the task to this repository.
+    repository_id: Option<String>,
+    /// Keep it out of To sort without a date.
+    sorted: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct UpdateTaskArgs {
+    task_id: String,
+    /// The version get_task or list_tasks returned.
+    expected_version: i64,
+    title: Option<String>,
+    description: Option<String>,
+    status: Option<StatusArg>,
+    /// `YYYY-MM-DD`, or null to clear.
+    #[serde(default, deserialize_with = "present")]
+    planned_date: Option<Option<String>>,
+    /// `YYYY-MM-DD`, or null to clear.
+    #[serde(default, deserialize_with = "present")]
+    due_date: Option<Option<String>>,
+    /// A note ID, or null to unlink the note.
+    #[serde(default, deserialize_with = "present")]
+    note_id: Option<Option<String>>,
+    /// A repository ID, or null to unlink the repository.
+    #[serde(default, deserialize_with = "present")]
+    repository_id: Option<Option<String>>,
+    sorted: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct CompleteTaskArgs {
+    task_id: String,
+    /// The version get_task or list_tasks returned.
+    expected_version: i64,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct LinkArgs {
+    /// The note's ID.
+    note_id: Option<String>,
+    /// Or its path: inside the vault or absolute.
+    path: Option<String>,
+    repository_id: String,
 }
