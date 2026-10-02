@@ -110,6 +110,17 @@ pub fn file_name_for(title: &str) -> String {
     }
 }
 
+/// Whether a file stem is `name`, or `name` with the number Brainiac adds
+/// to tell notes with the same title apart (`Untitled 2`).
+pub fn name_matches(stem: &str, name: &str) -> bool {
+    stem == name
+        || stem
+            .strip_prefix(name)
+            .and_then(|rest| rest.strip_prefix(' '))
+            .and_then(|n| n.parse::<u32>().ok())
+            .is_some_and(|n| n >= 2)
+}
+
 /// Modification time in nanoseconds since the Unix epoch.
 pub fn mtime_ns(meta: &fs::Metadata) -> i64 {
     meta.modified()
@@ -314,6 +325,22 @@ fn same_file(a: &Path, b: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_numbered_name_still_matches_its_title() {
+        assert!(name_matches("Untitled", "Untitled"));
+        assert!(name_matches("Untitled 2", "Untitled"));
+        assert!(name_matches("Plan 12", "Plan"));
+        for (stem, name) in [
+            ("Untitled 1", "Untitled"),
+            ("Untitled 2b", "Untitled"),
+            ("Untitled2", "Untitled"),
+            ("2026-10-02", "Standup"),
+            ("plan", "Plan"),
+        ] {
+            assert!(!name_matches(stem, name), "{stem} / {name}");
+        }
+    }
 
     #[test]
     fn vault_paths_are_validated() {

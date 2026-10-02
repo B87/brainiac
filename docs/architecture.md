@@ -270,6 +270,7 @@ Commands are thin adapters over Rust services. Use `#[tauri::command]`, serializ
 | `list_folder` / `get_note_lists` / `read_note` / `mark_note_opened` | v0.2: one vault folder as it is on disk; pinned and recent notes; content, hash version, and any draft |
 | `save_note` | v0.2: note ID, expected hash, Markdown; new version or `CONFLICT` |
 | `create_note` / `preview_rename` / `rename_note` | v0.2: folder and title; the notes a rename would rewrite; new path, optionally updating links in other notes |
+| `follow_note_title` | v0.2: the note and the title its file name last matched; renames the file after the current title when it still matches that title and no other note links to it, taking the next free number (`NoteService::follow_title`); the editor calls it once the cursor leaves the title's line or the note. A note summary's `title_file_name` is the name its title would give while it differs |
 | `trash_note` / `list_trash` / `restore_note` / `recreate_note` / `relink_note` | v0.2: the trash (restore names whether to overwrite); a missing note restored as a new file or pointed at an existing one |
 | `list_revisions` / `read_revision` / `restore_revision` / `discard_draft` / `save_draft_as_copy` | v0.2: revision history and conflict recovery |
 | `get_note_context` / `resolve_link` / `get_repository_notes` | v0.2: the context panel; where a clicked link leads; a repository's Notes tab |

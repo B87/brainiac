@@ -364,7 +364,8 @@ A note is edited as its Markdown text, so a save contains exactly what the user 
 - The ID is a convention Brainiac cannot enforce: copying a note copies it, and an edit can remove it. Two notes with the same ID are shown as a conflict; they are never merged silently.
 - A note is identified by its vault and its path within the vault, never by an absolute path, so the vault can move or be restored elsewhere.
 - A note moved or renamed outside Brainiac is recognised by its `brainiac_id`, otherwise by the same path, otherwise by content identical to exactly one note that went missing in the same scan or the same burst of changes, such as a `git pull`. Anything ambiguous becomes a missing note and a new note, which the user can relink; identical content alone does not prove identity.
-- The title is the frontmatter `title`, else the first heading, else the file name. Changing the title does not rename the file.
+- The title is the frontmatter `title`, else the first heading, else the file name. Lists and the folder tree show titles; the file's path shows on hover and in the note's header.
+- A note whose file name matches its title keeps them matching: when the title changes, the file is renamed after the title once the cursor leaves the title's line or the note, never while typing it. A number Brainiac added to tell notes apart (`Untitled 2.md`) still counts as matching, and a renamed note takes the next free number the same way. A note that other notes link to is not renamed by itself, because their links name the file; neither is a file whose name was already different from its title, such as `2026-10-02.md` titled Standup. While the two differ, the header offers **Rename File to Match Title…**, which opens Rename with the new name filled in and the links it would update listed.
 - Arbitrary frontmatter keys, code fences, and relative links are preserved.
 
 ### Links between notes

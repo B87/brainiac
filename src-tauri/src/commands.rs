@@ -395,6 +395,15 @@ pub async fn rename_note(
 }
 
 #[tauri::command]
+pub async fn follow_note_title(
+    note_id: String,
+    from_title: String,
+    notes: State<'_, Notes>,
+) -> AppResult<NoteSummary> {
+    notes.follow_title(&note_id, &from_title).await
+}
+
+#[tauri::command]
 pub async fn trash_note(note_id: String, notes: State<'_, Notes>) -> AppResult<()> {
     notes.trash(&note_id).await
 }

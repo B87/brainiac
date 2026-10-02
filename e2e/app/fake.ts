@@ -28,6 +28,17 @@ type FakeNote = {
 
 const NOW = "2026-10-02T09:00:00.000Z";
 
+const stemOf = (path: string) => path.replace(/^.*\//, "").replace(/\.md$/, "");
+/** The backend's `file_name_for`, enough for the tests' titles. */
+const fileNameFor = (title: string) =>
+  title.trim().replace(/[/:\\]/g, "-") || "Untitled";
+/** The backend's `name_matches`: `name`, or `name` plus a number from 2. */
+const nameMatches = (stem: string, name: string) => {
+  if (stem === name) return true;
+  const n = stem.startsWith(`${name} `) ? stem.slice(name.length + 1) : "";
+  return /^\d+$/.test(n) && Number(n) >= 2;
+};
+
 const settings: Settings = {
   editor: {
     executable: "code",
@@ -136,10 +147,14 @@ export class FakeBackend {
 
   summary(n: FakeNote): NoteSummary {
     const heading = /^#\s+(.+)$/m.exec(n.text)?.[1];
+    const title = heading ?? stemOf(n.path);
+    const name = fileNameFor(title);
     return {
       id: n.id,
       relative_path: n.path,
-      title: heading ?? n.path.replace(/^.*\//, "").replace(/\.md$/, ""),
+      title,
+      title_file_name:
+        n.missing || nameMatches(stemOf(n.path), name) ? null : `${name}.md`,
       text_state: "text",
       missing: !!n.missing,
       trashed: false,
@@ -419,6 +434,35 @@ export class FakeBackend {
           origin: "app",
         });
         return { note: this.summary(n), updated: [], failed: [] };
+      }
+      case "follow_note_title": {
+        // The backend also leaves a note that other notes link to alone.
+        const n = this.noteOf(args.noteId);
+        const target = this.summary(n).title_file_name;
+        if (
+          !target ||
+          !nameMatches(stemOf(n.path), fileNameFor(String(args.fromTitle)))
+        )
+          return this.summary(n);
+        const folder = n.path.includes("/")
+          ? n.path.replace(/\/[^/]*$/, "/")
+          : "";
+        const base = target.replace(/\.md$/, "");
+        let path = `${folder}${base}.md`;
+        for (
+          let i = 2;
+          [...this.notes.values()].some((o) => o.path === path);
+          i++
+        )
+          path = `${folder}${base} ${i}.md`;
+        n.path = path;
+        this.later("note_changed", {
+          note_id: n.id,
+          version: n.version,
+          relative_path: n.path,
+          origin: "app",
+        });
+        return this.summary(n);
       }
       case "update_settings":
         Object.assign(settings, args.settings);

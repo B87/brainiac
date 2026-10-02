@@ -268,3 +268,56 @@ test("edits typed after a conflict survive leaving the note", async ({
     page.getByRole("alert").filter({ hasText: "changed on disk" }),
   ).toBeVisible();
 });
+
+test("a new note's file follows its title once the cursor leaves the heading", async ({
+  page,
+}) => {
+  await setUpVault(page);
+  await page.getByRole("button", { name: "New note", exact: true }).click();
+  const editor = page.locator(".note-editor .cm-content");
+  await expect(editor).toContainText("Untitled");
+  const path = page.locator("header .mono");
+  await expect(path).toHaveText("Untitled.md");
+
+  // Line 5 is the heading, below the frontmatter.
+  await editor.click();
+  await page.keyboard.press("Meta+ArrowUp");
+  for (let i = 0; i < 4; i++) await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("End");
+  for (let i = 0; i < "Untitled".length; i++)
+    await page.keyboard.press("Backspace");
+  await page.keyboard.type("Payment retries");
+  await expect(
+    page.getByRole("status").filter({ hasText: /^Saved/ }),
+  ).toBeVisible({ timeout: 5000 });
+  // Not while the title is being typed.
+  await expect(path).toHaveText("Untitled.md");
+  expect(await calls(page, "follow_note_title")).toEqual([]);
+
+  await page.keyboard.press("ArrowDown");
+  await expect(path).toHaveText("Payment retries.md");
+  expect(await calls(page, "follow_note_title")).toEqual([
+    { noteId: expect.any(String), fromTitle: "Untitled" },
+  ]);
+  // Listed by its title, with the new path on hover.
+  await expect(
+    page
+      .getByRole("navigation", { name: "Notes" })
+      .getByTitle("Payment retries.md")
+      .first(),
+  ).toHaveText("Payment retries");
+
+  // Named otherwise, the file keeps its name and the header offers a rename.
+  await page.getByRole("button", { name: "Note actions" }).click();
+  await page.getByRole("menuitem", { name: "Rename or Move…" }).click();
+  const rename = page.getByRole("dialog", { name: "Rename or Move Note" });
+  await rename.getByRole("textbox").fill("Ideas/Plan.md");
+  await rename.getByRole("button", { name: "Rename" }).click();
+  await expect(path).toHaveText("Ideas/Plan.md");
+  await page
+    .getByRole("button", { name: "Rename File to Match Title…" })
+    .click();
+  await expect(rename.getByRole("textbox")).toHaveValue(
+    "Ideas/Payment retries.md",
+  );
+});

@@ -245,6 +245,7 @@ pub fn run() {
             commands::create_note,
             commands::preview_rename,
             commands::rename_note,
+            commands::follow_note_title,
             commands::trash_note,
             commands::list_trash,
             commands::restore_note,

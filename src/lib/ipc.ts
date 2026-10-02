@@ -275,6 +275,8 @@ export const ipc = {
     invoke<RenamePreview>("preview_rename", { noteId, newPath }),
   renameNote: (request: RenameNoteRequest) =>
     invoke<RenameResult>("rename_note", { request }),
+  followNoteTitle: (noteId: string, fromTitle: string) =>
+    invoke<NoteSummary>("follow_note_title", { noteId, fromTitle }),
   trashNote: (noteId: string) => invoke<void>("trash_note", { noteId }),
   listTrash: () => invoke<TrashedNote[]>("list_trash"),
   restoreNote: (noteId: string, overwrite: boolean) =>

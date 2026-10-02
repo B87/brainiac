@@ -17,6 +17,8 @@ type Props = {
   text: string;
   livePreview: boolean;
   onChange: (text: string) => void;
+  /** The cursor moved to another line (numbered from 1). */
+  onCursorLine?: (line: number) => void;
   onOpenLink?: (link: NoteLink) => void;
   resolveImage?: (src: string) => string | null;
   /** Show the note without letting it be edited (previews). */
@@ -40,6 +42,7 @@ export function NoteEditor(props: Props) {
       reported.current = text;
       latest.current.onChange(text);
     },
+    onCursorLine: (line) => latest.current.onCursorLine?.(line),
     onOpenLink: (link) => latest.current.onOpenLink?.(link),
     resolveImage: (src) => latest.current.resolveImage?.(src) ?? null,
     readOnly: latest.current.readOnly,

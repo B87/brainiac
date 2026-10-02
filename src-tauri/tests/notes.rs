@@ -522,3 +522,87 @@ async fn rebuilding_the_index_keeps_every_link_between_notes() {
     }
     assert_eq!(resolved, 6);
 }
+
+/// Replace a note's first heading through a save, as the editor would.
+async fn retitle(h: &Harness, id: &str, title: &str) {
+    let content = h.notes.read(id).await.unwrap();
+    let text = content.text.unwrap();
+    let heading = text.lines().find(|l| l.starts_with("# ")).unwrap();
+    h.notes
+        .save(SaveNoteRequest {
+            note_id: id.to_string(),
+            expected_version: content.version,
+            text: text.replacen(heading, &format!("# {title}"), 1),
+        })
+        .await
+        .unwrap();
+}
+
+async fn create(h: &Harness, title: &str) -> String {
+    let request = CreateNoteRequest {
+        folder: None,
+        title: Some(title.into()),
+        repository_id: None,
+    };
+    h.notes.create(request).await.unwrap().id
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_file_named_after_its_title_follows_the_title() {
+    let h = Harness::new(false).await;
+    let first = create(&h, "").await;
+    let second = create(&h, "").await;
+    let second_note = h.notes.summary(&second).await.unwrap();
+    assert_eq!(second_note.relative_path, "Untitled 2.md");
+    // The number Brainiac added still counts as matching the title.
+    assert_eq!(second_note.title_file_name, None);
+
+    retitle(&h, &second, "Payment retries").await;
+    let before = h.notes.summary(&second).await.unwrap();
+    assert_eq!(before.relative_path, "Untitled 2.md");
+    assert_eq!(
+        before.title_file_name.as_deref(),
+        Some("Payment retries.md")
+    );
+    let after = h.notes.follow_title(&second, "Untitled").await.unwrap();
+    assert_eq!(after.relative_path, "Payment retries.md");
+    assert_eq!(after.title_file_name, None);
+    assert!(!h.vault.join("Untitled 2.md").exists());
+
+    // A used name takes the next number, as a new note would.
+    retitle(&h, &first, "Payment retries").await;
+    let after = h.notes.follow_title(&first, "Untitled").await.unwrap();
+    assert_eq!(after.relative_path, "Payment retries 2.md");
+
+    // A case-only change renames too.
+    let plan = create(&h, "plan").await;
+    retitle(&h, &plan, "Plan").await;
+    let after = h.notes.follow_title(&plan, "plan").await.unwrap();
+    assert_eq!(after.relative_path, "Plan.md");
+    let names: Vec<String> = fs::read_dir(&h.vault)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(names.contains(&"Plan.md".to_string()), "{names:?}");
+    assert!(!names.contains(&"plan.md".to_string()), "{names:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_file_is_not_renamed_after_its_title_when_named_otherwise_or_linked() {
+    let h = Harness::new(false).await;
+    h.write("2026-10-02.md", "# Standup\n");
+    h.write("Index.md", "See [[Linked]].\n");
+    h.scan().await;
+    let dated = note_id_at(&h, "2026-10-02.md").await;
+    let note = h.notes.summary(&dated).await.unwrap();
+    assert_eq!(note.title_file_name.as_deref(), Some("Standup.md"));
+    let after = h.notes.follow_title(&dated, "Standup").await.unwrap();
+    assert_eq!(after.relative_path, "2026-10-02.md");
+
+    let linked = create(&h, "Linked").await;
+    retitle(&h, &linked, "Renamed").await;
+    let after = h.notes.follow_title(&linked, "Linked").await.unwrap();
+    assert_eq!(after.relative_path, "Linked.md");
+    assert_eq!(after.title_file_name.as_deref(), Some("Renamed.md"));
+    assert_eq!(h.read("Index.md"), "See [[Linked]].\n");
+}

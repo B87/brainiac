@@ -475,10 +475,17 @@ impl NoteService {
                 }
             })
             .collect();
+        // Folders first, then by what the tree shows: a note's title, else the name.
+        let label = |e: &FolderEntry| {
+            e.note
+                .as_ref()
+                .map_or(e.name.as_str(), |n| n.title.as_str())
+                .to_lowercase()
+        };
         listing.sort_by(|a, b| {
             (a.kind != FolderEntryKind::Folder)
                 .cmp(&(b.kind != FolderEntryKind::Folder))
-                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+                .then_with(|| label(a).cmp(&label(b)))
         });
         Ok(FolderListing {
             relative_path: folder,
@@ -946,6 +953,57 @@ impl NoteService {
             updated,
             failed,
         })
+    }
+
+    /// Rename a note's file after its title, when the file was named after
+    /// `from_title` (the title the editor last saw it match) and no other note
+    /// links to it, taking the next free number when the name is used
+    /// (SPEC.md, Note identity). Returns the note as it is now.
+    pub async fn follow_title(
+        self: &Arc<Self>,
+        id: &str,
+        from_title: &str,
+    ) -> AppResult<NoteSummary> {
+        let note = self.summary(id).await?;
+        let Some(target) = note.title_file_name.as_deref() else {
+            return Ok(note);
+        };
+        let stem = index::file_stem(&note.relative_path);
+        if !files::name_matches(stem, &files::file_name_for(from_title)) {
+            return Ok(note);
+        }
+        // Links name the file; renaming it would leave them unresolved.
+        if self
+            .linking_notes(id)
+            .await?
+            .keys()
+            .any(|source| source != id)
+        {
+            return Ok(note);
+        }
+        let base = index::file_stem(target);
+        let folder = note
+            .relative_path
+            .rsplit_once('/')
+            .map_or(String::new(), |(f, _)| format!("{f}/"));
+        for n in 1..100 {
+            let new_path = if n == 1 {
+                format!("{folder}{base}.md")
+            } else {
+                format!("{folder}{base} {n}.md")
+            };
+            let request = RenameNoteRequest {
+                note_id: id.to_string(),
+                new_path,
+                update_links: false,
+            };
+            match self.rename(request).await {
+                Ok(result) => return Ok(result.note),
+                Err(e) if e.code == ErrorCode::Conflict => continue,
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(note)
     }
 
     /// Rewrite one linking note's links to a renamed note. Returns its path when it changed.

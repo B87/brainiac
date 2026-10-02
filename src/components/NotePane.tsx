@@ -75,9 +75,9 @@ export default function NotePane(props: Props) {
     null,
   );
   const [menuOpen, setMenuOpen] = useState(false);
-  const [dialog, setDialog] = useState<"rename" | "history" | "compare" | null>(
-    null,
-  );
+  const [dialog, setDialog] = useState<
+    "rename" | "match" | "history" | "compare" | null
+  >(null);
   const [, setClock] = useState(0);
 
   // The editor's text, the text of the version it was read or saved as, and that version.
@@ -92,6 +92,17 @@ export default function NotePane(props: Props) {
   /** A version an outside change announced while a save was in flight. */
   const pendingOutside = useRef<string | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  /** The note as last read or saved, for code that runs after a save. */
+  const noteRef = useRef<NoteSummary | null>(null);
+  /** The title the file name matched when the note was read, while it
+   * follows the title (SPEC.md, Note identity); null when it does not. */
+  const followFrom = useRef<string | null>(null);
+  /** The cursor's line, and its line when a save last changed the title:
+   * the file is renamed once the cursor has left that line. */
+  const cursorLine = useRef(1);
+  const titleLine = useRef<number | null>(null);
+  /** The title a rename was last tried for, so a refusal is not repeated. */
+  const triedTitle = useRef<string | null>(null);
 
   const setSaveState = useCallback((s: SaveState) => {
     state.current = s;
@@ -131,6 +142,7 @@ export default function NotePane(props: Props) {
   const apply = useCallback(
     (c: NoteContent, reload: boolean) => {
       setContent(c);
+      noteRef.current = c.note;
       const keepMine = reload && unsaved();
       if (c.note.trashed || c.note.missing) {
         const shown = keepMine
@@ -157,6 +169,8 @@ export default function NotePane(props: Props) {
       base.current = c.version;
       savedText.current = c.text;
       loaded.current = true;
+      followFrom.current =
+        c.note.title_file_name === null ? c.note.title : null;
       setDisk(null);
       if (c.draft && c.draft.text !== c.text) {
         current.current = c.draft.text;
@@ -199,7 +213,10 @@ export default function NotePane(props: Props) {
       }
       if (version === base.current) {
         // Renamed or new context; the text is the same.
-        void ipc.readNote(noteId).then((c) => setContent(c));
+        void ipc.readNote(noteId).then((c) => {
+          noteRef.current = c.note;
+          setContent(c);
+        });
         return;
       }
       if (!unsaved()) {
@@ -226,6 +243,9 @@ export default function NotePane(props: Props) {
       });
       base.current = result.version;
       savedText.current = sent;
+      if (result.note.title !== noteRef.current?.title)
+        titleLine.current = cursorLine.current;
+      noteRef.current = result.note;
       setSearchPending(result.search_pending);
       setContent((c) =>
         c ? { ...c, note: result.note, version: result.version } : c,
@@ -248,6 +268,7 @@ export default function NotePane(props: Props) {
     const outside = pendingOutside.current;
     pendingOutside.current = null;
     if (outside !== null && outside !== base.current) outsideChange(outside);
+    else void followRef.current();
   }, [
     noteId,
     onError,
@@ -287,6 +308,42 @@ export default function NotePane(props: Props) {
   const saveRef = useRef(save);
   saveRef.current = save;
 
+  /**
+   * Rename the file after a changed title once the cursor has left the
+   * title's line, or at once when `leaving` the note. The backend decides
+   * whether it may (SPEC.md, Note identity).
+   */
+  const followTitle = useCallback(
+    async (leaving = false) => {
+      const note = noteRef.current;
+      const from = followFrom.current;
+      if (
+        !note ||
+        from === null ||
+        modeRef.current !== "editing" ||
+        state.current !== "saved" ||
+        note.title === from ||
+        note.title_file_name === null ||
+        triedTitle.current === note.title ||
+        (!leaving && cursorLine.current === titleLine.current)
+      )
+        return;
+      triedTitle.current = note.title;
+      try {
+        const next = await ipc.followNoteTitle(noteId, from);
+        if (next.relative_path !== note.relative_path)
+          followFrom.current = next.title;
+        noteRef.current = next;
+        setContent((c) => (c ? { ...c, note: next } : c));
+      } catch (e) {
+        if (!leaving) onError(errorMessage(e));
+      }
+    },
+    [noteId, onError],
+  );
+  const followRef = useRef(followTitle);
+  followRef.current = followTitle;
+
   // Others save first before changing the note's file (linking writes its ID).
   useEffect(() => {
     if (!props.flushRef) return;
@@ -301,6 +358,7 @@ export default function NotePane(props: Props) {
   useEffect(() => {
     const off = getCurrentWindow().onCloseRequested(async () => {
       await save();
+      await followRef.current(true);
     });
     return () => {
       void off.then((unlisten) => unlisten());
@@ -313,7 +371,8 @@ export default function NotePane(props: Props) {
     void ipc.markNoteOpened(noteId).catch(() => {});
     return () => {
       clearTimeout(timer.current);
-      if (unsaved()) void saveRef.current();
+      const saved = unsaved() ? saveRef.current() : Promise.resolve();
+      void saved.then(() => followRef.current(true));
     };
   }, [noteId, load, unsaved]);
 
@@ -367,6 +426,14 @@ export default function NotePane(props: Props) {
   };
 
   const note = content?.note ?? null;
+  // Offered while the file name differs from the title and is not about to
+  // follow it by itself.
+  const titleName =
+    mode === "editing" &&
+    note?.title_file_name &&
+    (followFrom.current === null || triedTitle.current === note.title)
+      ? note.title_file_name
+      : null;
 
   const openLink = async (link: NoteLink) => {
     try {
@@ -517,8 +584,20 @@ export default function NotePane(props: Props) {
       >
         <div className="flex min-w-0 flex-col">
           <span className="truncate font-semibold">{note?.title ?? "…"}</span>
-          <span className="mono truncate text-[11px] text-muted">
-            {note?.relative_path}
+          <span className="flex min-w-0 items-baseline gap-2 text-[11px]">
+            <span className="mono truncate text-muted">
+              {note?.relative_path}
+            </span>
+            {titleName && (
+              <button
+                type="button"
+                className="shrink-0 text-link hover:underline"
+                title={`Rename the file to ${titleName}`}
+                onClick={() => void save().then(() => setDialog("match"))}
+              >
+                Rename File to Match Title…
+              </button>
+            )}
           </span>
         </div>
         {note?.id_conflict && (
@@ -758,6 +837,10 @@ export default function NotePane(props: Props) {
             livePreview={props.livePreview}
             readOnly={mode !== "editing"}
             onChange={onChange}
+            onCursorLine={(line) => {
+              cursorLine.current = line;
+              void followTitle();
+            }}
             onOpenLink={(l) => void openLink(l)}
             resolveImage={(src) =>
               note ? vaultImageUrl(note.relative_path, src) : null
@@ -767,14 +850,28 @@ export default function NotePane(props: Props) {
         )}
       </div>
 
-      {dialog === "rename" && note && (
+      {(dialog === "rename" || dialog === "match") && note && (
         <RenameDialog
           note={note}
+          initialPath={
+            dialog === "match" && note.title_file_name
+              ? [folderOf(note.relative_path), note.title_file_name]
+                  .filter(Boolean)
+                  .join("/")
+              : undefined
+          }
           onClose={() => setDialog(null)}
           onDone={(message) => {
             setDialog(null);
             onNotice(message);
-            void ipc.readNote(noteId).then((c) => setContent(c));
+            void ipc.readNote(noteId).then((c) => {
+              noteRef.current = c.note;
+              // A file named after its title follows it from here on; one
+              // named otherwise keeps the name it was given.
+              followFrom.current =
+                c.note.title_file_name === null ? c.note.title : null;
+              setContent(c);
+            });
           }}
         />
       )}

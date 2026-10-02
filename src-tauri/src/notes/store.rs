@@ -4,7 +4,7 @@
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use super::files::mtime_rfc3339;
+use super::files::{self, mtime_rfc3339};
 use crate::db::{enum_name, parse_enum};
 use crate::models::{AppResult, NoteSummary, NoteTextState};
 
@@ -140,7 +140,22 @@ pub fn summary_of(row: &NoteRow, id_conflict: bool) -> NoteSummary {
         has_embedded_id: row.embedded_id.is_some(),
         modified_at: mtime_rfc3339(row.mtime),
         last_opened_at: row.last_opened_at.clone(),
+        title_file_name: title_file_name(row),
     }
+}
+
+/// The file name a live text note's title would give, when its own differs.
+fn title_file_name(row: &NoteRow) -> Option<String> {
+    if !row.is_live() || row.text_state != NoteTextState::Text {
+        return None;
+    }
+    let stem = crate::index::file_stem(&row.relative_path);
+    // A title taken from the file name always matches, whatever it contains.
+    if row.title == stem {
+        return None;
+    }
+    let name = files::file_name_for(&row.title);
+    (!files::name_matches(stem, &name)).then(|| format!("{name}.md"))
 }
 
 fn row_to_summary(r: &rusqlite::Row<'_>) -> rusqlite::Result<NoteSummary> {

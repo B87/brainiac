@@ -1134,6 +1134,10 @@ pub struct NoteSummary {
     /// The file's modification time.
     pub modified_at: String,
     pub last_opened_at: Option<String>,
+    /// The file name the title would give, such as `Payment retries.md`,
+    /// while it differs from the note's own; `None` when they match
+    /// (SPEC.md, Note identity).
+    pub title_file_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

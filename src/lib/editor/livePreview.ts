@@ -55,6 +55,8 @@ export type NoteEditorOptions = {
   livePreview: boolean;
   /** Called after every edit with the note's text, line endings included. */
   onChange?: (text: string) => void;
+  /** Called when the cursor moves to another line, with its number (from 1). */
+  onCursorLine?: (line: number) => void;
   /** `Cmd`+click on a link. */
   onOpenLink?: (link: NoteLink) => void;
   /** The URL to draw a vault image from, or null to leave its Markdown as text
@@ -460,7 +462,8 @@ export function createNoteState(
   text: string,
   options: NoteEditorOptions,
 ): EditorState {
-  const { onChange } = options;
+  const { onChange, onCursorLine } = options;
+  let cursorLine = 0;
   return EditorState.create({
     doc: text,
     extensions: [
@@ -487,6 +490,15 @@ export function createNoteState(
       onChange
         ? EditorView.updateListener.of((u) => {
             if (u.docChanged) onChange(noteText(u.state));
+          })
+        : [],
+      onCursorLine
+        ? EditorView.updateListener.of((u) => {
+            if (!u.selectionSet && !u.docChanged) return;
+            const line = u.state.doc.lineAt(u.state.selection.main.head).number;
+            if (line === cursorLine) return;
+            cursorLine = line;
+            onCursorLine(line);
           })
         : [],
       noteTheme,

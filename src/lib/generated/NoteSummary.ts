@@ -25,4 +25,10 @@ has_embedded_id: boolean,
 /**
  * The file's modification time.
  */
-modified_at: string, last_opened_at: string | null, };
+modified_at: string, last_opened_at: string | null, 
+/**
+ * The file name the title would give, such as `Payment retries.md`,
+ * while it differs from the note's own; `None` when they match
+ * (SPEC.md, Note identity).
+ */
+title_file_name: string | null, };

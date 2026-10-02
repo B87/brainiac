@@ -19,14 +19,17 @@ import Dialog from "./Dialog";
  */
 export function RenameDialog({
   note,
+  initialPath,
   onClose,
   onDone,
 }: {
   note: NoteSummary;
+  /** The path to propose, such as one named after the title. */
+  initialPath?: string;
   onClose: () => void;
   onDone: (message: string) => void;
 }) {
-  const [path, setPath] = useState(note.relative_path);
+  const [path, setPath] = useState(initialPath ?? note.relative_path);
   const [preview, setPreview] = useState<RenamePreview | null>(null);
   const [update, setUpdate] = useState(false);
   const [error, setError] = useState<string | null>(null);
