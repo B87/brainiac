@@ -19,6 +19,8 @@ import type { ListCommitsRequest } from "./generated/ListCommitsRequest";
 import type { MenuEvent } from "./generated/MenuEvent";
 import type { PinEntityType } from "./generated/PinEntityType";
 import type { RefsResult } from "./generated/RefsResult";
+import type { RelocateRepositoryRequest } from "./generated/RelocateRepositoryRequest";
+import type { RelocationOutcome } from "./generated/RelocationOutcome";
 import type { RepositoryChangedEvent } from "./generated/RepositoryChangedEvent";
 import type { RepositorySummary } from "./generated/RepositorySummary";
 import type { RepositoryTab } from "./generated/RepositoryTab";
@@ -27,6 +29,7 @@ import type { UpdateWorkspaceMembershipRequest } from "./generated/UpdateWorkspa
 import type { Workspace } from "./generated/Workspace";
 import type { WorkspaceActivity } from "./generated/WorkspaceActivity";
 import type { WorkspacePreview } from "./generated/WorkspacePreview";
+import type { WorkspaceRescan } from "./generated/WorkspaceRescan";
 
 export type { ActivityCommit } from "./generated/ActivityCommit";
 export type { ActivityItem } from "./generated/ActivityItem";
@@ -43,7 +46,9 @@ export type { MemberStatus } from "./generated/MemberStatus";
 export type { Pin } from "./generated/Pin";
 export type { PreviewStatus } from "./generated/PreviewStatus";
 export type { RefEntry } from "./generated/RefEntry";
+export type { RelocationConcern } from "./generated/RelocationConcern";
 export type { RepositoryFreshness } from "./generated/RepositoryFreshness";
+export type { SuggestedMove } from "./generated/SuggestedMove";
 export type { WorkspaceMember } from "./generated/WorkspaceMember";
 export type { WorkspacePreviewEntry } from "./generated/WorkspacePreviewEntry";
 export type {
@@ -61,6 +66,8 @@ export type {
   ListCommitsRequest,
   PinEntityType,
   RefsResult,
+  RelocateRepositoryRequest,
+  RelocationOutcome,
   RepositorySummary,
   RepositoryTab,
   TeamPulse,
@@ -68,6 +75,7 @@ export type {
   Workspace,
   WorkspaceActivity,
   WorkspacePreview,
+  WorkspaceRescan,
 };
 
 export function isAppError(e: unknown): e is AppError {
@@ -86,6 +94,8 @@ export const ipc = {
     invoke<RepositorySummary>("register_repository", { path }),
   removeRepository: (repositoryId: string) =>
     invoke<void>("remove_repository", { repositoryId }),
+  relocateRepository: (request: RelocateRepositoryRequest) =>
+    invoke<RelocationOutcome>("relocate_repository", { request }),
   refreshRepository: (repositoryId: string) =>
     invoke<RepositorySummary>("refresh_repository", { repositoryId }),
   openRepository: (repositoryId: string) =>
@@ -136,6 +146,8 @@ export const ipc = {
       folderPath,
       discoveryPath: discoveryPath ?? null,
     }),
+  rescanWorkspace: (workspaceId: string) =>
+    invoke<WorkspaceRescan>("rescan_workspace", { workspaceId }),
   createWorkspace: (request: CreateWorkspaceRequest) =>
     invoke<Workspace>("create_workspace", { request }),
   updateWorkspaceMembership: (request: UpdateWorkspaceMembershipRequest) =>

@@ -247,6 +247,10 @@ impl GitService {
             "color.ui=never",
         ]);
         cmd.env("GIT_OPTIONAL_LOCKS", "0")
+            // In a partial clone, Git would otherwise download any object it
+            // lacks (a blob for a diff, a commit asked about) from the remote:
+            // a write and a network call. Git before 2.44 ignores this.
+            .env("GIT_NO_LAZY_FETCH", "1")
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GIT_PAGER", "cat")
             .env("LC_ALL", "C")
@@ -498,6 +502,40 @@ impl GitService {
             .exec(Some(root), &args, 1024, &[], self.timeout)
             .await?;
         Ok(out.success())
+    }
+
+    /// Whether the repository has any of the commits (or tags) `ids`, in one
+    /// Git run: `--ignore-missing` lists the ones it has and skips the rest.
+    /// `None` when Git cannot tell without downloading: a partial clone with a
+    /// Git too old to honor `GIT_NO_LAZY_FETCH`.
+    pub async fn contains_any(&self, root: &Path, ids: &[String]) -> AppResult<Option<bool>> {
+        if ids.is_empty() {
+            return Ok(Some(false));
+        }
+        let honors_no_lazy_fetch =
+            parse_version(&self.version).is_some_and(|(major, minor, _)| (major, minor) >= (2, 44));
+        if !honors_no_lazy_fetch
+            && self
+                .config_value(root, "extensions.partialClone")
+                .await
+                .is_some()
+        {
+            return Ok(None);
+        }
+        let mut args = vec![
+            "rev-list",
+            "--no-walk",
+            "--ignore-missing",
+            "--end-of-options",
+        ];
+        for id in ids {
+            if id.is_empty() || !id.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Err(AppError::validation("Malformed object ID."));
+            }
+            args.push(id);
+        }
+        let out = self.run_raw(Some(root), &args).await?;
+        Ok(Some(!out.iter().all(u8::is_ascii_whitespace)))
     }
 
     // -----------------------------------------------------------------------

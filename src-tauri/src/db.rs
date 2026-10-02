@@ -22,6 +22,14 @@ const MIGRATIONS: &[(&str, &str)] = &[("0001_init", include_str!("../migrations/
 /// How many daily backups to keep.
 const BACKUP_RETENTION: usize = 7;
 
+/// Brainiac's `PRAGMA application_id` ("BRNC" in ASCII). It marks a database
+/// file, and every backup copied from it, as Brainiac's. Files from before
+/// 0.1.3 carry 0 and are adopted when opened.
+pub const APPLICATION_ID: i32 = 0x4252_4E43;
+
+/// The schema version this build migrates to.
+pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
+
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
 
 /// Handle to the database worker. Cheap to clone; all clones share one thread.
@@ -39,9 +47,11 @@ impl Db {
             std::fs::create_dir_all(parent)?;
         }
         let mut conn = Connection::open(path)?;
+        check_compatible(&conn, path)?;
         configure(&conn)?;
         backup_before_migration_if_needed(&conn, path)?;
         migrate(&mut conn)?;
+        conn.pragma_update(None, "application_id", APPLICATION_ID)?;
         daily_backup(&conn, path)?;
 
         let (sender, receiver) = mpsc::channel::<Job>();
@@ -126,6 +136,31 @@ pub fn schema_version(conn: &Connection) -> AppResult<u32> {
     Ok(conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))? as u32)
 }
 
+/// Refuse a file another program wrote, or one a newer Brainiac migrated.
+/// SQLite enforces neither header field, and running older code on a newer
+/// schema would skip tables it does not know about.
+fn check_compatible(conn: &Connection, path: &Path) -> AppResult<()> {
+    let id: i32 = conn.query_row("PRAGMA application_id", [], |r| r.get(0))?;
+    if id != 0 && id != APPLICATION_ID {
+        return Err(AppError::db(format!(
+            "{} is not a Brainiac database.",
+            path.display()
+        )));
+    }
+    let version = schema_version(conn)?;
+    if version > SCHEMA_VERSION {
+        return Err(AppError::db(format!(
+            "This data was saved by a newer version of Brainiac. Install the newer \
+             version, or restore a snapshot from {}.",
+            backups_dir(path).display()
+        ))
+        .with_details(format!(
+            "Data version {version}; this version of Brainiac reads up to {SCHEMA_VERSION}."
+        )));
+    }
+    Ok(())
+}
+
 fn migrate(conn: &mut Connection) -> AppResult<()> {
     let current = schema_version(conn)? as usize;
     for (index, (name, sql)) in MIGRATIONS.iter().enumerate().skip(current) {
@@ -147,15 +182,31 @@ fn backups_dir(db_path: &Path) -> PathBuf {
         .join("backups")
 }
 
+/// Copy the database to `dest` through a hidden temporary file that is renamed
+/// into place only when complete, so a crash never leaves a partial file that
+/// looks like a finished backup.
 fn write_backup(conn: &Connection, dest: &Path) -> AppResult<()> {
-    if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut dst = Connection::open(dest)?;
+    let parent = dest.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    let name = dest
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("backup");
+    let partial = parent.join(format!(".{name}{PARTIAL_SUFFIX}"));
+    let _ = std::fs::remove_file(&partial);
+    let mut dst = Connection::open(&partial)?;
     let backup = rusqlite::backup::Backup::new(conn, &mut dst)?;
     backup.run_to_completion(256, std::time::Duration::from_millis(5), None)?;
+    // `backup` borrows `dst`; dropping it ends the borrow so `dst` can be closed.
+    drop(backup);
+    // `close` hands the connection back with the error on failure; keep only the error.
+    dst.close().map_err(|(_, e)| e)?;
+    std::fs::rename(&partial, dest)?;
     Ok(())
 }
+
+/// Suffix of a backup still being written; see `write_backup`.
+const PARTIAL_SUFFIX: &str = ".partial";
 
 /// Snapshot an existing database before applying new migrations (docs/roadmap.md, Backup and restore).
 fn backup_before_migration_if_needed(conn: &Connection, db_path: &Path) -> AppResult<()> {
@@ -182,13 +233,25 @@ fn daily_backup(conn: &Connection, db_path: &Path) -> AppResult<()> {
         return Ok(());
     }
     write_backup(conn, &dest)?;
-    let mut daily: Vec<PathBuf> = std::fs::read_dir(&dir)?
+    let names: Vec<PathBuf> = std::fs::read_dir(&dir)?
         .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("daily-"))
-        })
+        .collect();
+    let name_of = |p: &PathBuf| {
+        p.file_name()
+            .and_then(|n| n.to_str())
+            .map(str::to_owned)
+            .unwrap_or_default()
+    };
+    // Leftovers from a backup interrupted by a crash.
+    for stale in names
+        .iter()
+        .filter(|p| name_of(p).ends_with(PARTIAL_SUFFIX))
+    {
+        let _ = std::fs::remove_file(stale);
+    }
+    let mut daily: Vec<PathBuf> = names
+        .into_iter()
+        .filter(|p| name_of(p).starts_with("daily-"))
         .collect();
     daily.sort();
     while daily.len() > BACKUP_RETENTION {
@@ -357,24 +420,62 @@ pub fn set_repository_tab(conn: &Connection, id: &str, tab: RepositoryTab) -> Ap
     Ok(())
 }
 
-/// Store the outcome of a status observation: either a snapshot or an error.
+/// Store the outcome of a status observation of the working tree at `root`:
+/// either a snapshot or an error. Returns false, storing nothing, when the
+/// registration no longer points at `root` (it was relocated meanwhile).
 pub fn store_observation(
     conn: &Connection,
     id: &str,
+    root: &str,
     checked_at: &str,
     status: Option<&StatusSnapshot>,
     error: Option<&AppError>,
-) -> AppResult<()> {
+) -> AppResult<bool> {
     let status_json = status.map(serde_json::to_string).transpose()?;
     let error_json = error.map(serde_json::to_string).transpose()?;
     // Keep the last good snapshot when a refresh fails, so the UI can show stale data.
-    conn.execute(
+    Ok(conn.execute(
         "UPDATE repositories
          SET last_checked_at = ?2,
              status_json = COALESCE(?3, status_json),
              error_json = ?4
+         WHERE id = ?1 AND canonical_root = ?5",
+        params![id, checked_at, status_json, error_json, root],
+    )? > 0)
+}
+
+/// Where a registration's working tree and Git directories are.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Location {
+    pub root: String,
+    pub git_dir: String,
+    pub common_git_dir: String,
+}
+
+/// Point a registration at a new location (SPEC.md, Relocating a repository).
+/// The last error and fetch error described the old location and are cleared;
+/// for a `different_repository`, so are its cached status and last fetch time.
+pub fn set_repository_location(
+    conn: &Connection,
+    id: &str,
+    location: &Location,
+    different_repository: bool,
+) -> AppResult<()> {
+    conn.execute(
+        "UPDATE repositories
+         SET canonical_root = ?2, display_path = ?2, git_dir = ?3, common_git_dir = ?4,
+             error_json = NULL, last_fetch_error_json = NULL,
+             status_json = CASE WHEN ?5 THEN NULL ELSE status_json END,
+             last_checked_at = CASE WHEN ?5 THEN NULL ELSE last_checked_at END,
+             last_fetch_at = CASE WHEN ?5 THEN NULL ELSE last_fetch_at END
          WHERE id = ?1",
-        params![id, checked_at, status_json, error_json],
+        params![
+            id,
+            location.root,
+            location.git_dir,
+            location.common_git_dir,
+            different_repository
+        ],
     )?;
     Ok(())
 }
@@ -599,6 +700,37 @@ pub fn delete_member(
         conn.execute("DELETE FROM workspace_members WHERE id = ?1", params![m.id])?;
     }
     Ok(member)
+}
+
+/// Move a member to another path. A different member of the same workspace
+/// already at that path (a non-Git folder, say) is removed first, since a
+/// workspace has one member per path.
+pub fn move_member(
+    conn: &Connection,
+    member_id: &str,
+    canonical_path: &str,
+    display_name: &str,
+    origin: MemberOrigin,
+) -> AppResult<()> {
+    conn.execute(
+        "DELETE FROM workspace_members
+         WHERE canonical_path = ?2 AND id <> ?1
+           AND workspace_id = (SELECT workspace_id FROM workspace_members WHERE id = ?1)",
+        params![member_id, canonical_path],
+    )?;
+    conn.execute(
+        "UPDATE workspace_members SET canonical_path = ?2, display_name = ?3, origin = ?4 WHERE id = ?1",
+        params![member_id, canonical_path, display_name, enum_name(origin)?],
+    )?;
+    Ok(())
+}
+
+pub fn set_discovery_root(conn: &Connection, workspace_id: &str, root: &str) -> AppResult<()> {
+    conn.execute(
+        "UPDATE workspaces SET discovery_root = ?2 WHERE id = ?1",
+        params![workspace_id, root],
+    )?;
+    Ok(())
 }
 
 pub fn set_workspace_root(

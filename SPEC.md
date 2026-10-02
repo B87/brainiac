@@ -64,6 +64,8 @@ The product can eventually include PR and CI status, calendar context, recurring
 
 v0.1 requires a usable local Git binary. Detect it on startup and provide a clear setup message when absent; do not silently install developer tools. Core Git viewing works offline and requires no Markdown vault, Ollama instance, remote-service account, or elevated macOS permissions. Ahead/behind information reflects existing local refs and may be stale relative to the remote server until someone fetches: the user, their editor, or Brainiac's Fetch now and opt-in auto-fetch (section 4, Fetching). Fetching is the only operation that writes to a repository, and it touches remote-tracking refs and objects only.
 
+Brainiac keeps its own data in a local database and snapshots it before each upgrade of its format and once a day, keeping seven. It refuses to open data saved by a newer version of Brainiac, or a file that is not Brainiac's, and says where the snapshots are; it never runs on data it cannot read correctly.
+
 ## 3. User experience
 
 ### Main window — v0.1
@@ -164,9 +166,30 @@ When a root exists, it has its own status, history, branches, and diffs, and eac
 - Deduplicate by canonical checkout root, retaining distinct linked worktree paths. Do not combine separate repositories merely because their current branch names match.
 - A missing discovery folder leaves the root and any manually added members usable and shows the discovery issue. Non-Git children are skipped with a preview explanation.
 - For discovered workspaces, watch the discovery folder for added/removed child folders and expose **Rescan**. Surface additions for the user to track; never add them silently. Mark removed or inaccessible registered members missing; preserve registrations and future context links until explicitly removed or relocated.
+- Rescan runs when a discovered workspace opens and on **Rescan**. When a missing member and exactly one untracked repository in the discovery folder are the same repository (Relocating a repository, below), Rescan suggests the move (**Update**) instead of listing that folder as new. A folder that matches several missing members, or a member that matches several folders, gets no suggestion and is listed as new. Rescan looks for up to 16 missing members among up to 64 untracked repositories, with one Git run per untracked repository plus one per match.
 - Stay within the discovery folder. Symlinked external repositories require explicit selection. Deeper descendants require explicit addition; do not crawl arbitrary nested dependency trees.
 - Brainiac owns its tracked-repository selection independently of editor configuration. Any workspace can gain manually added repositories or drop members, whichever way it was created.
 - A discovered workspace stores the selected folder as `discovery_root` and the scanned folder relative to it as `discovery_path` (absent when the selected folder itself is scanned), so Rescan works whether or not the selected folder is a repository.
+
+#### Relocating a repository
+
+A registration keeps its identity when its folder moves. **Locate…** points it at the new folder and keeps its ID, workspace memberships, pin, place in the recent list, last tab, and activity feed with its read state, all of which removing and adding the folder again would lose.
+
+- **Locate…** appears wherever a missing repository is shown: its overview row, the selected-repository panel, and its viewer. The viewer's More menu and the command palette offer it for the open repository even when its folder exists, for example to switch to a fresh clone. The folder picker opens in the old folder's parent.
+- The chosen folder must be inside a Git working tree; a folder below the top of a working tree stands for that working tree.
+- **Same repository** means the chosen working tree contains a commit Brainiac recorded for the registration: the last observed `HEAD`, or a recorded tip of a watched remote branch or tag. A fresh clone qualifies through the remote tips. The registration then moves without a question.
+- The check never downloads: Git runs with `GIT_NO_LAZY_FETCH=1`, so a partial clone answers from the objects it has. A partial clone with Git older than 2.44, which ignores that variable, counts as unverified.
+- Otherwise Brainiac asks first and says why: the chosen folder is below the top of the working tree, the histories share no recorded commit, or nothing was recorded to compare with. The confirmation covers the working-tree root it was shown; if the folder resolves to another root by then, Brainiac asks again. Confirming a repository whose history is unrelated or unverified starts its activity over: the old Git directory's feed is dropped when no other registration uses it, and the new one starts silently.
+- A folder already registered as another repository is refused with `CONFLICT`; remove one of the two registrations first. Merging two registrations is not supported.
+- What moves along:
+  - Every membership points at the new folder, and the member's name becomes the new folder name. In a discovered workspace the member counts as discovered when the new folder is the discovery root or directly inside the discovery folder, and as manual otherwise. A workspace's root repository that ends up anywhere other than its `discovery_root` stops being the root and stays an ordinary member.
+  - **The folder that moved** is the highest folder that is gone among the old folder and those of its parents whose names the new path repeats: relocating `code/web` to `src/web` while `code` is gone means `code` became `src`. Nothing moves along when the old folder still exists, as when switching to a second clone.
+  - Inside the folder that moved: a workspace `discovery_root`, missing registrations, and missing non-Git members move to the same relative path in the new folder when it exists. A repository moves only when that path is its working-tree root and the same repository; the others, including any Git cannot check, stay missing.
+  - When a main checkout's Git directory is gone from its old place and the history is the same, its registered linked worktrees are pointed at the new location. They work again once `git worktree repair` has run; Brainiac does not run it.
+  - Activity (baseline, feed, read state) follows the registration to the new Git directory when the history is the same, no other registration still uses the old Git directory, and none already uses the new one. When the new one is in use, the old feed is dropped once nothing uses it. When registrations remain on the old Git directory, its feed stays with them.
+- A status observation that started before a relocation and finishes after it is discarded.
+- Afterwards the moved registrations are refreshed and watched at their new folders. Branches that moved while a repository was missing arrive as ordinary activity events.
+- Relocating writes nothing to any repository.
 
 #### Presentation and Git boundaries
 
@@ -198,7 +221,7 @@ A `.code-workspace` convenience importer can be considered later if useful. It i
 
 ### Single-repository viewer
 
-A registered repository opens directly; workspace membership is optional. Keep tabs for Changes, History, and Branches/Tags, and remember the last tab per repository. A fresh repository with no commits shows an empty history while still showing staged/untracked files. Missing/inaccessible paths show an error with Relocate or Remove registration; removing registration does not touch the working directory.
+A registered repository opens directly; workspace membership is optional. Keep tabs for Changes, History, and Branches/Tags, and remember the last tab per repository. A fresh repository with no commits shows an empty history while still showing staged/untracked files. Missing/inaccessible paths show an error with **Locate…** (Relocating a repository) or Remove registration; removing registration does not touch the working directory.
 
 #### Changes and diffs
 

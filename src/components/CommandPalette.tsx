@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { shortPath } from "../lib/format";
-import type { AppSnapshot } from "../lib/ipc";
+import type { AppSnapshot, RepositorySummary } from "../lib/ipc";
 import { repoTone } from "../lib/repo";
 import { FetchIcon, FolderIcon, GridIcon, PlusIcon, SearchIcon } from "./icons";
 import type { View } from "./Sidebar";
@@ -12,6 +12,9 @@ type Props = {
   onOpenRepository: () => void;
   onNewWorkspace: () => void;
   onFetch: () => void;
+  /** The open repository, which Locate Folder… applies to. */
+  current: RepositorySummary | null;
+  onLocate: (repositoryId: string) => void;
 };
 
 type Item = {
@@ -29,6 +32,8 @@ export default function CommandPalette({
   onOpenRepository,
   onNewWorkspace,
   onFetch,
+  current,
+  onLocate,
 }: Props) {
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
@@ -94,6 +99,17 @@ export default function CommandPalette({
         icon: <FetchIcon size={13} />,
         action: onFetch,
       },
+      ...(current
+        ? [
+            {
+              id: "locate",
+              label: "Locate Folder…",
+              hint: current.name,
+              icon: <FolderIcon size={13} />,
+              action: () => onLocate(current.id),
+            },
+          ]
+        : []),
     ].filter((a) => match(a.label));
     return [
       ...repos,
@@ -101,7 +117,16 @@ export default function CommandPalette({
       ...(query.trim() ? activity : []),
       ...actions,
     ];
-  }, [snapshot, query, onView, onOpenRepository, onNewWorkspace, onFetch]);
+  }, [
+    snapshot,
+    query,
+    onView,
+    onOpenRepository,
+    onNewWorkspace,
+    onFetch,
+    current,
+    onLocate,
+  ]);
 
   useEffect(() => {
     inputRef.current?.focus();

@@ -10,8 +10,9 @@ use crate::db::RepositoryRow;
 use crate::models::{
     ActivitySettings, AppResult, AppSnapshot, ChangesResult, CommitDetail, CommitPage,
     CreateWorkspaceRequest, DiffOptions, DiffResult, DiffSelector, FetchResult, ListCommitsRequest,
-    PinEntityType, RefsResult, RepositorySummary, RepositoryTab, TeamPulse,
-    UpdateWorkspaceMembershipRequest, Workspace, WorkspaceActivity, WorkspacePreview,
+    PinEntityType, RefsResult, RelocateRepositoryRequest, RelocationOutcome, RepositorySummary,
+    RepositoryTab, TeamPulse, UpdateWorkspaceMembershipRequest, Workspace, WorkspaceActivity,
+    WorkspacePreview, WorkspaceRescan,
 };
 use crate::watcher::RepositoryWatcher;
 use crate::workspaces::{RepositoryService, WorkspaceChange};
@@ -63,6 +64,22 @@ pub async fn remove_repository(
 ) -> AppResult<()> {
     watcher.unwatch(&repository_id);
     service.remove(&repository_id).await
+}
+
+/// Point a registration at the folder its repository moved to, then watch
+/// every registration that moved at its new folder.
+#[tauri::command]
+pub async fn relocate_repository(
+    request: RelocateRepositoryRequest,
+    service: State<'_, Service>,
+    watcher: State<'_, RepositoryWatcher>,
+) -> AppResult<RelocationOutcome> {
+    let relocation = service.relocate_repository(request).await?;
+    for row in &relocation.moved {
+        watcher.unwatch(&row.id);
+        watch(&watcher, row);
+    }
+    Ok(relocation.outcome)
 }
 
 #[tauri::command]
@@ -178,6 +195,14 @@ pub async fn discover_repositories(
     service
         .discover_repositories(&folder_path, discovery_path.as_deref())
         .await
+}
+
+#[tauri::command]
+pub async fn rescan_workspace(
+    workspace_id: String,
+    service: State<'_, Service>,
+) -> AppResult<WorkspaceRescan> {
+    service.rescan_workspace(&workspace_id).await
 }
 
 #[tauri::command]

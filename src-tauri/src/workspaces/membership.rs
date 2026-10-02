@@ -52,13 +52,32 @@ struct PlannedMember {
 
 /// Where a discovered workspace looks for members: the selected folder and the
 /// scanned folder inside it. Used to tell discovered from manual additions.
-struct DiscoveryScope {
+pub(super) struct DiscoveryScope {
     root: PathBuf,
     scan: PathBuf,
 }
 
 impl DiscoveryScope {
-    fn origin_of(&self, path: &Path) -> MemberOrigin {
+    /// The scope of a stored workspace; `None` for a manual one. Reads the
+    /// filesystem (to canonicalize the scanned folder), so call it off the UI path.
+    pub(super) fn of(row: &WorkspaceRow) -> Option<Self> {
+        match (&row.discovery_mode, &row.discovery_root) {
+            (DiscoveryMode::Discovered, Some(root)) => {
+                let root = PathBuf::from(root);
+                let scan = match &row.discovery_path {
+                    Some(rel) => {
+                        let joined = root.join(rel);
+                        std::fs::canonicalize(&joined).unwrap_or(joined)
+                    }
+                    None => root.clone(),
+                };
+                Some(DiscoveryScope { root, scan })
+            }
+            _ => None,
+        }
+    }
+
+    pub(super) fn origin_of(&self, path: &Path) -> MemberOrigin {
         if path == self.root || path.parent() == Some(self.scan.as_path()) {
             MemberOrigin::Discovered
         } else {
@@ -78,7 +97,7 @@ impl RepositoryService {
     /// when it sits inside another repository, `nested`), then every immediate
     /// child folder of the discovery folder sorted by name. Children that cannot
     /// be tracked stay in `entries` with a non-`ok` status and a `message`, so
-    /// the UI can explain why they were skipped; `candidates` is left empty.
+    /// the UI can explain why they were skipped.
     /// Hidden (dot) folders and plain files are omitted. Symbolic links are not
     /// followed and are reported as `unsupported`. A missing discovery folder is
     /// reported as a `missing` entry rather than an error, so the root can still
@@ -422,17 +441,7 @@ impl RepositoryService {
                 .await?
                 .ok_or_else(workspace_not_found)?
         };
-        let scope = match (&row.discovery_mode, &row.discovery_root) {
-            (DiscoveryMode::Discovered, Some(root)) => {
-                let root = PathBuf::from(root);
-                let scan = match &row.discovery_path {
-                    Some(rel) => canonical_or_same(root.join(rel)).await,
-                    None => root.clone(),
-                };
-                Some(DiscoveryScope { root, scan })
-            }
-            _ => None,
-        };
+        let scope = DiscoveryScope::of(&row);
         let planned = self.plan_members(&request.add, scope.as_ref()).await?;
         let root_path = scope.map(|s| s.root);
         let remove = request.remove;
@@ -707,13 +716,12 @@ fn preview(root: &Path, entries: Vec<WorkspacePreviewEntry>) -> WorkspacePreview
         name: folder_name(root),
         discovery_mode: DiscoveryMode::Discovered,
         entries,
-        candidates: None,
     }
 }
 
 /// Resolve the repository containing `path`, or `None` when it is not in one.
 /// Other failures (timeout, permissions, Git missing) are real errors.
-async fn resolve_optional(
+pub(super) async fn resolve_optional(
     git: &crate::git::GitService,
     path: &Path,
 ) -> AppResult<Option<ResolvedRepository>> {
@@ -726,7 +734,7 @@ async fn resolve_optional(
 
 /// Canonicalize an absolute folder path: `NOT_FOUND` if it is missing,
 /// `VALIDATION` if it is relative or not a folder.
-async fn existing_folder(raw: &str) -> AppResult<PathBuf> {
+pub(super) async fn existing_folder(raw: &str) -> AppResult<PathBuf> {
     let path = Path::new(raw);
     if raw.is_empty() || !path.is_absolute() {
         return Err(AppError::validation(format!(
@@ -782,7 +790,7 @@ fn valid_name(raw: &str) -> AppResult<String> {
     Ok(name.to_string())
 }
 
-fn folder_name(path: &Path) -> String {
+pub(super) fn folder_name(path: &Path) -> String {
     path.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string())
