@@ -45,18 +45,33 @@ M0 landed on 1 October 2026 with 58 Rust tests and 3 frontend tests. Known M0 si
 
 ### v0.2 — Knowledge, tasks, and code context
 
-- [ ] Vault onboarding, scan/reconciliation, folder navigation, pinned/recent notes.
-- [ ] Editor fidelity spike; note CRUD, auto-save, source fallback, conflicts, trash, draft/history recovery.
-- [ ] Tasks with status, triage, planned dates, deadlines, linked note and linked repository.
-- [ ] Inbox, Today, Tasks, Brain alongside the existing Workspaces/Git views.
-- [ ] FTS5 note/task ingestion, ranked keyword search, safe snippets, rebuild status.
-- [ ] Note/repository associations, standard Markdown links/backlinks, unresolved targets.
-- [ ] Complete vault/database export and restore preserving tasks and associations.
+- [x] Vault onboarding, scan/reconciliation, folder navigation, pinned/recent notes.
+- [x] Editor fidelity spike (S1): TipTap's Markdown round trip rewrote or lost content, so notes are edited as styled Markdown text in CodeMirror 6.
+- [x] Live Preview spike (S1b): passed in WebKit; the editor is `src/lib/editor/` and the `NoteEditor` component, ready to wire into the Notes view.
+- [x] Note editor with Live Preview and Source mode; note CRUD, auto-save, conflicts, trash, draft/history recovery.
+- [x] Tasks with status, planned dates, deadlines, linked note and linked repository; tasks not yet sorted are marked as such.
+- [x] Today, Tasks, Notes alongside the existing Workspaces/Git views; tasks to sort appear as a folded line in Today and a filter in Tasks.
+- [x] Search tokenizer spike (S2): `unicode61` for note and task text, `trigram` only for titles and paths; every query word matches as a prefix.
+- [x] Vault scale spike (S3): 10,000 generated notes index in about 4 s and rescan in 35 ms; snippets are cut in Rust and one worker writes the index.
+- [x] Vault watcher spike (S4): one recursive watcher saw every editor save, rename, and `git pull` in a 10,000-note vault; changes are processed in batches so renames survive a pull.
+- [x] FTS5 note/task ingestion, ranked keyword search, safe snippets, rebuild status.
+- [x] Note/repository associations, Markdown links and wikilinks, backlinks, unresolved targets.
+- [x] Storage split into `brainiac.db`, `index.db`, and `history.db`; migration `0002` tested against a 0.1.3 database (built by the test from `0001_init.sql` with v0.1 data, so no binary fixture is checked in).
+- [x] Complete vault/database export and restore preserving tasks and associations.
+- [x] One write path for every caller: each write goes through a domain service that emits the committed change event; task writes carry the expected version; a note changed outside Brainiac keeps its previous text as a revision.
 
 **Exit gate:** use Brainiac for real notes and daily tasks alongside Git tracking; edits survive restart, knowledge search works offline, Today behaves correctly across midnight, and restore recovers files, tasks, and context links.
 
+### v0.2.x — Agent access
+
+- [ ] Local MCP server inside the running app, reached through a small `brainiac-mcp` stdio helper; off by default, read-only or read-write.
+- [ ] Tools for search, notes, tasks, and repository links that call the same domain services as the UI.
+
+**Exit gate:** an agent such as Claude Code finds notes, creates and completes a task, and links a note to a repository while the app is open; the UI updates live, a concurrent UI edit produces a conflict rather than an overwrite, and the agent's note edits can be undone from revision history.
+
 ### v0.3 — Content imports and global capture
 
+- [ ] Inbox view for captured and imported items, with triage: file or move, link to a task or repository, create a task.
 - [ ] Text/selection capture, URL bookmarks, Markdown copies, source provenance, resumable import jobs.
 - [ ] Public article extraction with bookmark/paste fallback.
 - [ ] `.eml` import, safe body conversion, message identity, original retention and export/restore.
@@ -96,13 +111,17 @@ Remote services require their own authentication, rate-limit, cache, error, and 
 
 | Unknown | Resolution method | Needed before |
 | --- | --- | --- |
-| Rich-editor Markdown fidelity | Round-trip fixture suite on existing notes | v0.2 editor commitment |
-| Actual note languages and syntax extensions | Sample a representative vault; document unsupported constructs | v0.2 compatibility claim |
+| Syntax in vaults brought from other tools | No existing vault to sample: a fixture vault covers CommonMark, GFM, wikilinks, and common Obsidian syntax (callouts, footnotes, embeds), which is kept as text; document what Brainiac does not style | v0.2 compatibility claim |
 | macOS minimum and Intel requirement | Verify target hardware, dependencies, and packaged builds | Release distribution |
 | Real-world workspace size and Git cost | Benchmark representative workspace/repositories | v0.1 watcher tuning |
 | Quick-capture focus behavior | macOS/Spaces/fullscreen prototype | v0.3 |
+| Vault size and note sizes | Generated vaults of 1,000 and 10,000 notes measured (S3; `docs/architecture.md`, Decisions); check against the real vault after a month of use, with a cold file cache | Confirming v0.2 batch sizes and revision budget |
+| Snapshot size and retention | Measure `brainiac.db` and `history.db` on a real vault after a month | v0.2 backup defaults |
+| Restore onto another Mac | Fixture: vault and snapshot restored where paths and repository locations differ | v0.2 restore |
 | Embedding model and dimensions | Local retrieval evaluation, model availability and license review | v0.4 schema/profile selection |
+| Chunking notes, code, and imports | Labelled set of about 30 real queries; compare heading-aware splits, size caps, and overlap by recall@k | v0.4 chunker version 1 |
 | SQLite-vector integration compatibility | Build and query a bundled release executable | v0.4 |
+| `sqlite-vec` approximate indexes | Track whether ANN indexes reach a stable release; brute force is enough at personal scale | Only if a vault outgrows brute force |
 | Remote integrations and company data constraints | Choose the first provider and its allowed scopes | Integration release |
 | Preferred mail source and capture gesture | Choose `.eml`, connected mailbox, or optional forwarding workflow | Email connector implementation |
 | Jira deployment/authentication | Confirm Cloud versus Data Center and company-supported access | Jira connector implementation |
@@ -113,139 +132,44 @@ These unknowns do not prevent implementing the core domain and persistence servi
 
 ## Designs for later releases
 
-### v0.2 additions to views, storage, and contracts
+v0.2's design (views, notes, tasks, search, storage, and backups) moved to [`SPEC.md`](../SPEC.md) sections 5–8 and [`architecture.md`](architecture.md) when the release started.
 
-#### Knowledge views — v0.2
-
-Add Brain (vault tree/editor), Tasks, Inbox, and Today alongside the existing Workspaces view. Tasks link to notes and repositories. Inbox holds untriaged tasks and locally authored capture notes; source-import notes arrive in v0.3.
-
-Today shows open tasks planned for today, due today, or overdue, with completed items in a separate section. It uses local calendar dates. Planning a task and setting its deadline remain separate actions. Search finds saved notes and tasks with excerpts.
-
-#### Editor decision gate — v0.2
-
-TipTap's Markdown support documents limitations. Treat fidelity as a release gate rather than assuming any Markdown file can be serialized without loss. [TipTap Markdown documentation](https://tiptap.dev/docs/editor/markdown)
-
-- Test headings, lists, checkboxes, tables, fenced code, links, images, frontmatter, HTML, and unknown syntax.
-- Keep frontmatter separate from the rich document and preserve unknown keys.
-- Opening a note without editing must never rewrite it.
-- Unsupported or lossy constructs use source mode, preserving original text.
-- If the rich editor cannot pass the fixture suite, ship v0.2 with source editing and preview; add rich editing when it meets the contract.
-
-#### Note identity and compatibility — v0.2
-
-- New notes receive a UUID in a namespaced frontmatter key, `brainiac_id`.
-- Existing notes with no such key receive a persisted application ID without modifying the file. Adding an embedded ID is an explicit action.
-- Title comes from frontmatter `title`, then the first H1, then the filename.
-- App-driven renames preserve identity. External moves use embedded IDs where available; otherwise match a unique content hash within the reconciliation batch.
-- Ambiguous moves become missing/new entries and can be relinked; identical contents alone do not prove identity.
-- Duplicate embedded IDs produce a visible conflict; never merge two notes silently.
-- Preserve arbitrary frontmatter keys, code fences, and relative links. Changing a title does not automatically rename the file.
-- In v0.2, supported notes are UTF-8 `.md` files on a local filesystem. Unsupported encoding and files over the proposed 5 MiB editing limit receive a clear message and an Open Externally action.
-
-#### Shortcuts
-
-| Shortcut | Action |
-| --- | --- |
-| `Cmd+N`, v0.2 | New note |
-| `Cmd+Shift+N`, v0.2 | New task |
-| `Cmd+S`, v0.2 | Save note immediately |
-| `Cmd+Shift+Space`, v0.3 | Configurable global quick capture |
-| `Cmd+K` | Knowledge search joins the repository/workspace palette |
+### Additions of v0.3 onward to storage and contracts
 
 #### Data model of later releases
 
-| Entity | Essential fields and constraints | Release |
-| --- | --- | --- |
-| `vaults` | `id`, `name`, `root_path`; one active vault initially | v0.2 |
-| `notes` | `id`, `vault_id`, `relative_path`, `embedded_id?`, `title`, `content_hash`, `mtime`, `indexed_at`, `missing_at?`; unique live path per vault | v0.2 |
-| `tasks` | `id`, `title`, `description`, `status`, `triaged_at?`, `planned_date?`, `due_date?`, `linked_note_id?`, `created_at`, `updated_at`, `completed_at?`, `version` | v0.2 |
-| `note_revisions` | `id`, `note_id`, `content`, `content_hash`, `created_at`, `reason`; bounded local history | v0.2 |
-| `search_documents` | FTS5 rows: entity type/ID plus title and searchable body | v0.2 |
-| `note_sources` | `note_id`, source type, canonical URL/provider ID, source time, import time, content scope, source hash; derived from note provenance | v0.3 |
-| `import_jobs` | `id`, input reference, adapter, state, staged payload reference, error, result note ID, idempotency key | v0.3 |
-| `note_links` | `source_note_id`, `target_note_id?`, `raw_target`, source location; unresolved links retained | v0.2 |
-| `note_repository_links` | `note_id`, `repository_id` | v0.2 |
-| `embedding_profiles` | `id`, provider/model identity, dimensions, distance metric, chunker version | v0.4 |
-| `note_chunks` | `id`, `note_id`, source hash, heading, byte/line range, text, chunk hash | v0.4 |
-| vector tables | Chunk ID and embedding, partitioned by compatible embedding profile | v0.4 |
-
-Task status is `todo`, `in_progress`, `done`, or `cancelled`, enforced by a database constraint. Completing sets `completed_at`; reopening clears it. Markdown checkboxes remain note content from v0.2 and do not automatically create or synchronize task records.
-Keep missing-note tombstones to preserve task context. Add task `linked_repository_id` in the v0.2 migration.
+| Entity | File | Essential fields and constraints | Release |
+| --- | --- | --- | --- |
+| `note_sources` | core | `note_id`, source type, canonical URL/provider ID, source time, import time, content scope, source hash; derived from note provenance | v0.3 |
+| `import_jobs` | core | `id`, input reference, adapter, state, staged payload reference, error, result note ID, idempotency key | v0.3 |
+| `embedding_profiles` | core | `id`, provider, model name and digest, dimensions, distance metric, normalization, chunker version, state | v0.4 |
+| `note_chunks` | index | `id`, `note_id`, profile, source hash, heading, byte/line range, text, chunk hash | v0.4 |
+| vector tables | index | One `vec0` table per embedding profile: chunk ID, embedding, filter columns | v0.4 |
 
 #### Commands of later releases
 
 | Command | Important input/output |
 | --- | --- |
-| `select_vault` | Native folder selection; returns vault and scan state |
-| `list_notes` / `read_note` | IDs and pagination; content plus hash version |
-| `create_note` / `rename_note` / `trash_note` / `restore_note` | Vault-relative destination, collision handling, expected version |
-| `save_note` | Note ID, expected hash, Markdown; new version or conflict |
-| `list_tasks` / `create_task` / `update_task` / `delete_task` | Filter or mutation DTO; expected integer version on existing records |
-| `search` | Query, entity filters, pagination; ranked escaped excerpts |
 | `prepare_import` / `commit_import` / `list_import_jobs` | Source input or job ID; preview/provenance, duplicate choice, resulting note, retry state |
-| `rebuild_search` / `export_backup` / `restore_backup` | Job ID, progress and explicit completion |
 | `configure_shortcut` | v0.3: validated binding and registration result |
 | `semantic_search` / `ask_brain` / `cancel_job` | v0.4+: profile/request IDs, results or response channel |
 
-### Safe note editing and indexing — v0.2
+#### Shortcuts of later releases
 
-#### Save contract
+| Shortcut | Action |
+| --- | --- |
+| `Cmd+Shift+Space`, v0.3 | Configurable global quick capture |
 
-`read_note` returns Markdown and a version based on its SHA-256 hash. `save_note` submits the expected version and new Markdown.
+### Agent access — v0.2.x
 
-1. Persist a recoverable draft checkpoint and serialize app-originated writes to this note.
-2. Read the current file and compare its hash with the expected version.
-3. If divergent, return `CONFLICT`; keep the editor draft and the disk version available.
-4. Preserve the pre-save file in local revision history. If that fails, stop the save and retain the draft.
-5. Write a temporary sibling file, flush it, recheck the expected disk version, and atomically replace the destination. Preserve file permissions and sync the directory where supported.
-6. Update note metadata and its FTS row in one database transaction.
-7. Return the new version and emit a committed change event. If indexing fails after the file write, report **Saved; search update pending** and enqueue repair.
+Agents such as Claude Code can already read and edit the vault's Markdown files, and the vault watcher treats them like any other editor. Tasks, links to repositories, and pins live only in `brainiac.db`, whose schema is internal; writing it directly would skip version checks, rules such as setting `completed_at`, and change events, so the UI would not update. Agents use a supported interface instead.
 
-The filesystem and SQLite do not share a transaction. Recovery must reconcile a completed file write with an interrupted database update. Hash checks detect observed conflicts; they cannot provide a filesystem compare-and-swap against arbitrary external editors. Revision history and draft recovery reduce that residual race risk.
+- The running app hosts a local MCP server. A small `brainiac-mcp` helper, which an agent starts over stdio, forwards requests to the app through a Unix socket in the app's data folder, as editor CLIs reach a running editor. If the app is not running, the helper reports that.
+- Tools mirror v0.2's commands (`docs/architecture.md`, IPC): `search`, `read_note`, `list_tasks`, `create_task`, `update_task`, `link_repository`, and `repository_status`. Each calls the same domain service as the matching Tauri command, so validation, version conflicts, and committed change events are identical and the UI updates live.
+- Off by default; Settings chooses read-only or read-write. Local only. No tool writes to a Git repository, runs commands, or changes settings.
+- Note edits made through the vault rather than the server get a revision with reason `external_change`, so they can be undone.
 
-Auto-save after a proposed 750 ms of inactivity. `Cmd+S` flushes immediately. Display Saving, Saved, Save failed, or Conflict accurately; switching views retains an unflushed draft.
-
-#### External modifications
-
-- Watch directories so atomic replacement saves are observed. Debounce note events for roughly 300 ms, then read and hash.
-- A hash equal to the accepted version is a no-op, including notifications from the app's own writes.
-- For a clean active editor, reload the changed file and refresh the base version.
-- For a dirty active editor, stop auto-save and offer **Reload disk**, **Save draft as copy**, or **Compare versions**. Preserve the draft before discarding it.
-- If a file disappears while open, keep the draft and offer restore as a new file or relink.
-- Startup, wake, watcher errors, and manual refresh trigger reconciliation. Notifications accelerate indexing; they are not the sole correctness mechanism.
-- Watcher callbacks enqueue work instead of parsing or accessing SQLite directly. `notify` is the Rust watcher abstraction. [notify documentation](https://docs.rs/notify/latest/notify/)
-
-#### Delete and recovery
-
-App deletion moves the note into a recoverable vault-local trash location and removes it from active search. Keep its tombstone and associations. Restore resolves destination collisions explicitly. Never permanently delete the user's file as the default action.
-
-External deletion marks a note missing and removes its search row. User-visible task context remains available as a missing note reference. Reconciliation must not treat an inaccessible vault as mass deletion.
-
-#### Backup and restore
-
-- Create a consistent SQLite snapshot before each migration and once per active day; retain seven daily snapshots by default.
-- Keep draft checkpoints and a bounded revision history: proposed 30 days, at most 20 revisions per note, and a global 250 MiB budget, excluding unresolved conflicts and active drafts.
-- Provide an export containing vault files, a consistent database snapshot, and a versioned manifest. Serialize application writes during snapshot/export and detect externally changed files; retry or report an incomplete export rather than claiming an atomic snapshot across independent editors.
-- Export tasks as JSON with IDs, dates, statuses, and associations for portability.
-- Restore validates the manifest and schema before replacement, then rescans files and rebuilds derived indexes.
-- Local snapshots are recovery aids; a complete backup must include both vault files and application data, preferably on another device or backup system.
-
-### Keyword search — v0.2
-
-Index note titles, saved note body including code blocks, and task titles/descriptions. Search starts during vault ingestion and becomes complete when ingestion finishes. No embedding model is required.
-
-Use a normal, content-bearing FTS5 table with entity IDs stored as unindexed columns. Maintain one row per live note/task, replacing it transactionally on updates. Keep the cache rebuildable independently of authoritative task records. FTS5 provides ranking, phrase, and prefix queries. [SQLite FTS5 documentation](https://www.sqlite.org/fts5.html)
-
-Search behavior:
-
-- Default input is literal user text; compile it into safe FTS expressions rather than passing arbitrary query syntax through.
-- Support quoted phrases and final-token prefix matching; handle malformed quotes without exposing SQL errors.
-- Boost title matches and include a title/path substring fallback for developer identifiers that tokenize poorly.
-- Filter by Note or Task. Return a bounded first page of 50 results with stable pagination.
-- Cancel or ignore obsolete requests when the query changes.
-- Render snippets as escaped text plus highlight ranges, never trusted HTML.
-- Clearly distinguish No matches, Indexing incomplete, and Search unavailable.
-- Update task FTS rows in the task write transaction. Note indexing follows the successful file write and can be repaired.
+v0.2 prepares for this without the server: every write goes through a domain service that emits its change event (not through a Tauri handler), and every task write carries the expected version.
 
 ### Capture and imports — v0.3
 
@@ -373,10 +297,13 @@ The embedding model, its dimensions, language coverage, and context limit are se
 
 Use the `sqlite-vec` Rust binding with the same bundled SQLite used by `rusqlite`. Register the extension through a vetted initialization path, encapsulate required unsafe FFI, and verify release packaging before adopting it. Never load arbitrary extensions supplied by a note or workspace. [sqlite-vec Rust binding](https://docs.rs/sqlite-vec/latest/sqlite_vec/)
 
-- Keep chunk metadata in ordinary tables and vector data in compatible profile-specific tables.
+- Keep chunk metadata in ordinary tables and vector data in compatible profile-specific tables, all in `index.db`.
 - Schema dimensions and the query embedding must match the active profile. Model changes create a new index generation; do not mix vectors from different models.
+- Changing the model adds a profile and its own `vec0` table. A resumable background job fills it while search keeps using the active profile; new and changed notes are embedded for both, and a backfill never overwrites a newer vector. Switch the active profile when the job finishes, then drop the old table, which also reclaims space `vec0` does not reclaim after deletes. [Qdrant: embedding model migration](https://qdrant.tech/documentation/tutorials-operations/embedding-model-migration/)
+- Stable `sqlite-vec` releases search by brute force only. Its author measured about 0.2 s for 100,000 vectors of 3,072 dimensions on an M1, so a personal vault of thousands to tens of thousands of chunks needs no approximate index. [sqlite-vec stable release](https://alexgarcia.xyz/blog/2024/sqlite-vec-stable-release/index.html)
+- Filter inside the vector query with `vec0` metadata columns (at most 16; equality, comparison, and `IN` only), for example by source kind; apply richer filters in SQL on an over-fetched result. [vec0 metadata columns](https://alexgarcia.xyz/blog/2024/sqlite-vec-metadata-release/index.html)
 - Use the extension's supported nearest-neighbor query syntax, including its `k` constraint where required. [sqlite-vec KNN documentation](https://alexgarcia.xyz/sqlite-vec/features/knn.html)
-- Combine keyword and semantic candidate ranks with reciprocal rank fusion; deduplicate overlapping chunks and cap results per note.
+- Combine keyword and semantic candidate ranks with reciprocal rank fusion (k = 60) in one SQL query: rank each list with `row_number()`, join them with `FULL OUTER JOIN`, and sum `1/(k + rank)` per list, so a match found by both outranks one found by either alone. This suits a vault full of exact project and repository names. Deduplicate overlapping chunks and cap results per note. [Hybrid search with sqlite-vec](https://alexgarcia.xyz/blog/2024/sqlite-vec-hybrid-search/index.html)
 - Return source excerpts and distinguish keyword from semantic matches.
 - Start with notes only. Task, commit-message, and source-code embeddings are separate future scope.
 - Model installation is an explicit user action. Show download/storage requirements, indexing progress, pause, cancellation, and retry.

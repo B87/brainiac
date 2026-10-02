@@ -2310,9 +2310,69 @@ fn is_lfs_pointer(hunks: &[Hunk]) -> bool {
     })
 }
 
+/// A remote URL without credentials, to store and export as the
+/// repository's identity. An `https://token@host/…` or `https://user:pass@…`
+/// remote loses its user part; any other `scheme://user:pass@…` keeps the user
+/// name but loses the password. An SCP-style `git@host:org/repo` has no
+/// password and is kept as it is.
+pub fn remote_without_credentials(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_string();
+    };
+    // The authority ends at the first `/`; credentials end at its last `@`.
+    let authority_end = rest.find('/').unwrap_or(rest.len());
+    let (authority, path) = rest.split_at(authority_end);
+    let Some((userinfo, host)) = authority.rsplit_once('@') else {
+        return url.to_string();
+    };
+    let web = matches!(
+        scheme.to_ascii_lowercase().as_str(),
+        "http" | "https" | "ftp" | "ftps"
+    );
+    match userinfo.split_once(':') {
+        Some((user, _)) if !web => format!("{scheme}://{user}@{host}{path}"),
+        None if !web => url.to_string(),
+        _ => format!("{scheme}://{host}{path}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remote_urls_lose_their_credentials() {
+        let cases = [
+            (
+                "https://ghp_secret@github.com/team/web.git",
+                "https://github.com/team/web.git",
+            ),
+            (
+                "https://me:pa@ss@example.com/team/web",
+                "https://example.com/team/web",
+            ),
+            (
+                "ssh://git:secret@example.com/team/web.git",
+                "ssh://git@example.com/team/web.git",
+            ),
+            (
+                "ssh://git@example.com:22/team/web.git",
+                "ssh://git@example.com:22/team/web.git",
+            ),
+            (
+                "git@example.com:team/web.git",
+                "git@example.com:team/web.git",
+            ),
+            (
+                "https://github.com/team/web.git",
+                "https://github.com/team/web.git",
+            ),
+            ("/Users/someone/code/web", "/Users/someone/code/web"),
+        ];
+        for (url, kept) in cases {
+            assert_eq!(remote_without_credentials(url), kept, "{url}");
+        }
+    }
 
     #[test]
     fn parses_apple_git_version() {

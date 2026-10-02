@@ -847,7 +847,7 @@ async fn database_migrates_backs_up_and_keeps_settings() {
     assert_eq!(
         db.call_blocking(|c| brainiac_lib::db::schema_version(c))
             .unwrap(),
-        1
+        brainiac_lib::db::SCHEMA_VERSION
     );
     let mut settings = Settings::default();
     settings.editor.executable = "cursor".into();

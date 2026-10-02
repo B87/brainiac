@@ -2,13 +2,13 @@
 
 Brainiac is an open-source macOS desktop app: Rust backend inside a Tauri v2 shell, React + TypeScript + Vite frontend. What the app does is `SPEC.md`; how it is built is `docs/architecture.md`; milestones and later releases are `docs/roadmap.md`.
 
-## Current scope: M0 then v0.1 only
+## Current scope: v0.2
 
-Build the Git viewer and repository tracker. Nothing from v0.2 onward (notes, vault, tasks, FTS5, imports, global capture, embeddings, AI) is in scope. Do not add dependencies or tables for later releases.
+v0.1 (the Git viewer and repository tracker) shipped as 0.1.3 and is maintained. Build v0.2: one Markdown vault, notes, tasks, Today, FTS5 keyword search, links between notes, tasks, and repositories, and export/restore (`SPEC.md` sections 5–8). Nothing from v0.2.x onward (the MCP server, imports, global capture, embeddings, AI) is in scope. Do not add dependencies or tables for later releases.
 
-Read `SPEC.md` and `docs/architecture.md` for v0.1 work. Open `docs/roadmap.md` only for planning or milestone checklists.
+Read `SPEC.md` and `docs/architecture.md` for v0.2 work. Open `docs/roadmap.md` only for planning or milestone checklists.
 
-Docs lifecycle: write a behavior change in `SPEC.md` first (or in the same commit as the code); update `docs/architecture.md` in the same commit as the code it describes; add decisions at the end of its Decisions section and never edit an accepted one; when a release starts, move its design from `docs/roadmap.md` into `SPEC.md`.
+Docs lifecycle: write a behavior change in `SPEC.md` first (or in the same commit as the code); update `docs/architecture.md` in the same commit as the code it describes; add decisions at the end of its Decisions section and never edit an accepted one; when a release starts, move its design from `docs/roadmap.md` into `SPEC.md` and `docs/architecture.md`.
 
 ## Decisions already made (do not re-open; the full log is `docs/architecture.md`, Decisions)
 
@@ -18,11 +18,14 @@ Docs lifecycle: write a behavior change in `SPEC.md` first (or in the same commi
 - Default editor: VS Code `code` CLI, configurable.
 - v0.1 backup = SQLite snapshots only.
 - DTO shapes are defined only in `src-tauri/src/models.rs` and exported to `src/lib/generated/`; the docs do not copy them. Describe any behavior change in `SPEC.md` before changing a shape.
+- v0.2 storage: the vault's Markdown files are the source of truth for notes; `brainiac.db` holds what cannot be rebuilt; `index.db` holds everything derived from the vault and can be deleted; `history.db` holds revisions and drafts (`docs/architecture.md`, Storage layout).
+- Every write goes through a domain service, which emits the committed change event; task writes carry the expected version.
 
 ## Hard rules
 
 - This is a public, general-purpose project. Never commit paths, repository names, workspace files, or settings from the maintainer's machine or employer. Examples and fixtures use generic names.
-- The app never writes to a repository: no checkout, commit, stash, pull, hook execution, or index changes. The one exception is fetching, and only as `SPEC.md` (Fetching) and `docs/architecture.md` (Git, Fetch invocation) define it: the explicit Fetch now action and opt-in per-workspace auto-fetch (off by default), with the hardened invocation that updates remote-tracking refs and tags only. Everything else is inspection.
+- The app never writes to a repository: no checkout, commit, stash, pull, hook execution, or index changes. The one exception is fetching, and only as `SPEC.md` (Fetching) and `docs/architecture.md` (Git, Fetch invocation) define it: the explicit Fetch now action and opt-in per-workspace auto-fetch (off by default), with the hardened invocation that updates remote-tracking refs and tags only. Everything else is inspection. A vault may be a Git repository: saving a note there edits a file the user asked to edit and never touches Git's state; trash, drafts, and revisions never go in the vault.
+- Notes stay ordinary Markdown: opening or indexing a note never rewrites it, unknown frontmatter keys are preserved, and Brainiac writes into a note only on a save or an explicit action (`SPEC.md`, section 5).
 - Keep business logic out of Tauri command handlers so it is testable with `cargo test` without a WebView.
 - Git test fixtures are built by the tests themselves (`git init` in a temporary directory), not checked in.
 - The updater signing private key lives outside the repository (`~/.tauri/brainiac.key`, CI secret `TAURI_SIGNING_PRIVATE_KEY`). Never read it into a file in the repo or print it. Only the public key belongs in `src-tauri/tauri.conf.json`.
@@ -30,11 +33,13 @@ Docs lifecycle: write a behavior change in `SPEC.md` first (or in the same commi
 
 ## Commands
 
-- `pnpm install` then `pnpm tauri dev` to run; `pnpm tauri build` for a packaged app.
+- `pnpm install` then `pnpm tauri dev` to run; `pnpm tauri build` for a packaged app. `pnpm tauri:dev` runs under a separate app identifier, so it uses its own data folder and never migrates the installed app's database.
 - Run `pnpm check` from the repository root before finishing: version agreement, Rust formatting, Clippy (all targets, warnings as errors), Rust tests, Biome, TypeScript, and frontend tests.
 - Frontend: `pnpm check:web` for Biome lint, formatting, and import checks; `pnpm check:fix` for safe fixes; `pnpm format` to format. Generated DTOs in `src/lib/generated/` are excluded from Biome; regenerate them with Rust tests rather than editing them.
 - Rust: `pnpm format:rust` to format; `pnpm format:rust:check`, `pnpm lint:rust`, and `pnpm test:rust` for individual checks. Rust tests also regenerate TypeScript bindings; commit them with the corresponding Rust changes.
 - `pnpm typecheck` and `pnpm test` for frontend types and tests; `pnpm build` for the frontend build only.
+- `pnpm test:editor` runs the WebKit tests (Playwright): the note editor alone (`e2e/editor/`) and the app's v0.2 views over an in-memory fake backend (`e2e/app/`). Run it after changing `src/lib/editor/` or the views. The first time, install the browser with `pnpm exec playwright install webkit`. CI runs it on every push.
+- `pnpm vault:gen <folder> [--notes 10000] [--seed 1]` writes a synthetic vault, the same for a given seed on every machine, for measuring scans, search, and the watcher (`src-tauri/examples/gen_vault.rs`). Never commit a generated vault.
 - `pnpm run` lists available scripts.
 - Releases: `pnpm release X.Y.Z` (tag + push, CI builds a draft), then `pnpm release:publish vX.Y.Z`. These wrap the scripts in `scripts/`; `pnpm version:check` verifies version agreement. Process in `docs/RELEASING.md`. Every user-visible change gets one short line under `## [Unreleased]` in `CHANGELOG.md`, saying what the user notices, not how it was done; internal changes get none. Do not create version sections by hand: `scripts/release.sh` turns Unreleased into the release's section and updates the links.
 

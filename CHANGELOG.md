@@ -11,6 +11,16 @@ into the release's section.
 
 ## [Unreleased]
 
+- Notes: choose a folder of Markdown files as your vault and edit them where they are, in Live Preview or Source, with autosave, version history, and a trash outside the vault.
+- A note changed in another editor reloads by itself; edits never overwrite a newer version on disk, and a conflict offers Compare…, Reload from Disk, and Save Draft as Copy.
+- Notes keep their identity, tasks, and links when they are renamed or moved outside Brainiac, including by a `git pull`.
+- Links between notes, wikilinks, backlinks, and unresolved links you can create with one click.
+- A note's file is renamed after its title when you change it, unless the file was named differently or other notes link to it; then the header offers Rename File to Match Title….
+- Tasks with a status, planned date, deadline, and a linked note and repository; Today shows what is due or planned, with the repositories in today's work.
+- Link notes to repositories; each repository gains a Notes tab (⌘4).
+- ⌘K searches notes and tasks by keyword, including code identifiers, alongside repositories and workspaces.
+- Export everything to a folder and restore it on another Mac, with tasks and links intact.
+
 ## [0.1.3] - 2026-10-02
 
 - Locate… points a repository whose folder moved at its new place, keeping its workspaces, pin, and activity; Rescan suggests the move when a member was renamed.

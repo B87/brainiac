@@ -3,6 +3,7 @@ import { shortPath } from "../lib/format";
 import type {
   AppSnapshot,
   RepositorySummary,
+  VaultState,
   Workspace,
   WorkspaceMember,
 } from "../lib/ipc";
@@ -12,8 +13,17 @@ import {
   workspaceLayout,
   workspaceRepositories,
 } from "../lib/workspace";
-import { ChevronDown, ChevronRight, GridIcon, PlusIcon } from "./icons";
+import {
+  ChevronDown,
+  ChevronRight,
+  GridIcon,
+  NoteIcon,
+  PlusIcon,
+  TaskIcon,
+  TodayIcon,
+} from "./icons";
 import type { RepoFocus } from "./RepositoryView";
+import type { TaskScope } from "./TasksView";
 
 /** A workspace dashboard's tabs. */
 export type WorkspaceTab = "overview" | "activity";
@@ -22,10 +32,14 @@ export type WorkspaceTab = "overview" | "activity";
 export type View =
   | { kind: "all" }
   | { kind: "workspace"; id: string; tab?: WorkspaceTab }
-  | { kind: "repository"; id: string; workspaceId?: string; focus?: RepoFocus };
+  | { kind: "repository"; id: string; workspaceId?: string; focus?: RepoFocus }
+  | { kind: "today" }
+  | { kind: "tasks"; scope?: TaskScope }
+  | { kind: "notes"; noteId?: string };
 
 type Props = {
   snapshot: AppSnapshot | null;
+  vault: VaultState | null;
   view: View;
   onView: (view: View) => void;
   onAdd: () => void;
@@ -45,7 +59,13 @@ function readCollapsed(): Set<string> {
   }
 }
 
-export default function Sidebar({ snapshot, view, onView, onAdd }: Props) {
+export default function Sidebar({
+  snapshot,
+  vault,
+  view,
+  onView,
+  onAdd,
+}: Props) {
   const [collapsed, setCollapsed] = useState(readCollapsed);
   const repos = snapshot?.repositories ?? [];
   const workspaces = snapshot?.workspaces ?? [];
@@ -98,6 +118,50 @@ export default function Sidebar({ snapshot, view, onView, onAdd }: Props) {
       {/* Room for the window's traffic lights; dragging here moves the window. */}
       <div data-tauri-drag-region className="h-12 shrink-0" />
       <div className="flex min-h-0 flex-1 flex-col gap-px overflow-y-auto px-2.5 py-1">
+        <button
+          type="button"
+          className="side-row"
+          aria-current={view.kind === "today"}
+          onClick={() => onView({ kind: "today" })}
+        >
+          <TodayIcon className="shrink-0" />
+          <span className="flex-1">Today</span>
+        </button>
+        <button
+          type="button"
+          className="side-row"
+          aria-current={view.kind === "tasks"}
+          onClick={() => onView({ kind: "tasks" })}
+        >
+          <TaskIcon className="shrink-0" />
+          <span className="flex-1">Tasks</span>
+        </button>
+        <button
+          type="button"
+          className="side-row"
+          aria-current={view.kind === "notes"}
+          onClick={() => onView({ kind: "notes" })}
+        >
+          <NoteIcon className="shrink-0" />
+          <span className="flex-1">Notes</span>
+          {vault?.index.state === "indexing" && (
+            <span className="text-[11px] text-muted" title="Indexing notes">
+              {vault.index.done}/{vault.index.total}
+            </span>
+          )}
+        </button>
+        {vault && !vault.vault && (
+          <button
+            type="button"
+            className="side-row text-link"
+            onClick={() => onView({ kind: "notes" })}
+          >
+            <PlusIcon size={12} className="shrink-0" />
+            <span className="flex-1">Set up your vault</span>
+          </button>
+        )}
+
+        <div className="mx-2 my-2 h-px bg-line" />
         <button
           type="button"
           className="side-row"

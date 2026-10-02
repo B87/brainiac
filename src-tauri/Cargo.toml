@@ -31,6 +31,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "ti
 notify = "8"
 uuid = { version = "1", features = ["v4"] }
 chrono = "0.4"
+# Notes (v0.2): headings, text, and links from Markdown; content hashes as note versions.
+pulldown-cmark = { version = "0.13", default-features = false }
+sha2 = "0.10"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

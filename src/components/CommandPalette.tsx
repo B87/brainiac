@@ -1,8 +1,26 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { shortPath } from "../lib/format";
-import type { AppSnapshot, RepositorySummary } from "../lib/ipc";
+import {
+  type AppSnapshot,
+  errorMessage,
+  ipc,
+  type RepositorySummary,
+  type SearchHit,
+  type SearchResults,
+} from "../lib/ipc";
 import { repoTone } from "../lib/repo";
-import { FetchIcon, FolderIcon, GridIcon, PlusIcon, SearchIcon } from "./icons";
+import { createLatest } from "../lib/stale";
+import {
+  FetchIcon,
+  FolderIcon,
+  GridIcon,
+  NoteIcon,
+  PlusIcon,
+  SearchIcon,
+  TaskIcon,
+  TodayIcon,
+} from "./icons";
+import { Parts } from "./NoteTree";
 import type { View } from "./Sidebar";
 
 type Props = {
@@ -15,16 +33,38 @@ type Props = {
   /** The open repository, which Locate Folder… applies to. */
   current: RepositorySummary | null;
   onLocate: (repositoryId: string) => void;
+  onOpenNote: (noteId: string) => void;
+  onOpenTask: (taskId: string) => void;
+  onNewNote: () => void;
+  onNewTask: () => void;
 };
+
+/** The palette's scope buttons (SPEC.md, Search). */
+type Scope = "all" | "repositories" | "notes" | "tasks";
 
 type Item = {
   id: string;
-  label: string;
+  label: React.ReactNode;
   hint: string;
+  snippet?: React.ReactNode;
   icon: React.ReactNode;
   action: () => void;
 };
 
+type Group = {
+  title: string;
+  items: Item[];
+  more?: { total: number; scope: Scope };
+};
+
+/** How many results each group shows before Show all. */
+const FIRST = 6;
+
+/**
+ * ⌘K (SPEC.md, Search): repositories, workspaces, notes, and tasks
+ * together, grouped by kind with repositories first. Notes and tasks are
+ * found by keyword; input is literal text and never an error.
+ */
 export default function CommandPalette({
   snapshot,
   onClose,
@@ -34,113 +74,244 @@ export default function CommandPalette({
   onFetch,
   current,
   onLocate,
+  onOpenNote,
+  onOpenTask,
+  onNewNote,
+  onNewTask,
 }: Props) {
   const [query, setQuery] = useState("");
+  const [scope, setScope] = useState<Scope>("all");
   const [index, setIndex] = useState(0);
+  const [results, setResults] = useState<SearchResults | null>(null);
+  const [searchError, setSearchError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const latest = useMemo(() => createLatest(), []);
+  const q = query.trim();
 
-  const items = useMemo<Item[]>(() => {
-    const q = query.trim().toLowerCase();
+  // Results follow the query; an older query's results never replace a newer one's.
+  useEffect(() => {
+    if (!q || scope === "repositories") {
+      latest.cancel();
+      setResults(null);
+      return;
+    }
+    const kinds =
+      scope === "notes"
+        ? (["note"] as const)
+        : scope === "tasks"
+          ? (["task"] as const)
+          : null;
+    const t = setTimeout(() => {
+      void latest.run(
+        () =>
+          ipc.search({
+            query: q,
+            kinds: kinds ? [...kinds] : null,
+            limit: scope === "all" ? FIRST : 200,
+          }),
+        (r) => {
+          setResults(r);
+          setSearchError(null);
+        },
+        (e) => setSearchError(errorMessage(e)),
+      );
+    }, 90);
+    return () => clearTimeout(t);
+  }, [q, scope, latest]);
+
+  // Results of an earlier query are not shown, so Enter never opens one of them.
+  const currentResults = results && results.query === q ? results : null;
+  const groups = useMemo<Group[]>(() => {
+    const lower = q.toLowerCase();
     const match = (...fields: string[]) =>
-      !q || fields.some((f) => f.toLowerCase().includes(q));
-    const workspaces: Item[] = snapshot.workspaces
-      .filter((w) => match(w.name, w.discovery_root ?? ""))
-      .map((w) => ({
-        id: `w:${w.id}`,
-        label: w.name,
-        hint: `workspace · ${w.members.length}`,
-        icon: <GridIcon size={13} />,
-        action: () => onView({ kind: "workspace", id: w.id }),
-      }));
-    const activity: Item[] = snapshot.workspaces
-      .filter((w) => match(`${w.name} activity`))
-      .map((w) => ({
-        id: `a:${w.id}`,
-        label: `${w.name} · Activity`,
-        hint: w.unseen_activity ? `${w.unseen_activity} new` : "",
-        icon: <GridIcon size={13} />,
-        action: () => onView({ kind: "workspace", id: w.id, tab: "activity" }),
-      }));
-    const repos: Item[] = snapshot.repositories
-      .filter((r) => match(r.name, r.display_path))
-      .map((r) => ({
-        id: `r:${r.id}`,
-        label: r.name,
-        hint: shortPath(r.display_path),
-        icon: <span className="dot" data-state={repoTone(r)} />,
-        action: () => onView({ kind: "repository", id: r.id }),
-      }));
-    const actions: Item[] = [
-      {
-        id: "all",
-        label: "All repositories",
-        hint: "",
-        icon: <GridIcon size={13} />,
-        action: () => onView({ kind: "all" }),
-      },
-      {
-        id: "open",
-        label: "Open Repository…",
-        hint: "⌘O",
-        icon: <FolderIcon size={13} />,
-        action: onOpenRepository,
-      },
-      {
-        id: "new",
-        label: "New Workspace…",
-        hint: "",
-        icon: <PlusIcon size={13} />,
-        action: onNewWorkspace,
-      },
-      {
-        id: "fetch",
-        label: "Fetch Now",
-        hint: "remote-tracking refs only",
-        icon: <FetchIcon size={13} />,
-        action: onFetch,
-      },
-      ...(current
-        ? [
-            {
-              id: "locate",
-              label: "Locate Folder…",
-              hint: current.name,
-              icon: <FolderIcon size={13} />,
-              action: () => onLocate(current.id),
-            },
-          ]
-        : []),
-    ].filter((a) => match(a.label));
-    return [
-      ...repos,
-      ...workspaces,
-      ...(query.trim() ? activity : []),
-      ...actions,
-    ];
+      !lower || fields.some((f) => f.toLowerCase().includes(lower));
+    const out: Group[] = [];
+    if (scope === "all" || scope === "repositories") {
+      const repos: Item[] = snapshot.repositories
+        .filter((r) => match(r.name, r.display_path))
+        .map((r) => ({
+          id: `r:${r.id}`,
+          label: r.name,
+          hint: shortPath(r.display_path),
+          icon: <span className="dot" data-state={repoTone(r)} />,
+          action: () => onView({ kind: "repository", id: r.id }),
+        }));
+      const workspaces: Item[] = snapshot.workspaces
+        .filter((w) => match(w.name, w.discovery_root ?? ""))
+        .map((w) => ({
+          id: `w:${w.id}`,
+          label: w.name,
+          hint: `workspace · ${w.members.length}`,
+          icon: <GridIcon size={13} />,
+          action: () => onView({ kind: "workspace", id: w.id }),
+        }));
+      const limit = scope === "all" && q ? FIRST : Number.POSITIVE_INFINITY;
+      if (repos.length)
+        out.push({
+          title: "Repositories",
+          items: repos.slice(0, limit),
+          more:
+            repos.length > limit
+              ? { total: repos.length, scope: "repositories" }
+              : undefined,
+        });
+      if (workspaces.length)
+        out.push({ title: "Workspaces", items: workspaces.slice(0, limit) });
+    }
+    const hitItem = (h: SearchHit): Item => ({
+      id: `${h.kind}:${h.id}`,
+      label: <Parts parts={h.title} />,
+      hint: h.detail,
+      snippet: h.snippet.length ? <Parts parts={h.snippet} /> : undefined,
+      icon: h.kind === "note" ? <NoteIcon size={13} /> : <TaskIcon size={13} />,
+      action: () => (h.kind === "note" ? onOpenNote(h.id) : onOpenTask(h.id)),
+    });
+    if (
+      currentResults &&
+      (scope === "all" || scope === "notes") &&
+      currentResults.notes.hits.length
+    )
+      out.push({
+        title: "Notes",
+        items: currentResults.notes.hits.map(hitItem),
+        more:
+          currentResults.notes.total > currentResults.notes.hits.length
+            ? { total: Number(currentResults.notes.total), scope: "notes" }
+            : undefined,
+      });
+    if (
+      currentResults &&
+      (scope === "all" || scope === "tasks") &&
+      currentResults.tasks.hits.length
+    )
+      out.push({
+        title: "Tasks",
+        items: currentResults.tasks.hits.map(hitItem),
+        more:
+          currentResults.tasks.total > currentResults.tasks.hits.length
+            ? { total: Number(currentResults.tasks.total), scope: "tasks" }
+            : undefined,
+      });
+    if (scope === "all") {
+      const actions: Item[] = [
+        {
+          id: "today",
+          label: "Today",
+          hint: "",
+          icon: <TodayIcon size={13} />,
+          action: () => onView({ kind: "today" }),
+        },
+        {
+          id: "tasks",
+          label: "Tasks",
+          hint: "",
+          icon: <TaskIcon size={13} />,
+          action: () => onView({ kind: "tasks" }),
+        },
+        {
+          id: "notes",
+          label: "Notes",
+          hint: "",
+          icon: <NoteIcon size={13} />,
+          action: () => onView({ kind: "notes" }),
+        },
+        {
+          id: "new-note",
+          label: "New Note",
+          hint: "⌘N",
+          icon: <PlusIcon size={13} />,
+          action: onNewNote,
+        },
+        {
+          id: "new-task",
+          label: "New Task",
+          hint: "⇧⌘N",
+          icon: <PlusIcon size={13} />,
+          action: onNewTask,
+        },
+        {
+          id: "all",
+          label: "All repositories",
+          hint: "",
+          icon: <GridIcon size={13} />,
+          action: () => onView({ kind: "all" }),
+        },
+        {
+          id: "open",
+          label: "Open Repository…",
+          hint: "⌘O",
+          icon: <FolderIcon size={13} />,
+          action: onOpenRepository,
+        },
+        {
+          id: "new",
+          label: "New Workspace…",
+          hint: "",
+          icon: <PlusIcon size={13} />,
+          action: onNewWorkspace,
+        },
+        {
+          id: "fetch",
+          label: "Fetch Now",
+          hint: "remote-tracking refs only",
+          icon: <FetchIcon size={13} />,
+          action: onFetch,
+        },
+        ...(current
+          ? [
+              {
+                id: "locate",
+                label: "Locate Folder…",
+                hint: current.name,
+                icon: <FolderIcon size={13} />,
+                action: () => onLocate(current.id),
+              },
+            ]
+          : []),
+      ].filter((a) => match(String(a.label)));
+      if (actions.length) out.push({ title: "Actions", items: actions });
+    }
+    return out;
   }, [
     snapshot,
-    query,
+    q,
+    scope,
+    currentResults,
     onView,
     onOpenRepository,
     onNewWorkspace,
     onFetch,
     current,
     onLocate,
+    onOpenNote,
+    onOpenTask,
+    onNewNote,
+    onNewTask,
   ]);
 
+  const flat = groups.flatMap((g) => g.items);
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new query or scope starts at the top.
+  useEffect(() => setIndex(0), [q, scope]);
 
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Escape") onClose();
     else if (e.key === "ArrowDown")
-      setIndex((i) => Math.min(i + 1, items.length - 1));
+      setIndex((i) => Math.min(i + 1, flat.length - 1));
     else if (e.key === "ArrowUp") setIndex((i) => Math.max(i - 1, 0));
-    else if (e.key === "Enter") items[index]?.action();
+    else if (e.key === "Enter") flat[index]?.action();
     else return;
     e.preventDefault();
   };
+
+  const index_ = results?.index;
+  const searchesNotes = scope === "all" || scope === "notes";
+  const nothing =
+    q && flat.length === 0 && (currentResults || scope === "repositories");
+  const quoted = q.includes('"');
+  let position = -1;
 
   return (
     <div className="absolute inset-0 z-30 flex items-start justify-center bg-black/25 pt-24">
@@ -154,9 +325,9 @@ export default function CommandPalette({
       <div
         role="dialog"
         aria-modal="true"
-        aria-label="Switch repository or workspace"
+        aria-label="Search and switch"
         tabIndex={-1}
-        className="relative w-[520px] rounded-xl border border-control-line bg-header shadow-2xl"
+        className="relative w-[620px] rounded-xl border border-control-line bg-header shadow-2xl"
         onKeyDown={onKeyDown}
       >
         <div className="flex items-center gap-2 border-b px-3.5 text-muted">
@@ -164,33 +335,121 @@ export default function CommandPalette({
           <input
             ref={inputRef}
             className="selectable h-11 flex-1 bg-transparent text-[14px] outline-none"
-            placeholder="Switch repository or workspace…"
+            placeholder="Search notes, tasks, and repositories…"
             value={query}
-            onChange={(e) => {
-              setQuery(e.target.value);
-              setIndex(0);
-            }}
+            onChange={(e) => setQuery(e.target.value)}
           />
         </div>
-        <div className="max-h-96 overflow-y-auto p-1.5">
-          {items.length === 0 && (
-            <div className="px-2 py-1 text-muted">No matches.</div>
-          )}
-          {items.map((it, i) => (
+        <div className="flex items-center gap-1.5 border-b px-3 py-1.5">
+          {(
+            [
+              ["all", "All"],
+              ["repositories", "Repositories"],
+              ["notes", "Notes"],
+              ["tasks", "Tasks"],
+            ] as Array<[Scope, string]>
+          ).map(([s, label]) => (
+            <button
+              key={s}
+              type="button"
+              className="chip h-6"
+              aria-pressed={scope === s}
+              onClick={() => {
+                setScope(s);
+                inputRef.current?.focus();
+              }}
+            >
+              {label}
+            </button>
+          ))}
+          <span className="ml-auto text-[11.5px] text-muted" role="status">
+            {searchesNotes && index_?.state === "indexing"
+              ? `Indexing notes: ${index_.done} of ${index_.total}. Results may be incomplete.`
+              : searchesNotes && index_?.state === "no_vault"
+                ? "No vault chosen: notes are not searched."
+                : ""}
+          </span>
+        </div>
+        {searchesNotes && index_?.state === "unavailable" && (
+          <div className="flex items-center gap-2 border-b px-3.5 py-2 text-[12.5px]">
+            <span className="flex-1">
+              Search unavailable. Repository names still match.
+            </span>
             <button
               type="button"
-              key={it.id}
-              className="menu-item h-8"
-              aria-current={i === index}
-              onMouseEnter={() => setIndex(i)}
-              onClick={it.action}
+              className="btn btn-sm"
+              onClick={() =>
+                void ipc
+                  .rebuildSearch()
+                  .catch((e) => setSearchError(errorMessage(e)))
+              }
             >
-              <span className="flex w-4 justify-center">{it.icon}</span>
-              <span className="truncate">{it.label}</span>
-              <span className="muted-in-menu ml-auto truncate text-[11px] text-muted">
-                {it.hint}
-              </span>
+              Rebuild Index
             </button>
+          </div>
+        )}
+        <div className="max-h-[440px] overflow-y-auto p-1.5">
+          {searchError && (
+            <div className="px-2 py-1 text-conflict">{searchError}</div>
+          )}
+          {nothing && (
+            <div className="flex items-center gap-2 px-2 py-1 text-muted">
+              No matches
+              {quoted && (
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() => setQuery(query.replaceAll('"', ""))}
+                >
+                  Search without quotes
+                </button>
+              )}
+            </div>
+          )}
+          {groups.map((g) => (
+            <div key={g.title} className="mb-1">
+              <div className="section-label px-2 pt-1.5 pb-0.5">{g.title}</div>
+              {g.items.map((it) => {
+                position++;
+                const at = position;
+                return (
+                  <button
+                    type="button"
+                    key={it.id}
+                    className="menu-item h-auto min-h-8 py-1"
+                    aria-current={at === index}
+                    onMouseEnter={() => setIndex(at)}
+                    onClick={it.action}
+                  >
+                    <span className="flex w-4 shrink-0 justify-center">
+                      {it.icon}
+                    </span>
+                    <span className="flex min-w-0 flex-1 flex-col">
+                      <span className="flex min-w-0 items-center gap-2">
+                        <span className="truncate">{it.label}</span>
+                        <span className="muted-in-menu ml-auto shrink-0 truncate text-[11px] text-muted">
+                          {it.hint}
+                        </span>
+                      </span>
+                      {it.snippet && (
+                        <span className="muted-in-menu truncate text-[11.5px] text-muted">
+                          {it.snippet}
+                        </span>
+                      )}
+                    </span>
+                  </button>
+                );
+              })}
+              {g.more && (
+                <button
+                  type="button"
+                  className="btn btn-sm btn-ghost ml-6 text-link"
+                  onClick={() => g.more && setScope(g.more.scope)}
+                >
+                  Show all {g.more.total}
+                </button>
+              )}
+            </div>
           ))}
         </div>
       </div>

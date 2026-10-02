@@ -38,7 +38,7 @@ The product can eventually include PR and CI status, calendar context, recurring
 
 ## 2. Release boundaries
 
-**v0.1 — Git viewer and single/multi-repository tracker.** This is the user's current priority. It must work as a complete local Git inspection tool before notes, tasks, content imports, or AI are introduced.
+**v0.1 — Git viewer and single/multi-repository tracker** shipped as 0.1.3. **v0.2 — knowledge, tasks, and code context** is the current release: one Markdown vault, tasks, Today, keyword search, and links between notes, tasks, and the repositories v0.1 tracks (sections 5–8). Content imports, global capture, and AI remain later releases.
 
 | Capability | Release | Scope |
 | --- | --- | --- |
@@ -52,11 +52,11 @@ The product can eventually include PR and CI status, calendar context, recurring
 | Workspace activity | v0.1 | Feed of watched branches and tags that moved, unread state, conflict-risk and drift warnings, team pulse, optional macOS notifications |
 | Tracking and refresh | v0.1 | Watchers, bounded jobs, manual refresh, wake/activation reconciliation |
 | Command palette | v0.1 | Repository/workspace switching and viewer commands |
-| Notes, task hub, Inbox, Today | v0.2 | One Markdown vault, safe editing, dates, context associations |
+| Notes, task hub, Today | v0.2 | One Markdown vault, safe editing, dates, context associations |
 | Keyword knowledge search | v0.2 | FTS5 across saved notes and tasks |
 | Backlinks and note/repository associations | v0.2 | Connect knowledge to the existing Git workspace |
 | External content imports | v0.3 | Paste, bookmarks, Markdown copies, articles, `.eml`, provenance and duplicate handling |
-| Global capture window | v0.3 | System shortcut, floating capture, shared backend state |
+| Global capture window and Inbox | v0.3 | System shortcut, floating capture, Inbox triage of captured and imported items, shared backend state |
 | Authenticated import adapters | v0.3.x | Selected Jira issues/mail messages; provider choice and video transcript acquisition validated separately |
 | Semantic search | v0.4 | Optional local embeddings and hybrid retrieval |
 | Grounded AI answers | v0.5 | Citation-backed local RAG |
@@ -70,7 +70,7 @@ Brainiac keeps its own data in a local database and snapshots it before each upg
 
 ### Main window — v0.1
 
-Use a quiet macOS layout: system font, light/dark appearance, native menu bar, standard window controls, visible keyboard focus, and readable text without translucency. Start directly in the Git workspace; do not show empty Brain, Tasks, or Inbox views before v0.2.
+Use a quiet macOS layout: system font, light/dark appearance, native menu bar, standard window controls, visible keyboard focus, and readable text without translucency. Start directly in the Git workspace; do not show empty Today, Tasks, or Notes views before v0.2.
 
 ```text
 ┌──────────────────┬───────────────────────────────────────────────────────────┐
@@ -91,6 +91,16 @@ Use a quiet macOS layout: system font, light/dark appearance, native menu bar, s
 ```
 
 The sidebar switches scope and shares the window's title bar area with the traffic lights. The center shows either a dashboard (All repositories or one workspace) or a selected repository's viewer. A dashboard is a table of repositories with a side panel for the selected row: branch, upstream, last commit, a peek at its changed files, and Open repository, Open in editor, and Reveal in Finder. The repository viewer's header carries the repository switcher, the tabs, the current branch with its upstream comparison and when it was last fetched, Fetch now, Refresh, Reveal in Finder, and Open in editor; there is no separate inspector, so diffs keep the full width. A workspace dashboard has two tabs, Overview (the table) and Activity (section 4, Workspace activity); the sidebar shows a workspace's unread activity count next to its name. The status bar lists the keyboard shortcuts of the current view.
+
+### Main window — v0.2
+
+The sidebar gains a section level above the repository tree: **Today**, **Tasks**, and **Notes**, then All repositories, Workspaces, and Pinned as in v0.1. The section that holds the notes is called Notes; "brain" names the whole app. There is no Inbox section before v0.3 (section 6).
+
+- Brainiac reopens the section that was open when it quit. The first launch after upgrading to v0.2 opens Workspaces as before, and the sidebar shows one **Set up your vault** row until a vault is chosen.
+- Today, Tasks, and Notes are never shown empty: before a vault is chosen they offer the vault setup, and Today and Tasks work without a vault.
+- Settings (`Cmd+,`) chooses the vault, holds the note-ID setting and **Rebuild Index**, and offers **Export…** and **Restore from Export…**, which the File menu also has.
+- Repositories, notes, and tasks each have one icon, used in the sidebar, ⌘K, chips, and side panels. A repository is always shown the same way wherever it appears: name, branch, a status dot with its words (clean, *N* changed, conflicted, missing), ahead and behind when not zero, and how fresh the data is ("checked 1 min ago", or "fetched 2 h ago" in amber when stale).
+- Edit times read as relative for the last seven days ("edited 2 hours ago") and as dates after that ("edited 14 Sep"). Due and planned dates are always dates ("Due Fri 3 Oct"); an overdue task says "Overdue" in words and with an icon, not by color alone.
 
 ### Git navigation and interactions — v0.1
 
@@ -120,10 +130,16 @@ Repository name/path filtering and commit-message/hash filtering belong to the G
 
 | Shortcut | Action |
 | --- | --- |
-| `Cmd+K` | Repository/workspace palette |
+| `Cmd+K` | Palette: repositories, workspaces, notes, and tasks (notes and tasks from v0.2) |
 | `Cmd+O` | Add/open a local repository |
 | `Cmd+R` | Refresh selected repository or workspace |
-| `Cmd+1` … `Cmd+3` | Repository tabs: Changes, History, Branches & tags |
+| `Cmd+1` … `Cmd+4` | Repository tabs: Changes, History, Branches & tags, Notes (v0.2) |
+| `Cmd+N`, v0.2 | New note; in a repository's Notes tab, a new note linked to it |
+| `Cmd+Shift+N`, v0.2 | New task |
+| `Cmd+S`, v0.2 | Save the note now |
+| `Cmd+Shift+E`, v0.2 | Switch the note editor between Live Preview and Source |
+| `Option+Cmd+0`, v0.2 | Show or hide the context panel in Notes |
+| `Space`, v0.2 | Mark the selected task done or not done |
 | `J` / `K` (or arrow keys) | Next / previous row in the focused list, without clicking it first |
 | `[` / `]` | Previous / next file in a commit or the changes list |
 | `N` / `P` | Next / previous hunk in the shown diff |
@@ -308,3 +324,101 @@ The Activity tab of a workspace answers "what did the team merge or release sinc
 - **Team pulse:** commits, merges, and releases on the watched refs in the last seven days, and the most active authors, counted from local refs. It is a separate request so the feed never waits for it; each Git directory is read again only when its ref files changed (the tracking fingerprint), otherwise its last reading is reused and filtered to the current seven days.
 - **Let me know:** optional per workspace, all off except the conflict-risk warning: a macOS notification when a watched branch moves (at most one per repository and workspace per hour), a morning digest at 09:00 local time when there are unread events, and the conflict-risk warning on events.
 - Events older than 90 days are pruned. Removing the last checkout of a Git directory deletes its tips and events; a Git directory no workspace watches loses its baseline, so watching it again starts silently.
+
+## 5. Notes — v0.2
+
+### The vault
+
+- One vault: a folder of Markdown notes the user chooses (**Choose Folder…**) or creates (**Create a New Vault…**). Brainiac edits the `.md` files where they are; nothing is moved, converted, or imported, and the notes stay ordinary files usable in any editor.
+- Supported notes are UTF-8 `.md` files on a local filesystem, up to 5 MiB for editing. Other files are listed with a clear message and **Open Externally**; a `.md` file over 5 MiB or not in UTF-8 is found in search by its name, not its text.
+- A vault may itself be a Git repository, and it can be registered and tracked like any other. The rule that Brainiac never writes to a repository covers Git's own state: it never stages, commits, checks out, or runs hooks there. Saving a note is an edit the user makes through Brainiac, like saving it in any editor. Trash, drafts, and revision history live in Brainiac's data folder, never in the vault, so saving never leaves extra files behind.
+- Brainiac scans the vault at startup, on wake, and when the watcher reports changes, and reconciles what it finds. A vault that cannot be read (an unmounted disk) is reported as unavailable, never treated as every note deleted.
+- Choosing another vault folder later keeps the notes of the previous one as missing, with their tasks and links; choosing that folder again brings them back.
+
+### Notes view
+
+- A vault tree with folders, pinned and recent notes, and a filter (`/`); the editor; and a context panel. The context panel lists the note's linked repositories (each with its live state and Open / Open in Editor), its tasks, its backlinks, its unresolved links (with **Create**), and suggestions: a registered repository the note mentions can be linked with one click or dismissed. Brainiac never links anything by itself.
+- The context panel can be hidden (`Option+Cmd+0`); when hidden, the header shows how many repositories and tasks the note has. It hides by itself when the window is too narrow for the editor.
+- Checkboxes in a note (`- [ ]`) are square and remain note text. They never become tasks and never appear in Today; tasks are round (section 6).
+
+### Editing
+
+A note is edited as its Markdown text, so a save contains exactly what the user typed and nothing Brainiac reformatted. A rich editor that converts Markdown to a document and back rewrote or lost content in testing (HTML, wikilinks, footnotes, nested code fences, list numbering, `snake_case` escaped); Brainiac draws its formatting over the text instead, and drawing never changes it.
+
+- **Live Preview**, the default, shows the note formatted. Headings show at their size; bold, italic, strikethrough, inline code, quotes, and fenced code are styled; Markdown markup (`#`, `**`, `` ` ``, link targets) is hidden except on the line being edited, where it reappears so it can be changed. Bullets, checkboxes, and horizontal rules are drawn as such, and links show only their text.
+- Images stored in the vault show below their line in Live Preview. A web image shows as its link, so opening a note makes no network request.
+- **Source** shows the same text with every mark visible, dimmed. `Cmd+Shift+E` or the toggle in the note header switches between them, keeping the cursor and scroll position; the choice applies to every note and is remembered.
+- Links and wikilinks open with `Cmd`+click; a link to another note opens it in Brainiac, a web link opens in the browser.
+- Clicking a checkbox toggles `[ ]` and `[x]` in the text.
+- Enter continues a list, task list, or quote on the next line and never renumbers the items below; Up and Down move one line at a time, including past a line drawn as an image.
+- Copying copies the Markdown, including markup Live Preview hides, and undo steps through text changes in both modes.
+- Frontmatter shows as a dimmed block at the top of the note and is edited as text, so unknown keys are preserved.
+- Tables, HTML, and syntax Brainiac does not render (callouts, footnotes, math) show as plain text in both modes and are saved as written.
+- Opening a note without editing never rewrites it, in either mode. A save changes only what was edited: line endings, a missing final newline, and the rest of the note stay as they were. A fixture suite checks this for headings, lists, checkboxes, tables, fenced code, links, images, frontmatter, HTML, unknown syntax, CRLF line endings, and a missing final newline.
+- Notes save by themselves after 750 ms without typing; `Cmd+S` saves at once. The header shows Saving, Saved, Save failed, or Changed on disk accurately, and switching views keeps an unsaved draft.
+
+### Note identity
+
+- New notes get a UUID in the frontmatter key `brainiac_id`.
+- An existing note without one gets an ID stored by Brainiac, without changing the file. Brainiac writes `brainiac_id` into the note the first time it gets a task or a repository link (a setting, on by default), because such a note carries context a rename must not lose. Adding it otherwise is an explicit action. Opening or indexing a note never writes it.
+- The ID is a convention Brainiac cannot enforce: copying a note copies it, and an edit can remove it. Two notes with the same ID are shown as a conflict; they are never merged silently.
+- A note is identified by its vault and its path within the vault, never by an absolute path, so the vault can move or be restored elsewhere.
+- A note moved or renamed outside Brainiac is recognised by its `brainiac_id`, otherwise by the same path, otherwise by content identical to exactly one note that went missing in the same scan or the same burst of changes, such as a `git pull`. Anything ambiguous becomes a missing note and a new note, which the user can relink; identical content alone does not prove identity.
+- The title is the frontmatter `title`, else the first heading, else the file name. Lists and the folder tree show titles; the file's path shows on hover and in the note's header.
+- A note whose file name matches its title keeps them matching: when the title changes, the file is renamed after the title once the cursor leaves the title's line or the note, never while typing it. A number Brainiac added to tell notes apart (`Untitled 2.md`) still counts as matching, and a renamed note takes the next free number the same way. A note that other notes link to is not renamed by itself, because their links name the file; neither is a file whose name was already different from its title, such as `2026-10-02.md` titled Standup. While the two differ, the header offers **Rename File to Match Title…**, which opens Rename with the new name filled in and the links it would update listed.
+- Arbitrary frontmatter keys, code fences, and relative links are preserved.
+
+### Links between notes
+
+- Brainiac reads both standard Markdown links to other notes and `[[wikilinks]]`, and writes standard Markdown links.
+- Backlinks list every note that links to the open note. A link whose target does not exist is kept as unresolved and resolves when a note with that name appears.
+- Renaming a note in Brainiac offers to update the links to it in other notes, listing the files it would change. The option is off by default because it edits other notes.
+
+### Saving and changes from outside
+
+- A save never overwrites a version of the note Brainiac has not seen. If the file changed on disk since it was opened, the save stops, the draft is kept, and the editor offers **Compare…**, **Reload from Disk**, and **Save Draft as Copy**.
+- A note changed outside Brainiac (another editor, a `git pull` in the vault, an agent) reloads by itself when it has no unsaved edits. Its previous text is kept in revision history first, so any outside edit can be undone like Brainiac's own.
+- If an open note's file disappears, the draft, its tasks, and its links are kept, and the editor offers **Restore as New File** and **Relink to a File…**.
+- If a save succeeds but search could not be updated, the header says **Saved · search update pending**, and the update is retried in the background.
+
+### Delete and recovery
+
+- Deleting a note moves it to Brainiac's trash, in its data folder, and removes it from search. Its tasks and links are kept. Restoring it asks before overwriting a note at the same path. Brainiac never permanently deletes a note as the default action.
+- A note deleted outside Brainiac is shown as missing; its tasks keep a reference to it, and its last text is kept in revision history so **Restore as New File** can bring it back.
+- Revision history keeps up to 20 versions per note for 30 days, within 250 MiB in total. Autosaves while typing count as one version until 10 minutes pass; each change from outside Brainiac is its own version; unresolved conflicts and unsaved drafts are never pruned.
+
+### Notes and repositories
+
+- A note can link to any number of registered repositories, and only to repositories (not workspaces). Links are made explicitly: **Link…** in the context panel, accepting a suggestion, or creating the note from a repository.
+- The repository viewer gains a **Notes** tab (`Cmd+4`): the notes linked to the repository, its open tasks, and suggested notes that mention it, with a read-only preview, **Open Note**, **Unlink**, and **New Note for** *repository*. With nothing linked it explains how to link or create one.
+- Wherever a linked repository appears, it shows its live state from the status Brainiac already keeps; nothing extra runs in Git.
+- Removing a repository keeps its links, shown as a removed repository with **Add Again** and **Unlink**. Adding a repository with the same remote later offers to reconnect them. A linked repository whose folder moved offers **Locate…** (section 4, Relocating a repository).
+
+## 6. Tasks and Today — v0.2
+
+- A task has a title, a short plain-text description, a status (to do, in progress, done, cancelled), an optional planned date, an optional deadline, and links to at most one note and one repository. Work spanning several repositories links a note that covers them. Longer material belongs in the linked note.
+- Planning a task and giving it a deadline are separate actions. Dates are calendar days in the Mac's time zone, so a task due today stays due today when travelling or when the clocks change.
+- Completing a task records when; reopening it clears that. A task is drawn with a round check, never a square checkbox.
+- **To sort:** a new task without a planned date or deadline is *to sort* until it gets one or is marked **Sorted**. v0.2 has no Inbox: everything is created inside the app, and an inbox earns its place only when items arrive faster than they are sorted, which starts with v0.3's capture and imports. Quick notes go to an ordinary `Inbox/` folder in the vault.
+- **Today** lists open tasks that are overdue, due today, or planned for today or an earlier day (unfinished work carries over), then those completed today. Tasks to sort appear as one folded **To sort · N** line above them; expanding it lists them. Each task shows its linked note and repository, the repository with its live state. A side panel lists the repositories in today's work with their state and **Fetch** and **Open**. "Today" follows the Mac's date, including across midnight and after waking.
+- **Tasks** lists all tasks, filtered by status and by **To sort**.
+- Two edits of the same task, from two places, never overwrite each other silently: the later one is refused with a conflict and shows the current task.
+
+## 7. Search — v0.2
+
+`Cmd+K` searches repositories, workspaces, notes, and tasks together, grouped by kind, with repositories first. Notes and tasks are searched by keyword; no AI model is needed.
+
+- Searches note titles, note text including code blocks, and task titles and descriptions. Search becomes complete when the vault scan finishes; until then it says **Indexing notes: N of M. Results may be incomplete.**
+- Input is literal text: it is never read as search syntax, and a malformed quote or stray symbol never shows an error. Each word also matches words that start with it, so `migrat` finds *migration* and `async run` finds *async runtime*; a quoted phrase matches its words in order. Case and accents are ignored, so `cafe` finds *cafè*.
+- Code identifiers are found whole or by their parts: `fetch_with_backoff` and `backoff` both find `fetch_with_backoff`, and `tokio::spawn`, `src/main.rs`, and `v0.2` match as written.
+- Title matches rank higher, and titles and paths also match any part of a word, so `Backoff` finds a note named `fetchWithBackoff.md`. In note text, a word inside a camelCase identifier or inside unspaced Chinese or Japanese text is found only from its start.
+- Scope buttons filter to Repositories, Notes, or Tasks. Each group shows its first results and **Show all N**. Snippets highlight the matched words.
+- The palette says **No matches** (offering a looser search when a quoted phrase found nothing), **Indexing incomplete**, or **Search unavailable** (with **Rebuild Index**; repository names still match) and never confuses them.
+- Results update as the query changes; an older query's results never replace a newer one's.
+
+## 8. Backup and restore — v0.2
+
+- Brainiac snapshots its own data before each format upgrade and once a day, keeping seven (section 2). Revision history is snapshotted separately and less often. The search index is never backed up; it is rebuilt from the vault.
+- **Export** writes the vault's notes, a consistent copy of Brainiac's data, a manifest, and tasks as JSON with their dates, statuses, and links. It goes into a new folder outside the vault, where it would otherwise be read as a second copy of every note. A note changed during the export is retried or reported; the export never claims to be complete when it is not.
+- **Restore** checks that the files are Brainiac's and from a version it can read before replacing anything. The export's notes are copied into an empty folder, or an existing vault folder is used as it is. Brainiac then restarts into the restored data, snapshotting the data it replaces first. It matches notes by `brainiac_id`, then by path and content; matches repositories by their remote URL (stored and exported without a password or token in it), offering **Locate…** for the rest, and keeps the repositories already registered on this Mac; and rebuilds search.
+- Snapshots are recovery aids on the same Mac. A complete backup is an export, or the vault plus Brainiac's data folder, kept on another device or backup system.

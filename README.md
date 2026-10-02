@@ -2,7 +2,7 @@
 
 A keyboard-oriented macOS desktop app for programmers: a Git workspace tracker today, a personal second brain over time. Rust backend, Tauri v2 shell, React + TypeScript frontend. Everything runs locally; the app reads your repositories and, only when you ask it to, fetches.
 
-**Status:** early development. The current release line (v0.1) is a read-only Git viewer and multi-repository tracker. See [`SPEC.md`](SPEC.md) for what it does, [`docs/architecture.md`](docs/architecture.md) for how it is built, and [`docs/roadmap.md`](docs/roadmap.md) for what comes next.
+**Status:** early development. The released line (v0.1) is a read-only Git viewer and multi-repository tracker; v0.2, not released yet, adds notes, tasks, Today, and keyword search. See [`SPEC.md`](SPEC.md) for what it does, [`docs/architecture.md`](docs/architecture.md) for how it is built, and [`docs/roadmap.md`](docs/roadmap.md) for what comes next.
 
 ## What works now
 
@@ -12,6 +12,7 @@ A keyboard-oriented macOS desktop app for programmers: a Git workspace tracker t
 - Changes on disk are picked up by filesystem watchers and coalesced refreshes; nothing is polled per keystroke.
 - Workspace Activity: see what was merged or tagged on your team's watched branches since you last looked, with warnings when it touches files you are changing.
 - Registrations, pins, and settings persist in SQLite with daily snapshot backups.
+- v0.2 (unreleased): a vault of ordinary Markdown notes edited where they are, with Live Preview, autosave, conflict handling, version history, and a trash outside the vault; tasks with dates and Today; links between notes, tasks, and repositories; ⌘K keyword search across notes and tasks; export and restore.
 
 Brainiac never runs `checkout`, `commit`, `stash`, `pull`, hooks, or anything from a workspace file. The one write it can make is a fetch, which updates remote-tracking branches and tags only: when you press Fetch now, or on a schedule for a workspace where you turned auto-fetch on (off by default).
 
@@ -72,8 +73,9 @@ Tag-driven: `scripts/release.sh X.Y.Z` bumps the version, tags and pushes; GitHu
 
 ```
 src/            React frontend (components/, lib/ipc.ts, lib/generated/)
-src-tauri/      Rust crate: git.rs, db.rs, workspaces.rs, watcher.rs, commands.rs
-src-tauri/migrations/   Ordered SQL migrations
+src-tauri/      Rust crate: git.rs, db.rs, workspaces.rs, watcher.rs, commands.rs;
+                v0.2: vault.rs, notes.rs, index.rs, tasks.rs, backup.rs
+src-tauri/migrations/   Ordered SQL migrations (index/ and history/ for the v0.2 files)
 src-tauri/tests/        Integration tests that build Git fixtures in temp dirs
 scripts/                Release helpers (version check, release, publish)
 docs/                   RELEASING.md

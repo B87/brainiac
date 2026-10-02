@@ -1,0 +1,4 @@
+/* The app's styles; with this folder as Vite's root, Tailwind must be told to
+   scan the app's sources for the classes they use. */
+@import "../../src/index.css";
+@source "../../src";
