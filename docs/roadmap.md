@@ -52,8 +52,16 @@ M0 landed on 1 October 2026 with 58 Rust tests and 3 frontend tests. Known M0 si
 - [ ] FTS5 note/task ingestion, ranked keyword search, safe snippets, rebuild status.
 - [ ] Note/repository associations, standard Markdown links/backlinks, unresolved targets.
 - [ ] Complete vault/database export and restore preserving tasks and associations.
+- [ ] One write path for every caller: each write goes through a domain service that emits the committed change event; task writes carry the expected version; a note changed outside Brainiac keeps its previous text as a revision.
 
 **Exit gate:** use Brainiac for real notes and daily tasks alongside Git tracking; edits survive restart, knowledge search works offline, Today behaves correctly across midnight, and restore recovers files, tasks, and context links.
+
+### v0.2.x — Agent access
+
+- [ ] Local MCP server inside the running app, reached through a small `brainiac-mcp` stdio helper; off by default, read-only or read-write.
+- [ ] Tools for search, notes, tasks, and repository links that call the same domain services as the UI.
+
+**Exit gate:** an agent such as Claude Code finds notes, creates and completes a task, and links a note to a repository while the app is open; the UI updates live, a concurrent UI edit produces a conflict rather than an overwrite, and the agent's note edits can be undone from revision history.
 
 ### v0.3 — Content imports and global capture
 
@@ -102,8 +110,13 @@ Remote services require their own authentication, rate-limit, cache, error, and 
 | macOS minimum and Intel requirement | Verify target hardware, dependencies, and packaged builds | Release distribution |
 | Real-world workspace size and Git cost | Benchmark representative workspace/repositories | v0.1 watcher tuning |
 | Quick-capture focus behavior | macOS/Spaces/fullscreen prototype | v0.3 |
+| Vault size and note sizes | Count notes, largest file, and full-ingest time on a real vault | v0.2 batch sizes and revision budget |
+| Snapshot size and retention | Measure `brainiac.db` and `history.db` on a real vault after a month | v0.2 backup defaults |
+| Restore onto another Mac | Fixture: vault and snapshot restored where paths and repository locations differ | v0.2 restore |
 | Embedding model and dimensions | Local retrieval evaluation, model availability and license review | v0.4 schema/profile selection |
+| Chunking notes, code, and imports | Labelled set of about 30 real queries; compare heading-aware splits, size caps, and overlap by recall@k | v0.4 chunker version 1 |
 | SQLite-vector integration compatibility | Build and query a bundled release executable | v0.4 |
+| `sqlite-vec` approximate indexes | Track whether ANN indexes reach a stable release; brute force is enough at personal scale | Only if a vault outgrows brute force |
 | Remote integrations and company data constraints | Choose the first provider and its allowed scopes | Integration release |
 | Preferred mail source and capture gesture | Choose `.eml`, connected mailbox, or optional forwarding workflow | Email connector implementation |
 | Jira deployment/authentication | Confirm Cloud versus Data Center and company-supported access | Jira connector implementation |
@@ -140,9 +153,12 @@ TipTap's Markdown support documents limitations. Treat fidelity as a release gat
 #### Note identity and compatibility — v0.2
 
 - New notes receive a UUID in a namespaced frontmatter key, `brainiac_id`.
-- Existing notes with no such key receive a persisted application ID without modifying the file. Adding an embedded ID is an explicit action.
+- Existing notes with no such key receive a persisted application ID without modifying the file. Brainiac writes `brainiac_id` into an existing note the first time it gets a task or repository link (a setting, on by default), because those notes carry context that a rename must not lose; otherwise adding it is an explicit action. Opening or indexing a note never writes it.
+- The ID is a convention the app cannot enforce: a copied note duplicates it and an edit can remove it. Handle both as described below rather than trusting it blindly. Dendron relies on the same convention for notes moved outside the app. [Dendron FAQ](https://wiki.dendron.so/notes/683740e3-70ce-4a47-a1f4-1f140e80b558/)
 - Title comes from frontmatter `title`, then the first H1, then the filename.
-- App-driven renames preserve identity. External moves use embedded IDs where available; otherwise match a unique content hash within the reconciliation batch.
+- App-driven renames preserve identity. External moves use embedded IDs where available; otherwise match the same relative path, then a unique content hash within the reconciliation batch.
+- A note's identity is its vault ID plus its vault-relative path, never an absolute path, so a vault can move or be restored elsewhere.
+- Renaming a note in Brainiac offers to update links to it in other notes, listing the files; the option is off by default because it edits other files.
 - Ambiguous moves become missing/new entries and can be relinked; identical contents alone do not prove identity.
 - Duplicate embedded IDs produce a visible conflict; never merge two notes silently.
 - Preserve arbitrary frontmatter keys, code fences, and relative links. Changing a title does not automatically rename the file.
@@ -158,25 +174,42 @@ TipTap's Markdown support documents limitations. Treat fidelity as a release gat
 | `Cmd+Shift+Space`, v0.3 | Configurable global quick capture |
 | `Cmd+K` | Knowledge search joins the repository/workspace palette |
 
+#### Storage layout — v0.2
+
+Only two things cannot be rebuilt: the vault's Markdown files and a small core database. Everything else is a cache that can be discarded and rebuilt from them, which decides where data lives, what is backed up, and how restore works.
+
+| File | Holds | Rebuildable | Backed up |
+| --- | --- | --- | --- |
+| Vault (`.md` files) | Note text, frontmatter including `brainiac_id`, links written in notes | Source of truth | By the user, and in Brainiac's export |
+| `brainiac.db` | Settings, repositories, workspaces, pins, activity, vaults, note identity, tasks and their search table, note-to-repository links, embedding profiles | No | Daily snapshots and export |
+| `index.db` | Note bodies, the notes search table, parsed links between notes, chunks and vectors (v0.4) | Yes, from the vault | Never; rebuilt after a restore |
+| `history.db` | Note revisions and draft checkpoints | No, but optional | Its own snapshots, less often than `brainiac.db` |
+
+- Under WAL, a transaction across attached database files is atomic within each file but not across them; a crash during commit can leave one file updated and another not. [SQLite ATTACH](https://www.sqlite.org/lang_attach.html) Splitting is therefore safe only because `index.db` is rebuildable: each indexed row records the content hash it was built from, and startup re-indexes rows whose hash no longer matches `brainiac.db`.
+- The split keeps snapshots small (seven daily copies of the core, not of every note body and revision) and lets indexing write to `index.db` on its own connection instead of queueing behind Git queries on the core database's worker.
+- Note-to-repository links have no foreign key to `repositories`: removing a repository keeps the link, shown as a removed repository, with the name and remote URL copied onto the link when it was made. Re-adding a repository with the same remote offers to reconnect it. `repositories` gains a `remote_url` column (the `origin` fetch URL, refreshed on observation).
+
 #### Data model of later releases
 
-| Entity | Essential fields and constraints | Release |
-| --- | --- | --- |
-| `vaults` | `id`, `name`, `root_path`; one active vault initially | v0.2 |
-| `notes` | `id`, `vault_id`, `relative_path`, `embedded_id?`, `title`, `content_hash`, `mtime`, `indexed_at`, `missing_at?`; unique live path per vault | v0.2 |
-| `tasks` | `id`, `title`, `description`, `status`, `triaged_at?`, `planned_date?`, `due_date?`, `linked_note_id?`, `created_at`, `updated_at`, `completed_at?`, `version` | v0.2 |
-| `note_revisions` | `id`, `note_id`, `content`, `content_hash`, `created_at`, `reason`; bounded local history | v0.2 |
-| `search_documents` | FTS5 rows: entity type/ID plus title and searchable body | v0.2 |
-| `note_sources` | `note_id`, source type, canonical URL/provider ID, source time, import time, content scope, source hash; derived from note provenance | v0.3 |
-| `import_jobs` | `id`, input reference, adapter, state, staged payload reference, error, result note ID, idempotency key | v0.3 |
-| `note_links` | `source_note_id`, `target_note_id?`, `raw_target`, source location; unresolved links retained | v0.2 |
-| `note_repository_links` | `note_id`, `repository_id` | v0.2 |
-| `embedding_profiles` | `id`, provider/model identity, dimensions, distance metric, chunker version | v0.4 |
-| `note_chunks` | `id`, `note_id`, source hash, heading, byte/line range, text, chunk hash | v0.4 |
-| vector tables | Chunk ID and embedding, partitioned by compatible embedding profile | v0.4 |
+| Entity | File | Essential fields and constraints | Release |
+| --- | --- | --- | --- |
+| `vaults` | core | `id`, `name`, `root_path`; one active vault initially | v0.2 |
+| `notes` | core | `id`, `vault_id`, `relative_path`, `embedded_id?`, `title`, `content_hash`, `mtime`, `last_opened_at?`, `missing_at?`; unique live path per vault | v0.2 |
+| `tasks` | core | `id`, `title`, `description`, `status`, `triaged_at?`, `planned_date?`, `due_date?`, `linked_note_id?`, `linked_repository_id?`, `created_at`, `updated_at`, `completed_at?`, `version` | v0.2 |
+| `task_search` | core | External-content FTS5 over `tasks` (title, description), kept in step by triggers in the task's own transaction | v0.2 |
+| `note_repository_links` | core | `note_id`, `repository_id`, `repository_name`, `remote_url?`, `created_at`; no foreign key to `repositories` | v0.2 |
+| `note_bodies` | index | `note_id`, `content_hash`, `title`, `body`; the content table for `note_search` | v0.2 |
+| `note_search` | index | External-content FTS5 over `note_bodies` | v0.2 |
+| `note_links` | index | `source_note_id`, `target_note_id?`, `raw_target`, source location; unresolved links retained | v0.2 |
+| `note_revisions` | history | `id`, `note_id`, `content`, `content_hash`, `created_at`, `reason` (`app_save`, `external_change`, `restore`); bounded local history | v0.2 |
+| `note_sources` | core | `note_id`, source type, canonical URL/provider ID, source time, import time, content scope, source hash; derived from note provenance | v0.3 |
+| `import_jobs` | core | `id`, input reference, adapter, state, staged payload reference, error, result note ID, idempotency key | v0.3 |
+| `embedding_profiles` | core | `id`, provider, model name and digest, dimensions, distance metric, normalization, chunker version, state | v0.4 |
+| `note_chunks` | index | `id`, `note_id`, profile, source hash, heading, byte/line range, text, chunk hash | v0.4 |
+| vector tables | index | One `vec0` table per embedding profile: chunk ID, embedding, filter columns | v0.4 |
 
-Task status is `todo`, `in_progress`, `done`, or `cancelled`, enforced by a database constraint. Completing sets `completed_at`; reopening clears it. Markdown checkboxes remain note content from v0.2 and do not automatically create or synchronize task records.
-Keep missing-note tombstones to preserve task context. Add task `linked_repository_id` in the v0.2 migration.
+Task status is `todo`, `in_progress`, `done`, or `cancelled`, held in a `task_statuses` lookup table like the other enumerations in `0001_init.sql`. Completing sets `completed_at`; reopening clears it. A task is *to sort* while `triaged_at` is empty. `planned_date` and `due_date` are local calendar dates (`YYYY-MM-DD`), not UTC timestamps, so Today does not shift with time zones or daylight saving; `created_at`, `updated_at`, and `completed_at` stay UTC like the rest of the schema. A task links to at most one note and one repository; work spanning several repositories links a note that covers them. Task descriptions stay short plain text; longer material belongs in a linked note. Markdown checkboxes remain note content from v0.2 and do not automatically create or synchronize task records.
+Keep missing-note tombstones to preserve task context. Pinning a note adds `note` to `pin_entity_types`.
 
 #### Commands of later releases
 
@@ -204,7 +237,7 @@ Keep missing-note tombstones to preserve task context. Add task `linked_reposito
 3. If divergent, return `CONFLICT`; keep the editor draft and the disk version available.
 4. Preserve the pre-save file in local revision history. If that fails, stop the save and retain the draft.
 5. Write a temporary sibling file, flush it, recheck the expected disk version, and atomically replace the destination. Preserve file permissions and sync the directory where supported.
-6. Update note metadata and its FTS row in one database transaction.
+6. Update note metadata in `brainiac.db`, then its body, search row, and links in `index.db`. The two are separate transactions; the index row carries the content hash it was built from, so an interrupted update is found and redone.
 7. Return the new version and emit a committed change event. If indexing fails after the file write, report **Saved; search update pending** and enqueue repair.
 
 The filesystem and SQLite do not share a transaction. Recovery must reconcile a completed file write with an interrupted database update. Hash checks detect observed conflicts; they cannot provide a filesystem compare-and-swap against arbitrary external editors. Revision history and draft recovery reduce that residual race risk.
@@ -215,6 +248,7 @@ Auto-save after a proposed 750 ms of inactivity. `Cmd+S` flushes immediately. Di
 
 - Watch directories so atomic replacement saves are observed. Debounce note events for roughly 300 ms, then read and hash.
 - A hash equal to the accepted version is a no-op, including notifications from the app's own writes.
+- Before re-indexing a file changed outside Brainiac, store the previously indexed text from `index.db` as a revision with reason `external_change`, so edits from another editor or an agent can be undone like the app's own.
 - For a clean active editor, reload the changed file and refresh the base version.
 - For a dirty active editor, stop auto-save and offer **Reload disk**, **Save draft as copy**, or **Compare versions**. Preserve the draft before discarding it.
 - If a file disappears while open, keep the draft and offer restore as a new file or relink.
@@ -229,18 +263,20 @@ External deletion marks a note missing and removes its search row. User-visible 
 
 #### Backup and restore
 
-- Create a consistent SQLite snapshot before each migration and once per active day; retain seven daily snapshots by default.
+- Create a consistent snapshot of `brainiac.db` before each migration and once per active day; retain seven daily snapshots by default. Snapshot `history.db` on its own, less often. Never back up `index.db`.
+- Snapshots use SQLite's backup API on the app's own connection, copying everything in one pass, so the copy is consistent while the app keeps running. `VACUUM INTO` also produces a consistent, compacted copy at more CPU cost and suits exports. Write either to a temporary name and rename it when complete, so a crash never leaves a partial file that looks like a snapshot. [SQLite backup API](https://www.sqlite.org/backup.html), [VACUUM INTO](https://www.sqlite.org/lang_vacuum.html)
+- Every database file carries Brainiac's `PRAGMA application_id`; restore and open reject a file without it.
 - Keep draft checkpoints and a bounded revision history: proposed 30 days, at most 20 revisions per note, and a global 250 MiB budget, excluding unresolved conflicts and active drafts.
-- Provide an export containing vault files, a consistent database snapshot, and a versioned manifest. Serialize application writes during snapshot/export and detect externally changed files; retry or report an incomplete export rather than claiming an atomic snapshot across independent editors.
+- Provide an export containing vault files, a consistent database snapshot, and a versioned manifest. The vault and the database cannot share a transaction, so the manifest is what lets them be reconciled: schema version, vault ID, and for each note its ID, relative path, and content hash; for each linked repository its name and remote URL. Serialize application writes during snapshot/export and detect externally changed files; retry or report an incomplete export rather than claiming an atomic snapshot across independent editors.
 - Export tasks as JSON with IDs, dates, statuses, and associations for portability.
-- Restore validates the manifest and schema before replacement, then rescans files and rebuilds derived indexes.
+- Restore validates the application ID, manifest, and schema before replacement. It then matches notes by `brainiac_id`, then by relative path and content hash; matches repositories by remote URL, offering Locate… for the rest; and rebuilds `index.db` from the vault.
 - Local snapshots are recovery aids; a complete backup must include both vault files and application data, preferably on another device or backup system.
 
 ### Keyword search — v0.2
 
 Index note titles, saved note body including code blocks, and task titles/descriptions. Search starts during vault ingestion and becomes complete when ingestion finishes. No embedding model is required.
 
-Use a normal, content-bearing FTS5 table with entity IDs stored as unindexed columns. Maintain one row per live note/task, replacing it transactionally on updates. Keep the cache rebuildable independently of authoritative task records. FTS5 provides ranking, phrase, and prefix queries. [SQLite FTS5 documentation](https://www.sqlite.org/fts5.html)
+Use external-content FTS5 tables, which index text stored once in a table Brainiac owns: `note_search` over `note_bodies` in `index.db`, and `task_search` over `tasks` in `brainiac.db`, each kept in step by triggers in the same transaction as the write. Their `integrity-check` command detects drift and `rebuild` regenerates the index from the content table, which a contentless table cannot do; snippets and highlights need the stored text either way. A search queries both tables and merges the results. FTS5 provides ranking, phrase, and prefix queries. [SQLite FTS5 documentation](https://www.sqlite.org/fts5.html)
 
 Search behavior:
 
@@ -252,6 +288,17 @@ Search behavior:
 - Render snippets as escaped text plus highlight ranges, never trusted HTML.
 - Clearly distinguish No matches, Indexing incomplete, and Search unavailable.
 - Update task FTS rows in the task write transaction. Note indexing follows the successful file write and can be repaired.
+
+### Agent access — v0.2.x
+
+Agents such as Claude Code can already read and edit the vault's Markdown files, and the vault watcher treats them like any other editor. Tasks, links to repositories, and pins live only in `brainiac.db`, whose schema is internal; writing it directly would skip version checks, rules such as setting `completed_at`, and change events, so the UI would not update. Agents use a supported interface instead.
+
+- The running app hosts a local MCP server. A small `brainiac-mcp` helper, which an agent starts over stdio, forwards requests to the app through a Unix socket in the app's data folder, as editor CLIs reach a running editor. If the app is not running, the helper reports that.
+- Tools mirror the commands of later releases: `search`, `read_note`, `list_tasks`, `create_task`, `update_task`, `link_repository`, and `repository_status`. Each calls the same domain service as the matching Tauri command, so validation, version conflicts, and committed change events are identical and the UI updates live.
+- Off by default; Settings chooses read-only or read-write. Local only. No tool writes to a Git repository, runs commands, or changes settings.
+- Note edits made through the vault rather than the server get a revision with reason `external_change`, so they can be undone.
+
+v0.2 prepares for this without the server: every write goes through a domain service that emits its change event (not through a Tauri handler), and every task write carries the expected version.
 
 ### Capture and imports — v0.3
 
@@ -379,10 +426,13 @@ The embedding model, its dimensions, language coverage, and context limit are se
 
 Use the `sqlite-vec` Rust binding with the same bundled SQLite used by `rusqlite`. Register the extension through a vetted initialization path, encapsulate required unsafe FFI, and verify release packaging before adopting it. Never load arbitrary extensions supplied by a note or workspace. [sqlite-vec Rust binding](https://docs.rs/sqlite-vec/latest/sqlite_vec/)
 
-- Keep chunk metadata in ordinary tables and vector data in compatible profile-specific tables.
+- Keep chunk metadata in ordinary tables and vector data in compatible profile-specific tables, all in `index.db`.
 - Schema dimensions and the query embedding must match the active profile. Model changes create a new index generation; do not mix vectors from different models.
+- Changing the model adds a profile and its own `vec0` table. A resumable background job fills it while search keeps using the active profile; new and changed notes are embedded for both, and a backfill never overwrites a newer vector. Switch the active profile when the job finishes, then drop the old table, which also reclaims space `vec0` does not reclaim after deletes. [Qdrant: embedding model migration](https://qdrant.tech/documentation/tutorials-operations/embedding-model-migration/)
+- Stable `sqlite-vec` releases search by brute force only. Its author measured about 0.2 s for 100,000 vectors of 3,072 dimensions on an M1, so a personal vault of thousands to tens of thousands of chunks needs no approximate index. [sqlite-vec stable release](https://alexgarcia.xyz/blog/2024/sqlite-vec-stable-release/index.html)
+- Filter inside the vector query with `vec0` metadata columns (at most 16; equality, comparison, and `IN` only), for example by source kind; apply richer filters in SQL on an over-fetched result. [vec0 metadata columns](https://alexgarcia.xyz/blog/2024/sqlite-vec-metadata-release/index.html)
 - Use the extension's supported nearest-neighbor query syntax, including its `k` constraint where required. [sqlite-vec KNN documentation](https://alexgarcia.xyz/sqlite-vec/features/knn.html)
-- Combine keyword and semantic candidate ranks with reciprocal rank fusion; deduplicate overlapping chunks and cap results per note.
+- Combine keyword and semantic candidate ranks with reciprocal rank fusion (k = 60) in one SQL query: rank each list with `row_number()`, join them with `FULL OUTER JOIN`, and sum `1/(k + rank)` per list, so a match found by both outranks one found by either alone. This suits a vault full of exact project and repository names. Deduplicate overlapping chunks and cap results per note. [Hybrid search with sqlite-vec](https://alexgarcia.xyz/blog/2024/sqlite-vec-hybrid-search/index.html)
 - Return source excerpts and distinguish keyword from semantic matches.
 - Start with notes only. Task, commit-message, and source-code embeddings are separate future scope.
 - Model installation is an explicit user action. Show download/storage requirements, indexing progress, pause, cancellation, and retry.
@@ -400,3 +450,11 @@ RAG uses hybrid retrieval to answer questions about saved notes. It adds synthes
 - Do not silently turn generated suggestions into tasks or modify notes.
 - Keep conversations session-local initially; Save as note is explicit.
 - AI requests go only to the configured local endpoint by default. A cloud provider would require a later explicit product decision and opt-in.
+
+### Evolving the data — all releases
+
+- Migrations stay append-only and run at startup, after a pre-migration snapshot. That is enough for one user on one machine.
+- An app must never run on a database newer than it knows: `PRAGMA user_version` is a convention SQLite does not enforce, so the app checks it and refuses, pointing to the pre-migration snapshot. This ships in v0.1.x, before the first schema change. [SQLite file format](https://www.sqlite.org/fileformat.html)
+- Rows use UUIDs, notes are identified by vault ID plus relative path, and unknown frontmatter keys are preserved, so multiple vaults or sync can be added later without rewriting identity. Absolute paths stay only where they are local by nature, such as a repository's folder; its remote URL is the identity that travels.
+- Sync, if it comes, cannot migrate every device at once, because devices run different app versions. Record a format version on synced records and translate on read rather than migrating all data in one step. [Ink & Switch: Cambria](https://www.inkandswitch.com/cambria/)
+- New AI models or chunkers add an embedding profile; they never alter existing vectors in place.
