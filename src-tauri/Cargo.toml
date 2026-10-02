@@ -1,6 +1,6 @@
 [package]
 name = "brainiac"
-version = "0.1.3"
+version = "0.2.0"
 description = "Second brain and Git workspace tracker for programmers"
 authors = ["Brainiac contributors"]
 license = "MIT OR Apache-2.0"

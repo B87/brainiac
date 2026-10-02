@@ -11,6 +11,8 @@ into the release's section.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-02
+
 - Notes: choose a folder of Markdown files as your vault and edit them where they are, in Live Preview or Source, with autosave, version history, and a trash outside the vault.
 - A note changed in another editor reloads by itself; edits never overwrite a newer version on disk, and a conflict offers Compare…, Reload from Disk, and Save Draft as Copy.
 - Notes keep their identity, tasks, and links when they are renamed or moved outside Brainiac, including by a `git pull`.
@@ -104,7 +106,8 @@ First public build: a read-only Git viewer and multi-repository tracker for macO
 - The Branches tab is a placeholder.
 - Not signed with an Apple Developer certificate; the first launch needs right-click > Open (see the README).
 
-[Unreleased]: https://github.com/B87/brainiac/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/B87/brainiac/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/B87/brainiac/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/B87/brainiac/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/B87/brainiac/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/B87/brainiac/compare/v0.1.0...v0.1.1
