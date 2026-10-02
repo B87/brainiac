@@ -88,7 +88,7 @@ brainiac/
     tests/                     Integration tests; unit tests can live in modules
 ```
 
-Create modules as their behavior is implemented; the scaffold does not need empty placeholders for every file. Add `notes.rs`, `tasks.rs`, and `search.rs` in v0.2; `imports.rs` in v0.3; then AI modules at their milestones. The initial project does not need an editor or content-ingestion dependencies.
+Create modules as their behavior is implemented; the scaffold does not need empty placeholders for every file. Add `vault.rs` (scan, reconciliation, the vault watcher), `notes.rs` (read, save, trash, revisions), `index.rs` (note bodies, search, links between notes), and `tasks.rs` in v0.2; `imports.rs` in v0.3; then AI modules at their milestones. The initial project does not need an editor or content-ingestion dependencies.
 
 In Rust, a **package** is described by `Cargo.toml`; a **crate** is a compilation unit, such as its library or executable; a **module** organizes code within a crate. Tauri's scaffold has a small desktop binary (`main.rs`) that delegates to the application library (`lib.rs`). This is scaffold reuse, not a separate backend service.
 
@@ -114,24 +114,41 @@ Files become modules through declarations such as `mod notes;` in `lib.rs`. A di
 | Saved note body and frontmatter | Markdown files in the selected vault | Search metadata can be rebuilt from files |
 | Imported source snapshots and provenance | Markdown frontmatter/body and any retained original files in the vault | Source cache can be rebuilt; originals must be backed up |
 | Pending import jobs and uncommitted previews | SQLite plus managed staging files where needed | Requires recovery until a note is committed |
-| Tasks, planned dates, deadlines, associations | SQLite | Requires backup/export |
-| Imported-note identities without embedded IDs | SQLite | Requires backup to preserve exact associations |
-| Pins, workspace membership, settings | SQLite | Requires backup/export |
-| Search text cache, backlinks, repository snapshots | SQLite derived tables | Yes |
-| Chunks and embeddings | SQLite derived tables | Yes, from files and model configuration |
-| Unsaved editor recovery | Local draft journal | Recovery data, not the saved note |
+| Tasks, planned dates, deadlines, associations | `brainiac.db` | Requires backup/export |
+| Note identities without embedded IDs | `brainiac.db` | Requires backup to preserve exact associations |
+| Pins, workspace membership, settings | `brainiac.db` | Requires backup/export |
+| Repository snapshots | `brainiac.db` cache columns | Yes |
+| Note bodies, search, links between notes | `index.db` | Yes, from the vault |
+| Chunks and embeddings | `index.db` | Yes, from the vault and model configuration |
+| Revisions and unsaved editor drafts | `history.db` | Recovery data, not the saved note |
 
 This ownership table covers the full roadmap. In v0.1, persist workspace membership, repository registration, pins, and settings; cache Git observations with timestamps; keep the activity feed's ref tips and events. Note/task/import stores are introduced at their later milestones.
 
-SQLite therefore holds both authoritative application data and derived indexes. Deleting the database is not a safe way to rebuild search.
+`brainiac.db` (the file named `brainiac.sqlite3` today) holds only data that cannot be rebuilt; everything derived lives in `index.db`, which can be deleted to rebuild search (Storage layout, below).
 
 Use Tauri's application data directory for the database, recovery journal, and managed backups. The user chooses the Markdown vault; its location is not hard-coded. Keep paths inside the vault relative so relocating the vault does not invalidate every record.
 
 Opening the database (`db::Db::open`) checks two header fields SQLite itself never enforces. `PRAGMA application_id` is set to Brainiac's (`db::APPLICATION_ID`) after migrating, so every snapshot carries it; a file with another non-zero ID is refused, and a file with 0 (from before 0.1.3) is adopted. `PRAGMA user_version` is the number of applied migrations; a file newer than this build's `db::SCHEMA_VERSION` is refused before anything writes to it, because older code would ignore tables it does not know. Either refusal hides the main window and shows a dialog naming the backups folder; dismissing it quits. Snapshots (before migrations and daily, seven kept) are copied with SQLite's backup API on the worker's own connection into a hidden `.<name>.partial` file that is renamed into place when complete, so a crash never leaves a partial file that looks like a snapshot; leftovers are removed with the next daily snapshot.
 
+### Storage layout — v0.2
+
+Only two things cannot be rebuilt: the vault's Markdown files and a small core database. Everything else is a cache that can be discarded and rebuilt from them, which decides where data lives, what is backed up, and how restore works.
+
+| File | Holds | Rebuildable | Backed up |
+| --- | --- | --- | --- |
+| Vault (`.md` files) | Note text, frontmatter including `brainiac_id`, links written in notes | Source of truth | By the user, and in Brainiac's export |
+| `brainiac.db` | Settings, repositories, workspaces, pins, activity, vaults, note identity, tasks and their search table, note-to-repository links | No | Snapshots before migrations and daily, and export |
+| `index.db` | Note bodies, the notes search table, parsed links between notes; chunks and vectors from v0.4 | Yes, from the vault | Never; rebuilt after a restore |
+| `history.db` | Note revisions and draft checkpoints | No, but optional | Its own snapshots, less often than `brainiac.db` |
+
+- Under WAL, a transaction across attached database files is atomic within each file but not across them; a crash during commit can leave one file updated and another not. [SQLite ATTACH](https://www.sqlite.org/lang_attach.html) The split is safe only because `index.db` is rebuildable: each indexed row records the content hash it was built from, and startup re-indexes rows whose hash no longer matches `brainiac.db`.
+- The split keeps snapshots small (copies of the core, not of every note body and revision) and lets indexing write to `index.db` on its own connection instead of queueing behind Git queries on the core database's worker. Indexing commits in transactions of at most 200 notes, and search and list queries use a read-only connection.
+- Every file carries `PRAGMA application_id` and is checked on open, as `brainiac.db` is today.
+- Note-to-repository links have no foreign key to `repositories`: removing a repository keeps the link, with the repository's name and remote URL copied onto it when it was made. `repositories` gains `remote_url` (the `origin` fetch URL, refreshed on observation), which restore and reconnection match on.
+
 ### Data model
 
-Tables of later releases are in `docs/roadmap.md` and are not created before their release. IDs are UUID strings and timestamps are UTC instants. The schema is `src-tauri/migrations/0001_init.sql`.
+Tables of v0.3 onward are in `docs/roadmap.md` and are not created before their release. IDs are UUID strings and timestamps are UTC instants. The v0.1 schema is `src-tauri/migrations/0001_init.sql`; v0.2's core tables arrive in `0002`, and `index.db` and `history.db` get their own migration lists.
 
 | Entity | Essential fields and constraints | Release |
 | --- | --- | --- |
@@ -144,7 +161,55 @@ Tables of later releases are in `docs/roadmap.md` and are not created before the
 | `ref_tips` | `git_store`, `ref_name`, `target_id`; the last seen tip of each watched remote-tracking branch and tag, derived and rebuildable | v0.1 |
 | `activity_events` | `id`, `git_store`, `kind` (`advanced`, `rewritten`, `created`, `tagged`), `ref_name` (full), `match_name` (what patterns match), `old_id?`, `new_id`, `observed_at`, `seen_at?`, detail JSON (commits, authors, overlapping paths, drift); pruned after 90 days | v0.1 |
 
+v0.2 adds, with the file each lives in:
+
+| Entity | File | Essential fields and constraints |
+| --- | --- | --- |
+| `repositories.remote_url` | core | New column; see Storage layout |
+| `vaults` | core | `id`, `name`, `root_path`; one active vault initially |
+| `notes` | core | `id`, `vault_id`, `relative_path`, `embedded_id?`, `title`, `content_hash`, `mtime`, `last_opened_at?`, `missing_at?`; unique live path per vault; missing notes stay as tombstones so tasks keep their context |
+| `tasks` | core | `id`, `title`, `description`, `status`, `triaged_at?`, `planned_date?`, `due_date?`, `linked_note_id?`, `linked_repository_id?`, `created_at`, `updated_at`, `completed_at?`, `version` |
+| `task_statuses` | core | Lookup table: `todo`, `in_progress`, `done`, `cancelled` |
+| `task_search` | core | External-content FTS5 over `tasks` (title, description), kept in step by triggers in the task's own transaction |
+| `note_repository_links` | core | `note_id`, `repository_id`, `repository_name`, `remote_url?`, `created_at`; no foreign key to `repositories` |
+| `pin_entity_types` | core | Gains `note` |
+| `note_bodies` | index | `note_id`, `content_hash`, `title`, `body`; the content table for `note_search` |
+| `note_search` | index | External-content FTS5 over `note_bodies` |
+| `note_links` | index | `source_note_id`, `target_note_id?`, `raw_target`, kind (Markdown link or wikilink), source location; unresolved links retained |
+| `note_revisions` | history | `id`, `note_id`, `content`, `content_hash`, `created_at`, `reason` (`app_save`, `external_change`, `restore`) |
+| `drafts` | history | `note_id`, `base_hash`, `content`, `updated_at`; one per note with unsaved edits |
+
+`planned_date` and `due_date` are local calendar dates (`YYYY-MM-DD`), not UTC instants, so Today does not shift with time zones or daylight saving. Completing a task sets `completed_at`; reopening clears it; a task is to sort while `triaged_at` is empty. Every task write carries the expected `version` and fails with `CONFLICT` when it changed.
+
 Use foreign keys, WAL mode, a bounded busy timeout, and explicit transactions. Repository status is a cache with an observation time, never an authoritative copy of Git state.
+
+### Notes, indexing, and backups — v0.2
+
+**Save contract.** `read_note` returns Markdown and a version, its SHA-256 hash. `save_note` submits the expected version and the new Markdown:
+
+1. Persist a draft checkpoint in `history.db` and serialize app-originated writes to this note.
+2. Read the current file and compare its hash with the expected version; if it differs, return `CONFLICT` and keep both the draft and the disk version.
+3. Store the pre-save file as a revision. If that fails, stop and keep the draft.
+4. Write a temporary sibling file, flush it, recheck the disk version, and atomically replace the destination, preserving permissions and syncing the directory where supported.
+5. Update the note's metadata in `brainiac.db`, then its body, search row, and links in `index.db`, in separate transactions; an interrupted index update is found by its content hash and redone.
+6. Return the new version and emit `note_changed`. If indexing failed after the file write, report "Saved; search update pending" and queue a repair.
+
+The filesystem and SQLite do not share a transaction, and hash checks cannot be a compare-and-swap against arbitrary external editors; revisions and drafts cover that residual race.
+
+**Vault watcher.** `notify` watches the vault's directories so atomic-replace saves are seen. Callbacks only queue work; a per-note queue debounces for about 300 ms, then reads and hashes. A hash equal to the accepted version is a no-op, including the app's own writes. Before re-indexing an outside change, the previously indexed text from `index.db` is stored as a revision with reason `external_change`. Startup, wake, watcher errors, and manual refresh run a full reconciliation; notifications only speed it up.
+
+**Search.** `note_search` and `task_search` are external-content FTS5 tables: text is stored once in a table Brainiac owns, triggers keep the index in step in the same transaction, `integrity-check` detects drift, and `rebuild` regenerates it from the content table, which a contentless table cannot do. User input is compiled into safe FTS expressions, never passed through. A search queries both tables and the in-memory repository list and merges the results. [SQLite FTS5](https://www.sqlite.org/fts5.html)
+
+**Backups.** Snapshots of `brainiac.db` keep the v0.1 mechanism (backup API on the worker's connection, written under a temporary name and renamed). `history.db` is snapshotted the same way on its own schedule; `index.db` never is. An export writes the vault, a `VACUUM INTO` copy of `brainiac.db` (consistent and compacted), tasks as JSON, and a versioned manifest: schema version, vault ID, each note's ID, relative path, and content hash, and each linked repository's name and remote URL. Application writes are serialized during an export; a file changed meanwhile is retried or reported. Restore validates the application ID, manifest, and schema before replacing anything, matches notes by `brainiac_id`, then path and hash, matches repositories by remote URL, and rebuilds `index.db`. [VACUUM INTO](https://www.sqlite.org/lang_vacuum.html)
+
+**One write path.** Every write, whoever asks for it, goes through a domain service, and the service (not the Tauri handler) emits the committed change event. The UI, the vault watcher, and the local MCP server planned for v0.2.x (`docs/roadmap.md`) then get identical validation, version conflicts, and live updates.
+
+### Evolving the data
+
+- Migrations stay append-only and run at startup after a pre-migration snapshot; an app refuses a database newer than it knows (Storage, above). That is enough for one user on one machine.
+- Rows use UUIDs, notes are identified by vault ID plus relative path, and unknown frontmatter keys are preserved, so multiple vaults or sync can be added later without rewriting identity. Absolute paths stay only where they are local by nature, such as a repository's folder; its remote URL is the identity that travels.
+- Sync, if it comes, cannot migrate every device at once, because devices run different app versions: record a format version on synced records and translate on read. [Ink & Switch: Cambria](https://www.inkandswitch.com/cambria/)
+- New embedding models or chunkers (v0.4) add a profile; they never change existing vectors in place.
 
 ## Git
 
@@ -178,7 +243,7 @@ git -c gc.auto=0 -c maintenance.auto=false -c fetch.prune=false -c fetch.pruneTa
 
 ## IPC
 
-The app exposes repository and workspace registration, Git queries, fetching, the activity feed, settings and pins, and application snapshots. Commands of later releases are in `docs/roadmap.md`.
+The app exposes repository and workspace registration, Git queries, fetching, the activity feed, settings and pins, and application snapshots; v0.2 adds the vault, notes, tasks, search, and backups. Commands of v0.3 onward are in `docs/roadmap.md`.
 
 Commands are thin adapters over Rust services. Use `#[tauri::command]`, serializable request/response DTOs, and a typed TypeScript client. Generate DTO types from Rust or verify shared schemas in CI; do not assume Tauri automatically creates complete TypeScript bindings. [Tauri command documentation](https://v2.tauri.app/develop/calling-rust/)
 
@@ -191,6 +256,14 @@ Commands are thin adapters over Rust services. Use `#[tauri::command]`, serializ
 | `list_commits` / `get_commit` / `list_refs` | v0.1: repository/ref scope, pagination cursor or commit ID; history/details/ref DTOs |
 | `fetch_repository` | v0.1: repository ID; fetch outcome with the refs that moved |
 | `get_workspace_activity` / `get_team_pulse` / `mark_activity_seen` / `update_activity_settings` | v0.1: workspace ID; feed and freshness; team pulse; seen markers; watched refs and notification settings |
+| `select_vault` | v0.2: native folder selection; vault and scan state |
+| `list_notes` / `read_note` | v0.2: folder or filter with pagination; content plus hash version |
+| `create_note` / `rename_note` / `trash_note` / `restore_note` | v0.2: vault-relative destination, collision handling, expected version; rename optionally updates links in other notes |
+| `save_note` | v0.2: note ID, expected hash, Markdown; new version or `CONFLICT` |
+| `link_repository` / `unlink_repository` | v0.2: note ID and repository ID |
+| `list_tasks` / `create_task` / `update_task` / `delete_task` | v0.2: filter or mutation DTO; expected integer version on existing tasks |
+| `search` | v0.2: query, kind filters, pagination; ranked results with escaped snippets and highlight ranges, and the index state |
+| `rebuild_search` / `export_backup` / `restore_backup` | v0.2: job ID, progress, and explicit completion |
 
 Errors expose stable codes: `VALIDATION`, `NOT_FOUND`, `CONFLICT`, `PERMISSION_DENIED`, `IO`, `DB`, `DEPENDENCY_UNAVAILABLE`, `TIMEOUT`, and `CANCELLED`. Include a user-facing message and retryability, keeping low-level diagnostics in local logs.
 
@@ -206,7 +279,7 @@ The request and response types are defined once, in `src-tauri/src/models.rs`, a
 
 Commands map onto these as follows: `get_app_snapshot → AppSnapshot`; `register_repository(path) → RepositorySummary`; `remove_repository(id)`; `open_repository(id)` marks it recent; `set_repository_tab(id, tab)`; `open_in_editor(id, path?, line?)`; `reveal_in_finder(id, path?)`; `discover_repositories(folder_path, discovery_path?) → WorkspacePreview`; `rescan_workspace(workspace_id) → WorkspaceRescan`; `relocate_repository(RelocateRepositoryRequest) → RelocationOutcome` fails with `CONFLICT` when another registration has the folder, writes nothing when it returns `needs_confirmation`, and re-watches every registration that moved; `create_workspace(CreateWorkspaceRequest) → Workspace`; `update_workspace_membership(UpdateWorkspaceMembershipRequest) → Workspace`; `rename_workspace(workspace_id, name) → Workspace`; `remove_workspace(workspace_id)` also deletes its pin and keeps member registrations; `set_pinned(entity_type, entity_id, pinned)`; `refresh_repository(id) → RepositorySummary`; `list_changes(id) → ChangesResult`; `get_diff(id, DiffSelector, DiffOptions?) → DiffResult`; `list_commits(ListCommitsRequest) → CommitPage`; `get_commit(id, commit_id, parent_index?) → CommitDetail`; `list_refs(id) → RefsResult`; `fetch_repository(id) → FetchResult` fails with `CONFLICT` when another Git process holds a lock and `PERMISSION_DENIED` when the remote needs sign-in; `get_workspace_activity(workspace_id) → WorkspaceActivity`; `get_team_pulse(workspace_id) → TeamPulse`; `mark_activity_seen(workspace_id, event_ids?)` marks the given events, or all of the workspace's, as seen; `update_activity_settings(workspace_id, ActivitySettings) → Workspace`. Every result carries the repository ID so a late response for a previously selected repository can be discarded by the frontend.
 
-Events are `repository_changed` and `menu`; later releases add `note_changed`, `note_missing`, `task_changed`, and `index_status_changed`. Scope payloads to the authorized window. Do not broadcast note contents through global events. Commands return definitive state even if an event is missed. [Tauri frontend events](https://v2.tauri.app/develop/calling-frontend/)
+Events are `repository_changed` and `menu`; v0.2 adds `note_changed`, `note_missing`, `task_changed`, and `index_status_changed`, each emitted by the domain service that committed the change. Scope payloads to the authorized window. Do not broadcast note contents through global events. Commands return definitive state even if an event is missed. [Tauri frontend events](https://v2.tauri.app/develop/calling-frontend/)
 
 ## Security, privacy, and distribution
 
@@ -300,3 +373,5 @@ Decisions already made. Add new ones at the end with a date; do not edit an acce
 - **2 Oct 2026 — Migrations folded into `0001_init.sql`** before any public release that needs an upgrade path; from the next release on, migrations are only appended.
 - **2 Oct 2026 — A relocated folder is the same repository when it contains a recorded commit**: the last observed `HEAD` or a tip in the activity baseline, checked with one `git rev-list --no-walk --ignore-missing`. Paths and remote URLs are not identity. Anything else needs the user's confirmation and starts the activity feed over. The relocation lives in `workspaces/relocation.rs`; Rescan's move suggestions use the same check and run in the backend (`rescan_workspace`), replacing the frontend comparison of `discover_repositories` with the member list.
 - **2 Oct 2026 — The database refuses what it cannot safely use.** Brainiac marks its database with `PRAGMA application_id` and refuses a file with another ID or with a `user_version` newer than it knows, instead of running older code over a newer schema. Snapshots are written to a temporary name and renamed when complete. These ship before the first schema change so that every version able to read v0.2's data also refuses it when too old.
+- **2 Oct 2026 — v0.2 keeps data in three SQLite files beside the vault**: `brainiac.db` for what cannot be rebuilt, `index.db` for everything derived from the vault (search, links between notes, later vectors), and `history.db` for revisions and drafts. Transactions across attached files are not atomic under WAL, so only rebuildable data leaves the core file, and each indexed row records the content hash it was built from. Search uses external-content FTS5 tables so they can be checked and rebuilt.
+- **2 Oct 2026 — v0.2 product choices**: no Inbox view until v0.3 (tasks to sort fold into Today); the notes section is called Notes; a vault may be a Git repository, and trash, drafts, and revisions stay out of it; `brainiac_id` is written into a note when it first gets a task or repository link; Brainiac reads Markdown links and wikilinks and writes Markdown links; notes link to repositories only, and a link survives the repository's removal.
