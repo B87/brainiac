@@ -53,6 +53,7 @@ M0 landed on 1 October 2026 with 58 Rust tests and 3 frontend tests. Known M0 si
 - [ ] Today, Tasks, Notes alongside the existing Workspaces/Git views; tasks to sort appear as a folded line in Today and a filter in Tasks.
 - [x] Search tokenizer spike (S2): `unicode61` for note and task text, `trigram` only for titles and paths; every query word matches as a prefix.
 - [x] Vault scale spike (S3): 10,000 generated notes index in about 4 s and rescan in 35 ms; snippets are cut in Rust and one worker writes the index.
+- [x] Vault watcher spike (S4): one recursive watcher saw every editor save, rename, and `git pull` in a 10,000-note vault; changes are processed in batches so renames survive a pull.
 - [ ] FTS5 note/task ingestion, ranked keyword search, safe snippets, rebuild status.
 - [ ] Note/repository associations, Markdown links and wikilinks, backlinks, unresolved targets.
 - [ ] Storage split into `brainiac.db`, `index.db`, and `history.db`; migration `0002` tested against a 0.1.3 database.

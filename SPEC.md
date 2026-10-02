@@ -361,7 +361,7 @@ A note is edited as its Markdown text, so a save contains exactly what the user 
 - An existing note without one gets an ID stored by Brainiac, without changing the file. Brainiac writes `brainiac_id` into the note the first time it gets a task or a repository link (a setting, on by default), because such a note carries context a rename must not lose. Adding it otherwise is an explicit action. Opening or indexing a note never writes it.
 - The ID is a convention Brainiac cannot enforce: copying a note copies it, and an edit can remove it. Two notes with the same ID are shown as a conflict; they are never merged silently.
 - A note is identified by its vault and its path within the vault, never by an absolute path, so the vault can move or be restored elsewhere.
-- A note moved or renamed outside Brainiac is recognised by its `brainiac_id`, otherwise by the same path, otherwise by content identical to exactly one missing note in the same scan. Anything ambiguous becomes a missing note and a new note, which the user can relink; identical content alone does not prove identity.
+- A note moved or renamed outside Brainiac is recognised by its `brainiac_id`, otherwise by the same path, otherwise by content identical to exactly one note that went missing in the same scan or the same burst of changes, such as a `git pull`. Anything ambiguous becomes a missing note and a new note, which the user can relink; identical content alone does not prove identity.
 - The title is the frontmatter `title`, else the first heading, else the file name. Changing the title does not rename the file.
 - Arbitrary frontmatter keys, code fences, and relative links are preserved.
 
