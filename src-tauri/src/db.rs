@@ -22,6 +22,14 @@ const MIGRATIONS: &[(&str, &str)] = &[("0001_init", include_str!("../migrations/
 /// How many daily backups to keep.
 const BACKUP_RETENTION: usize = 7;
 
+/// Brainiac's `PRAGMA application_id` ("BRNC" in ASCII). It marks a database
+/// file, and every backup copied from it, as Brainiac's. Files from before
+/// 0.1.3 carry 0 and are adopted when opened.
+pub const APPLICATION_ID: i32 = 0x4252_4E43;
+
+/// The schema version this build migrates to.
+pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
+
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
 
 /// Handle to the database worker. Cheap to clone; all clones share one thread.
@@ -39,9 +47,11 @@ impl Db {
             std::fs::create_dir_all(parent)?;
         }
         let mut conn = Connection::open(path)?;
+        check_compatible(&conn, path)?;
         configure(&conn)?;
         backup_before_migration_if_needed(&conn, path)?;
         migrate(&mut conn)?;
+        conn.pragma_update(None, "application_id", APPLICATION_ID)?;
         daily_backup(&conn, path)?;
 
         let (sender, receiver) = mpsc::channel::<Job>();
@@ -126,6 +136,31 @@ pub fn schema_version(conn: &Connection) -> AppResult<u32> {
     Ok(conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))? as u32)
 }
 
+/// Refuse a file another program wrote, or one a newer Brainiac migrated.
+/// SQLite enforces neither header field, and running older code on a newer
+/// schema would skip tables it does not know about.
+fn check_compatible(conn: &Connection, path: &Path) -> AppResult<()> {
+    let id: i32 = conn.query_row("PRAGMA application_id", [], |r| r.get(0))?;
+    if id != 0 && id != APPLICATION_ID {
+        return Err(AppError::db(format!(
+            "{} is not a Brainiac database.",
+            path.display()
+        )));
+    }
+    let version = schema_version(conn)?;
+    if version > SCHEMA_VERSION {
+        return Err(AppError::db(format!(
+            "This data was saved by a newer version of Brainiac. Install the newer \
+             version, or restore a snapshot from {}.",
+            backups_dir(path).display()
+        ))
+        .with_details(format!(
+            "Data version {version}; this version of Brainiac reads up to {SCHEMA_VERSION}."
+        )));
+    }
+    Ok(())
+}
+
 fn migrate(conn: &mut Connection) -> AppResult<()> {
     let current = schema_version(conn)? as usize;
     for (index, (name, sql)) in MIGRATIONS.iter().enumerate().skip(current) {
@@ -147,15 +182,31 @@ fn backups_dir(db_path: &Path) -> PathBuf {
         .join("backups")
 }
 
+/// Copy the database to `dest` through a hidden temporary file that is renamed
+/// into place only when complete, so a crash never leaves a partial file that
+/// looks like a finished backup.
 fn write_backup(conn: &Connection, dest: &Path) -> AppResult<()> {
-    if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut dst = Connection::open(dest)?;
+    let parent = dest.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    let name = dest
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("backup");
+    let partial = parent.join(format!(".{name}{PARTIAL_SUFFIX}"));
+    let _ = std::fs::remove_file(&partial);
+    let mut dst = Connection::open(&partial)?;
     let backup = rusqlite::backup::Backup::new(conn, &mut dst)?;
     backup.run_to_completion(256, std::time::Duration::from_millis(5), None)?;
+    // `backup` borrows `dst`; dropping it ends the borrow so `dst` can be closed.
+    drop(backup);
+    // `close` hands the connection back with the error on failure; keep only the error.
+    dst.close().map_err(|(_, e)| e)?;
+    std::fs::rename(&partial, dest)?;
     Ok(())
 }
+
+/// Suffix of a backup still being written; see `write_backup`.
+const PARTIAL_SUFFIX: &str = ".partial";
 
 /// Snapshot an existing database before applying new migrations (docs/roadmap.md, Backup and restore).
 fn backup_before_migration_if_needed(conn: &Connection, db_path: &Path) -> AppResult<()> {
@@ -182,13 +233,25 @@ fn daily_backup(conn: &Connection, db_path: &Path) -> AppResult<()> {
         return Ok(());
     }
     write_backup(conn, &dest)?;
-    let mut daily: Vec<PathBuf> = std::fs::read_dir(&dir)?
+    let names: Vec<PathBuf> = std::fs::read_dir(&dir)?
         .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("daily-"))
-        })
+        .collect();
+    let name_of = |p: &PathBuf| {
+        p.file_name()
+            .and_then(|n| n.to_str())
+            .map(str::to_owned)
+            .unwrap_or_default()
+    };
+    // Leftovers from a backup interrupted by a crash.
+    for stale in names
+        .iter()
+        .filter(|p| name_of(p).ends_with(PARTIAL_SUFFIX))
+    {
+        let _ = std::fs::remove_file(stale);
+    }
+    let mut daily: Vec<PathBuf> = names
+        .into_iter()
+        .filter(|p| name_of(p).starts_with("daily-"))
         .collect();
     daily.sort();
     while daily.len() > BACKUP_RETENTION {

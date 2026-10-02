@@ -15,7 +15,7 @@ use std::time::Duration;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{Emitter, Manager, WindowEvent};
 
-use crate::models::{ChangeOrigin, MenuEvent, RepositoryChangedEvent};
+use crate::models::{AppError, ChangeOrigin, MenuEvent, RepositoryChangedEvent};
 use crate::workspaces::RepositoryService;
 
 /// Event names shared with the frontend.
@@ -44,7 +44,14 @@ pub fn run() {
             // --- Persistence -------------------------------------------------
             let data_dir = app.path().app_data_dir()?;
             let db_path = data_dir.join("brainiac.sqlite3");
-            let db = db::Db::open(&db_path)?;
+            let db = match db::Db::open(&db_path) {
+                Ok(db) => db,
+                Err(e) => {
+                    tracing::error!(error = %e, details = ?e.details, "cannot open the database");
+                    show_startup_error(app, &e);
+                    return Ok(());
+                }
+            };
             tracing::info!(path = %db_path.display(), "database ready");
             let settings = db.call_blocking(|conn| db::load_settings(conn))?;
 
@@ -125,7 +132,11 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let WindowEvent::Focused(true) = event {
-                let service = window.state::<commands::Service>().inner().clone();
+                // Absent only when startup failed and the error dialog is showing.
+                let Some(service) = window.try_state::<commands::Service>() else {
+                    return;
+                };
+                let service = service.inner().clone();
                 tauri::async_runtime::spawn(async move {
                     let _ = service.request_refresh_all(ChangeOrigin::Wake, ACTIVATION_MIN_AGE).await;
                 });
@@ -161,6 +172,25 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Brainiac");
+}
+
+/// Tell the user why Brainiac cannot start and quit when they dismiss it.
+/// The main window stays hidden: without the database no command can run.
+fn show_startup_error(app: &tauri::App, error: &AppError) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
+    }
+    let text = match &error.details {
+        Some(details) => format!("{}\n\n{}", error.message, details),
+        None => error.message.clone(),
+    };
+    let handle = app.handle().clone();
+    app.dialog()
+        .message(text)
+        .title("Brainiac can't open its data")
+        .kind(MessageDialogKind::Error)
+        .show(move |_| handle.exit(1));
 }
 
 fn init_tracing() {

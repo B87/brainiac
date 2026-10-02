@@ -193,7 +193,11 @@ async fn baseline_then_fast_forward_with_overlap() {
     assert_eq!(pulse.commits, 3);
     // Unchanged refs reuse the cached pulse without running Git.
     f.git_calls("");
-    assert_eq!(f.svc.team_pulse(&f.workspace_id).await.unwrap(), pulse);
+    let mut again = f.svc.team_pulse(&f.workspace_id).await.unwrap();
+    // The seven-day window is recomputed on every call and may have moved a
+    // second; everything read from Git must be the cached result.
+    again.since = pulse.since.clone();
+    assert_eq!(again, pulse);
     assert!(f.git_calls("").is_empty(), "the cached pulse ran Git");
     // A moved ref is read again.
     commit(&f.mate, "Alex Kim", "more.txt", "m\n", "More");

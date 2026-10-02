@@ -64,6 +64,8 @@ The product can eventually include PR and CI status, calendar context, recurring
 
 v0.1 requires a usable local Git binary. Detect it on startup and provide a clear setup message when absent; do not silently install developer tools. Core Git viewing works offline and requires no Markdown vault, Ollama instance, remote-service account, or elevated macOS permissions. Ahead/behind information reflects existing local refs and may be stale relative to the remote server until someone fetches: the user, their editor, or Brainiac's Fetch now and opt-in auto-fetch (section 4, Fetching). Fetching is the only operation that writes to a repository, and it touches remote-tracking refs and objects only.
 
+Brainiac keeps its own data in a local database and snapshots it before each upgrade of its format and once a day, keeping seven. It refuses to open data saved by a newer version of Brainiac, or a file that is not Brainiac's, and says where the snapshots are; it never runs on data it cannot read correctly.
+
 ## 3. User experience
 
 ### Main window — v0.1
