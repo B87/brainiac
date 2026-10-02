@@ -52,11 +52,11 @@ The product can eventually include PR and CI status, calendar context, recurring
 | Workspace activity | v0.1 | Feed of watched branches and tags that moved, unread state, conflict-risk and drift warnings, team pulse, optional macOS notifications |
 | Tracking and refresh | v0.1 | Watchers, bounded jobs, manual refresh, wake/activation reconciliation |
 | Command palette | v0.1 | Repository/workspace switching and viewer commands |
-| Notes, task hub, Inbox, Today | v0.2 | One Markdown vault, safe editing, dates, context associations |
+| Notes, task hub, Today | v0.2 | One Markdown vault, safe editing, dates, context associations |
 | Keyword knowledge search | v0.2 | FTS5 across saved notes and tasks |
 | Backlinks and note/repository associations | v0.2 | Connect knowledge to the existing Git workspace |
 | External content imports | v0.3 | Paste, bookmarks, Markdown copies, articles, `.eml`, provenance and duplicate handling |
-| Global capture window | v0.3 | System shortcut, floating capture, shared backend state |
+| Global capture window and Inbox | v0.3 | System shortcut, floating capture, Inbox triage of captured and imported items, shared backend state |
 | Authenticated import adapters | v0.3.x | Selected Jira issues/mail messages; provider choice and video transcript acquisition validated separately |
 | Semantic search | v0.4 | Optional local embeddings and hybrid retrieval |
 | Grounded AI answers | v0.5 | Citation-backed local RAG |
@@ -68,7 +68,7 @@ v0.1 requires a usable local Git binary. Detect it on startup and provide a clea
 
 ### Main window — v0.1
 
-Use a quiet macOS layout: system font, light/dark appearance, native menu bar, standard window controls, visible keyboard focus, and readable text without translucency. Start directly in the Git workspace; do not show empty Brain, Tasks, or Inbox views before v0.2.
+Use a quiet macOS layout: system font, light/dark appearance, native menu bar, standard window controls, visible keyboard focus, and readable text without translucency. Start directly in the Git workspace; do not show empty Today, Tasks, or Notes views before v0.2.
 
 ```text
 ┌──────────────────┬───────────────────────────────────────────────────────────┐

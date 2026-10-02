@@ -47,8 +47,8 @@ M0 landed on 1 October 2026 with 58 Rust tests and 3 frontend tests. Known M0 si
 
 - [ ] Vault onboarding, scan/reconciliation, folder navigation, pinned/recent notes.
 - [ ] Editor fidelity spike; note CRUD, auto-save, source fallback, conflicts, trash, draft/history recovery.
-- [ ] Tasks with status, triage, planned dates, deadlines, linked note and linked repository.
-- [ ] Inbox, Today, Tasks, Brain alongside the existing Workspaces/Git views.
+- [ ] Tasks with status, planned dates, deadlines, linked note and linked repository; tasks not yet sorted are marked as such.
+- [ ] Today, Tasks, Notes alongside the existing Workspaces/Git views; tasks to sort appear as a folded line in Today and a filter in Tasks.
 - [ ] FTS5 note/task ingestion, ranked keyword search, safe snippets, rebuild status.
 - [ ] Note/repository associations, standard Markdown links/backlinks, unresolved targets.
 - [ ] Complete vault/database export and restore preserving tasks and associations.
@@ -57,6 +57,7 @@ M0 landed on 1 October 2026 with 58 Rust tests and 3 frontend tests. Known M0 si
 
 ### v0.3 — Content imports and global capture
 
+- [ ] Inbox view for captured and imported items, with triage: file or move, link to a task or repository, create a task.
 - [ ] Text/selection capture, URL bookmarks, Markdown copies, source provenance, resumable import jobs.
 - [ ] Public article extraction with bookmark/paste fallback.
 - [ ] `.eml` import, safe body conversion, message identity, original retention and export/restore.
@@ -117,7 +118,12 @@ These unknowns do not prevent implementing the core domain and persistence servi
 
 #### Knowledge views — v0.2
 
-Add Brain (vault tree/editor), Tasks, Inbox, and Today alongside the existing Workspaces view. Tasks link to notes and repositories. Inbox holds untriaged tasks and locally authored capture notes; source-import notes arrive in v0.3.
+Add Today, Tasks, and Notes (vault tree/editor) alongside the existing Workspaces view. Tasks link to notes and repositories. The section is called Notes, not Brain: "brain" names the whole app, as in **Add to brain** and **Ask my brain**.
+
+v0.2 has no separate Inbox view. An inbox earns its place when items arrive faster than they are sorted, which starts with v0.3's capture from other apps and imports; in v0.2 everything is created inside the app, at a moment when the user can give it a date or not. Until then:
+
+- A task is *to sort* until it gets a planned date, a deadline, or an explicit **Sorted** (`triaged_at` set). Today shows these as one folded **To sort · N** line above its sections; expanding it lists them. Tasks has a **To sort** filter.
+- Quick notes go to an ordinary `Inbox/` folder in the vault, which stays usable outside Brainiac. v0.3's Inbox view lists that folder's notes alongside imported items.
 
 Today shows open tasks planned for today, due today, or overdue, with completed items in a separate section. It uses local calendar dates. Planning a task and setting its deadline remain separate actions. Search finds saved notes and tasks with excerpts.
 
