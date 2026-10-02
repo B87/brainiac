@@ -64,8 +64,11 @@ M0 landed on 1 October 2026 with 58 Rust tests and 3 frontend tests. Known M0 si
 
 ### v0.2.x — Agent access
 
-- [ ] Local MCP server inside the running app, reached through a small `brainiac-mcp` stdio helper; off by default, read-only or read-write.
-- [ ] Tools for search, notes, tasks, and repository links that call the same domain services as the UI.
+- [x] Spike S5: `rmcp` over a Unix socket, reached by Claude Code through a stdio helper (`docs/architecture.md`, Decisions).
+- [ ] Local MCP server inside the running app, reached through `brainiac mcp`, the app's own executable as a stdio helper that opens the app when it is closed; off by default, read only or read and write.
+- [ ] Tools for search, notes, tasks, and repository links that call the same domain services as the UI; agent saves kept as `agent` revisions.
+- [ ] Settings → Agent access, with the connected agents and the command to add Brainiac to Claude Code.
+- [ ] Claude Code plugin in this repository: the server and a skill for using Brainiac.
 
 **Exit gate:** an agent such as Claude Code finds notes, creates and completes a task, and links a note to a repository while the app is open; the UI updates live, a concurrent UI edit produces a conflict rather than an overwrite, and the agent's note edits can be undone from revision history.
 
@@ -132,7 +135,7 @@ These unknowns do not prevent implementing the core domain and persistence servi
 
 ## Designs for later releases
 
-v0.2's design (views, notes, tasks, search, storage, and backups) moved to [`SPEC.md`](../SPEC.md) sections 5–8 and [`architecture.md`](architecture.md) when the release started.
+v0.2's design (views, notes, tasks, search, storage, and backups) moved to [`SPEC.md`](../SPEC.md) sections 5–8 and [`architecture.md`](architecture.md) when the release started, and v0.2.x's agent access to `SPEC.md` section 9 and `architecture.md`, Agent access.
 
 ### Additions of v0.3 onward to storage and contracts
 
@@ -159,17 +162,6 @@ v0.2's design (views, notes, tasks, search, storage, and backups) moved to [`SPE
 | Shortcut | Action |
 | --- | --- |
 | `Cmd+Shift+Space`, v0.3 | Configurable global quick capture |
-
-### Agent access — v0.2.x
-
-Agents such as Claude Code can already read and edit the vault's Markdown files, and the vault watcher treats them like any other editor. Tasks, links to repositories, and pins live only in `brainiac.db`, whose schema is internal; writing it directly would skip version checks, rules such as setting `completed_at`, and change events, so the UI would not update. Agents use a supported interface instead.
-
-- The running app hosts a local MCP server. A small `brainiac-mcp` helper, which an agent starts over stdio, forwards requests to the app through a Unix socket in the app's data folder, as editor CLIs reach a running editor. If the app is not running, the helper reports that.
-- Tools mirror v0.2's commands (`docs/architecture.md`, IPC): `search`, `read_note`, `list_tasks`, `create_task`, `update_task`, `link_repository`, and `repository_status`. Each calls the same domain service as the matching Tauri command, so validation, version conflicts, and committed change events are identical and the UI updates live.
-- Off by default; Settings chooses read-only or read-write. Local only. No tool writes to a Git repository, runs commands, or changes settings.
-- Note edits made through the vault rather than the server get a revision with reason `external_change`, so they can be undone.
-
-v0.2 prepares for this without the server: every write goes through a domain service that emits its change event (not through a Tauri handler), and every task write carries the expected version.
 
 ### Capture and imports — v0.3
 

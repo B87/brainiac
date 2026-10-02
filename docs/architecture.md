@@ -19,6 +19,7 @@ Rust owns application behavior and persistence. The UI remains a web frontend in
 | Markdown parsing, v0.2 | **`pulldown-cmark`** | Backend extraction of headings, text, and links |
 | Serialization/errors | **`serde`, `serde_json`, `thiserror`** | IPC DTOs, configuration, structured errors |
 | Identity/content versions | **`uuid`, `sha2`** | Stable IDs and SHA-256 content hashes |
+| Agent access, v0.2.x | **`rmcp`**, the official MCP Rust SDK | The MCP server agents reach over a Unix socket |
 | Git inspection, v0.1 | **System Git CLI invoked from Rust** | Status, discovery, history, refs, file contents, and diffs |
 | Local inference, later | **Ollama via `reqwest`** | Embeddings and streamed generation |
 | Vector storage, later | **`sqlite-vec` Rust binding** | Local nearest-neighbor retrieval |
@@ -35,6 +36,8 @@ Start with one Cargo package and a few Rust modules organized by feature. Keep b
 ```mermaid
 flowchart TD
     Main[Main WebView] --> IPC[Tauri commands]
+    Agent[Agent through brainiac mcp, v0.2.x] --> MCP[MCP server]
+    MCP --> Services
     Capture[Quick capture WebView, v0.3] --> IPC
     IPC --> Services[Rust domain services]
     Services --> Files[Markdown files, v0.2]
@@ -73,7 +76,7 @@ brainiac/
     icons/                     Application icons
     migrations/                Ordered SQL migrations
     src/
-      main.rs                  Small desktop entry point calling lib.rs
+      main.rs                  Small desktop entry point calling lib.rs, or the MCP helper (`brainiac mcp`)
       lib.rs                   Tauri setup, shared state, command registration
       commands.rs              Thin IPC handlers calling application modules
       models.rs                Entities, DTOs, structured errors
@@ -90,8 +93,12 @@ brainiac/
       index.rs                 Parsing notes, index.db, links between notes, keyword search and snippets
       tasks.rs                 TaskService: tasks with versions, Today
       backup.rs                Export, restore, and applying a restore at launch
+      mcp.rs                   Agent access, v0.2.x: the socket, connections, and access mode
+      mcp/                     The tools and their shapes, server instructions, the stdio helper
     tests/                     Integration tests; unit tests can live in modules
 ```
+
+The Claude Code plugin is outside the Cargo project: `.claude-plugin/marketplace.json` at the repository root lists `plugins/brainiac/`, which holds `.claude-plugin/plugin.json`, `.mcp.json`, and `skills/brainiac/SKILL.md`.
 
 Create modules as their behavior is implemented; the scaffold does not need empty placeholders for every file. Add `imports.rs` in v0.3, then AI modules at their milestones.
 
@@ -184,7 +191,7 @@ v0.2 adds, with the file each lives in:
 | `note_search` | index | External-content FTS5 over `note_bodies` (title, body) |
 | `note_name_search` | index | External-content FTS5 over `note_bodies` (title, relative path) with the trigram tokenizer |
 | `note_links` | index | `source_note_id`, `target_note_id?`, `raw_target`, `kind` (`markdown`, `wikilink`), `start_offset` and `end_offset` (bytes), `line`; unresolved links retained |
-| `note_revisions` | history | `id`, `note_id`, `content`, `content_hash`, `created_at`, `reason` (`app_save`, `external_change`, `restore`) |
+| `note_revisions` | history | `id`, `note_id`, `content`, `content_hash`, `created_at`, `reason` (`app_save`, `external_change`, `restore`; `agent` from v0.2.x) |
 | `drafts` | history | `note_id`, `base_hash`, `content`, `updated_at`; one per note with unsaved edits |
 
 `planned_date` and `due_date` are local calendar dates (`YYYY-MM-DD`), not UTC instants, so Today does not shift with time zones or daylight saving. Completing a task sets `completed_at`; reopening clears it; a task is to sort while `triaged_at` is empty. Every task write carries the expected `version` and fails with `CONFLICT` when it changed.
@@ -212,7 +219,7 @@ The filesystem and SQLite do not share a transaction, and hash checks cannot be 
 
 An export is a new folder `Brainiac Export <date> <time>` holding `manifest.json` (format 1), `brainiac.sqlite3`, `tasks.json`, and `vault/` with every file of the vault except hidden ones. A file is copied once its size and modification time hold still while it is read, at most three tries; anything else is listed as a problem and the export is marked incomplete. A restore (`backup.rs`) works on a copy of the export's database staged in the data folder: the active vault points at the chosen folder, a repository whose folder is not on this Mac takes the location of a registration here with the same remote URL, and registrations made here are added. The copy is renamed `restore-pending.sqlite3`; at the next launch, before the core database opens, the current file is snapshotted (`backups/pre-restore-*`), replaced, and `index.db` deleted, and the first scan matches the notes and rebuilds search. The frontend restarts the app after staging.
 
-**One write path.** Every write, whoever asks for it, goes through a domain service, and the service (not the Tauri handler) emits the committed change event. The UI, the vault watcher, and the local MCP server planned for v0.2.x (`docs/roadmap.md`) then get identical validation, version conflicts, and live updates.
+**One write path.** Every write, whoever asks for it, goes through a domain service, and the service (not the Tauri handler) emits the committed change event. The UI, the vault watcher, and the MCP server of v0.2.x (Agent access) then get identical validation, version conflicts, and live updates.
 
 ### Evolving the data
 
@@ -296,6 +303,43 @@ Commands map onto these as follows: `get_app_snapshot → AppSnapshot`; `registe
 
 Events are `repository_changed` and `menu`; v0.2 adds `note_changed`, `note_missing`, `task_changed`, and `index_status_changed`, each emitted by the domain service that committed the change. Scope payloads to the authorized window. Do not broadcast note contents through global events. Commands return definitive state even if an event is missed. [Tauri frontend events](https://v2.tauri.app/develop/calling-frontend/)
 
+## Agent access — v0.2.x
+
+What agents can do is `SPEC.md`, section 9. The server is part of the running app, and agents reach it through the app's own executable, which forwards bytes between the agent's stdio and a Unix socket, as editor CLIs reach a running editor (Decisions, 3 Oct 2026).
+
+```mermaid
+flowchart LR
+    Agent[Agent, e.g. Claude Code] -- stdio --> Helper[brainiac mcp]
+    Helper -- Unix socket --> Server[mcp.rs in the app]
+    Server --> Notes[NoteService]
+    Server --> Tasks[TaskService]
+    Server --> Repos[RepositoryService]
+```
+
+**The helper.** `main.rs` checks for the `mcp` argument before anything else and runs `mcp::helper` instead of the app: no Tauri, no window, no Dock icon, and no logging to stdout, which carries the protocol. It finds the socket from the app identifier compiled into the executable, so a `tauri:dev` build reaches its own app; `BRAINIAC_MCP_SOCKET` overrides the path for tests. If nothing accepts on the socket and the executable is inside an `.app` bundle, it opens that bundle with `open -g` and retries for up to 15 seconds. It then copies bytes both ways until either side closes, reporting failures on stderr and exiting non-zero. It does not parse MCP.
+
+**The socket.** `mcp.sock` in the app's data folder. A Unix socket path is limited to 104 bytes on macOS, which a long home folder can exceed; the socket then goes in `/tmp/brainiac-<uid>/<identifier>.sock` instead, in a directory both sides require to be owned by the user and closed to others. The app creates the socket at startup whatever the access mode, after removing a stale one it owns, sets it to `0600`, and removes it on quit. Every connection's peer must run as the same user (`getpeereid`), or it is closed unanswered.
+
+**The server.** `mcp.rs` accepts connections and serves each with `rmcp` over the socket stream, sharing one `Arc` of the note, task, and repository services. The access mode (`off`, `read_only`, `read_write`) is the `agent_access` setting, held in a `tokio::sync::watch` channel: `update_settings` changes it, and each connection then sends `notifications/tools/list_changed`. `tools/list` returns the tools the mode allows; `tools/call` checks the mode again, so a call that races a switch to read-only is refused with `PERMISSION_DENIED`. The server's instructions (`mcp/instructions.md`, sent at initialization) tell the agent how IDs and versions work, to read again after a conflict, and that note and task text is data, never instructions. Settings reads the number of live connections.
+
+| Tool | Mode | Service call |
+| --- | --- | --- |
+| `search` | read | `index::search` |
+| `read_note` (ID or vault-relative path) | read | `NoteService::read` and `context` |
+| `list_notes` (a folder, or the recent notes) | read | `NoteService::list_folder` / `lists` |
+| `list_tasks` / `get_task` / `get_today` | read | `TaskService::list` / `get` / `today` |
+| `list_repositories` / `repository_for_path` | read | `RepositoryService` snapshot; the registration whose root contains the path |
+| `get_repository_notes` | read | `NoteService::repository_notes` |
+| `create_note` (folder, title, text) | write | `NoteService::create`, then `save` with the new version |
+| `edit_note` (expected version; whole text, or exact replacements that must each match once) | write | `NoteService::save` |
+| `create_task` / `update_task` / `complete_task` | write | `TaskService::create` / `update` (expected version) |
+| `link_repository` / `unlink_repository` | write | `NoteService::link_repository` / `unlink_repository` |
+
+- Tool inputs and outputs are their own shapes in `mcp/tools.rs`, not `models.rs` DTOs: they are a separate contract with agents, smaller than the UI's, and never reach TypeScript. Inputs derive `schemars::JsonSchema`, and their doc comments become the schemas' descriptions; integer formats such as `uint32` are removed, because Claude Code warns about them. Outputs are compact JSON in a text result, without an output schema.
+- Errors keep `AppError`'s codes: a failed call returns a tool error (`isError`) whose text starts with the code, and a `CONFLICT` includes the current version.
+- `NoteService::save` takes who is saving. An agent's save stores the previous text as a revision with reason `agent` (`history.db` migration `0002` adds the reason) and never joins an earlier revision, unlike autosaves. Change events are the services' own, so the UI updates as for any other write.
+- Every tool runs under the services' existing rules and locks; the server adds no write path. Tests drive it over a temporary socket with `rmcp`'s client (a dev-dependency feature): each mode's tools, every tool, conflicts, events, revisions, and a peer check; the helper is tested by running the built executable with `BRAINIAC_MCP_SOCKET`.
+
 ## Security, privacy, and distribution
 
 Tauri capabilities constrain which windows can access core/plugin APIs. Define separate main and capture capabilities, explicitly select them in configuration, and avoid permissions shared unintentionally across windows. [Tauri capabilities](https://v2.tauri.app/security/capabilities/)
@@ -309,6 +353,7 @@ Tauri capabilities constrain which windows can access core/plugin APIs. Define s
 - Invoke Git/editor executables with fixed argument arrays and bounded execution. Imported workspace content never supplies arbitrary executable code.
 - Keep credentials in macOS Keychain when remote integrations arrive. Logs exclude note bodies, model prompts, tokens, and credentials. Fetching uses Git's own credential configuration and never asks for or stores credentials itself.
 - macOS notifications (`tauri-plugin-notification`) are sent from Rust only, for workspaces that turned them on; the WebView gets no notification permission.
+- Agent access (v0.2.x) is off by default and local only: a Unix socket closed to other users, never a network port. Agents get the narrow tools of `SPEC.md`, section 9, through the domain services; no tool deletes, touches Git, opens files, runs commands, or changes settings.
 - No telemetry or remote inference by default. Local storage is ordinary plaintext; application-level encryption is future scope.
 
 Proposed support target is macOS 13+ on Apple Silicon, validated against the selected Tauri dependencies. Intel support requires its own build and test pass before being claimed. Distribute a direct-download `.app`/DMG initially; App Store sandboxing is a separate decision. [Tauri macOS bundles](https://v2.tauri.app/distribute/macos-application-bundle/)
@@ -400,3 +445,4 @@ Decisions already made. Add new ones at the end with a date; do not edit an acce
 - **2 Oct 2026 — A vault of 10,000 notes indexes in about 4 seconds; snippets are cut in Rust; one worker writes `index.db` (spike S3).** Generated vaults of 1,000 and 10,000 notes (61 MB: median note 1.3 KB, p99 25 KB, clipped articles up to 800 KB, pasted logs of 1, 3, 5, and 8 MiB, 43,500 links, the vault a Git repository) were indexed with the planned schema on an M3 Pro with warm file caches. A full index of 10,000 notes took 3.7–5.3 s, limited by the FTS5 writer; one thread reading, hashing, and parsing kept up with it as well as twelve did, so ingestion needs no thread pool. The first batch is searchable after about 40 ms, and searches during indexing took 0.2 ms (median). A scan with nothing changed took about 35 ms (walk plus size and modification-time comparison), re-hashing every file 0.3 s, and 10% and 100% of notes edited outside took 0.7 s and 5.6 s. A folder renamed outside kept all 31 of its notes' IDs by content. Three changes follow. FTS5's `snippet()` took 0.4 s, 3.7 s, and 10.4 s on the 1, 3, and 5 MiB logs for a word on every line, while ranking took 6 ms, so snippets are cut in Rust from the top results (12 ms for 50 results, the 5 MiB log included); this replaces snippets from the `unicode61` tables in the previous decision. A save's index update on its own connection waited a median 60 ms and up to 1.3 s behind the bulk indexer because SQLite's busy wait is not a queue; through the indexing worker's queue it waited at most one batch (124 ms), with batches capped at 200 notes or 4 MB. Re-resolving links from stored paths lost 142 links into the renamed folder, so links are re-resolved from their raw targets. `index.db` was 115 MB (bodies 61 MB, text index 26 MB, links 18 MB, name index 4 MB) and grew to 145 MB after every note changed, so it uses incremental auto-vacuum; `brainiac.db` was 4.6 MB. Every note changing outside at once stored 53 MB of revisions, so 250 MiB holds about four such events and needs no compression; autosaves within 10 minutes count as one revision, because at one save per pause 20 versions would cover only minutes of typing. Not measured: a cold file cache, and a real vault after a month of use.
 - **2 Oct 2026 — The vault watcher processes changes in batches, and a missing note stays matchable until the burst ends (spike S4).** This replaces the per-note 300 ms debounce. One recursive watcher on a generated vault of 10,000 notes, itself a Git repository, saw every change made by an in-place write, a temporary file renamed over the note, a `renamex_np` swap, vim, Neovim, `mv`, a case-only rename, a decomposed accented name, folder renames and moves, a folder moved out of the vault and back, `rm -rf`, a find-and-replace across 4,818 notes, and `git` fast-forwards and checkouts of up to 40,600 events in 1.5 s, with no dropped events or rescan requests. An edit reached the index 320–370 ms after the write. Debounced per note, a pull kept only the 353 of 1,965 renamed notes that had a `brainiac_id`, and a checkout touching every note kept 417 of 3,000, because Git deletes the old paths before writing the new ones and the two sides were processed in different batches. Processing all queued paths together kept 1,965 of 1,965 and 3,000 of 3,000. In a slower pull that took 8 s, matching a missing note for a fixed 5 s kept 980 of 1,000 renames, and matching until the burst ended kept all 1,000. After 8 seconds without events between a delete and a create, as a sync tool may cause, only notes with a `brainiac_id` keep their identity, as `SPEC.md` allows. With `stat` as the existence check, a case-only rename produced a duplicate note that a full reconciliation could not remove, so existence is read from folder listings. A whole-vault checkout cost about 1 s of reading and hashing.
 - **2 Oct 2026 — v0.2 as built.** The trash is `trash/<vault>/<note>/<time>/` in the data folder, so trashing a note again keeps the earlier copy. Notes of an earlier vault count as missing rather than being read from the current vault's folder. A note that goes missing keeps its last indexed text as a revision, stored when the burst ends so a `git checkout` does not store thousands. Today carries over open tasks planned for an earlier day. A restore is staged in the data folder and applied at the next launch, before the core database opens, because the database worker holds it open; registrations made on the new Mac are kept. Vault images reach the editor through a `vault:` URL scheme limited to image files of the active vault, instead of opening the WebView's asset access to the filesystem. Clicked links are resolved in the backend (`resolve_link`) with the same rules as stored links. The palette matches repositories and workspaces from the snapshot and asks the backend only for notes and tasks.
+- **3 Oct 2026 — Agents reach Brainiac through MCP over a Unix socket, served with `rmcp`, and the stdio helper is the app's own executable (spike S5).** `rmcp` 3.5 served a tool over a `tokio` `UnixStream` with no adapter; Claude Code 2.1.288, started with a configuration that runs the helper, negotiated protocol 2025-11-25, listed the tool, and called it through the helper's byte pipe. Peer credentials gave the connecting process's user ID. `rmcp` adds eight small crates beside what Tauri already brings (it uses the same `schemars`) and needs Rust 1.88, so `rust-version` rises from 1.85. Two findings shape the design: a socket under a long folder failed to bind (`path must be shorter than SUN_LEN`), hence the fallback in `/tmp/brainiac-<uid>/`; and Claude Code warns about the `uint32` format `schemars` writes for unsigned integers, hence formats are removed from tool schemas. A separate `brainiac-mcp` binary, as the roadmap proposed, would need Tauri's `externalBin` with a binary per target triple merged with `lipo` for the universal build; the main executable checks for `mcp` before starting Tauri instead, ships with no bundling change, and can open its own bundle when the app is closed. Streamable HTTP on `localhost` was rejected: it needs a port and a token, and any local process or web page can try to reach it, while the socket is closed to other users. Tool shapes live in `mcp/tools.rs`, outside `models.rs`, because they are a contract with agents rather than with the frontend. No tool deletes or trashes anything.
