@@ -7,6 +7,7 @@ pub mod db;
 pub mod fetcher;
 pub mod git;
 pub mod index;
+pub mod mcp;
 pub mod models;
 pub mod notes;
 pub mod tasks;
@@ -43,6 +44,12 @@ const SCHEDULE_TICK: Duration = Duration::from_secs(60);
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let context = tauri::generate_context!();
+    // `brainiac mcp` is the agents' stdio helper, not the app (SPEC.md, section 9).
+    // It must start before logging, because its stdout carries the protocol.
+    if std::env::args().nth(1).as_deref() == Some("mcp") {
+        std::process::exit(mcp::helper::run(&context.config().identifier));
+    }
     init_tracing();
 
     tauri::Builder::default()
@@ -132,7 +139,28 @@ pub fn run() {
             let notes = NoteService::new(stores, data_dir.clone(), knowledge_emitter);
             notes.set_write_note_ids(settings.write_note_ids);
             app.manage(Arc::clone(&notes));
-            app.manage(Arc::new(TaskService::new(Arc::clone(&notes))));
+            let tasks = Arc::new(TaskService::new(Arc::clone(&notes)));
+            app.manage(Arc::clone(&tasks));
+
+            // --- Agent access (v0.2.x) --------------------------------------
+            let agent = mcp::AgentServer::new(
+                Arc::clone(&notes),
+                tasks,
+                Arc::clone(&service),
+                settings.agent_access,
+            );
+            let socket = mcp::socket_path(&data_dir, &app.config().identifier);
+            let listening = Arc::clone(&agent);
+            tauri::async_runtime::spawn(async move {
+                match listening.bind(&socket).await {
+                    Ok(listener) => {
+                        tracing::info!(path = %socket.display(), "agent socket ready");
+                        listening.accept(listener).await;
+                    }
+                    Err(e) => tracing::warn!(error = %e, details = ?e.details, "agent access unavailable"),
+                }
+            });
+            app.manage(agent);
             // Know the vault before the window asks for it; its scan runs in the background.
             if let Err(e) = tauri::async_runtime::block_on(notes.start()) {
                 tracing::warn!(error = %e, "could not open the vault");
@@ -278,8 +306,15 @@ pub fn run() {
             commands::preview_restore,
             commands::restore_backup,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Brainiac");
+        .build(context)
+        .expect("error while running Brainiac")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                if let Some(agent) = app.try_state::<commands::Agent>() {
+                    agent.close();
+                }
+            }
+        });
 }
 
 /// Image types Live Preview shows from the vault.

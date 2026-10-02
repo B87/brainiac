@@ -51,6 +51,7 @@ const settings: Settings = {
   auto_fetch_interval_minutes: 15,
   fetch_timeout_seconds: 60,
   write_note_ids: true,
+  agent_access: "off",
 };
 
 export const repository: RepositorySummary = {

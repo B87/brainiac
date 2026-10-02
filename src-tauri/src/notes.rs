@@ -325,6 +325,33 @@ impl NoteService {
             .ok_or_else(|| AppError::not_found("That note does not exist."))
     }
 
+    /// The live note at a path: vault-relative (`Projects/Plan.md`) or an
+    /// absolute path inside the vault, as agents often have.
+    pub async fn note_id_at(&self, path: &str) -> AppResult<String> {
+        let vault = self.require_vault()?;
+        let absolute = std::path::Path::new(path);
+        let relative = if absolute.is_absolute() {
+            let canonical = absolute
+                .canonicalize()
+                .unwrap_or_else(|_| absolute.to_path_buf());
+            let inside = canonical
+                .strip_prefix(&vault.root)
+                .map_err(|_| AppError::validation("That path is not inside the vault."))?;
+            inside.to_string_lossy().into_owned()
+        } else {
+            path.trim_start_matches("./").to_string()
+        };
+        // Rejects `..` and anything else that would leave the vault.
+        files::resolve(&vault.root, &relative)?;
+        let vault_id = vault.id.clone();
+        self.stores
+            .core
+            .call(move |conn| store::live_note_at(conn, &vault_id, &relative))
+            .await?
+            .map(|row| row.id)
+            .ok_or_else(|| AppError::not_found("No note at that path."))
+    }
+
     /// Absolute path of a vault-relative path, inside the vault.
     pub fn absolute(&self, relative: &str) -> AppResult<PathBuf> {
         let vault = self.require_vault()?;
