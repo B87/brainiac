@@ -11,6 +11,8 @@ into the release's section.
 
 ## [Unreleased]
 
+- Locate… points a repository whose folder moved at its new place, keeping its workspaces, pin, and activity; Rescan suggests the move when a member was renamed.
+
 ## [0.1.2] - 2026-10-02
 
 Workspaces with an activity feed of what your team merged, Fetch now and opt-in auto-fetch, and a redesigned Git viewer.

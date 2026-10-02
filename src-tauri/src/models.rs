@@ -742,8 +742,76 @@ pub struct WorkspacePreview {
     /// The root (when the folder is a repository) first, then every child folder
     /// of the discovery folder sorted by name, including skipped ones with a message.
     pub entries: Vec<WorkspacePreviewEntry>,
-    /// Reserved for Rescan of an existing workspace; `discover_repositories` leaves it empty.
-    pub candidates: Option<Vec<WorkspacePreviewEntry>>,
+}
+
+/// Result of `rescan_workspace`: what a discovered workspace's folder holds
+/// that the workspace does not track (SPEC.md, Discovery and membership).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct WorkspaceRescan {
+    pub workspace_id: String,
+    /// Untracked repositories (`ok` entries), minus the targets of `moves`.
+    pub repositories: Vec<WorkspacePreviewEntry>,
+    /// Untracked folders that cannot be tracked: plain folders, symbolic links, nested folders.
+    pub skipped: u32,
+    /// Missing members that appear to have moved to an untracked folder.
+    pub moves: Vec<SuggestedMove>,
+}
+
+/// A missing member and the one untracked folder that holds the same repository.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SuggestedMove {
+    pub repository_id: String,
+    /// The member's name.
+    pub name: String,
+    /// The member's old, missing folder.
+    pub from: String,
+    /// The untracked working-tree root it appears to have moved to.
+    pub to: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RelocateRepositoryRequest {
+    pub repository_id: String,
+    /// Absolute folder chosen by the user; a folder inside a working tree stands for its root.
+    pub path: String,
+    /// The `root` of a `needs_confirmation` the user accepted: proceed despite
+    /// its concerns, as long as the folder still resolves to that root.
+    pub confirmed_root: Option<String>,
+}
+
+/// Why relocating needs the user's confirmation (SPEC.md, Relocating a repository).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum RelocationConcern {
+    /// The chosen folder is below the top of its working tree.
+    InsideRepository,
+    /// The working tree contains none of the commits recorded for the registration.
+    UnrelatedHistory,
+    /// Nothing was recorded for the registration to compare with.
+    UnverifiedHistory,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+#[ts(export)]
+pub enum RelocationOutcome {
+    Relocated {
+        /// Boxed so this variant is not much larger than the other one in
+        /// memory; it serializes exactly like a plain `RepositorySummary`.
+        repository: Box<RepositorySummary>,
+        /// Names of the missing repositories inside the old folder that moved along.
+        carried: Vec<String>,
+    },
+    /// Nothing was written; repeat the request with `confirmed` to proceed.
+    NeedsConfirmation {
+        /// The working-tree root the registration would point to.
+        root: String,
+        concerns: Vec<RelocationConcern>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

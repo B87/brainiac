@@ -221,6 +221,42 @@ impl ActivityTracker {
         Ok(())
     }
 
+    /// Commits the baseline of a Git directory records, at most `limit`:
+    /// evidence of which repository it was, for relocation.
+    pub async fn recorded_commits(&self, store: &str, limit: u32) -> AppResult<Vec<String>> {
+        let s = store.to_string();
+        self.db
+            .call(move |conn| store::tip_targets(conn, &s, limit))
+            .await
+    }
+
+    /// A Git directory moved from `from` to `to`: its baseline, feed, and
+    /// read state follow it. Waits for passes in progress on either key.
+    pub async fn relocate(&self, from: &str, to: &str) -> AppResult<()> {
+        if from == to {
+            return Ok(());
+        }
+        // Take the two locks in a fixed order, so two relocations in opposite
+        // directions cannot each hold one and wait for the other.
+        let (first, second) = if from < to { (from, to) } else { (to, from) };
+        let (first, second) = (self.lock_for(first), self.lock_for(second));
+        let _a = first.lock().await;
+        let _b = second.lock().await;
+        let (f, t) = (from.to_string(), to.to_string());
+        self.db
+            .call(move |conn| store::relocate(conn, &f, &t))
+            .await?;
+        for key in [from, to] {
+            self.fingerprints.lock().expect("fingerprints").remove(key);
+            self.pulse_cache.lock().expect("pulse cache").remove(key);
+            self.last_notified
+                .lock()
+                .expect("notify lock")
+                .retain(|(s, _), _| s != key);
+        }
+        Ok(())
+    }
+
     /// Record events for watched refs of `checkout`'s Git directory that moved
     /// since the last pass. `status` is the checkout's current observation,
     /// used for conflict-risk and drift details. A Git failure that leaves

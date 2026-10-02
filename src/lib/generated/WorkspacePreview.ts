@@ -14,8 +14,4 @@ name: string, discovery_mode: DiscoveryMode,
  * The root (when the folder is a repository) first, then every child folder
  * of the discovery folder sorted by name, including skipped ones with a message.
  */
-entries: Array<WorkspacePreviewEntry>, 
-/**
- * Reserved for Rescan of an existing workspace; `discover_repositories` leaves it empty.
- */
-candidates: Array<WorkspacePreviewEntry> | null, };
+entries: Array<WorkspacePreviewEntry>, };

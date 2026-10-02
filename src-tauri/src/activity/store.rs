@@ -164,6 +164,44 @@ pub(super) fn forget(conn: &Connection, git_store: &str, events: bool) -> AppRes
     Ok(())
 }
 
+/// Up to `limit` distinct objects the baseline's tips point at.
+pub(super) fn tip_targets(
+    conn: &Connection,
+    git_store: &str,
+    limit: u32,
+) -> AppResult<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT target_id FROM ref_tips WHERE git_store = ?1 ORDER BY target_id LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![git_store, limit], |r| r.get(0))?;
+    Ok(rows.collect::<Result<_, _>>()?)
+}
+
+/// Move a Git directory's baseline, tips, and events to a new key. Whatever
+/// was stored under `to` belonged to no registration and is replaced, unless
+/// there is nothing under `from` (a repeated relocation), which changes nothing.
+pub(super) fn relocate(conn: &mut Connection, from: &str, to: &str) -> AppResult<()> {
+    let has_data: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM ref_baselines WHERE git_store = ?1)
+             OR EXISTS (SELECT 1 FROM activity_events WHERE git_store = ?1)",
+        params![from],
+        |r| r.get(0),
+    )?;
+    if !has_data {
+        return Ok(());
+    }
+    let tx = conn.transaction()?;
+    forget(&tx, to, true)?;
+    for table in ["ref_baselines", "ref_tips", "activity_events"] {
+        tx.execute(
+            &format!("UPDATE {table} SET git_store = ?2 WHERE git_store = ?1"),
+            params![from, to],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 const EVENT_COLUMNS: &str =
     "id, git_store, kind, ref_name, match_name, old_id, new_id, observed_at, seen_at, detail_json";
 

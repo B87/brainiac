@@ -20,6 +20,7 @@ use crate::db::{self, Db, RepositoryRow};
 mod feed;
 mod fetching;
 mod membership;
+mod relocation;
 use crate::activity::ActivityTracker;
 use crate::fetcher::Fetcher;
 use crate::git::{GitService, LogQuery};
@@ -30,6 +31,7 @@ use crate::models::{
     Settings,
 };
 pub use membership::WorkspaceChange;
+pub use relocation::Relocation;
 
 /// Default page size and hard cap for history requests (SPEC.md, Workspaces and repositories).
 const DEFAULT_PAGE: u32 = 100;
@@ -407,22 +409,25 @@ impl RepositoryService {
                 (None, Some(e))
             }
         };
-        {
+        let stored = {
             let id2 = id.to_string();
+            let root = row.canonical_root.clone();
             let at = checked_at.clone();
             let status2 = status.clone();
             let error2 = error.clone();
             self.db
                 .call(move |conn| {
-                    db::store_observation(conn, &id2, &at, status2.as_ref(), error2.as_ref())
+                    db::store_observation(conn, &id2, &root, &at, status2.as_ref(), error2.as_ref())
                 })
-                .await?;
-        }
+                .await?
+        };
         // Turn moved watched refs into activity events before announcing the
-        // change, so the snapshot that follows already counts them.
+        // change, so the snapshot that follows already counts them. An
+        // observation of a folder the registration no longer points at is
+        // dropped, tracking included.
         let new_events = match &status {
-            Some(s) => self.track(&row, s).await > 0,
-            None => false,
+            Some(s) if stored => self.track(&row, s).await > 0,
+            _ => false,
         };
         let changed = force_changed
             || new_events

@@ -123,7 +123,6 @@ async fn discovery_in_a_repository_with_a_discovery_subfolder() {
     let docs = &preview.entries[2];
     assert!(docs.repository_root.is_none());
     assert!(docs.message.as_deref().unwrap().contains("belongs to"));
-    assert!(preview.candidates.is_none());
 
     // Without a discovery path the root's own children are scanned: `services`
     // and `assets` are plain folders inside the root.
