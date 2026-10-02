@@ -1,23 +1,34 @@
-//! SQLite persistence: a single connection owned by a dedicated worker thread,
-//! ordered migrations, and consistent backups.
+//! SQLite persistence: each database file has one connection owned by a
+//! dedicated worker thread, ordered migrations, and consistent backups.
 //!
-//! Callers never touch the connection directly. They send a closure to the
-//! worker (`Db::call`) and await its result, which keeps all database access
+//! Callers never touch a connection directly. They send a closure to the
+//! worker (`Db::call`) and await its result, which keeps all access to a file
 //! serialized and off the async executor threads (docs/architecture.md, Concurrency and lifecycle).
+//!
+//! v0.2 keeps three files (docs/architecture.md, Storage layout): the core
+//! database (`CORE`, the file `brainiac.sqlite3`), the rebuildable index
+//! (`INDEX`), and revision history (`HISTORY`). Each has its own
+//! `application_id`, migration list, and backup policy.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 
 use crate::models::{
     ActivitySettings, AppError, AppResult, DiscoveryMode, MemberOrigin, Pin, PinEntityType,
     RepositoryTab, Settings, StatusSnapshot,
 };
 
-/// Ordered migrations. Add new entries at the end; never edit a shipped one.
-const MIGRATIONS: &[(&str, &str)] = &[("0001_init", include_str!("../migrations/0001_init.sql"))];
+/// Ordered migrations of the core database. Add new entries at the end; never edit a shipped one.
+const MIGRATIONS: &[(&str, &str)] = &[
+    ("0001_init", include_str!("../migrations/0001_init.sql")),
+    (
+        "0002_knowledge",
+        include_str!("../migrations/0002_knowledge.sql"),
+    ),
+];
 
 /// How many daily backups to keep.
 const BACKUP_RETENTION: usize = 7;
@@ -27,12 +38,80 @@ const BACKUP_RETENTION: usize = 7;
 /// 0.1.3 carry 0 and are adopted when opened.
 pub const APPLICATION_ID: i32 = 0x4252_4E43;
 
-/// The schema version this build migrates to.
+/// The schema version this build migrates the core database to.
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
+
+/// When a file is snapshotted into the `backups` folder next to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Backups {
+    /// Never: the file is rebuilt instead (`index.db`).
+    Never,
+    /// Before migrations, and once per this many days, keeping `keep` copies.
+    Every { days: u32, keep: usize },
+}
+
+/// One kind of database file: its name, its marker, its migrations, and how it is backed up.
+#[derive(Debug, Clone, Copy)]
+pub struct Store {
+    /// Prefix of its backups (empty for the core database, whose backup names predate v0.2).
+    pub backup_prefix: &'static str,
+    pub application_id: i32,
+    pub migrations: &'static [(&'static str, &'static str)],
+    pub backups: Backups,
+    /// Accept a file whose `application_id` is 0 (core databases from before 0.1.3).
+    pub adopt_unmarked: bool,
+    /// Create the file with incremental auto-vacuum, so space freed by a scan
+    /// that rewrote many notes can be reclaimed.
+    pub incremental_vacuum: bool,
+}
+
+/// `brainiac.db`: what cannot be rebuilt.
+pub const CORE: Store = Store {
+    backup_prefix: "",
+    application_id: APPLICATION_ID,
+    migrations: MIGRATIONS,
+    backups: Backups::Every {
+        days: 1,
+        keep: BACKUP_RETENTION,
+    },
+    adopt_unmarked: true,
+    incremental_vacuum: false,
+};
+
+/// `index.db`: note bodies, search, and links between notes, rebuilt from the vault ("BRNI").
+pub const INDEX: Store = Store {
+    backup_prefix: "index-",
+    application_id: 0x4252_4E49,
+    migrations: &[(
+        "0001_index",
+        include_str!("../migrations/index/0001_index.sql"),
+    )],
+    backups: Backups::Never,
+    adopt_unmarked: false,
+    incremental_vacuum: true,
+};
+
+/// `history.db`: revisions and drafts, snapshotted weekly ("BRNH").
+pub const HISTORY: Store = Store {
+    backup_prefix: "history-",
+    application_id: 0x4252_4E48,
+    migrations: &[(
+        "0001_history",
+        include_str!("../migrations/history/0001_history.sql"),
+    )],
+    backups: Backups::Every { days: 7, keep: 2 },
+    adopt_unmarked: false,
+    incremental_vacuum: false,
+};
+
+/// File names in the data folder. The core keeps its v0.1 name.
+pub const CORE_FILE: &str = "brainiac.sqlite3";
+pub const INDEX_FILE: &str = "index.sqlite3";
+pub const HISTORY_FILE: &str = "history.sqlite3";
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
 
-/// Handle to the database worker. Cheap to clone; all clones share one thread.
+/// Handle to a database worker. Cheap to clone; all clones share one thread.
 #[derive(Clone)]
 pub struct Db {
     sender: mpsc::Sender<Job>,
@@ -40,23 +119,61 @@ pub struct Db {
 }
 
 impl Db {
-    /// Open (or create) the database at `path`, run pending migrations, and
-    /// start the worker thread. Takes a daily backup before the first write.
+    /// Open (or create) the core database at `path`, run pending migrations,
+    /// and start the worker thread. Takes a daily backup before the first write.
     pub fn open(path: &Path) -> AppResult<Self> {
+        Self::open_store(path, &CORE)
+    }
+
+    /// Open (or create) a database file of the given kind.
+    pub fn open_store(path: &Path, store: &Store) -> AppResult<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let mut conn = Connection::open(path)?;
-        check_compatible(&conn, path)?;
+        check_compatible(&conn, path, store)?;
+        if store.incremental_vacuum && schema_version(&conn)? == 0 {
+            // Only takes effect before the first table is created.
+            conn.execute_batch("PRAGMA auto_vacuum = INCREMENTAL;")?;
+        }
         configure(&conn)?;
-        backup_before_migration_if_needed(&conn, path)?;
-        migrate(&mut conn)?;
-        conn.pragma_update(None, "application_id", APPLICATION_ID)?;
-        daily_backup(&conn, path)?;
+        backup_before_migration_if_needed(&conn, path, store)?;
+        migrate(&mut conn, store)?;
+        conn.pragma_update(None, "application_id", store.application_id)?;
+        periodic_backup(&conn, path, store)?;
+        Self::spawn(conn, path, "brainiac-db")
+    }
 
+    /// Open the index, which is rebuildable: a file written by a newer
+    /// Brainiac, or one that cannot be read, is deleted and created again. A
+    /// file another program owns is refused like any other store.
+    pub fn open_index(path: &Path) -> AppResult<Self> {
+        match Self::open_store(path, &INDEX) {
+            Ok(db) => Ok(db),
+            Err(e) if is_foreign(path) => Err(e),
+            Err(e) => {
+                tracing::warn!(error = %e, details = ?e.details, "recreating the search index");
+                remove_database(path)?;
+                Self::open_store(path, &INDEX)
+            }
+        }
+    }
+
+    /// A worker with a read-only connection to an existing file, for queries
+    /// that must not wait behind its writer (docs/architecture.md, Storage layout).
+    pub fn open_read_only(path: &Path) -> AppResult<Self> {
+        let conn = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        conn.execute_batch("PRAGMA busy_timeout = 5000; PRAGMA query_only = ON;")?;
+        Self::spawn(conn, path, "brainiac-db-read")
+    }
+
+    fn spawn(mut conn: Connection, path: &Path, name: &str) -> AppResult<Self> {
         let (sender, receiver) = mpsc::channel::<Job>();
         thread::Builder::new()
-            .name("brainiac-db".into())
+            .name(name.into())
             .spawn(move || {
                 for job in receiver {
                     job(&mut conn);
@@ -73,7 +190,7 @@ impl Db {
         })
     }
 
-    /// Convenience for tests and tools: an in-memory-like database in a temp dir.
+    /// Where the database file is.
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -122,6 +239,27 @@ impl Db {
     }
 }
 
+/// Whether `path` holds a database another program marked as its own.
+fn is_foreign(path: &Path) -> bool {
+    Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .and_then(|c| c.query_row("PRAGMA application_id", [], |r| r.get::<_, i32>(0)))
+        .is_ok_and(|id| id != 0 && id != INDEX.application_id)
+}
+
+/// Delete a database file and its WAL and shared-memory files.
+pub fn remove_database(path: &Path) -> AppResult<()> {
+    for suffix in ["", "-wal", "-shm"] {
+        let mut name = path.as_os_str().to_owned();
+        name.push(suffix);
+        match std::fs::remove_file(PathBuf::from(name)) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
+}
+
 fn configure(conn: &Connection) -> AppResult<()> {
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;
@@ -139,31 +277,34 @@ pub fn schema_version(conn: &Connection) -> AppResult<u32> {
 /// Refuse a file another program wrote, or one a newer Brainiac migrated.
 /// SQLite enforces neither header field, and running older code on a newer
 /// schema would skip tables it does not know about.
-fn check_compatible(conn: &Connection, path: &Path) -> AppResult<()> {
+fn check_compatible(conn: &Connection, path: &Path, store: &Store) -> AppResult<()> {
     let id: i32 = conn.query_row("PRAGMA application_id", [], |r| r.get(0))?;
-    if id != 0 && id != APPLICATION_ID {
+    let fresh = schema_version(conn)? == 0;
+    let accepted = id == store.application_id || (id == 0 && (store.adopt_unmarked || fresh));
+    if !accepted {
         return Err(AppError::db(format!(
             "{} is not a Brainiac database.",
             path.display()
         )));
     }
     let version = schema_version(conn)?;
-    if version > SCHEMA_VERSION {
+    let known = store.migrations.len() as u32;
+    if version > known {
         return Err(AppError::db(format!(
             "This data was saved by a newer version of Brainiac. Install the newer \
              version, or restore a snapshot from {}.",
             backups_dir(path).display()
         ))
         .with_details(format!(
-            "Data version {version}; this version of Brainiac reads up to {SCHEMA_VERSION}."
+            "Data version {version}; this version of Brainiac reads up to {known}."
         )));
     }
     Ok(())
 }
 
-fn migrate(conn: &mut Connection) -> AppResult<()> {
+fn migrate(conn: &mut Connection, store: &Store) -> AppResult<()> {
     let current = schema_version(conn)? as usize;
-    for (index, (name, sql)) in MIGRATIONS.iter().enumerate().skip(current) {
+    for (index, (name, sql)) in store.migrations.iter().enumerate().skip(current) {
         let tx = conn.transaction()?;
         tx.execute_batch(sql).map_err(|e| {
             AppError::db(format!("Migration {name} failed.")).with_details(e.to_string())
@@ -175,7 +316,8 @@ fn migrate(conn: &mut Connection) -> AppResult<()> {
     Ok(())
 }
 
-fn backups_dir(db_path: &Path) -> PathBuf {
+/// The folder snapshots of the database at `db_path` are written to.
+pub fn backups_dir(db_path: &Path) -> PathBuf {
     db_path
         .parent()
         .unwrap_or_else(|| Path::new("."))
@@ -205,17 +347,28 @@ fn write_backup(conn: &Connection, dest: &Path) -> AppResult<()> {
     Ok(())
 }
 
+/// Snapshot the database file at `src` (not opened by a worker) to `dest`.
+pub fn snapshot_file(src: &Path, dest: &Path) -> AppResult<()> {
+    let conn = Connection::open_with_flags(src, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    write_backup(&conn, dest)
+}
+
 /// Suffix of a backup still being written; see `write_backup`.
 const PARTIAL_SUFFIX: &str = ".partial";
 
-/// Snapshot an existing database before applying new migrations (docs/roadmap.md, Backup and restore).
-fn backup_before_migration_if_needed(conn: &Connection, db_path: &Path) -> AppResult<()> {
+/// Snapshot an existing database before applying new migrations (SPEC.md, Backup and restore).
+fn backup_before_migration_if_needed(
+    conn: &Connection,
+    db_path: &Path,
+    store: &Store,
+) -> AppResult<()> {
     let current = schema_version(conn)? as usize;
-    if current == 0 || current >= MIGRATIONS.len() {
+    if current == 0 || current >= store.migrations.len() || store.backups == Backups::Never {
         return Ok(());
     }
     let dest = backups_dir(db_path).join(format!(
-        "pre-migration-v{}-{}.sqlite3",
+        "{}pre-migration-v{}-{}.sqlite3",
+        store.backup_prefix,
         current,
         chrono::Utc::now().format("%Y%m%dT%H%M%SZ")
     ));
@@ -224,24 +377,46 @@ fn backup_before_migration_if_needed(conn: &Connection, db_path: &Path) -> AppRe
     Ok(())
 }
 
-/// One backup per calendar day, keeping the newest `BACKUP_RETENTION`.
-fn daily_backup(conn: &Connection, db_path: &Path) -> AppResult<()> {
-    let dir = backups_dir(db_path);
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-    let dest = dir.join(format!("daily-{today}.sqlite3"));
-    if dest.exists() {
+/// One backup per period, keeping the newest `keep`. The core's are named
+/// `daily-<date>`, the history's `history-every-<date>`.
+fn periodic_backup(conn: &Connection, db_path: &Path, store: &Store) -> AppResult<()> {
+    let Backups::Every { days, keep } = store.backups else {
         return Ok(());
-    }
-    write_backup(conn, &dest)?;
-    let names: Vec<PathBuf> = std::fs::read_dir(&dir)?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .collect();
+    };
+    let dir = backups_dir(db_path);
+    let prefix = if store.backup_prefix.is_empty() {
+        "daily-".to_string()
+    } else {
+        format!("{}every-", store.backup_prefix)
+    };
+    let today = chrono::Local::now().date_naive();
     let name_of = |p: &PathBuf| {
         p.file_name()
             .and_then(|n| n.to_str())
             .map(str::to_owned)
             .unwrap_or_default()
     };
+    let names: Vec<PathBuf> = match std::fs::read_dir(&dir) {
+        Ok(rd) => rd.filter_map(|e| e.ok().map(|e| e.path())).collect(),
+        Err(_) => Vec::new(),
+    };
+    let mut existing: Vec<PathBuf> = names
+        .iter()
+        .filter(|p| name_of(p).starts_with(&prefix) && name_of(p).ends_with(".sqlite3"))
+        .cloned()
+        .collect();
+    existing.sort();
+    let newest = existing.last().and_then(|p| {
+        let name = name_of(p);
+        let date = name.strip_prefix(&prefix)?.strip_suffix(".sqlite3")?;
+        chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()
+    });
+    if newest.is_some_and(|d| (today - d).num_days() < i64::from(days)) {
+        return Ok(());
+    }
+    let dest = dir.join(format!("{prefix}{}.sqlite3", today.format("%Y-%m-%d")));
+    write_backup(conn, &dest)?;
+    existing.push(dest);
     // Leftovers from a backup interrupted by a crash.
     for stale in names
         .iter()
@@ -249,13 +424,8 @@ fn daily_backup(conn: &Connection, db_path: &Path) -> AppResult<()> {
     {
         let _ = std::fs::remove_file(stale);
     }
-    let mut daily: Vec<PathBuf> = names
-        .into_iter()
-        .filter(|p| name_of(p).starts_with("daily-"))
-        .collect();
-    daily.sort();
-    while daily.len() > BACKUP_RETENTION {
-        let old = daily.remove(0);
+    while existing.len() > keep {
+        let old = existing.remove(0);
         let _ = std::fs::remove_file(old);
     }
     Ok(())
@@ -316,6 +486,8 @@ pub struct RepositoryRow {
     pub last_fetch_at: Option<String>,
     /// Why Brainiac's last fetch failed; cleared by a successful one.
     pub last_fetch_error: Option<AppError>,
+    /// The `origin` fetch URL as last observed.
+    pub remote_url: Option<String>,
 }
 
 impl From<&RepositoryRow> for crate::git::Checkout {
@@ -334,7 +506,7 @@ impl From<&RepositoryRow> for crate::git::Checkout {
     }
 }
 
-const REPO_COLUMNS: &str = "id, canonical_root, display_path, git_dir, common_git_dir, created_at, last_opened_at, last_checked_at, last_tab, status_json, error_json, last_fetch_at, last_fetch_error_json";
+const REPO_COLUMNS: &str = "id, canonical_root, display_path, git_dir, common_git_dir, created_at, last_opened_at, last_checked_at, last_tab, status_json, error_json, last_fetch_at, last_fetch_error_json, remote_url";
 
 fn row_to_repository(r: &rusqlite::Row<'_>) -> rusqlite::Result<RepositoryRow> {
     let last_tab: Option<String> = r.get(8)?;
@@ -356,6 +528,7 @@ fn row_to_repository(r: &rusqlite::Row<'_>) -> rusqlite::Result<RepositoryRow> {
         last_fetch_error: r
             .get::<_, Option<String>>(12)?
             .and_then(|s| serde_json::from_str(&s).ok()),
+        remote_url: r.get(13)?,
     })
 }
 
@@ -396,6 +569,15 @@ pub fn insert_repository(conn: &Connection, row: &RepositoryRow) -> AppResult<()
             row.created_at,
             row.last_opened_at
         ],
+    )?;
+    Ok(())
+}
+
+/// Record the `origin` URL a repository was last seen with.
+pub fn set_remote_url(conn: &Connection, id: &str, url: Option<&str>) -> AppResult<()> {
+    conn.execute(
+        "UPDATE repositories SET remote_url = ?2 WHERE id = ?1 AND remote_url IS NOT ?2",
+        params![id, url],
     )?;
     Ok(())
 }
@@ -772,10 +954,10 @@ pub fn list_pins(conn: &Connection) -> AppResult<Vec<Pin>> {
     let rows = stmt.query_map([], |r| {
         let kind: String = r.get(0)?;
         Ok(Pin {
-            entity_type: if kind == "workspace" {
-                PinEntityType::Workspace
-            } else {
-                PinEntityType::Repository
+            entity_type: match kind.as_str() {
+                "workspace" => PinEntityType::Workspace,
+                "note" => PinEntityType::Note,
+                _ => PinEntityType::Repository,
             },
             entity_id: r.get(1)?,
             position: r.get(2)?,
@@ -793,6 +975,7 @@ pub fn set_pinned(
     let kind = match entity_type {
         PinEntityType::Repository => "repository",
         PinEntityType::Workspace => "workspace",
+        PinEntityType::Note => "note",
     };
     if pinned {
         conn.execute(

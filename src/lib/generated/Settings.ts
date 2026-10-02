@@ -6,4 +6,9 @@ export type Settings = { editor: EditorSettings, refresh_interval_seconds: numbe
 /**
  * Minutes between automatic fetches of a workspace's watched branches (minimum 5).
  */
-auto_fetch_interval_minutes: number, fetch_timeout_seconds: number, };
+auto_fetch_interval_minutes: number, fetch_timeout_seconds: number, 
+/**
+ * Write `brainiac_id` into a note the first time it gets a task or a
+ * repository link (SPEC.md, Note identity).
+ */
+write_note_ids: boolean, };

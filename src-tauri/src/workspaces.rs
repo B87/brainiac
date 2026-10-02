@@ -138,6 +138,22 @@ impl RepositoryService {
         self.settings.lock().expect("settings lock").clone()
     }
 
+    /// Replace the settings, keeping them in the database.
+    pub async fn update_settings(&self, settings: Settings) -> AppResult<Settings> {
+        if settings.refresh_interval_seconds < 10 || settings.auto_fetch_interval_minutes < 5 {
+            return Err(AppError::validation(
+                "Refresh at most every 10 seconds and auto-fetch at most every 5 minutes.",
+            ));
+        }
+        let stored = settings.clone();
+        self.db
+            .call(move |conn| db::save_settings(conn, &stored))
+            .await?;
+        *self.settings.lock().expect("settings lock") = settings.clone();
+        self.bump_version();
+        Ok(settings)
+    }
+
     pub fn snapshot_version(&self) -> u64 {
         self.version.load(Ordering::SeqCst)
     }
@@ -200,6 +216,7 @@ impl RepositoryService {
                     error: None,
                     last_fetch_at: None,
                     last_fetch_error: None,
+                    remote_url: None,
                 };
                 let id = row.id.clone();
                 self.db
@@ -339,6 +356,7 @@ impl RepositoryService {
                 Path::new(&row.common_git_dir),
             ),
             fetch_error: row.last_fetch_error.clone(),
+            remote_url: row.remote_url.clone(),
         }
     }
 
@@ -421,6 +439,28 @@ impl RepositoryService {
                 })
                 .await?
         };
+        // The origin URL identifies the repository to restore and reconnection
+        // (SPEC.md, Notes and repositories). It rarely changes, so only
+        // registration, manual refreshes, and waking look again.
+        if stored
+            && status.is_some()
+            && matches!(
+                origin,
+                ChangeOrigin::Registration | ChangeOrigin::Refresh | ChangeOrigin::Wake
+            )
+        {
+            if let Ok(git) = self.git() {
+                let url = git
+                    .config_value(Path::new(&row.canonical_root), "remote.origin.url")
+                    .await;
+                if url != row.remote_url {
+                    let id2 = id.to_string();
+                    self.db
+                        .call(move |conn| db::set_remote_url(conn, &id2, url.as_deref()))
+                        .await?;
+                }
+            }
+        }
         // Turn moved watched refs into activity events before announcing the
         // change, so the snapshot that follows already counts them. An
         // observation of a folder the registration no longer points at is

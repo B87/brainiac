@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
-  "description": "Capability for the main window: core IPC, dragging the window by its title area, native folder picker and confirmations, opening paths in Finder, in-app updates.",
+  "description": "Capability for the main window: core IPC, dragging the window by its title area, closing it after unsaved note edits are saved, native folder and file pickers, confirmations, opening paths in Finder, in-app updates.",
   "windows": [
     "main"
   ],
@@ -9,8 +9,10 @@
     "core:default",
     "core:event:default",
     "core:window:allow-start-dragging",
+    "core:window:allow-destroy",
     "dialog:allow-open",
     "dialog:allow-ask",
+    "dialog:allow-save",
     "opener:default",
     "updater:default",
     "process:allow-restart"

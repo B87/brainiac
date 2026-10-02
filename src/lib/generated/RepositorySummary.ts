@@ -22,4 +22,8 @@ last_fetch_at: string | null,
 /**
  * Outcome of Brainiac's last fetch; cleared by a successful one.
  */
-fetch_error: AppError | null, };
+fetch_error: AppError | null, 
+/**
+ * The `origin` fetch URL, refreshed on registration, manual refresh, and wake.
+ */
+remote_url: string | null, };

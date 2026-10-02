@@ -1,11 +1,16 @@
 //! Tauri setup: shared state, native menu, background loops, command registration.
 
 pub mod activity;
+pub mod backup;
 pub mod commands;
 pub mod db;
 pub mod fetcher;
 pub mod git;
+pub mod index;
 pub mod models;
+pub mod notes;
+pub mod tasks;
+pub mod vault;
 pub mod watcher;
 pub mod workspaces;
 
@@ -16,11 +21,20 @@ use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{Emitter, Manager, WindowEvent};
 
 use crate::models::{AppError, ChangeOrigin, MenuEvent, RepositoryChangedEvent};
+use crate::notes::{KnowledgeEvent, NoteService};
+use crate::tasks::TaskService;
 use crate::workspaces::RepositoryService;
 
 /// Event names shared with the frontend.
 pub const EVENT_REPOSITORY_CHANGED: &str = "repository_changed";
 pub const EVENT_MENU: &str = "menu";
+pub const EVENT_NOTE_CHANGED: &str = "note_changed";
+pub const EVENT_NOTE_MISSING: &str = "note_missing";
+pub const EVENT_TASK_CHANGED: &str = "task_changed";
+pub const EVENT_INDEX_STATUS_CHANGED: &str = "index_status_changed";
+
+/// Minimum age of a vault scan before focus or wake triggers another.
+const VAULT_ACTIVATION_MIN_AGE: Duration = Duration::from_secs(30);
 
 /// Minimum age of an observation before focus/wake triggers a refresh.
 const ACTIVATION_MIN_AGE: Duration = Duration::from_secs(10);
@@ -38,12 +52,27 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
+        // Vault images for Live Preview: `vault://localhost/<path in the vault>`
+        // serves image files inside the active vault and nothing else.
+        .register_asynchronous_uri_scheme_protocol("vault", |ctx, request, responder| {
+            let app = ctx.app_handle().clone();
+            tauri::async_runtime::spawn(async move {
+                responder.respond(vault_image(&app, request.uri().path()));
+            });
+        })
         .setup(|app| {
             let handle = app.handle().clone();
 
             // --- Persistence -------------------------------------------------
             let data_dir = app.path().app_data_dir()?;
-            let db_path = data_dir.join("brainiac.sqlite3");
+            let db_path = data_dir.join(db::CORE_FILE);
+            // A restore staged before the last quit replaces the data now,
+            // before anything opens it (SPEC.md, Backup and restore).
+            if let Err(e) = backup::apply_pending_restore(&data_dir) {
+                tracing::error!(error = %e, details = ?e.details, "cannot apply the restore");
+                show_startup_error(app, &e);
+                return Ok(());
+            }
             let db = match db::Db::open(&db_path) {
                 Ok(db) => db,
                 Err(e) => {
@@ -69,7 +98,7 @@ pub fn run() {
                     tracing::warn!(error = %e, "failed to emit repository_changed");
                 }
             });
-            let service = Arc::new(RepositoryService::new(db, git, settings.clone(), emitter));
+            let service = Arc::new(RepositoryService::new(db.clone(), git, settings.clone(), emitter));
             let notify_handle = handle.clone();
             service.set_notifier(Arc::new(move |title: String, body: String| {
                 use tauri_plugin_notification::NotificationExt;
@@ -78,6 +107,36 @@ pub fn run() {
                 }
             }));
             app.manage(Arc::clone(&service));
+
+            // --- Notes, tasks, and search (v0.2) ----------------------------
+            let stores = match notes::Stores::open(&data_dir, db) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!(error = %e, details = ?e.details, "cannot open the notes databases");
+                    show_startup_error(app, &e);
+                    return Ok(());
+                }
+            };
+            let knowledge_handle = handle.clone();
+            let knowledge_emitter: notes::KnowledgeEmitter = Arc::new(move |event: KnowledgeEvent| {
+                let sent = match &event {
+                    KnowledgeEvent::NoteChanged(e) => knowledge_handle.emit(EVENT_NOTE_CHANGED, e),
+                    KnowledgeEvent::NoteMissing(e) => knowledge_handle.emit(EVENT_NOTE_MISSING, e),
+                    KnowledgeEvent::TaskChanged(e) => knowledge_handle.emit(EVENT_TASK_CHANGED, e),
+                    KnowledgeEvent::IndexStatus(e) => knowledge_handle.emit(EVENT_INDEX_STATUS_CHANGED, e),
+                };
+                if let Err(e) = sent {
+                    tracing::warn!(error = %e, "failed to emit a notes event");
+                }
+            });
+            let notes = NoteService::new(stores, data_dir.clone(), knowledge_emitter);
+            notes.set_write_note_ids(settings.write_note_ids);
+            app.manage(Arc::clone(&notes));
+            app.manage(Arc::new(TaskService::new(Arc::clone(&notes))));
+            // Know the vault before the window asks for it; its scan runs in the background.
+            if let Err(e) = tauri::async_runtime::block_on(notes.start()) {
+                tracing::warn!(error = %e, "could not open the vault");
+            }
 
             // --- Watcher and background loops --------------------------------
             let (fs_watcher, rx) = watcher::RepositoryWatcher::new()?;
@@ -140,6 +199,12 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     let _ = service.request_refresh_all(ChangeOrigin::Wake, ACTIVATION_MIN_AGE).await;
                 });
+                if let Some(notes) = window.try_state::<commands::Notes>() {
+                    let notes = notes.inner().clone();
+                    tauri::async_runtime::spawn(async move {
+                        notes.request_full_reconcile(VAULT_ACTIVATION_MIN_AGE);
+                    });
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -169,9 +234,127 @@ pub fn run() {
             commands::get_team_pulse,
             commands::mark_activity_seen,
             commands::update_activity_settings,
+            commands::update_settings,
+            commands::get_vault_state,
+            commands::select_vault,
+            commands::list_folder,
+            commands::get_note_lists,
+            commands::read_note,
+            commands::mark_note_opened,
+            commands::save_note,
+            commands::create_note,
+            commands::preview_rename,
+            commands::rename_note,
+            commands::trash_note,
+            commands::list_trash,
+            commands::restore_note,
+            commands::recreate_note,
+            commands::relink_note,
+            commands::list_revisions,
+            commands::read_revision,
+            commands::restore_revision,
+            commands::save_draft,
+            commands::discard_draft,
+            commands::save_draft_as_copy,
+            commands::open_vault_file,
+            commands::reveal_vault_path,
+            commands::get_note_context,
+            commands::resolve_link,
+            commands::get_repository_notes,
+            commands::link_repository,
+            commands::unlink_repository,
+            commands::dismiss_suggestion,
+            commands::reconnect_repository,
+            commands::list_tasks,
+            commands::get_task,
+            commands::get_today,
+            commands::create_task,
+            commands::update_task,
+            commands::delete_task,
+            commands::search,
+            commands::rebuild_search,
+            commands::export_backup,
+            commands::preview_restore,
+            commands::restore_backup,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Brainiac");
+}
+
+/// Image types Live Preview shows from the vault.
+const VAULT_IMAGE_TYPES: &[(&str, &str)] = &[
+    ("png", "image/png"),
+    ("jpg", "image/jpeg"),
+    ("jpeg", "image/jpeg"),
+    ("gif", "image/gif"),
+    ("webp", "image/webp"),
+    ("svg", "image/svg+xml"),
+    ("avif", "image/avif"),
+    ("bmp", "image/bmp"),
+];
+
+/// Serve an image file of the active vault for `vault://localhost/<path>`.
+/// Anything else, including paths that leave the vault, is a 404.
+fn vault_image(app: &tauri::AppHandle, uri_path: &str) -> tauri::http::Response<Vec<u8>> {
+    let not_found = || {
+        tauri::http::Response::builder()
+            .status(404)
+            .body(Vec::new())
+            .expect("static response")
+    };
+    let Some(notes) = app.try_state::<commands::Notes>() else {
+        return not_found();
+    };
+    let relative = percent_decode_path(uri_path.trim_start_matches('/'));
+    let Some(mime) = relative
+        .rsplit('.')
+        .next()
+        .and_then(|ext| {
+            VAULT_IMAGE_TYPES
+                .iter()
+                .find(|(e, _)| e.eq_ignore_ascii_case(ext))
+        })
+        .map(|(_, m)| *m)
+    else {
+        return not_found();
+    };
+    match notes
+        .absolute(&relative)
+        .and_then(|p| Ok(std::fs::read(p)?))
+    {
+        Ok(bytes) => tauri::http::Response::builder()
+            .status(200)
+            .header("Content-Type", mime)
+            // An SVG may not run scripts or load anything.
+            .header(
+                "Content-Security-Policy",
+                "default-src 'none'; style-src 'unsafe-inline'",
+            )
+            .body(bytes)
+            .unwrap_or_else(|_| not_found()),
+        Err(_) => not_found(),
+    }
+}
+
+fn percent_decode_path(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Some(v) = std::str::from_utf8(&b[i + 1..i + 3])
+                .ok()
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
+            {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Tell the user why Brainiac cannot start and quit when they dismiss it.
@@ -216,11 +399,33 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
     let palette = MenuItem::with_id(
         app,
         "palette",
-        "Switch Repository or Workspace…",
+        "Search or Switch…",
         true,
         Some("CmdOrCtrl+K"),
     )?;
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?;
+    let new_note = MenuItem::with_id(app, "new_note", "New Note", true, Some("CmdOrCtrl+N"))?;
+    let new_task = MenuItem::with_id(app, "new_task", "New Task", true, Some("CmdOrCtrl+Shift+N"))?;
+    let save = MenuItem::with_id(app, "save", "Save", true, Some("CmdOrCtrl+S"))?;
+    let export = MenuItem::with_id(app, "export", "Export…", true, None::<&str>)?;
+    let restore = MenuItem::with_id(app, "restore", "Restore from Export…", true, None::<&str>)?;
+    let toggle_source = MenuItem::with_id(
+        app,
+        "toggle_source",
+        "Switch Live Preview / Source",
+        true,
+        Some("CmdOrCtrl+Shift+E"),
+    )?;
+    let toggle_context = MenuItem::with_id(
+        app,
+        "toggle_context",
+        "Show or Hide Context Panel",
+        true,
+        Some("Alt+CmdOrCtrl+0"),
+    )?;
+    let show_today = MenuItem::with_id(app, "show_today", "Today", true, None::<&str>)?;
+    let show_tasks = MenuItem::with_id(app, "show_tasks", "Tasks", true, None::<&str>)?;
+    let show_notes = MenuItem::with_id(app, "show_notes", "Notes", true, None::<&str>)?;
     let check_updates = MenuItem::with_id(
         app,
         "check_updates",
@@ -253,7 +458,14 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
         "File",
         true,
         &[
+            &new_note,
+            &new_task,
             &open,
+            &PredefinedMenuItem::separator(app)?,
+            &save,
+            &PredefinedMenuItem::separator(app)?,
+            &export,
+            &restore,
             &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::close_window(app, None)?,
         ],
@@ -277,9 +489,16 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
         "View",
         true,
         &[
+            &show_today,
+            &show_tasks,
+            &show_notes,
+            &PredefinedMenuItem::separator(app)?,
             &refresh,
             &fetch,
             &palette,
+            &PredefinedMenuItem::separator(app)?,
+            &toggle_source,
+            &toggle_context,
             &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::fullscreen(app, None)?,
         ],

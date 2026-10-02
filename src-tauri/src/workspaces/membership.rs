@@ -500,7 +500,7 @@ impl RepositoryService {
         Ok(())
     }
 
-    /// Pin or unpin a repository or workspace. Pinning appends to the end.
+    /// Pin or unpin a repository, workspace, or note. Pinning appends to the end.
     pub async fn set_pinned(
         &self,
         entity_type: PinEntityType,
@@ -514,6 +514,13 @@ impl RepositoryService {
                 let exists = match entity_type {
                     PinEntityType::Repository => db::get_repository(conn, &id)?.is_some(),
                     PinEntityType::Workspace => db::get_workspace(conn, &id)?.is_some(),
+                    PinEntityType::Note => conn
+                        .query_row(
+                            "SELECT EXISTS (SELECT 1 FROM notes WHERE id = ?1 AND trashed_at IS NULL)",
+                            [&id],
+                            |r| r.get::<_, bool>(0),
+                        )
+                        .map_err(AppError::from)?,
                 };
                 // Unpinning something already deleted is harmless; pinning it is not.
                 if exists || !pinned {
@@ -618,6 +625,7 @@ fn insert_members(
                     error: None,
                     last_fetch_at: None,
                     last_fetch_error: None,
+                    remote_url: None,
                 };
                 let (id, created) = db::ensure_repository(conn, &row)?;
                 if created {

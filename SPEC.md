@@ -98,6 +98,7 @@ The sidebar gains a section level above the repository tree: **Today**, **Tasks*
 
 - Brainiac reopens the section that was open when it quit. The first launch after upgrading to v0.2 opens Workspaces as before, and the sidebar shows one **Set up your vault** row until a vault is chosen.
 - Today, Tasks, and Notes are never shown empty: before a vault is chosen they offer the vault setup, and Today and Tasks work without a vault.
+- Settings (`Cmd+,`) chooses the vault, holds the note-ID setting and **Rebuild Index**, and offers **Export…** and **Restore from Export…**, which the File menu also has.
 - Repositories, notes, and tasks each have one icon, used in the sidebar, ⌘K, chips, and side panels. A repository is always shown the same way wherever it appears: name, branch, a status dot with its words (clean, *N* changed, conflicted, missing), ahead and behind when not zero, and how fresh the data is ("checked 1 min ago", or "fetched 2 h ago" in amber when stale).
 - Edit times read as relative for the last seven days ("edited 2 hours ago") and as dates after that ("edited 14 Sep"). Due and planned dates are always dates ("Due Fri 3 Oct"); an overdue task says "Overdue" in words and with an icon, not by color alone.
 
@@ -332,6 +333,7 @@ The Activity tab of a workspace answers "what did the team merge or release sinc
 - Supported notes are UTF-8 `.md` files on a local filesystem, up to 5 MiB for editing. Other files are listed with a clear message and **Open Externally**; a `.md` file over 5 MiB or not in UTF-8 is found in search by its name, not its text.
 - A vault may itself be a Git repository, and it can be registered and tracked like any other. The rule that Brainiac never writes to a repository covers Git's own state: it never stages, commits, checks out, or runs hooks there. Saving a note is an edit the user makes through Brainiac, like saving it in any editor. Trash, drafts, and revision history live in Brainiac's data folder, never in the vault, so saving never leaves extra files behind.
 - Brainiac scans the vault at startup, on wake, and when the watcher reports changes, and reconciles what it finds. A vault that cannot be read (an unmounted disk) is reported as unavailable, never treated as every note deleted.
+- Choosing another vault folder later keeps the notes of the previous one as missing, with their tasks and links; choosing that folder again brings them back.
 
 ### Notes view
 
@@ -381,7 +383,7 @@ A note is edited as its Markdown text, so a save contains exactly what the user 
 ### Delete and recovery
 
 - Deleting a note moves it to Brainiac's trash, in its data folder, and removes it from search. Its tasks and links are kept. Restoring it asks before overwriting a note at the same path. Brainiac never permanently deletes a note as the default action.
-- A note deleted outside Brainiac is shown as missing; its tasks keep a reference to it.
+- A note deleted outside Brainiac is shown as missing; its tasks keep a reference to it, and its last text is kept in revision history so **Restore as New File** can bring it back.
 - Revision history keeps up to 20 versions per note for 30 days, within 250 MiB in total. Autosaves while typing count as one version until 10 minutes pass; each change from outside Brainiac is its own version; unresolved conflicts and unsaved drafts are never pruned.
 
 ### Notes and repositories
@@ -397,7 +399,7 @@ A note is edited as its Markdown text, so a save contains exactly what the user 
 - Planning a task and giving it a deadline are separate actions. Dates are calendar days in the Mac's time zone, so a task due today stays due today when travelling or when the clocks change.
 - Completing a task records when; reopening it clears that. A task is drawn with a round check, never a square checkbox.
 - **To sort:** a new task without a planned date or deadline is *to sort* until it gets one or is marked **Sorted**. v0.2 has no Inbox: everything is created inside the app, and an inbox earns its place only when items arrive faster than they are sorted, which starts with v0.3's capture and imports. Quick notes go to an ordinary `Inbox/` folder in the vault.
-- **Today** lists open tasks that are overdue, due today, or planned for today, then those completed today. Tasks to sort appear as one folded **To sort · N** line above them; expanding it lists them. Each task shows its linked note and repository, the repository with its live state. A side panel lists the repositories in today's work with their state and **Fetch** and **Open**. "Today" follows the Mac's date, including across midnight and after waking.
+- **Today** lists open tasks that are overdue, due today, or planned for today or an earlier day (unfinished work carries over), then those completed today. Tasks to sort appear as one folded **To sort · N** line above them; expanding it lists them. Each task shows its linked note and repository, the repository with its live state. A side panel lists the repositories in today's work with their state and **Fetch** and **Open**. "Today" follows the Mac's date, including across midnight and after waking.
 - **Tasks** lists all tasks, filtered by status and by **To sort**.
 - Two edits of the same task, from two places, never overwrite each other silently: the later one is refused with a conflict and shows the current task.
 
@@ -417,5 +419,5 @@ A note is edited as its Markdown text, so a save contains exactly what the user 
 
 - Brainiac snapshots its own data before each format upgrade and once a day, keeping seven (section 2). Revision history is snapshotted separately and less often. The search index is never backed up; it is rebuilt from the vault.
 - **Export** writes the vault's notes, a consistent copy of Brainiac's data, a manifest, and tasks as JSON with their dates, statuses, and links. A note changed during the export is retried or reported; the export never claims to be complete when it is not.
-- **Restore** checks that the files are Brainiac's and from a version it can read before replacing anything. It then matches notes by `brainiac_id`, then by path and content; matches repositories by their remote URL, offering **Locate…** for the rest; and rebuilds search.
+- **Restore** checks that the files are Brainiac's and from a version it can read before replacing anything. The export's notes are copied into an empty folder, or an existing vault folder is used as it is. Brainiac then restarts into the restored data, snapshotting the data it replaces first. It matches notes by `brainiac_id`, then by path and content; matches repositories by their remote URL, offering **Locate…** for the rest, and keeps the repositories already registered on this Mac; and rebuilds search.
 - Snapshots are recovery aids on the same Mac. A complete backup is an export, or the vault plus Brainiac's data folder, kept on another device or backup system.

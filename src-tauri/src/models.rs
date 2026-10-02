@@ -149,6 +149,9 @@ pub struct Settings {
     pub auto_fetch_interval_minutes: u64,
     #[ts(type = "number")]
     pub fetch_timeout_seconds: u64,
+    /// Write `brainiac_id` into a note the first time it gets a task or a
+    /// repository link (SPEC.md, Note identity).
+    pub write_note_ids: bool,
 }
 
 impl Default for Settings {
@@ -167,6 +170,7 @@ impl Default for Settings {
             },
             auto_fetch_interval_minutes: 15,
             fetch_timeout_seconds: 60,
+            write_note_ids: true,
         }
     }
 }
@@ -177,6 +181,7 @@ impl Default for Settings {
 pub enum PinEntityType {
     Repository,
     Workspace,
+    Note,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -281,6 +286,7 @@ pub enum RepositoryTab {
     Changes,
     History,
     Refs,
+    Notes,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -304,6 +310,8 @@ pub struct RepositorySummary {
     pub last_fetch_at: Option<String>,
     /// Outcome of Brainiac's last fetch; cleared by a successful one.
     pub fetch_error: Option<AppError>,
+    /// The `origin` fetch URL, refreshed on registration, manual refresh, and wake.
+    pub remote_url: Option<String>,
 }
 
 /// The cached result of one `git status` observation (stored as JSON in SQLite).
@@ -1041,6 +1049,582 @@ pub struct RepositoryChangedEvent {
 #[ts(export)]
 pub struct MenuEvent {
     pub id: String,
+}
+
+// ---------------------------------------------------------------------------
+// Vault and notes (v0.2)
+// ---------------------------------------------------------------------------
+
+/// The vault Brainiac edits: one folder of Markdown notes (SPEC.md, The vault).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct VaultInfo {
+    pub id: String,
+    /// Folder name of the vault.
+    pub name: String,
+    pub root_path: String,
+    /// False while the folder cannot be read, such as on an unmounted disk.
+    pub available: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum IndexState {
+    /// No vault is chosen; tasks are still searchable.
+    NoVault,
+    /// The vault is being scanned; results may be incomplete.
+    Indexing,
+    Ready,
+    /// The vault cannot be read, or the index failed; repository names still match.
+    Unavailable,
+}
+
+/// How complete search is. Emitted as `index_status_changed`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct IndexStatus {
+    pub state: IndexState,
+    /// Notes indexed so far and in total during a scan.
+    #[ts(type = "number")]
+    pub done: u64,
+    #[ts(type = "number")]
+    pub total: u64,
+    /// Saved notes whose search update failed and is being retried.
+    #[ts(type = "number")]
+    pub pending_repairs: u64,
+    /// Why search is unavailable.
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct VaultState {
+    pub vault: Option<VaultInfo>,
+    pub index: IndexStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum NoteTextState {
+    Text,
+    /// Over 5 MiB: found by name, opened externally.
+    TooLarge,
+    /// Not UTF-8: found by name, opened externally.
+    NotUtf8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct NoteSummary {
+    pub id: String,
+    /// Path inside the vault with forward slashes, such as `Projects/Plan.md`.
+    pub relative_path: String,
+    pub title: String,
+    pub text_state: NoteTextState,
+    /// The file is gone; the note keeps its tasks and links.
+    pub missing: bool,
+    /// Moved to Brainiac's trash.
+    pub trashed: bool,
+    /// Another note carries the same `brainiac_id` (SPEC.md, Note identity).
+    pub id_conflict: bool,
+    /// Whether the file carries `brainiac_id` in its frontmatter.
+    pub has_embedded_id: bool,
+    /// The file's modification time.
+    pub modified_at: String,
+    pub last_opened_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum FolderEntryKind {
+    Folder,
+    Note,
+    /// Any other file: listed, opened externally.
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct FolderEntry {
+    pub name: String,
+    pub relative_path: String,
+    pub kind: FolderEntryKind,
+    pub note: Option<NoteSummary>,
+}
+
+/// One folder of the vault, listed from disk.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct FolderListing {
+    /// Empty for the vault's top folder.
+    pub relative_path: String,
+    pub entries: Vec<FolderEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct NoteLists {
+    pub pinned: Vec<NoteSummary>,
+    pub recent: Vec<NoteSummary>,
+}
+
+/// Edits that were not saved, kept in history.db until a save succeeds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct NoteDraft {
+    pub text: String,
+    /// The version the edits started from; when it differs from the file's, the draft is a conflict.
+    pub base_version: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct NoteContent {
+    pub note: NoteSummary,
+    /// The note's Markdown; `None` for a note that is not editable text. For
+    /// a missing note, its last known text from revision history, if any.
+    pub text: Option<String>,
+    /// SHA-256 of the file as read; a save must name it.
+    pub version: String,
+    pub draft: Option<NoteDraft>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SaveNoteRequest {
+    pub note_id: String,
+    pub expected_version: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SaveNoteResult {
+    pub note: NoteSummary,
+    pub version: String,
+    /// The file is saved but search could not be updated yet; it is retried.
+    pub search_pending: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CreateNoteRequest {
+    /// Folder inside the vault; `None` for the top folder.
+    pub folder: Option<String>,
+    /// Title, also used for the file name; "Untitled" when empty.
+    pub title: Option<String>,
+    /// Link the new note to this repository (New Note for repository).
+    pub repository_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RenameNoteRequest {
+    pub note_id: String,
+    /// New path inside the vault, ending in `.md`.
+    pub new_path: String,
+    /// Also rewrite links to the note in other notes.
+    pub update_links: bool,
+}
+
+/// What a rename would change before it is made.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RenamePreview {
+    pub new_path: String,
+    /// Notes whose links to this note would be rewritten.
+    pub linking_notes: Vec<NoteSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RenameResult {
+    pub note: NoteSummary,
+    /// Notes whose links were rewritten.
+    pub updated: Vec<String>,
+    /// Notes that could not be rewritten, such as ones changed meanwhile.
+    pub failed: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct TrashedNote {
+    pub note: NoteSummary,
+    pub trashed_at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum RevisionReason {
+    AppSave,
+    ExternalChange,
+    Restore,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct NoteRevision {
+    pub id: String,
+    pub created_at: String,
+    pub reason: RevisionReason,
+    #[ts(type = "number")]
+    pub size: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct LinkedRepository {
+    pub repository_id: String,
+    /// The name when the link was made; the live name comes from the snapshot.
+    pub name: String,
+    pub remote_url: Option<String>,
+    /// False when the repository was removed from Brainiac.
+    pub registered: bool,
+    /// A registered repository with the same remote, offered as a reconnection.
+    pub reconnect_to: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Backlink {
+    pub note: NoteSummary,
+    /// The linking line, trimmed.
+    pub excerpt: String,
+    pub line: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum NoteLinkKind {
+    Markdown,
+    Wikilink,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct UnresolvedLink {
+    pub raw_target: String,
+    pub kind: NoteLinkKind,
+    pub line: u32,
+    /// Where **Create** would put the note.
+    pub suggested_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RepositorySuggestion {
+    pub repository_id: String,
+    pub name: String,
+}
+
+/// Where a clicked link in a note leads.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ResolvedLink {
+    /// The note the link points at, when it exists.
+    pub note: Option<NoteSummary>,
+    /// Where **Create** would put the note when it does not.
+    pub suggested_path: String,
+}
+
+/// Everything the context panel shows for one note (SPEC.md, Notes view).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct NoteContext {
+    pub note_id: String,
+    pub repositories: Vec<LinkedRepository>,
+    pub tasks: Vec<Task>,
+    pub backlinks: Vec<Backlink>,
+    pub unresolved: Vec<UnresolvedLink>,
+    pub suggestions: Vec<RepositorySuggestion>,
+}
+
+/// A repository's Notes tab (SPEC.md, Notes and repositories).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RepositoryNotes {
+    pub repository_id: String,
+    pub notes: Vec<NoteSummary>,
+    /// Open tasks linked to the repository.
+    pub tasks: Vec<Task>,
+    /// Notes that mention the repository by name and are not linked to it.
+    pub suggested: Vec<NoteSummary>,
+}
+
+// ---------------------------------------------------------------------------
+// Tasks (v0.2)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum TaskStatus {
+    Todo,
+    InProgress,
+    Done,
+    Cancelled,
+}
+
+impl TaskStatus {
+    pub fn is_open(self) -> bool {
+        matches!(self, TaskStatus::Todo | TaskStatus::InProgress)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct TaskNote {
+    pub id: String,
+    pub title: String,
+    pub relative_path: String,
+    pub missing: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Task {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    pub status: TaskStatus,
+    /// No planned date, no deadline, and not marked Sorted (SPEC.md, Tasks and Today).
+    pub to_sort: bool,
+    /// Local calendar dates, `YYYY-MM-DD`.
+    pub planned_date: Option<String>,
+    pub due_date: Option<String>,
+    pub note: Option<TaskNote>,
+    pub repository_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub completed_at: Option<String>,
+    /// Increments on every change; an update must name the version it read.
+    #[ts(type = "number")]
+    pub version: i64,
+}
+
+/// Everything a task's editor can change. Sent whole with the version it was read at.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct TaskFields {
+    pub title: String,
+    pub description: String,
+    pub status: TaskStatus,
+    pub planned_date: Option<String>,
+    pub due_date: Option<String>,
+    pub note_id: Option<String>,
+    pub repository_id: Option<String>,
+    /// Marked Sorted without a date. Giving the task a date also sorts it.
+    pub sorted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct UpdateTaskRequest {
+    pub task_id: String,
+    #[ts(type = "number")]
+    pub expected_version: i64,
+    pub fields: TaskFields,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct TaskFilter {
+    /// Only these statuses; all when `None`.
+    pub statuses: Option<Vec<TaskStatus>>,
+    /// Only tasks to sort (true) or only sorted ones (false).
+    pub to_sort: Option<bool>,
+    pub note_id: Option<String>,
+    pub repository_id: Option<String>,
+}
+
+/// The Today view for the Mac's current date (SPEC.md, Tasks and Today).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct TodayView {
+    /// Today's local date, `YYYY-MM-DD`.
+    pub date: String,
+    /// Open tasks that are overdue, due today, or planned for today.
+    pub open: Vec<Task>,
+    /// Tasks completed today.
+    pub completed: Vec<Task>,
+    /// Open tasks to sort, shown folded.
+    pub to_sort: Vec<Task>,
+    /// Repositories linked to today's tasks or their notes, without duplicates.
+    pub repository_ids: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Search (v0.2)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum SearchKind {
+    Note,
+    Task,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SearchRequest {
+    /// Literal text; never read as search syntax.
+    pub query: String,
+    /// Only these kinds; both when `None`.
+    pub kinds: Option<Vec<SearchKind>>,
+    /// Results per kind (default 8, at most 200).
+    pub limit: Option<u32>,
+}
+
+/// A piece of a snippet or title; highlighted pieces matched a query word.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct TextPart {
+    pub text: String,
+    pub highlight: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SearchHit {
+    pub kind: SearchKind,
+    pub id: String,
+    pub title: Vec<TextPart>,
+    /// The note's path, or the task's status and dates.
+    pub detail: String,
+    pub snippet: Vec<TextPart>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SearchGroup {
+    pub hits: Vec<SearchHit>,
+    /// How many match in all (Show all N).
+    #[ts(type = "number")]
+    pub total: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SearchResults {
+    pub query: String,
+    pub notes: SearchGroup,
+    pub tasks: SearchGroup,
+    pub index: IndexStatus,
+}
+
+// ---------------------------------------------------------------------------
+// Export and restore (v0.2)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ExportResult {
+    /// The folder the export was written to.
+    pub path: String,
+    #[ts(type = "number")]
+    pub notes: u64,
+    #[ts(type = "number")]
+    pub tasks: u64,
+    /// Files that changed during the export and could not be copied consistently.
+    pub problems: Vec<String>,
+    /// True only when every note was copied as listed in the manifest.
+    pub complete: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ExportedRepository {
+    pub name: String,
+    pub remote_url: Option<String>,
+}
+
+/// What an export contains, checked before anything is replaced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RestorePreview {
+    pub path: String,
+    pub exported_at: String,
+    pub app_version: String,
+    pub vault_name: Option<String>,
+    #[ts(type = "number")]
+    pub notes: u64,
+    #[ts(type = "number")]
+    pub tasks: u64,
+    pub repositories: Vec<ExportedRepository>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RestoreRequest {
+    /// The export folder.
+    pub export_path: String,
+    /// Where the vault goes: an empty or new folder the export's notes are
+    /// copied into, or, with `use_existing_vault`, a folder that already holds them.
+    pub vault_path: String,
+    pub use_existing_vault: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RestoreResult {
+    /// Repositories matched to a registered one by remote URL.
+    #[ts(type = "number")]
+    pub matched_repositories: u64,
+    /// Repositories that need Locate….
+    pub unmatched_repositories: Vec<String>,
+    /// Brainiac restarts to open the restored data.
+    pub needs_restart: bool,
+}
+
+// ---------------------------------------------------------------------------
+// v0.2 events
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum NoteChangeOrigin {
+    /// Saved, created, or renamed in Brainiac.
+    App,
+    /// Changed outside Brainiac: another editor, a `git pull`, an agent.
+    External,
+    /// Trashed or restored.
+    Trash,
+}
+
+/// Emitted as `note_changed`; carries no note text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct NoteChangedEvent {
+    pub note_id: String,
+    /// The note's version after the change; `None` once it is gone.
+    pub version: Option<String>,
+    pub relative_path: String,
+    pub origin: NoteChangeOrigin,
+}
+
+/// Emitted as `note_missing` when a note's file is gone for good.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct NoteMissingEvent {
+    pub note_id: String,
+}
+
+/// Emitted as `task_changed`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct TaskChangedEvent {
+    pub task_id: String,
+    /// `None` when the task was deleted.
+    #[ts(type = "number | null")]
+    pub version: Option<i64>,
 }
 
 pub fn now_rfc3339() -> String {

@@ -1,5 +1,6 @@
 //! Thin Tauri command handlers. Each one validates nothing beyond types and
-//! delegates to `RepositoryService`; business rules live there.
+//! delegates to a service (`RepositoryService`, `NoteService`,
+//! `TaskService`); business rules live there.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -14,6 +15,15 @@ use crate::models::{
     RepositoryTab, TeamPulse, UpdateWorkspaceMembershipRequest, Workspace, WorkspaceActivity,
     WorkspacePreview, WorkspaceRescan,
 };
+use crate::models::{
+    CreateNoteRequest, ExportResult, FolderListing, NoteContent, NoteContext, NoteLists,
+    NoteRevision, NoteSummary, RenameNoteRequest, RenamePreview, RenameResult, RepositoryNotes,
+    RestorePreview, RestoreRequest, RestoreResult, SaveNoteRequest, SaveNoteResult, SearchRequest,
+    SearchResults, Task, TaskFields, TaskFilter, TodayView, TrashedNote, UpdateTaskRequest,
+    VaultState,
+};
+use crate::notes::NoteService;
+use crate::tasks::TaskService;
 use crate::watcher::RepositoryWatcher;
 use crate::workspaces::{RepositoryService, WorkspaceChange};
 
@@ -293,4 +303,339 @@ pub async fn get_team_pulse(
     service: State<'_, Service>,
 ) -> AppResult<TeamPulse> {
     service.team_pulse(&workspace_id).await
+}
+
+#[tauri::command]
+pub async fn update_settings(
+    settings: crate::models::Settings,
+    service: State<'_, Service>,
+    notes: State<'_, Notes>,
+) -> AppResult<crate::models::Settings> {
+    let saved = service.update_settings(settings).await?;
+    notes.set_write_note_ids(saved.write_note_ids);
+    Ok(saved)
+}
+
+// ---------------------------------------------------------------------------
+// v0.2: vault, notes, tasks, search, backups
+// ---------------------------------------------------------------------------
+
+pub type Notes = Arc<NoteService>;
+pub type Tasks = Arc<TaskService>;
+
+#[tauri::command]
+pub async fn get_vault_state(notes: State<'_, Notes>) -> AppResult<VaultState> {
+    Ok(notes.vault_state().await)
+}
+
+/// Use the folder at `path` as the vault; with `create`, make a new, empty one there.
+#[tauri::command]
+pub async fn select_vault(
+    path: String,
+    create: bool,
+    notes: State<'_, Notes>,
+) -> AppResult<VaultState> {
+    notes.select_vault(&path, create).await
+}
+
+#[tauri::command]
+pub async fn list_folder(
+    folder: Option<String>,
+    notes: State<'_, Notes>,
+) -> AppResult<FolderListing> {
+    notes.list_folder(folder).await
+}
+
+#[tauri::command]
+pub async fn get_note_lists(notes: State<'_, Notes>) -> AppResult<NoteLists> {
+    notes.lists().await
+}
+
+#[tauri::command]
+pub async fn read_note(note_id: String, notes: State<'_, Notes>) -> AppResult<NoteContent> {
+    notes.read(&note_id).await
+}
+
+#[tauri::command]
+pub async fn mark_note_opened(note_id: String, notes: State<'_, Notes>) -> AppResult<()> {
+    notes.mark_opened(&note_id).await
+}
+
+#[tauri::command]
+pub async fn save_note(
+    request: SaveNoteRequest,
+    notes: State<'_, Notes>,
+) -> AppResult<SaveNoteResult> {
+    notes.save(request).await
+}
+
+#[tauri::command]
+pub async fn create_note(
+    request: CreateNoteRequest,
+    notes: State<'_, Notes>,
+) -> AppResult<NoteSummary> {
+    notes.create(request).await
+}
+
+#[tauri::command]
+pub async fn preview_rename(
+    note_id: String,
+    new_path: String,
+    notes: State<'_, Notes>,
+) -> AppResult<RenamePreview> {
+    notes.preview_rename(&note_id, &new_path).await
+}
+
+#[tauri::command]
+pub async fn rename_note(
+    request: RenameNoteRequest,
+    notes: State<'_, Notes>,
+) -> AppResult<RenameResult> {
+    notes.rename(request).await
+}
+
+#[tauri::command]
+pub async fn trash_note(note_id: String, notes: State<'_, Notes>) -> AppResult<()> {
+    notes.trash(&note_id).await
+}
+
+#[tauri::command]
+pub async fn list_trash(notes: State<'_, Notes>) -> AppResult<Vec<TrashedNote>> {
+    notes.list_trash().await
+}
+
+#[tauri::command]
+pub async fn restore_note(
+    note_id: String,
+    overwrite: bool,
+    notes: State<'_, Notes>,
+) -> AppResult<NoteSummary> {
+    notes.restore(&note_id, overwrite).await
+}
+
+#[tauri::command]
+pub async fn recreate_note(
+    note_id: String,
+    text: String,
+    notes: State<'_, Notes>,
+) -> AppResult<NoteSummary> {
+    notes.recreate(&note_id, text).await
+}
+
+#[tauri::command]
+pub async fn relink_note(
+    note_id: String,
+    path: String,
+    notes: State<'_, Notes>,
+) -> AppResult<NoteSummary> {
+    notes.relink(&note_id, &path).await
+}
+
+#[tauri::command]
+pub async fn list_revisions(
+    note_id: String,
+    notes: State<'_, Notes>,
+) -> AppResult<Vec<NoteRevision>> {
+    notes.revisions(&note_id).await
+}
+
+#[tauri::command]
+pub async fn read_revision(revision_id: String, notes: State<'_, Notes>) -> AppResult<String> {
+    notes.revision_text(&revision_id).await
+}
+
+#[tauri::command]
+pub async fn restore_revision(
+    note_id: String,
+    revision_id: String,
+    expected_version: String,
+    notes: State<'_, Notes>,
+) -> AppResult<SaveNoteResult> {
+    notes
+        .restore_revision(&note_id, &revision_id, &expected_version)
+        .await
+}
+
+/// Keep unsaved edits as a draft while the note cannot be saved (changed on disk, or gone).
+#[tauri::command]
+pub async fn save_draft(
+    note_id: String,
+    base_version: String,
+    text: String,
+    notes: State<'_, Notes>,
+) -> AppResult<()> {
+    notes.keep_draft(&note_id, &base_version, text).await
+}
+
+#[tauri::command]
+pub async fn discard_draft(note_id: String, notes: State<'_, Notes>) -> AppResult<()> {
+    notes.discard_draft(&note_id).await
+}
+
+#[tauri::command]
+pub async fn save_draft_as_copy(
+    note_id: String,
+    text: String,
+    notes: State<'_, Notes>,
+) -> AppResult<NoteSummary> {
+    notes.save_copy(&note_id, text).await
+}
+
+/// Open a vault file in its default application (files Brainiac does not edit).
+#[tauri::command]
+pub async fn open_vault_file(relative_path: String, notes: State<'_, Notes>) -> AppResult<()> {
+    let path = notes.absolute(&relative_path)?;
+    tauri_plugin_opener::open_path(&path, None::<&str>).map_err(|e| {
+        crate::models::AppError::io("Could not open the file.").with_details(e.to_string())
+    })
+}
+
+/// Reveal a vault file or folder in Finder; the vault itself without a path.
+#[tauri::command]
+pub async fn reveal_vault_path(
+    relative_path: Option<String>,
+    notes: State<'_, Notes>,
+) -> AppResult<()> {
+    let target = match relative_path.filter(|p| !p.is_empty()) {
+        Some(p) => notes.absolute(&p)?,
+        None => notes
+            .vault()
+            .map(|v| v.root)
+            .ok_or_else(|| crate::models::AppError::not_found("Choose a vault folder first."))?,
+    };
+    tauri_plugin_opener::reveal_item_in_dir(&target).map_err(|e| {
+        crate::models::AppError::io("Could not reveal the item in Finder.")
+            .with_details(e.to_string())
+    })
+}
+
+#[tauri::command]
+pub async fn get_note_context(note_id: String, notes: State<'_, Notes>) -> AppResult<NoteContext> {
+    notes.context(&note_id).await
+}
+
+#[tauri::command]
+pub async fn resolve_link(
+    note_id: String,
+    target: String,
+    wikilink: bool,
+    notes: State<'_, Notes>,
+) -> AppResult<crate::models::ResolvedLink> {
+    notes.resolve_link(&note_id, &target, wikilink).await
+}
+
+#[tauri::command]
+pub async fn get_repository_notes(
+    repository_id: String,
+    notes: State<'_, Notes>,
+) -> AppResult<RepositoryNotes> {
+    notes.repository_notes(&repository_id).await
+}
+
+#[tauri::command]
+pub async fn link_repository(
+    note_id: String,
+    repository_id: String,
+    notes: State<'_, Notes>,
+) -> AppResult<()> {
+    notes.link_repository(&note_id, &repository_id).await
+}
+
+#[tauri::command]
+pub async fn unlink_repository(
+    note_id: String,
+    repository_id: String,
+    notes: State<'_, Notes>,
+) -> AppResult<()> {
+    notes.unlink_repository(&note_id, &repository_id).await
+}
+
+#[tauri::command]
+pub async fn dismiss_suggestion(
+    note_id: String,
+    repository_id: String,
+    notes: State<'_, Notes>,
+) -> AppResult<()> {
+    notes.dismiss_suggestion(&note_id, &repository_id).await
+}
+
+/// Move the links of a removed repository to a registered one with the same remote.
+#[tauri::command]
+pub async fn reconnect_repository(
+    from: String,
+    to: String,
+    notes: State<'_, Notes>,
+) -> AppResult<()> {
+    notes.reconnect_repository(&from, &to).await
+}
+
+#[tauri::command]
+pub async fn list_tasks(
+    filter: Option<TaskFilter>,
+    tasks: State<'_, Tasks>,
+) -> AppResult<Vec<Task>> {
+    tasks.list(filter.unwrap_or_default()).await
+}
+
+#[tauri::command]
+pub async fn get_task(task_id: String, tasks: State<'_, Tasks>) -> AppResult<Task> {
+    tasks.get(&task_id).await
+}
+
+#[tauri::command]
+pub async fn get_today(tasks: State<'_, Tasks>) -> AppResult<TodayView> {
+    tasks.today().await
+}
+
+#[tauri::command]
+pub async fn create_task(fields: TaskFields, tasks: State<'_, Tasks>) -> AppResult<Task> {
+    tasks.create(fields).await
+}
+
+#[tauri::command]
+pub async fn update_task(request: UpdateTaskRequest, tasks: State<'_, Tasks>) -> AppResult<Task> {
+    tasks.update(request).await
+}
+
+#[tauri::command]
+pub async fn delete_task(
+    task_id: String,
+    expected_version: i64,
+    tasks: State<'_, Tasks>,
+) -> AppResult<()> {
+    tasks.delete(&task_id, expected_version).await
+}
+
+#[tauri::command]
+pub async fn search(request: SearchRequest, notes: State<'_, Notes>) -> AppResult<SearchResults> {
+    crate::index::search(&notes, request).await
+}
+
+#[tauri::command]
+pub async fn rebuild_search(notes: State<'_, Notes>) -> AppResult<()> {
+    notes.rebuild_search().await
+}
+
+/// Write an export into a new folder inside `folder`.
+#[tauri::command]
+pub async fn export_backup(folder: String, notes: State<'_, Notes>) -> AppResult<ExportResult> {
+    crate::backup::export(&notes, std::path::Path::new(&folder)).await
+}
+
+#[tauri::command]
+pub async fn preview_restore(path: String) -> AppResult<RestorePreview> {
+    tokio::task::spawn_blocking(move || crate::backup::preview(std::path::Path::new(&path)))
+        .await
+        .map_err(|e| {
+            crate::models::AppError::io("Reading the export stopped.").with_details(e.to_string())
+        })?
+}
+
+/// Stage a restore; the frontend relaunches Brainiac to apply it.
+#[tauri::command]
+pub async fn restore_backup(
+    request: RestoreRequest,
+    notes: State<'_, Notes>,
+) -> AppResult<RestoreResult> {
+    crate::backup::restore(&notes, request).await
 }
