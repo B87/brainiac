@@ -265,7 +265,7 @@ External deletion marks a note missing and removes its search row. User-visible 
 
 - Create a consistent snapshot of `brainiac.db` before each migration and once per active day; retain seven daily snapshots by default. Snapshot `history.db` on its own, less often. Never back up `index.db`.
 - Snapshots use SQLite's backup API on the app's own connection, copying everything in one pass, so the copy is consistent while the app keeps running. `VACUUM INTO` also produces a consistent, compacted copy at more CPU cost and suits exports. Write either to a temporary name and rename it when complete, so a crash never leaves a partial file that looks like a snapshot. [SQLite backup API](https://www.sqlite.org/backup.html), [VACUUM INTO](https://www.sqlite.org/lang_vacuum.html)
-- Every database file carries Brainiac's `PRAGMA application_id`; restore and open reject a file without it.
+- Every database file carries Brainiac's `PRAGMA application_id` (since 0.1.3); open and restore reject a file with another ID, and adopt one with none, which predates the marker.
 - Keep draft checkpoints and a bounded revision history: proposed 30 days, at most 20 revisions per note, and a global 250 MiB budget, excluding unresolved conflicts and active drafts.
 - Provide an export containing vault files, a consistent database snapshot, and a versioned manifest. The vault and the database cannot share a transaction, so the manifest is what lets them be reconciled: schema version, vault ID, and for each note its ID, relative path, and content hash; for each linked repository its name and remote URL. Serialize application writes during snapshot/export and detect externally changed files; retry or report an incomplete export rather than claiming an atomic snapshot across independent editors.
 - Export tasks as JSON with IDs, dates, statuses, and associations for portability.
@@ -454,7 +454,7 @@ RAG uses hybrid retrieval to answer questions about saved notes. It adds synthes
 ### Evolving the data — all releases
 
 - Migrations stay append-only and run at startup, after a pre-migration snapshot. That is enough for one user on one machine.
-- An app must never run on a database newer than it knows: `PRAGMA user_version` is a convention SQLite does not enforce, so the app checks it and refuses, pointing to the pre-migration snapshot. This ships in v0.1.x, before the first schema change. [SQLite file format](https://www.sqlite.org/fileformat.html)
+- An app must never run on a database newer than it knows: `PRAGMA user_version` is a convention SQLite does not enforce, so the app checks it and refuses, naming the backups folder. This shipped in 0.1.3, before the first schema change. [SQLite file format](https://www.sqlite.org/fileformat.html)
 - Rows use UUIDs, notes are identified by vault ID plus relative path, and unknown frontmatter keys are preserved, so multiple vaults or sync can be added later without rewriting identity. Absolute paths stay only where they are local by nature, such as a repository's folder; its remote URL is the identity that travels.
 - Sync, if it comes, cannot migrate every device at once, because devices run different app versions. Record a format version on synced records and translate on read rather than migrating all data in one step. [Ink & Switch: Cambria](https://www.inkandswitch.com/cambria/)
 - New AI models or chunkers add an embedding profile; they never alter existing vectors in place.
