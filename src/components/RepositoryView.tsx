@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { relativeTime, shortPath } from "../lib/format";
 import {
+  type AppSnapshot,
   type ChangesResult,
   errorMessage,
   ipc,
@@ -8,6 +9,7 @@ import {
   type RefsResult,
   type RepositorySummary,
   type RepositoryTab,
+  type Task,
 } from "../lib/ipc";
 import { useKeys } from "../lib/keys";
 import {
@@ -31,6 +33,7 @@ import {
   RefreshIcon,
 } from "./icons";
 import Popover from "./Popover";
+import RepositoryNotesTab from "./RepositoryNotesTab";
 
 /** Where the viewer opens, for links from the activity feed. */
 export type RepoFocus = {
@@ -56,6 +59,12 @@ type Props = {
   /** Ask for the folder this repository moved to. */
   onLocate: () => void;
   onError: (message: string | null) => void;
+  /** For the Notes tab. */
+  snapshot: AppSnapshot;
+  hasVault: boolean;
+  onOpenNote: (noteId: string) => void;
+  onNewNote: () => void;
+  onEditTask: (task: Task) => void;
 };
 
 export default function RepositoryView({
@@ -71,6 +80,11 @@ export default function RepositoryView({
   onRemove,
   onLocate,
   onError,
+  snapshot,
+  hasVault,
+  onOpenNote,
+  onNewNote,
+  onEditTask,
 }: Props) {
   const [tab, setTab] = useState<RepositoryTab>(
     focus?.tab ?? repository.last_tab ?? "changes",
@@ -140,6 +154,7 @@ export default function RepositoryView({
     "mod+1": () => changeTab("changes"),
     "mod+2": () => changeTab("history"),
     "mod+3": () => changeTab("refs"),
+    "mod+4": () => changeTab("notes"),
   });
 
   const run = (p: Promise<unknown>) =>
@@ -196,6 +211,14 @@ export default function RepositoryView({
             onClick={() => changeTab("refs")}
           >
             Branches &amp; tags
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "notes"}
+            onClick={() => changeTab("notes")}
+          >
+            Notes
           </button>
         </div>
         <div data-tauri-drag-region className="h-full flex-1" />
@@ -292,7 +315,17 @@ export default function RepositoryView({
         </div>
       </header>
 
-      {unavailable ? (
+      {tab === "notes" ? (
+        <RepositoryNotesTab
+          repository={repository}
+          snapshot={snapshot}
+          hasVault={hasVault}
+          onOpenNote={onOpenNote}
+          onNewNote={onNewNote}
+          onEditTask={onEditTask}
+          onError={onError}
+        />
+      ) : unavailable ? (
         <Unavailable
           repository={repository}
           onRemove={onRemove}

@@ -232,7 +232,7 @@ test("Cmd+click opens web and note links; a plain click opens nothing", async ({
   await click("Rollout checklist", true);
   expect(await page.evaluate(() => window.ed.opened)).toEqual([
     { kind: "url", target: "https://example.com/org/payments-api" },
-    { kind: "note", target: "Rollout checklist" },
+    { kind: "note", target: "Rollout checklist", wiki: true },
   ]);
 });
 

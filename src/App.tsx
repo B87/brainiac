@@ -1,23 +1,41 @@
 import { ask, open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AddDialog, { type AddMode } from "./components/AddDialog";
+import {
+  ExportProblems,
+  RestoreDialog,
+  runExport,
+} from "./components/BackupDialogs";
 import CommandPalette from "./components/CommandPalette";
 import Dashboard, { type Discovered } from "./components/Dashboard";
+import NotesView from "./components/NotesView";
 import RepositoryView from "./components/RepositoryView";
+import SettingsDialog from "./components/SettingsDialog";
 import Sidebar, { type View } from "./components/Sidebar";
 import StatusBar from "./components/StatusBar";
+import TaskEditor from "./components/TaskEditor";
+import TasksView from "./components/TasksView";
+import TodayView from "./components/TodayView";
 import UpdateBanner from "./components/UpdateBanner";
 import { shortPath } from "./lib/format";
 import {
   type AppSnapshot,
+  type ExportResult,
   errorMessage,
   ipc,
+  onIndexStatusChanged,
   onMenu,
   onRepositoryChanged,
   type PinEntityType,
   type SuggestedMove,
+  subscribe,
+  type Task,
+  type TaskFields,
+  type VaultState,
   type Workspace,
 } from "./lib/ipc";
+import { folderOf } from "./lib/notes";
+import { usePref } from "./lib/prefs";
 import {
   parentFolder,
   plural,
@@ -26,9 +44,44 @@ import {
 } from "./lib/repo";
 import { workspaceRepositories } from "./lib/workspace";
 
+/** The section open when Brainiac quit, reopened at launch (SPEC.md, Main window v0.2). */
+const VIEW_KEY = "brainiac.view";
+
+function readView(): View {
+  try {
+    const v = JSON.parse(
+      localStorage.getItem(VIEW_KEY) ?? "null",
+    ) as View | null;
+    if (v && typeof v.kind === "string") return v;
+  } catch {
+    // Fall back to the first launch's view.
+  }
+  return { kind: "all" };
+}
+
+/** A task being edited, or a new one with its first fields. */
+type EditingTask = {
+  task?: Task;
+  initial?: Partial<TaskFields>;
+  initialNote?: { id: string; title: string } | null;
+};
+
 export default function App() {
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null);
-  const [view, setView] = useState<View>({ kind: "all" });
+  const [view, setView] = useState<View>(readView);
+  const [vault, setVault] = useState<VaultState | null>(null);
+  const [livePreview, setLivePreview] = usePref(
+    "brainiac.notes.livePreview",
+    true,
+  );
+  const [contextOpen, setContextOpen] = usePref("brainiac.notes.context", true);
+  /** Bumped by ⌘S; the open note saves at once. */
+  const [saveTick, setSaveTick] = useState(0);
+  const [editingTask, setEditingTask] = useState<EditingTask | null>(null);
+  const [dialog, setDialog] = useState<"settings" | "restore" | null>(null);
+  const [exportProblems, setExportProblems] = useState<ExportResult | null>(
+    null,
+  );
   const [banner, setBanner] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [addMode, setAddMode] = useState<AddMode | null>(null);
@@ -43,6 +96,10 @@ export default function App() {
   const [notice, setNotice] = useState<string | null>(null);
   const viewRef = useRef(view);
   viewRef.current = view;
+  const livePreviewRef = useRef(livePreview);
+  livePreviewRef.current = livePreview;
+  const contextOpenRef = useRef(contextOpen);
+  contextOpenRef.current = contextOpen;
 
   const reloadSnapshot = useCallback(async () => {
     try {
@@ -56,11 +113,120 @@ export default function App() {
     }
   }, []);
 
+  /** The note open in Notes, so coming back to Notes shows it again. */
+  const lastNote = useRef<string | undefined>(
+    view.kind === "notes" ? view.noteId : undefined,
+  );
   const showView = useCallback((next: View) => {
+    if (next.kind === "notes") {
+      if (next.noteId) lastNote.current = next.noteId;
+      else if (lastNote.current)
+        next = { kind: "notes", noteId: lastNote.current };
+    }
     setView(next);
     setPaletteOpen(false);
     if (next.kind === "repository")
       void ipc.openRepository(next.id).catch(() => {});
+  }, []);
+
+  // Remember the section, so Brainiac reopens it.
+  useEffect(() => {
+    try {
+      const kept =
+        view.kind === "repository"
+          ? { kind: "repository", id: view.id, workspaceId: view.workspaceId }
+          : view;
+      localStorage.setItem(VIEW_KEY, JSON.stringify(kept));
+    } catch {
+      // Preference only.
+    }
+  }, [view]);
+
+  // The vault and how complete search is.
+  useEffect(() => {
+    void ipc
+      .getVaultState()
+      .then(setVault)
+      .catch((e) => setBanner(errorMessage(e)));
+    return subscribe(
+      onIndexStatusChanged((index) => {
+        setVault((v) => (v ? { ...v, index } : v));
+        // The vault becomes available or unavailable with a scan.
+        void ipc
+          .getVaultState()
+          .then(setVault)
+          .catch(() => {});
+      }),
+    );
+  }, []);
+
+  const openNote = useCallback(
+    (noteId: string) => showView({ kind: "notes", noteId }),
+    [showView],
+  );
+  const openRepo = useCallback(
+    (id: string) => showView({ kind: "repository", id }),
+    [showView],
+  );
+  const editTask = useCallback((task: Task) => setEditingTask({ task }), []);
+
+  /** A new note: linked to the open repository, next to the open note, or in Inbox/. */
+  const newNote = useCallback(
+    async (folder?: string) => {
+      if (!vault?.vault) {
+        showView({ kind: "notes" });
+        return;
+      }
+      try {
+        let target = folder;
+        let repositoryId: string | null = null;
+        if (target === undefined) {
+          if (view.kind === "repository") {
+            repositoryId = view.id;
+            target = "";
+          } else if (view.kind === "notes" && view.noteId) {
+            target = folderOf(
+              (await ipc.readNote(view.noteId)).note.relative_path,
+            );
+          } else target = "Inbox";
+        }
+        const note = await ipc.createNote({
+          folder: target || null,
+          repository_id: repositoryId,
+        });
+        showView({ kind: "notes", noteId: note.id });
+      } catch (e) {
+        setBanner(errorMessage(e));
+      }
+    },
+    [vault, view, showView],
+  );
+
+  /** A new task, linked to the open repository or note. */
+  const newTask = useCallback(async () => {
+    if (view.kind === "repository") {
+      setEditingTask({ initial: { repository_id: view.id } });
+      return;
+    }
+    if (view.kind === "notes" && view.noteId) {
+      try {
+        const note = await ipc.readNote(view.noteId);
+        if (!note.note.missing) {
+          setEditingTask({
+            initialNote: { id: note.note.id, title: note.note.title },
+          });
+          return;
+        }
+      } catch {
+        // A new task without a note.
+      }
+    }
+    setEditingTask({});
+  }, [view]);
+
+  const exportNow = useCallback(async () => {
+    const result = await runExport(setNotice, setBanner);
+    if (result && !result.complete) setExportProblems(result);
   }, []);
 
   const openRepositoryPicker = useCallback(async () => {
@@ -92,6 +258,7 @@ export default function App() {
     view.kind === "repository" ? (byId.get(view.id) ?? null) : null;
 
   // Fall back to the overview when the shown repository or workspace is removed.
+  // Today, Tasks, and Notes are always there.
   useEffect(() => {
     if (!snapshot) return;
     if (
@@ -325,8 +492,22 @@ export default function App() {
     void fetchRepositories(
       scope.filter((r) => r.state !== "missing").map((r) => r.id),
     );
-  const actions = useRef({ refresh, fetchScope });
-  actions.current = { refresh, fetchScope };
+  const actions = useRef({
+    refresh,
+    fetchScope,
+    newNote,
+    newTask,
+    exportNow,
+    showView,
+  });
+  actions.current = {
+    refresh,
+    fetchScope,
+    newNote,
+    newTask,
+    exportNow,
+    showView,
+  };
 
   useEffect(() => {
     void reloadSnapshot();
@@ -355,12 +536,23 @@ export default function App() {
       if (e.id === "fetch") actions.current.fetchScope();
       if (e.id === "palette") setPaletteOpen(true);
       if (e.id === "check_updates") setUpdateTick((t) => t + 1);
+      if (e.id === "new_note") void actions.current.newNote();
+      if (e.id === "new_task") void actions.current.newTask();
+      if (e.id === "save") setSaveTick((t) => t + 1);
+      if (e.id === "toggle_source") setLivePreview(!livePreviewRef.current);
+      if (e.id === "toggle_context") setContextOpen(!contextOpenRef.current);
+      if (e.id === "export") void actions.current.exportNow();
+      if (e.id === "restore") setDialog("restore");
+      if (e.id === "settings") setDialog("settings");
+      if (e.id === "show_today") actions.current.showView({ kind: "today" });
+      if (e.id === "show_tasks") actions.current.showView({ kind: "tasks" });
+      if (e.id === "show_notes") actions.current.showView({ kind: "notes" });
     }).then((u) => (disposed ? u() : unlisteners.push(u)));
     return () => {
       disposed = true;
       for (const unlisten of unlisteners) unlisten();
     };
-  }, [reloadSnapshot]);
+  }, [reloadSnapshot, setLivePreview, setContextOpen]);
 
   const isPinned = (type: PinEntityType, id: string) =>
     !!snapshot?.pins.some((p) => p.entity_type === type && p.entity_id === id);
@@ -370,6 +562,7 @@ export default function App() {
       <div className="flex min-h-0 flex-1">
         <Sidebar
           snapshot={snapshot}
+          vault={vault}
           view={view}
           onView={showView}
           onAdd={() => setAddMode({ kind: "choose" })}
@@ -395,6 +588,53 @@ export default function App() {
           )}
           {!snapshot ? (
             <div className="p-6 text-muted">Loading…</div>
+          ) : view.kind === "today" ? (
+            <TodayView
+              snapshot={snapshot}
+              fetching={fetching}
+              onEdit={editTask}
+              onNew={() => void newTask()}
+              onOpenNote={openNote}
+              onOpenRepo={openRepo}
+              onFetch={(ids) => void fetchRepositories(ids)}
+              onError={setBanner}
+            />
+          ) : view.kind === "tasks" ? (
+            <TasksView
+              snapshot={snapshot}
+              scope={view.scope ?? "open"}
+              onScope={(scope) => setView({ kind: "tasks", scope })}
+              onEdit={editTask}
+              onNew={() => void newTask()}
+              onOpenNote={openNote}
+              onOpenRepo={openRepo}
+              onError={setBanner}
+            />
+          ) : view.kind === "notes" ? (
+            <NotesView
+              snapshot={snapshot}
+              vault={vault}
+              noteId={view.noteId ?? null}
+              livePreview={livePreview}
+              onLivePreview={setLivePreview}
+              contextOpen={contextOpen}
+              onToggleContext={() => setContextOpen(!contextOpen)}
+              saveTick={saveTick}
+              onOpenNote={openNote}
+              onOpenRepo={openRepo}
+              onNewNote={(folder) => void newNote(folder)}
+              onEditTask={editTask}
+              onNewTask={(note) => setEditingTask({ initialNote: note })}
+              onVault={(state) => {
+                setVault(state);
+                setBanner(null);
+              }}
+              onNotice={setNotice}
+              onError={setBanner}
+              onPinsChanged={() => void reloadSnapshot()}
+              onAddRepository={() => void openRepositoryPicker()}
+              onLocate={(id) => void locate(id)}
+            />
           ) : selected ? (
             <RepositoryView
               key={`${selected.id}:${JSON.stringify(view.kind === "repository" ? (view.focus ?? null) : null)}`}
@@ -410,6 +650,11 @@ export default function App() {
               onRemove={() => void removeRepository(selected.id)}
               onLocate={() => void locate(selected.id)}
               onError={setBanner}
+              snapshot={snapshot}
+              hasVault={!!vault?.vault}
+              onOpenNote={openNote}
+              onNewNote={() => void newNote()}
+              onEditTask={editTask}
             />
           ) : (
             <Dashboard
@@ -526,6 +771,52 @@ export default function App() {
             setPaletteOpen(false);
             void locate(id);
           }}
+          onOpenNote={openNote}
+          onOpenTask={(id) => {
+            setPaletteOpen(false);
+            void ipc
+              .getTask(id)
+              .then((task) => setEditingTask({ task }))
+              .catch((e) => setBanner(errorMessage(e)));
+          }}
+          onNewNote={() => {
+            setPaletteOpen(false);
+            void newNote();
+          }}
+          onNewTask={() => {
+            setPaletteOpen(false);
+            void newTask();
+          }}
+        />
+      )}
+      {editingTask && snapshot && (
+        <TaskEditor
+          snapshot={snapshot}
+          task={editingTask.task}
+          initial={editingTask.initial}
+          initialNote={editingTask.initialNote}
+          onClose={() => setEditingTask(null)}
+          onSaved={() => setEditingTask(null)}
+        />
+      )}
+      {dialog === "settings" && snapshot && (
+        <SettingsDialog
+          snapshot={snapshot}
+          vault={vault}
+          onVault={(state) => setVault(state)}
+          onClose={() => setDialog(null)}
+          onExport={() => void exportNow()}
+          onRestore={() => setDialog("restore")}
+          onChanged={() => void reloadSnapshot()}
+        />
+      )}
+      {dialog === "restore" && (
+        <RestoreDialog onClose={() => setDialog(null)} />
+      )}
+      {exportProblems && (
+        <ExportProblems
+          result={exportProblems}
+          onClose={() => setExportProblems(null)}
         />
       )}
       {addMode && snapshot && (

@@ -33,12 +33,12 @@ Docs lifecycle: write a behavior change in `SPEC.md` first (or in the same commi
 
 ## Commands
 
-- `pnpm install` then `pnpm tauri dev` to run; `pnpm tauri build` for a packaged app.
+- `pnpm install` then `pnpm tauri dev` to run; `pnpm tauri build` for a packaged app. `pnpm tauri:dev` runs under a separate app identifier, so it uses its own data folder and never migrates the installed app's database.
 - Run `pnpm check` from the repository root before finishing: version agreement, Rust formatting, Clippy (all targets, warnings as errors), Rust tests, Biome, TypeScript, and frontend tests.
 - Frontend: `pnpm check:web` for Biome lint, formatting, and import checks; `pnpm check:fix` for safe fixes; `pnpm format` to format. Generated DTOs in `src/lib/generated/` are excluded from Biome; regenerate them with Rust tests rather than editing them.
 - Rust: `pnpm format:rust` to format; `pnpm format:rust:check`, `pnpm lint:rust`, and `pnpm test:rust` for individual checks. Rust tests also regenerate TypeScript bindings; commit them with the corresponding Rust changes.
 - `pnpm typecheck` and `pnpm test` for frontend types and tests; `pnpm build` for the frontend build only.
-- `pnpm test:editor` runs the note editor's tests in WebKit (Playwright, `e2e/editor/`); run it after changing `src/lib/editor/`. The first time, install the browser with `pnpm exec playwright install webkit`. CI runs it on every push.
+- `pnpm test:editor` runs the WebKit tests (Playwright): the note editor alone (`e2e/editor/`) and the app's v0.2 views over an in-memory fake backend (`e2e/app/`). Run it after changing `src/lib/editor/` or the views. The first time, install the browser with `pnpm exec playwright install webkit`. CI runs it on every push.
 - `pnpm vault:gen <folder> [--notes 10000] [--seed 1]` writes a synthetic vault, the same for a given seed on every machine, for measuring scans, search, and the watcher (`src-tauri/examples/gen_vault.rs`). Never commit a generated vault.
 - `pnpm run` lists available scripts.
 - Releases: `pnpm release X.Y.Z` (tag + push, CI builds a draft), then `pnpm release:publish vX.Y.Z`. These wrap the scripts in `scripts/`; `pnpm version:check` verifies version agreement. Process in `docs/RELEASING.md`. Every user-visible change gets one short line under `## [Unreleased]` in `CHANGELOG.md`, saying what the user notices, not how it was done; internal changes get none. Do not create version sections by hand: `scripts/release.sh` turns Unreleased into the release's section and updates the links.

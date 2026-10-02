@@ -234,7 +234,7 @@ describe("checkboxes and links", () => {
     const at = (s: string) => linkAt(state, text.indexOf(s) + 1);
     expect(at("web")).toEqual({ kind: "url", target: "https://example.com" });
     expect(at("note]")).toEqual({ kind: "note", target: "other.md" });
-    expect(at("alias")).toEqual({ kind: "note", target: "Target" });
+    expect(at("alias")).toEqual({ kind: "note", target: "Target", wiki: true });
     expect(at("bare")).toEqual({
       kind: "url",
       target: "https://bare.example.com",

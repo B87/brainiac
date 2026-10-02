@@ -45,20 +45,20 @@ M0 landed on 1 October 2026 with 58 Rust tests and 3 frontend tests. Known M0 si
 
 ### v0.2 — Knowledge, tasks, and code context
 
-- [ ] Vault onboarding, scan/reconciliation, folder navigation, pinned/recent notes.
+- [x] Vault onboarding, scan/reconciliation, folder navigation, pinned/recent notes.
 - [x] Editor fidelity spike (S1): TipTap's Markdown round trip rewrote or lost content, so notes are edited as styled Markdown text in CodeMirror 6.
 - [x] Live Preview spike (S1b): passed in WebKit; the editor is `src/lib/editor/` and the `NoteEditor` component, ready to wire into the Notes view.
-- [ ] Note editor with Live Preview and Source mode; note CRUD, auto-save, conflicts, trash, draft/history recovery.
-- [ ] Tasks with status, planned dates, deadlines, linked note and linked repository; tasks not yet sorted are marked as such.
-- [ ] Today, Tasks, Notes alongside the existing Workspaces/Git views; tasks to sort appear as a folded line in Today and a filter in Tasks.
+- [x] Note editor with Live Preview and Source mode; note CRUD, auto-save, conflicts, trash, draft/history recovery.
+- [x] Tasks with status, planned dates, deadlines, linked note and linked repository; tasks not yet sorted are marked as such.
+- [x] Today, Tasks, Notes alongside the existing Workspaces/Git views; tasks to sort appear as a folded line in Today and a filter in Tasks.
 - [x] Search tokenizer spike (S2): `unicode61` for note and task text, `trigram` only for titles and paths; every query word matches as a prefix.
 - [x] Vault scale spike (S3): 10,000 generated notes index in about 4 s and rescan in 35 ms; snippets are cut in Rust and one worker writes the index.
 - [x] Vault watcher spike (S4): one recursive watcher saw every editor save, rename, and `git pull` in a 10,000-note vault; changes are processed in batches so renames survive a pull.
-- [ ] FTS5 note/task ingestion, ranked keyword search, safe snippets, rebuild status.
-- [ ] Note/repository associations, Markdown links and wikilinks, backlinks, unresolved targets.
-- [ ] Storage split into `brainiac.db`, `index.db`, and `history.db`; migration `0002` tested against a 0.1.3 database.
-- [ ] Complete vault/database export and restore preserving tasks and associations.
-- [ ] One write path for every caller: each write goes through a domain service that emits the committed change event; task writes carry the expected version; a note changed outside Brainiac keeps its previous text as a revision.
+- [x] FTS5 note/task ingestion, ranked keyword search, safe snippets, rebuild status.
+- [x] Note/repository associations, Markdown links and wikilinks, backlinks, unresolved targets.
+- [x] Storage split into `brainiac.db`, `index.db`, and `history.db`; migration `0002` tested against a 0.1.3 database (built by the test from `0001_init.sql` with v0.1 data, so no binary fixture is checked in).
+- [x] Complete vault/database export and restore preserving tasks and associations.
+- [x] One write path for every caller: each write goes through a domain service that emits the committed change event; task writes carry the expected version; a note changed outside Brainiac keeps its previous text as a revision.
 
 **Exit gate:** use Brainiac for real notes and daily tasks alongside Git tracking; edits survive restart, knowledge search works offline, Today behaves correctly across midnight, and restore recovers files, tasks, and context links.
 

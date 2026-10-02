@@ -19,7 +19,11 @@ type Props = {
   onChange: (text: string) => void;
   onOpenLink?: (link: NoteLink) => void;
   resolveImage?: (src: string) => string | null;
+  /** Show the note without letting it be edited (previews). */
+  readOnly?: boolean;
   className?: string;
+  /** Receives the editor view once created, for focusing and scrolling. */
+  onView?: (view: EditorView | null) => void;
 };
 
 export function NoteEditor(props: Props) {
@@ -38,6 +42,7 @@ export function NoteEditor(props: Props) {
     },
     onOpenLink: (link) => latest.current.onOpenLink?.(link),
     resolveImage: (src) => latest.current.resolveImage?.(src) ?? null,
+    readOnly: latest.current.readOnly,
   });
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: created once; text changes are applied below.
@@ -48,7 +53,9 @@ export function NoteEditor(props: Props) {
       state: createNoteState(props.text, options()),
     });
     view.current = created;
+    latest.current.onView?.(created);
     return () => {
+      latest.current.onView?.(null);
       created.destroy();
       view.current = null;
     };

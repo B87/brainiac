@@ -48,7 +48,8 @@ import {
   taskToggle,
 } from "./preview";
 
-export type NoteLink = { kind: LinkKind; target: string };
+/** A clicked link: a web address, or another note by Markdown link or wikilink. */
+export type NoteLink = { kind: LinkKind; target: string; wiki?: boolean };
 
 export type NoteEditorOptions = {
   livePreview: boolean;
@@ -59,6 +60,8 @@ export type NoteEditorOptions = {
   /** The URL to draw a vault image from, or null to leave its Markdown as text
    * (web images, missing files). */
   resolveImage?: (src: string) => string | null;
+  /** Show the note without letting it be edited (previews). */
+  readOnly?: boolean;
 };
 
 const livePreviewOn = Facet.define<boolean, boolean>({
@@ -243,6 +246,7 @@ function previewPlugin(resolveImage: (src: string) => string | null) {
             !target.classList.contains("cm-md-checkbox")
           )
             return false;
+          if (view.state.readOnly) return false;
           const changes = taskToggle(view.state, view.posAtDOM(target));
           if (!changes) return false;
           event.preventDefault();
@@ -476,6 +480,9 @@ export function createNoteState(
       mode.of(livePreviewOn.of(options.livePreview)),
       previewPlugin(options.resolveImage ?? (() => null)),
       linkClicks(options.onOpenLink),
+      options.readOnly
+        ? [EditorState.readOnly.of(true), EditorView.editable.of(false)]
+        : [],
       caretFollow,
       onChange
         ? EditorView.updateListener.of((u) => {

@@ -302,7 +302,7 @@ export function previewItems(
 export function linkAt(
   state: EditorState,
   pos: number,
-): { kind: LinkKind; target: string } | null {
+): { kind: LinkKind; target: string; wiki?: boolean } | null {
   for (const side of [1, -1] as const) {
     for (
       let node: SyntaxNode | null = syntaxTree(state).resolveInner(pos, side);
@@ -311,7 +311,7 @@ export function linkAt(
     ) {
       if (node.name === "WikiLink") {
         const { target } = wikiParts(state, node);
-        return { kind: "note", target };
+        return { kind: "note", target, wiki: true };
       }
       if (node.name === "Link" || node.name === "Autolink") {
         const { target } = linkParts(state, node);

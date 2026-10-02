@@ -5,12 +5,27 @@ import type { View } from "./Sidebar";
 
 /** Shortcuts that work in each view (SPEC.md, Keyboard defaults). */
 function hints(view: View): Array<[string, string]> {
+  if (view.kind === "today" || view.kind === "tasks")
+    return [
+      ["J K", "rows"],
+      ["Space", "done"],
+      ["↵", "open"],
+      ["⇧⌘N", "new task"],
+    ];
+  if (view.kind === "notes")
+    return [
+      ["⌘N", "new"],
+      ["⌘S", "save"],
+      ["⇧⌘E", "source"],
+      ["⌥⌘0", "context"],
+      ["/", "filter"],
+    ];
   if (view.kind === "repository")
     return [
       ["J K", "rows"],
       ["[ ]", "files"],
       ["N P", "hunks"],
-      ["⌘1–3", "tabs"],
+      ["⌘1–4", "tabs"],
       ["/", "filter"],
     ];
   if (view.kind === "workspace")

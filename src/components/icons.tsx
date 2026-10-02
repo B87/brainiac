@@ -175,3 +175,62 @@ export const ClockIcon = (p: IconProps) => (
     <path d="M8 4.5V8l2.5 1.5" />
   </Svg>
 );
+
+/** A page with a folded corner: a note. */
+export const NoteIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M4 2h5.5L12.5 5v9H4z" />
+    <path d="M9.5 2v3h3M6 8h4.5M6 10.5h4.5" />
+  </Svg>
+);
+
+/** A round check: a task. Tasks are round; note checkboxes are square. */
+export const TaskIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="8" cy="8" r="5.5" />
+    <path d="M5.6 8.2l1.6 1.6 3.2-3.4" />
+  </Svg>
+);
+
+/** A sun: Today. */
+export const TodayIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="8" cy="8" r="2.8" />
+    <path d="M8 1.5v1.6M8 12.9v1.6M1.5 8h1.6M12.9 8h1.6M3.4 3.4l1.1 1.1M11.5 11.5l1.1 1.1M3.4 12.6l1.1-1.1M11.5 4.5l1.1-1.1" />
+  </Svg>
+);
+
+export const TrashIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.7 9h5.6l.7-9" />
+  </Svg>
+);
+
+export const LinkIcon = (p: IconProps) => (
+  <Svg strokeWidth={1.5} {...p}>
+    <path d="M7 9a2.5 2.5 0 0 0 3.5 0l2-2a2.5 2.5 0 0 0-3.5-3.5l-.8.8" />
+    <path d="M9 7a2.5 2.5 0 0 0-3.5 0l-2 2A2.5 2.5 0 0 0 7 12.5l.8-.8" />
+  </Svg>
+);
+
+export const PinIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M6 2.5h4M7 2.5v4L4.5 9h7L9 6.5v-4M8 9v4.5" />
+  </Svg>
+);
+
+/** An exclamation in a triangle: overdue or a problem, never color alone. */
+export const AlertIcon = (p: IconProps) => (
+  <Svg strokeWidth={1.5} {...p}>
+    <path d="M8 2.5l6 10.5H2z" />
+    <path d="M8 6.5v3M8 11.3v.2" />
+  </Svg>
+);
+
+/** A sidebar on the right: the context panel. */
+export const PanelRightIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="2" y="3" width="12" height="10" rx="1.5" />
+    <path d="M10 3v10" />
+  </Svg>
+);

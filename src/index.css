@@ -340,7 +340,8 @@
     padding: 0 8px;
     font-size: 11.5px;
   }
-  .seg > button[aria-selected="true"] {
+  .seg > button[aria-selected="true"],
+  .seg > button[aria-pressed="true"] {
     background: var(--seg);
     color: var(--fg);
     font-weight: 500;
@@ -884,5 +885,121 @@
     height: 1px;
     margin: 4px 6px;
     background: var(--line);
+  }
+}
+
+/* v0.2: notes, tasks, Today. */
+@layer components {
+  /* A task's round check (tasks are round; note checkboxes are square). */
+  .task-check {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: 1.5px solid var(--muted);
+    border-radius: 50%;
+    background: transparent;
+    color: var(--accent-fg);
+  }
+  .task-check:hover {
+    border-color: var(--accent);
+  }
+  .task-check[data-status="in_progress"] {
+    border-color: var(--accent);
+    background: linear-gradient(90deg, var(--accent) 50%, transparent 50%);
+  }
+  .task-check[data-status="done"] {
+    border-color: var(--clean-dot);
+    background: var(--clean-dot);
+  }
+  .task-check[data-status="cancelled"] {
+    border-style: dashed;
+  }
+  .task-done-title {
+    color: var(--muted);
+    text-decoration: line-through;
+  }
+
+  /* Small inline chip for a linked note or repository. */
+  .ref-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    max-width: 220px;
+    height: 20px;
+    padding: 0 6px;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    background: var(--panel);
+    color: var(--fg-2);
+    font: inherit;
+    font-size: 11.5px;
+    white-space: nowrap;
+  }
+  .ref-chip > span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  button.ref-chip:hover {
+    color: var(--fg);
+    border-color: var(--control-line);
+  }
+
+  .overdue {
+    color: var(--conflict);
+    font-weight: 500;
+  }
+
+  /* The note editor fills its pane; Live Preview styles come from lib/editor. */
+  .note-editor {
+    height: 100%;
+    font-size: 14px;
+  }
+  .note-editor .cm-editor {
+    height: 100%;
+  }
+  /* More specific than CodeMirror's own theme, which sets the content's padding. */
+  .note-editor .cm-editor .cm-scroller {
+    padding: 18px 0 40vh;
+    line-height: 1.6;
+  }
+  .note-editor .cm-editor .cm-scroller .cm-content {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 0 28px;
+  }
+  .note-editor .cm-editor.cm-focused {
+    outline: none;
+  }
+
+  .banner {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--info-line);
+    background: var(--info-bg);
+    color: var(--info-fg);
+  }
+  .banner[data-tone="warn"] {
+    border-color: color-mix(in srgb, var(--dirty) 40%, transparent);
+    background: color-mix(in srgb, var(--dirty) 12%, var(--app));
+    color: var(--fg);
+  }
+
+  .panel-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 14px 4px;
+  }
+
+  mark.hit {
+    background: color-mix(in srgb, var(--dirty-dot) 35%, transparent);
+    color: inherit;
+    border-radius: 2px;
   }
 }
