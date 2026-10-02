@@ -348,6 +348,7 @@ A note is edited as its Markdown text, so a save contains exactly what the user 
 - **Source** shows the same text with every mark visible, dimmed. `Cmd+Shift+E` or the toggle in the note header switches between them, keeping the cursor and scroll position; the choice applies to every note and is remembered.
 - Links and wikilinks open with `Cmd`+click; a link to another note opens it in Brainiac, a web link opens in the browser.
 - Clicking a checkbox toggles `[ ]` and `[x]` in the text.
+- Enter continues a list, task list, or quote on the next line and never renumbers the items below; Up and Down move one line at a time, including past a line drawn as an image.
 - Copying copies the Markdown, including markup Live Preview hides, and undo steps through text changes in both modes.
 - Frontmatter shows as a dimmed block at the top of the note and is edited as text, so unknown keys are preserved.
 - Tables, HTML, and syntax Brainiac does not render (callouts, footnotes, math) show as plain text in both modes and are saved as written.

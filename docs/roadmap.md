@@ -47,7 +47,7 @@ M0 landed on 1 October 2026 with 58 Rust tests and 3 frontend tests. Known M0 si
 
 - [ ] Vault onboarding, scan/reconciliation, folder navigation, pinned/recent notes.
 - [x] Editor fidelity spike (S1): TipTap's Markdown round trip rewrote or lost content, so notes are edited as styled Markdown text in CodeMirror 6.
-- [ ] Live Preview spike (S1b): cursor and selection across hidden markup, undo, copying, and scrolling a long note with images.
+- [x] Live Preview spike (S1b): passed in WebKit; the editor is `src/lib/editor/` and the `NoteEditor` component, ready to wire into the Notes view.
 - [ ] Note editor with Live Preview and Source mode; note CRUD, auto-save, conflicts, trash, draft/history recovery.
 - [ ] Tasks with status, planned dates, deadlines, linked note and linked repository; tasks not yet sorted are marked as such.
 - [ ] Today, Tasks, Notes alongside the existing Workspaces/Git views; tasks to sort appear as a folded line in Today and a filter in Tasks.
