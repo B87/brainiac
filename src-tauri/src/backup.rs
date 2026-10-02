@@ -96,6 +96,17 @@ fn folder_name(path: &str) -> String {
 /// copied again, and reported if it never holds still.
 pub async fn export(notes: &Arc<NoteService>, parent: &Path) -> AppResult<ExportResult> {
     let _gate = notes.gate.write().await;
+    // An export inside the vault would be indexed as a second copy of every
+    // note, and copied again by the next export. The vault root is stored
+    // canonical, so only `parent` needs resolving.
+    if let Some(v) = notes.vault() {
+        let parent = std::fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
+        if parent.starts_with(&v.root) {
+            return Err(AppError::validation(
+                "Choose a folder outside the vault for the export.",
+            ));
+        }
+    }
     let stamp = chrono::Local::now().format("%Y-%m-%d %H%M%S");
     let dest = parent.join(format!("Brainiac Export {stamp}"));
     if dest.exists() {

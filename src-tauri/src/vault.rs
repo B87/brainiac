@@ -171,6 +171,10 @@ impl NoteService {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "Vault".into());
         let (root_text, name2, now) = (root.display().to_string(), name.clone(), now_rfc3339());
+        // Every note write holds the gate for reading, so the switch waits
+        // for writes in progress, and none starts against the old vault's
+        // note in the new folder. The guard lets go when it goes out of scope.
+        let _gate = self.gate.write().await;
         let row = self
             .stores
             .core

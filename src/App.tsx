@@ -100,6 +100,8 @@ export default function App() {
   livePreviewRef.current = livePreview;
   const contextOpenRef = useRef(contextOpen);
   contextOpenRef.current = contextOpen;
+  /** Notes' own toggle while it is shown: a narrow window keeps its own state. */
+  const toggleContextRef = useRef<(() => void) | null>(null);
 
   const reloadSnapshot = useCallback(async () => {
     try {
@@ -540,7 +542,10 @@ export default function App() {
       if (e.id === "new_task") void actions.current.newTask();
       if (e.id === "save") setSaveTick((t) => t + 1);
       if (e.id === "toggle_source") setLivePreview(!livePreviewRef.current);
-      if (e.id === "toggle_context") setContextOpen(!contextOpenRef.current);
+      if (e.id === "toggle_context") {
+        if (toggleContextRef.current) toggleContextRef.current();
+        else setContextOpen(!contextOpenRef.current);
+      }
       if (e.id === "export") void actions.current.exportNow();
       if (e.id === "restore") setDialog("restore");
       if (e.id === "settings") setDialog("settings");
@@ -619,6 +624,7 @@ export default function App() {
               onLivePreview={setLivePreview}
               contextOpen={contextOpen}
               onToggleContext={() => setContextOpen(!contextOpen)}
+              toggleContextRef={toggleContextRef}
               saveTick={saveTick}
               onOpenNote={openNote}
               onOpenRepo={openRepo}

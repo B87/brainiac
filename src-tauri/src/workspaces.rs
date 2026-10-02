@@ -450,9 +450,12 @@ impl RepositoryService {
             )
         {
             if let Ok(git) = self.git() {
+                // Exports and note links copy this URL, so a token in it
+                // must not be stored.
                 let url = git
                     .config_value(Path::new(&row.canonical_root), "remote.origin.url")
-                    .await;
+                    .await
+                    .map(|u| crate::git::remote_without_credentials(&u));
                 if url != row.remote_url {
                     let id2 = id.to_string();
                     self.db

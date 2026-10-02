@@ -219,7 +219,7 @@ async fn a_task_linked_to_a_note_and_repository_shows_in_their_context() {
         .create(TaskFields {
             note_id: Some(note.clone()),
             repository_id: Some(repo.clone()),
-            planned_date: Some(chrono::Local::now().format("%Y-%m-%d").to_string()),
+            planned_date: Some("2026-10-02".into()),
             ..fields("Tag the release")
         })
         .await
@@ -234,7 +234,12 @@ async fn a_task_linked_to_a_note_and_repository_shows_in_their_context() {
         h.notes.repository_notes(&repo).await.unwrap().tasks.len(),
         1
     );
-    let today = h.tasks.today().await.unwrap();
+    // A fixed date: reading the clock twice could straddle midnight.
+    let today = h
+        .tasks
+        .today_on(NaiveDate::from_ymd_opt(2026, 10, 2).unwrap())
+        .await
+        .unwrap();
     assert_eq!(today.repository_ids, vec![repo]);
 
     let found = brainiac_lib::index::search(
@@ -261,4 +266,42 @@ async fn a_task_linked_to_a_note_and_repository_shows_in_their_context() {
     .unwrap();
     assert_eq!(found.tasks.total, 1);
     assert!(found.notes.hits.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reconnecting_a_repository_announces_the_tasks_and_notes_it_moved() {
+    let h = Harness::new(false).await;
+    h.write("Release.md", "# Release\n");
+    h.scan().await;
+    let note = note_id_at(&h, "Release.md").await;
+    let old = h.register_repository("web").await;
+    let new = h.register_repository("web-clone").await;
+    h.notes.link_repository(&note, &old).await.unwrap();
+    let t = h
+        .tasks
+        .create(TaskFields {
+            note_id: Some(note.clone()),
+            repository_id: Some(old.clone()),
+            ..fields("Tag the release")
+        })
+        .await
+        .unwrap();
+    h.events.lock().unwrap().clear();
+
+    h.notes.reconnect_repository(&old, &new).await.unwrap();
+    let moved = h.tasks.get(&t.id).await.unwrap();
+    assert_eq!(moved.repository_id.as_deref(), Some(new.as_str()));
+    assert!(h.saw(|e| matches!(e, KnowledgeEvent::TaskChanged(c)
+        if c.task_id == t.id && c.version == Some(moved.version))));
+    assert!(h.saw(|e| matches!(e, KnowledgeEvent::NoteChanged(c) if c.note_id == note)));
+
+    // A view that took the announced version can edit the task.
+    h.tasks
+        .update(UpdateTaskRequest {
+            task_id: t.id.clone(),
+            expected_version: moved.version,
+            fields: fields("Tag the release today"),
+        })
+        .await
+        .unwrap();
 }

@@ -321,3 +321,41 @@ test("a new note's file follows its title once the cursor leaves the heading", a
     "Ideas/Payment retries.md",
   );
 });
+
+test("a narrow window shows the context panel on request without changing the saved choice", async ({
+  page,
+}) => {
+  await setUpVault(page);
+  await page.getByRole("button", { name: "New note", exact: true }).click();
+  await expect(page.locator(".note-editor .cm-content")).toContainText(
+    "Untitled",
+  );
+  const panel = page.getByRole("complementary", { name: "Note context" });
+  await expect(panel).toBeVisible();
+  await page.getByRole("button", { name: "Hide context panel" }).click();
+  await expect(panel).toBeHidden();
+  // The header counts this note's links instead.
+  await expect(page.getByText("0 repositories · 0 tasks")).toBeVisible();
+
+  await page.setViewportSize({ width: 1000, height: 900 });
+  await page.getByRole("button", { name: "Show context panel" }).click();
+  await expect(panel).toBeVisible();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await expect(panel).toBeHidden();
+});
+
+test("a dialog opened from a menu takes focus, so Escape closes it", async ({
+  page,
+}) => {
+  await setUpVault(page);
+  await page.getByRole("button", { name: "New note", exact: true }).click();
+  await expect(page.locator(".note-editor .cm-content")).toContainText(
+    "Untitled",
+  );
+  await page.getByRole("button", { name: "Note actions" }).click();
+  await page.getByRole("menuitem", { name: "Version History…" }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+});

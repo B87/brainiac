@@ -360,10 +360,11 @@ impl NoteService {
             version: row.content_hash.clone(),
             draft: draft.clone(),
         };
-        if !row.is_live() {
+        let vault = self.require_vault()?;
+        // The vault may have changed since the row was read.
+        if !row.is_live() || row.vault_id != vault.id {
             return Ok(missing());
         }
-        let vault = self.require_vault()?;
         let path = files::resolve(&vault.root, &row.relative_path)?;
         let bytes = match blocking(move || Ok(std::fs::read(&path)?)).await {
             Ok(b) => b,
@@ -1062,7 +1063,7 @@ impl NoteService {
             return Ok(());
         }
         let _flight = InFlight::new(self, id);
-        if row.is_live() {
+        if row.is_live() && row.vault_id == vault.id {
             let from = files::resolve(&vault.root, &row.relative_path)?;
             let dir = self.trash_dir(&row.vault_id, id);
             let name = row
@@ -1717,7 +1718,8 @@ impl NoteService {
     pub async fn reconnect_repository(&self, from: &str, to: &str) -> AppResult<()> {
         let _gate = self.gate.read().await;
         let (from, to) = (from.to_string(), to.to_string());
-        self.stores
+        let changed = self
+            .stores
             .core
             .call(move |conn| {
                 let repo = db::get_repository(conn, &to)?
@@ -1729,6 +1731,17 @@ impl NoteService {
                 store::reconnect(conn, &from, &to, &name, repo.remote_url.as_deref())
             })
             .await?;
+        // The tasks' versions went up: open views must take the new ones,
+        // or their next edit would be refused as a conflict.
+        for (task_id, version) in changed.tasks {
+            self.emit(KnowledgeEvent::TaskChanged(TaskChangedEvent {
+                task_id,
+                version: Some(version),
+            }));
+        }
+        for note_id in &changed.notes {
+            self.announce_context(note_id).await;
+        }
         Ok(())
     }
 

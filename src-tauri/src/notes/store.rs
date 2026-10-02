@@ -514,6 +514,15 @@ pub fn dismissed(conn: &Connection, note_id: &str) -> AppResult<Vec<String>> {
     Ok(rows.collect::<Result<_, _>>()?)
 }
 
+/// What a reconnection changed, so the service can announce it.
+#[derive(Debug, Default)]
+pub struct Reconnected {
+    /// Each moved task with its new version.
+    pub tasks: Vec<(String, i64)>,
+    /// Notes whose context changed: linked to the repository, or to a moved task.
+    pub notes: Vec<String>,
+}
+
 /// Move every link from a removed repository to a registered one with the
 /// same remote (Reconnect). Links the note already has are kept once.
 pub fn reconnect(
@@ -522,9 +531,19 @@ pub fn reconnect(
     to: &str,
     name: &str,
     remote_url: Option<&str>,
-) -> AppResult<usize> {
+) -> AppResult<Reconnected> {
     let tx = conn.transaction()?;
-    let moved = tx.execute(
+    let mut notes: Vec<String> = {
+        let mut stmt = tx.prepare(
+            "SELECT note_id FROM note_repository_links WHERE repository_id = ?1
+             UNION SELECT linked_note_id FROM tasks
+             WHERE linked_repository_id = ?1 AND linked_note_id IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([from], |r| r.get(0))?;
+        rows.collect::<Result<_, _>>()?
+    };
+    notes.sort();
+    tx.execute(
         "UPDATE OR IGNORE note_repository_links SET repository_id = ?2, repository_name = ?3, remote_url = ?4
          WHERE repository_id = ?1",
         params![from, to, name, remote_url],
@@ -533,13 +552,18 @@ pub fn reconnect(
         "DELETE FROM note_repository_links WHERE repository_id = ?1",
         [from],
     )?;
-    let tasks = tx.execute(
-        "UPDATE tasks SET linked_repository_id = ?2, version = version + 1, updated_at = ?3
-         WHERE linked_repository_id = ?1",
-        params![from, to, crate::models::now_rfc3339()],
-    )?;
+    let tasks = {
+        let mut stmt = tx.prepare(
+            "UPDATE tasks SET linked_repository_id = ?2, version = version + 1, updated_at = ?3
+             WHERE linked_repository_id = ?1 RETURNING id, version",
+        )?;
+        let rows = stmt.query_map(params![from, to, crate::models::now_rfc3339()], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })?;
+        rows.collect::<Result<_, _>>()?
+    };
     tx.commit()?;
-    Ok(moved + tasks)
+    Ok(Reconnected { tasks, notes })
 }
 
 /// Registered repositories: ID, folder name, remote URL.

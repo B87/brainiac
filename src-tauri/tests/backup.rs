@@ -171,6 +171,20 @@ async fn a_folder_that_is_not_an_export_is_refused_before_anything_changes() {
     assert!(err.message.contains("newer version"), "{}", err.message);
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn an_export_into_the_vault_is_refused() {
+    let h = Harness::new(false).await;
+    h.write("Plan.md", "# Plan\n");
+    h.scan().await;
+    fs::create_dir_all(h.vault.join("Backups")).unwrap();
+    for parent in [h.vault.clone(), h.vault.join("Backups")] {
+        let err = backup::export(&h.notes, &parent).await.unwrap_err();
+        assert!(err.message.contains("outside the vault"), "{}", err.message);
+    }
+    let left: Vec<_> = fs::read_dir(h.vault.join("Backups")).unwrap().collect();
+    assert!(left.is_empty(), "nothing is written into the vault");
+}
+
 /// A database exactly as 0.1.3 left it: the v0.1 schema with data in it.
 fn v013_database(path: &std::path::Path) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();

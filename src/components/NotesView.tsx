@@ -3,6 +3,9 @@ import {
   type AppSnapshot,
   errorMessage,
   ipc,
+  onNoteChanged,
+  onTaskChanged,
+  subscribe,
   type Task,
   type VaultState,
 } from "../lib/ipc";
@@ -27,6 +30,7 @@ export default function NotesView({
   onLivePreview,
   contextOpen,
   onToggleContext,
+  toggleContextRef,
   saveTick,
   onOpenNote,
   onOpenRepo,
@@ -47,6 +51,8 @@ export default function NotesView({
   onLivePreview: (on: boolean) => void;
   contextOpen: boolean;
   onToggleContext: () => void;
+  /** Filled with this view's toggle, which the menu's ⌥⌘0 calls. */
+  toggleContextRef: React.MutableRefObject<(() => void) | null>;
   saveTick: number;
   onOpenNote: (noteId: string) => void;
   onOpenRepo: (repositoryId: string) => void;
@@ -62,12 +68,71 @@ export default function NotesView({
   onLocate: (repositoryId: string) => void;
 }) {
   const flush = useRef<(() => Promise<void>) | null>(null);
+  // Kept with the note they count, so another note never shows them.
   const [counts, setCounts] = useState<{
+    noteId: string;
     repositories: number;
     tasks: number;
   } | null>(null);
   const [narrow, setNarrow] = useState(false);
+  // A narrow window shows the panel only when asked, without changing the
+  // saved choice for wide windows.
+  const [narrowOpen, setNarrowOpen] = useState(false);
   const host = useRef<HTMLDivElement>(null);
+  const showContext =
+    !!vault?.vault && !!noteId && (narrow ? narrowOpen : contextOpen);
+
+  useEffect(() => {
+    toggleContextRef.current = narrow
+      ? () => setNarrowOpen((open) => !open)
+      : onToggleContext;
+    return () => {
+      toggleContextRef.current = null;
+    };
+  }, [toggleContextRef, narrow, onToggleContext]);
+
+  // With the panel hidden, the header still counts the note's repositories
+  // and tasks; the panel reports them itself while it is shown.
+  useEffect(() => {
+    if (!noteId || showContext) return;
+    let alive = true;
+    let t: ReturnType<typeof setTimeout> | undefined;
+    const load = () =>
+      void ipc
+        .getNoteContext(noteId)
+        .then(
+          (c) =>
+            alive &&
+            setCounts({
+              noteId,
+              repositories: c.repositories.length,
+              tasks: c.tasks.length,
+            }),
+        )
+        .catch(() => {});
+    load();
+    const off = subscribe(
+      onNoteChanged(() => {
+        clearTimeout(t);
+        t = setTimeout(load, 200);
+      }),
+      onTaskChanged(() => {
+        clearTimeout(t);
+        t = setTimeout(load, 200);
+      }),
+    );
+    return () => {
+      alive = false;
+      clearTimeout(t);
+      off();
+    };
+  }, [noteId, showContext]);
+  const reportCounts = useCallback(
+    (c: { repositories: number; tasks: number }) => {
+      if (noteId) setCounts({ noteId, ...c });
+    },
+    [noteId],
+  );
 
   useEffect(() => {
     if (!host.current) return;
@@ -119,8 +184,6 @@ export default function NotesView({
         <VaultSetup onDone={onVault} />
       </div>
     );
-  const showContext = contextOpen && !narrow && !!noteId;
-
   return (
     <div ref={host} className="flex min-h-0 min-w-0 flex-1 flex-col">
       {!vault.vault.available && (
@@ -165,8 +228,8 @@ export default function NotesView({
             onLivePreview={onLivePreview}
             saveTick={saveTick}
             contextOpen={showContext}
-            onToggleContext={onToggleContext}
-            contextCounts={counts}
+            onToggleContext={() => toggleContextRef.current?.()}
+            contextCounts={counts?.noteId === noteId ? counts : null}
             pinned={pinnedIds.has(noteId)}
             onTogglePin={() => togglePin(noteId)}
             onOpenNote={onOpenNote}
@@ -200,7 +263,7 @@ export default function NotesView({
             key={`context:${noteId}`}
             noteId={noteId}
             snapshot={snapshot}
-            onCounts={setCounts}
+            onCounts={reportCounts}
             onOpenNote={onOpenNote}
             onOpenRepo={onOpenRepo}
             onEditTask={onEditTask}

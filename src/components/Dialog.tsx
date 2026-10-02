@@ -1,9 +1,10 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect, useRef } from "react";
 import { CloseIcon } from "./icons";
 
 /**
  * A modal dialog over the window: Escape and the backdrop close it, and the
- * keyboard belongs to it while it is open (lib/keys.ts).
+ * keyboard belongs to it while it is open (lib/keys.ts). Focus moves into it
+ * when it opens and returns where it was when it closes.
  */
 export default function Dialog({
   title,
@@ -18,19 +19,30 @@ export default function Dialog({
   footer?: ReactNode;
   children: ReactNode;
 }) {
+  const box = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const before =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    // A field with autoFocus already has focus; otherwise the dialog takes
+    // it, so Escape reaches it even when opened from a menu that closed.
+    if (!box.current?.contains(document.activeElement)) box.current?.focus();
+    return () => {
+      if (before?.isConnected) before.focus();
+    };
+  }, []);
   return (
     <div className="absolute inset-0 z-30 flex items-start justify-center bg-black/30 pt-20">
-      <button
-        type="button"
-        aria-label="Close"
-        className="absolute inset-0"
-        onClick={onClose}
-      />
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: the backdrop is for the mouse; the keyboard closes with Escape or the Close button. */}
+      <div role="presentation" className="absolute inset-0" onClick={onClose} />
       <div
+        ref={box}
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        className="relative flex max-h-[calc(100%-120px)] flex-col rounded-xl border border-control-line bg-header shadow-2xl"
+        className="relative flex max-h-[calc(100%-120px)] flex-col rounded-xl border border-control-line bg-header shadow-2xl outline-none"
         style={{ width }}
         onKeyDown={(e) => {
           if (e.key === "Escape") {
