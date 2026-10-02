@@ -294,12 +294,24 @@ test("switching modes keeps the selection and the top line", async ({
   await load(page, long);
   const middle = long.split("\n").slice(0, 1500).join("\n").length + 3;
   await select(page, middle);
+  // The top line once layout holds still, so a slow machine still
+  // measuring line heights is not read halfway.
+  const steadyTop = async () => {
+    let last = -1;
+    for (let i = 0; i < 30; i++) {
+      const top = await page.evaluate(async () => {
+        await window.ed.frame();
+        return window.ed.topLine();
+      });
+      if (top === last) return top;
+      last = top;
+    }
+    return last;
+  };
   for (const on of [false, true, false, true]) {
-    const before = await page.evaluate(() => window.ed.topLine());
+    const before = await steadyTop();
     await page.evaluate((o) => window.ed.setLive(o), on);
-    expect(
-      Math.abs((await page.evaluate(() => window.ed.topLine())) - before),
-    ).toBeLessThanOrEqual(2);
+    expect(Math.abs((await steadyTop()) - before)).toBeLessThanOrEqual(2);
     expect(await head(page)).toBe(middle);
   }
 });

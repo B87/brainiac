@@ -115,10 +115,10 @@ const harness = {
   /** The number of the first line at the top of the view. */
   topLine() {
     const v = current();
+    // Heights count from the document's top; the scroller's top edge is
+    // this far below it.
     const block = v.lineBlockAtHeight(
-      v.scrollDOM.scrollTop -
-        v.documentTop +
-        v.scrollDOM.getBoundingClientRect().top,
+      v.scrollDOM.getBoundingClientRect().top - v.documentTop,
     );
     return v.state.doc.lineAt(block.from).number;
   },
