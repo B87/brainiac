@@ -405,8 +405,14 @@ async fn a_stale_socket_is_replaced_and_a_missing_app_is_reported() {
     // Not a socket: never removed.
     let file = dir.path().join("file.sock");
     std::fs::write(&file, "keep").unwrap();
+    assert!(server.status().problem.is_none());
     assert!(server.bind(&file).await.is_err());
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "keep");
+    // Settings says why agents cannot connect.
+    let status = server.status();
+    assert!(status.problem.is_some_and(|p| p.contains("agent socket")));
+    // The test binary stands in for the app's executable here.
+    assert!(!status.executable.is_empty());
 
     // A development build is not in an app bundle, so it cannot open the app.
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_brainiac"))

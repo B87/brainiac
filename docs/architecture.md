@@ -286,6 +286,7 @@ Commands are thin adapters over Rust services. Use `#[tauri::command]`, serializ
 | `search` / `rebuild_search` | v0.2: literal query, kinds, results per kind; ranked hits with highlighted title and snippet parts, totals, and the index state |
 | `export_backup` / `preview_restore` / `restore_backup` | v0.2: a parent folder; an export checked before anything changes; the export, the vault folder, and whether to copy notes into it |
 | `open_vault_file` / `reveal_vault_path` / `update_settings` | v0.2: files Brainiac does not edit open in their default app; settings |
+| `get_agent_access_status` | v0.2.x: the access mode, connected agents, the executable agents run, and why agents cannot connect, if they cannot |
 
 Errors expose stable codes: `VALIDATION`, `NOT_FOUND`, `CONFLICT`, `PERMISSION_DENIED`, `IO`, `DB`, `DEPENDENCY_UNAVAILABLE`, `TIMEOUT`, and `CANCELLED`. Include a user-facing message and retryability, keeping low-level diagnostics in local logs.
 

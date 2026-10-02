@@ -233,6 +233,36 @@ test("Settings shows the vault and turns note IDs off", async ({ page }) => {
   await expect(settings).toBeHidden();
 });
 
+test("Settings turns agent access on and shows how to add Brainiac to Claude Code", async ({
+  page,
+}) => {
+  await setUpVault(page);
+  await page.evaluate(() => window.emitEvent("menu", { id: "settings" }));
+  const settings = page.getByRole("dialog", { name: "Settings" });
+  const access = settings.getByRole("group", { name: "Agent access" });
+  await expect(access.getByRole("button", { name: "Off" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(settings.getByText("No agents connected")).toBeVisible();
+  await expect(
+    settings.getByText(
+      "claude mcp add --scope user brainiac -- /Applications/Brainiac.app/Contents/MacOS/brainiac mcp",
+    ),
+  ).toBeVisible();
+
+  await access.getByRole("button", { name: "Read and write" }).click();
+  const updates = await calls(page, "update_settings");
+  expect(updates.at(-1)).toMatchObject({
+    settings: { agent_access: "read_write" },
+  });
+  await expect(
+    access.getByRole("button", { name: "Read and write" }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect(settings.getByText(/never delete anything/)).toBeVisible();
+  await expect(settings.getByText("1 agent connected")).toBeVisible();
+});
+
 test("edits typed after a conflict survive leaving the note", async ({
   page,
 }) => {

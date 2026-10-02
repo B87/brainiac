@@ -167,6 +167,20 @@ pub enum AgentAccess {
     ReadWrite,
 }
 
+/// Settings → Agent access: what the app shows about agents (SPEC.md, section 9).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AgentAccessStatus {
+    pub access: AgentAccess,
+    /// Agents connected now, whatever they may do.
+    pub connections: u32,
+    /// The program an agent runs with the argument `mcp`, such as
+    /// `/Applications/Brainiac.app/Contents/MacOS/brainiac`.
+    pub executable: String,
+    /// Why agents cannot connect, such as a socket that could not be created.
+    pub problem: Option<String>,
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {

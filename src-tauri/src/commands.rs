@@ -30,6 +30,14 @@ use crate::workspaces::{RepositoryService, WorkspaceChange};
 pub type Service = Arc<RepositoryService>;
 pub type Agent = Arc<crate::mcp::AgentServer>;
 
+/// Settings → Agent access: the mode, connected agents, and the command to add Brainiac.
+#[tauri::command]
+pub async fn get_agent_access_status(
+    agent: State<'_, Agent>,
+) -> AppResult<crate::models::AgentAccessStatus> {
+    Ok(agent.status())
+}
+
 #[tauri::command]
 pub async fn get_app_snapshot(service: State<'_, Service>) -> AppResult<AppSnapshot> {
     service.snapshot().await

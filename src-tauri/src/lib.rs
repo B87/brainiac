@@ -263,6 +263,7 @@ pub fn run() {
             commands::mark_activity_seen,
             commands::update_activity_settings,
             commands::update_settings,
+            commands::get_agent_access_status,
             commands::get_vault_state,
             commands::select_vault,
             commands::list_folder,

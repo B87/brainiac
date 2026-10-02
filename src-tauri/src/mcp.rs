@@ -17,7 +17,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::UnixListener;
 use tokio::sync::watch;
 
-use crate::models::{AgentAccess, AppError, AppResult};
+use crate::models::{AgentAccess, AgentAccessStatus, AppError, AppResult};
 use crate::notes::NoteService;
 use crate::tasks::TaskService;
 use crate::workspaces::RepositoryService;
@@ -108,6 +108,8 @@ pub struct AgentServer {
     connections: AtomicUsize,
     /// The socket this server bound, removed on `close`.
     socket: Mutex<Option<PathBuf>>,
+    /// Why the socket could not be opened, shown in Settings.
+    problem: Mutex<Option<String>>,
 }
 
 impl AgentServer {
@@ -124,6 +126,7 @@ impl AgentServer {
             access: watch::Sender::new(access),
             connections: AtomicUsize::new(0),
             socket: Mutex::new(None),
+            problem: Mutex::new(None),
         })
     }
 
@@ -149,8 +152,28 @@ impl AgentServer {
         self.connections.load(Ordering::SeqCst)
     }
 
-    /// Bind the socket, replacing a stale one left by a previous run.
+    /// What Settings → Agent access shows.
+    pub fn status(&self) -> AgentAccessStatus {
+        AgentAccessStatus {
+            access: self.access(),
+            connections: self.connections() as u32,
+            executable: std::env::current_exe()
+                .and_then(|p| p.canonicalize())
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
+            problem: self.problem.lock().expect("problem").clone(),
+        }
+    }
+
+    /// Bind the socket, replacing a stale one left by a previous run. A
+    /// failure is kept for Settings to show.
     pub async fn bind(&self, path: &Path) -> AppResult<UnixListener> {
+        let bound = self.bind_inner(path).await;
+        *self.problem.lock().expect("problem") = bound.as_ref().err().map(|e| e.message.clone());
+        bound
+    }
+
+    async fn bind_inner(&self, path: &Path) -> AppResult<UnixListener> {
         prepare_socket_dir(path)?;
         if std::fs::symlink_metadata(path).is_ok() {
             if !owned_socket(path) {

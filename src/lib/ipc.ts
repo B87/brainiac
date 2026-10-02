@@ -5,6 +5,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { ActivitySettings } from "./generated/ActivitySettings";
+import type { AgentAccessStatus } from "./generated/AgentAccessStatus";
 import type { AppError } from "./generated/AppError";
 import type { AppSnapshot } from "./generated/AppSnapshot";
 import type { ChangesResult } from "./generated/ChangesResult";
@@ -66,6 +67,7 @@ import type { WorkspaceRescan } from "./generated/WorkspaceRescan";
 export type { ActivityCommit } from "./generated/ActivityCommit";
 export type { ActivityItem } from "./generated/ActivityItem";
 export type { ActivityKind } from "./generated/ActivityKind";
+export type { AgentAccess } from "./generated/AgentAccess";
 export type { Backlink } from "./generated/Backlink";
 export type { ChangeEntry } from "./generated/ChangeEntry";
 export type { CommitFile } from "./generated/CommitFile";
@@ -100,6 +102,7 @@ export type { WorkspaceMember } from "./generated/WorkspaceMember";
 export type { WorkspacePreviewEntry } from "./generated/WorkspacePreviewEntry";
 export type {
   ActivitySettings,
+  AgentAccessStatus,
   AppError,
   AppSnapshot,
   ChangesResult,
@@ -253,6 +256,9 @@ export const ipc = {
     invoke<Workspace>("update_activity_settings", { workspaceId, settings }),
   updateSettings: (settings: Settings) =>
     invoke<Settings>("update_settings", { settings }),
+  /** Settings → Agent access: the mode, connected agents, and the helper's path. */
+  getAgentAccessStatus: () =>
+    invoke<AgentAccessStatus>("get_agent_access_status"),
 
   // v0.2: vault and notes
   getVaultState: () => invoke<VaultState>("get_vault_state"),
