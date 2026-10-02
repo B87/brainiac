@@ -52,6 +52,7 @@ M0 landed on 1 October 2026 with 58 Rust tests and 3 frontend tests. Known M0 si
 - [ ] Tasks with status, planned dates, deadlines, linked note and linked repository; tasks not yet sorted are marked as such.
 - [ ] Today, Tasks, Notes alongside the existing Workspaces/Git views; tasks to sort appear as a folded line in Today and a filter in Tasks.
 - [x] Search tokenizer spike (S2): `unicode61` for note and task text, `trigram` only for titles and paths; every query word matches as a prefix.
+- [x] Vault scale spike (S3): 10,000 generated notes index in about 4 s and rescan in 35 ms; snippets are cut in Rust and one worker writes the index.
 - [ ] FTS5 note/task ingestion, ranked keyword search, safe snippets, rebuild status.
 - [ ] Note/repository associations, Markdown links and wikilinks, backlinks, unresolved targets.
 - [ ] Storage split into `brainiac.db`, `index.db`, and `history.db`; migration `0002` tested against a 0.1.3 database.
@@ -113,7 +114,7 @@ Remote services require their own authentication, rate-limit, cache, error, and 
 | macOS minimum and Intel requirement | Verify target hardware, dependencies, and packaged builds | Release distribution |
 | Real-world workspace size and Git cost | Benchmark representative workspace/repositories | v0.1 watcher tuning |
 | Quick-capture focus behavior | macOS/Spaces/fullscreen prototype | v0.3 |
-| Vault size and note sizes | Generate vaults of 1,000 and 10,000 notes with a realistic spread of sizes and time a full ingest; check against the real vault after a month of use | v0.2 batch sizes and revision budget |
+| Vault size and note sizes | Generated vaults of 1,000 and 10,000 notes measured (S3; `docs/architecture.md`, Decisions); check against the real vault after a month of use, with a cold file cache | Confirming v0.2 batch sizes and revision budget |
 | Snapshot size and retention | Measure `brainiac.db` and `history.db` on a real vault after a month | v0.2 backup defaults |
 | Restore onto another Mac | Fixture: vault and snapshot restored where paths and repository locations differ | v0.2 restore |
 | Embedding model and dimensions | Local retrieval evaluation, model availability and license review | v0.4 schema/profile selection |

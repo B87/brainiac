@@ -329,7 +329,7 @@ The Activity tab of a workspace answers "what did the team merge or release sinc
 ### The vault
 
 - One vault: a folder of Markdown notes the user chooses (**Choose Folder…**) or creates (**Create a New Vault…**). Brainiac edits the `.md` files where they are; nothing is moved, converted, or imported, and the notes stay ordinary files usable in any editor.
-- Supported notes are UTF-8 `.md` files on a local filesystem, up to 5 MiB for editing. Other files are listed with a clear message and **Open Externally**.
+- Supported notes are UTF-8 `.md` files on a local filesystem, up to 5 MiB for editing. Other files are listed with a clear message and **Open Externally**; a `.md` file over 5 MiB or not in UTF-8 is found in search by its name, not its text.
 - A vault may itself be a Git repository, and it can be registered and tracked like any other. The rule that Brainiac never writes to a repository covers Git's own state: it never stages, commits, checks out, or runs hooks there. Saving a note is an edit the user makes through Brainiac, like saving it in any editor. Trash, drafts, and revision history live in Brainiac's data folder, never in the vault, so saving never leaves extra files behind.
 - Brainiac scans the vault at startup, on wake, and when the watcher reports changes, and reconciles what it finds. A vault that cannot be read (an unmounted disk) is reported as unavailable, never treated as every note deleted.
 
@@ -382,7 +382,7 @@ A note is edited as its Markdown text, so a save contains exactly what the user 
 
 - Deleting a note moves it to Brainiac's trash, in its data folder, and removes it from search. Its tasks and links are kept. Restoring it asks before overwriting a note at the same path. Brainiac never permanently deletes a note as the default action.
 - A note deleted outside Brainiac is shown as missing; its tasks keep a reference to it.
-- Revision history keeps up to 20 versions per note for 30 days, within 250 MiB in total; unresolved conflicts and unsaved drafts are never pruned.
+- Revision history keeps up to 20 versions per note for 30 days, within 250 MiB in total. Autosaves while typing count as one version until 10 minutes pass; each change from outside Brainiac is its own version; unresolved conflicts and unsaved drafts are never pruned.
 
 ### Notes and repositories
 
