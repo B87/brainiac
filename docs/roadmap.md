@@ -23,7 +23,7 @@ M0 landed on 1 October 2026 with 58 Rust tests and 3 frontend tests. Known M0 si
 ### v0.1 — Git viewer and repository tracker
 
 - [x] Add/open one repository directly; persist recent/pinned repositories.
-- [ ] Relocate a repository whose folder moved (today: remove and add again).
+- [x] Relocate a repository whose folder moved, keeping its identity; Rescan suggests renamed members.
 - [x] Create a workspace manually or by discovering independent repositories inside a chosen folder, with optional root grouping and rescan.
 - [x] Let the user choose which discovered repositories to track and manage membership independently of their IDE.
 - [x] Aggregate status table, unique changed-file counts, dirty/conflicted/stale filters, partial-error handling.

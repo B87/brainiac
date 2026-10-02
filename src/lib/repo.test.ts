@@ -11,7 +11,10 @@ import {
   initials,
   middleTruncate,
   olderThan,
+  parentFolder,
   parseHistoryFilter,
+  relocatedNotice,
+  relocationQuestion,
   upstreamTarget,
 } from "./repo";
 
@@ -147,5 +150,30 @@ describe("versions and filters", () => {
     const now = Date.parse("2026-10-01T00:00:00Z");
     expect(olderThan("2026-06-01T00:00:00Z", 90, now)).toBe(true);
     expect(olderThan("2026-09-20T00:00:00Z", 90, now)).toBe(false);
+  });
+});
+
+describe("relocation", () => {
+  it("opens the picker in the old folder's parent", () => {
+    expect(parentFolder("/work/code/api")).toBe("/work/code");
+    expect(parentFolder("/work/code/api/")).toBe("/work/code");
+    expect(parentFolder("/api")).toBe("/");
+  });
+  it("explains each concern", () => {
+    const text = relocationQuestion("api", "/work/api-2", [
+      "inside_repository",
+      "unrelated_history",
+    ]);
+    expect(text.split("\n\n")).toHaveLength(3);
+    expect(text).toContain("Point “api” at /work/api-2?");
+    expect(text).toContain("looks like a different repository");
+  });
+  it("mentions what moved along", () => {
+    expect(relocatedNotice("api", "/work/api-2", [])).toBe(
+      "“api” now points to /work/api-2",
+    );
+    expect(relocatedNotice("app", "/work/app-2", ["a", "b"])).toBe(
+      "“app” now points to /work/app-2, with 2 repositories inside it",
+    );
   });
 });

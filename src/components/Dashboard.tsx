@@ -7,6 +7,7 @@ import {
   errorMessage,
   ipc,
   type RepositorySummary,
+  type SuggestedMove,
   type Workspace,
   type WorkspaceMember,
 } from "../lib/ipc";
@@ -56,6 +57,11 @@ type Props = {
   onRescan: () => void;
   onTrack: (paths: string[]) => void;
   onDismissDiscovered: () => void;
+  /** Accept Rescan's suggestion that these members moved. */
+  onApplyMoves: (moves: SuggestedMove[]) => void;
+  onDismissMoves: () => void;
+  /** Ask for the folder a repository moved to. */
+  onLocate: (repositoryId: string) => void;
   onRemoveMember: (canonicalPath: string) => void;
   onRename: (name: string) => void;
   onDeleteWorkspace: () => void;
@@ -72,11 +78,12 @@ type Props = {
   onError: (message: string | null) => void;
 };
 
-/** Result of a rescan: untracked repositories and skipped plain folders. */
+/** Result of a rescan: untracked repositories, skipped plain folders, and suggested moves. */
 export type Discovered = {
   workspaceId: string;
   repositories: Array<{ name: string; path: string }>;
   skipped: number;
+  moves: SuggestedMove[];
 };
 
 type Row =
@@ -202,6 +209,12 @@ export default function Dashboard(props: Props) {
     "mod+1": () => props.onTab("overview"),
     "mod+2": () => workspace && props.onTab("activity"),
   });
+
+  /** A missing member with a registration can be located; a plain folder cannot. */
+  const locateMember = (m: WorkspaceMember) => {
+    const id = m.repository_id;
+    return id && m.status !== "not_git" ? () => props.onLocate(id) : undefined;
+  };
 
   const discovered =
     workspace && props.discovered?.workspaceId === workspace.id
@@ -415,6 +428,15 @@ export default function Dashboard(props: Props) {
               </div>
             </div>
 
+            {discovered && discovered.moves.length > 0 && (
+              <MovesBanner
+                workspace={workspace}
+                moves={discovered.moves}
+                onApply={props.onApplyMoves}
+                onDismiss={props.onDismissMoves}
+              />
+            )}
+
             {discovered &&
               (discovered.repositories.length > 0 ||
                 discovered.skipped > 0) && (
@@ -529,6 +551,7 @@ export default function Dashboard(props: Props) {
                       onRemove={() =>
                         props.onRemoveMember(row.member.canonical_path)
                       }
+                      onLocate={locateMember(row.member)}
                     />
                   ) : (
                     <RepoRow
@@ -564,6 +587,7 @@ export default function Dashboard(props: Props) {
               fetching={props.fetching.has(selected.id)}
               onFetch={() => props.onFetch([selected.id])}
               onOpen={() => onOpen(selected.id)}
+              onLocate={() => props.onLocate(selected.id)}
               onClose={() => setSelectedId(null)}
               onError={props.onError}
             />
@@ -771,10 +795,13 @@ function MissingRow({
   member,
   path,
   onRemove,
+  onLocate,
 }: {
   member: WorkspaceMember;
   path: string;
   onRemove: () => void;
+  /** Absent for a non-Git folder, which has no registration to relocate. */
+  onLocate?: () => void;
 }) {
   return (
     <div className="flex min-h-[52px] items-center gap-3.5 border-t border-l-[3px] border-t-line-soft border-l-transparent pr-3.5 pl-[11px]">
@@ -792,8 +819,63 @@ function MissingRow({
           </span>
         </span>
       </span>
+      {onLocate && (
+        <button
+          type="button"
+          className="btn btn-sm btn-primary"
+          onClick={onLocate}
+        >
+          Locate…
+        </button>
+      )}
       <button type="button" className="btn btn-sm" onClick={onRemove}>
         Remove from workspace
+      </button>
+    </div>
+  );
+}
+
+/** Rescan's suggestion that missing members moved to untracked folders. */
+function MovesBanner({
+  workspace,
+  moves,
+  onApply,
+  onDismiss,
+}: {
+  workspace: Workspace | null;
+  moves: SuggestedMove[];
+  onApply: (moves: SuggestedMove[]) => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-3 rounded-lg border border-info-line bg-info-bg px-3 py-2.5 text-info-fg">
+      <RescanIcon size={15} className="shrink-0" />
+      <span className="flex-1">
+        {moves.length === 1 ? (
+          <>
+            {moves[0].name} seems to have moved to{" "}
+            <span className="mono">{displayPath(workspace, moves[0].to)}</span>.
+          </>
+        ) : (
+          `${moves.length} repositories seem to have moved: ${moves
+            .map((m) => `${m.name} → ${displayPath(workspace, m.to)}`)
+            .join(", ")}.`
+        )}
+      </span>
+      <button
+        type="button"
+        className="btn btn-sm btn-primary"
+        onClick={() => onApply(moves)}
+      >
+        {moves.length === 1 ? "Update" : "Update all"}
+      </button>
+      <button
+        type="button"
+        className="btn btn-sm btn-ghost px-1.5"
+        aria-label="Dismiss"
+        onClick={onDismiss}
+      >
+        <CloseIcon />
       </button>
     </div>
   );
@@ -893,6 +975,7 @@ function Peek({
   fetching,
   onFetch,
   onOpen,
+  onLocate,
   onClose,
   onError,
 }: {
@@ -900,6 +983,7 @@ function Peek({
   fetching: boolean;
   onFetch: () => void;
   onOpen: () => void;
+  onLocate: () => void;
   onClose: () => void;
   onError: (message: string | null) => void;
 }) {
@@ -1068,10 +1152,24 @@ function Peek({
         )}
       </div>
       <div className="flex flex-col gap-2 border-t px-[18px] pt-3.5 pb-[18px]">
-        <button type="button" className="btn btn-primary h-8" onClick={onOpen}>
-          Open repository
-          <span className="text-[11px] opacity-80">↵</span>
-        </button>
+        {r.state === "missing" ? (
+          <button
+            type="button"
+            className="btn btn-primary h-8"
+            onClick={onLocate}
+          >
+            Locate…
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="btn btn-primary h-8"
+            onClick={onOpen}
+          >
+            Open repository
+            <span className="text-[11px] opacity-80">↵</span>
+          </button>
+        )}
         <div className="flex gap-2">
           <button
             type="button"

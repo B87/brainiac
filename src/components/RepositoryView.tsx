@@ -53,6 +53,8 @@ type Props = {
   onPalette: () => void;
   onRefresh: () => void;
   onRemove: () => void;
+  /** Ask for the folder this repository moved to. */
+  onLocate: () => void;
   onError: (message: string | null) => void;
 };
 
@@ -67,6 +69,7 @@ export default function RepositoryView({
   onPalette,
   onRefresh,
   onRemove,
+  onLocate,
   onError,
 }: Props) {
   const [tab, setTab] = useState<RepositoryTab>(
@@ -267,6 +270,14 @@ export default function RepositoryView({
               >
                 Copy path
               </MenuButton>
+              <MenuButton
+                onClick={() => {
+                  setMenuOpen(false);
+                  onLocate();
+                }}
+              >
+                Locate Folder…
+              </MenuButton>
               <div className="menu-sep" />
               <MenuButton
                 onClick={() => {
@@ -286,6 +297,7 @@ export default function RepositoryView({
           repository={repository}
           onRemove={onRemove}
           onRefresh={onRefresh}
+          onLocate={onLocate}
         />
       ) : tab === "changes" ? (
         <ChangesTab
@@ -375,10 +387,12 @@ function Unavailable({
   repository: r,
   onRemove,
   onRefresh,
+  onLocate,
 }: {
   repository: RepositorySummary;
   onRemove: () => void;
   onRefresh: () => void;
+  onLocate: () => void;
 }) {
   return (
     <div className="flex flex-1 flex-col items-start gap-3 p-8">
@@ -391,8 +405,8 @@ function Unavailable({
           <>
             Nothing found at{" "}
             <span className="mono">{shortPath(r.display_path)}</span>. The
-            registration is kept; move the folder back or remove the
-            registration. Your files are never touched.
+            registration is kept: locate the folder where it moved to, move it
+            back, or remove the registration. Your files are never touched.
           </>
         ) : (
           (r.error?.message ?? "This repository could not be read.")
@@ -404,6 +418,11 @@ function Unavailable({
         </pre>
       )}
       <div className="flex gap-2">
+        {r.state === "missing" && (
+          <button type="button" className="btn btn-primary" onClick={onLocate}>
+            Locate…
+          </button>
+        )}
         <button type="button" className="btn" onClick={onRefresh}>
           Check again
         </button>

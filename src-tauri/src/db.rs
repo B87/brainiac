@@ -357,24 +357,62 @@ pub fn set_repository_tab(conn: &Connection, id: &str, tab: RepositoryTab) -> Ap
     Ok(())
 }
 
-/// Store the outcome of a status observation: either a snapshot or an error.
+/// Store the outcome of a status observation of the working tree at `root`:
+/// either a snapshot or an error. Returns false, storing nothing, when the
+/// registration no longer points at `root` (it was relocated meanwhile).
 pub fn store_observation(
     conn: &Connection,
     id: &str,
+    root: &str,
     checked_at: &str,
     status: Option<&StatusSnapshot>,
     error: Option<&AppError>,
-) -> AppResult<()> {
+) -> AppResult<bool> {
     let status_json = status.map(serde_json::to_string).transpose()?;
     let error_json = error.map(serde_json::to_string).transpose()?;
     // Keep the last good snapshot when a refresh fails, so the UI can show stale data.
-    conn.execute(
+    Ok(conn.execute(
         "UPDATE repositories
          SET last_checked_at = ?2,
              status_json = COALESCE(?3, status_json),
              error_json = ?4
+         WHERE id = ?1 AND canonical_root = ?5",
+        params![id, checked_at, status_json, error_json, root],
+    )? > 0)
+}
+
+/// Where a registration's working tree and Git directories are.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Location {
+    pub root: String,
+    pub git_dir: String,
+    pub common_git_dir: String,
+}
+
+/// Point a registration at a new location (SPEC.md, Relocating a repository).
+/// The last error and fetch error described the old location and are cleared;
+/// for a `different_repository`, so are its cached status and last fetch time.
+pub fn set_repository_location(
+    conn: &Connection,
+    id: &str,
+    location: &Location,
+    different_repository: bool,
+) -> AppResult<()> {
+    conn.execute(
+        "UPDATE repositories
+         SET canonical_root = ?2, display_path = ?2, git_dir = ?3, common_git_dir = ?4,
+             error_json = NULL, last_fetch_error_json = NULL,
+             status_json = CASE WHEN ?5 THEN NULL ELSE status_json END,
+             last_checked_at = CASE WHEN ?5 THEN NULL ELSE last_checked_at END,
+             last_fetch_at = CASE WHEN ?5 THEN NULL ELSE last_fetch_at END
          WHERE id = ?1",
-        params![id, checked_at, status_json, error_json],
+        params![
+            id,
+            location.root,
+            location.git_dir,
+            location.common_git_dir,
+            different_repository
+        ],
     )?;
     Ok(())
 }
@@ -599,6 +637,37 @@ pub fn delete_member(
         conn.execute("DELETE FROM workspace_members WHERE id = ?1", params![m.id])?;
     }
     Ok(member)
+}
+
+/// Move a member to another path. A different member of the same workspace
+/// already at that path (a non-Git folder, say) is removed first, since a
+/// workspace has one member per path.
+pub fn move_member(
+    conn: &Connection,
+    member_id: &str,
+    canonical_path: &str,
+    display_name: &str,
+    origin: MemberOrigin,
+) -> AppResult<()> {
+    conn.execute(
+        "DELETE FROM workspace_members
+         WHERE canonical_path = ?2 AND id <> ?1
+           AND workspace_id = (SELECT workspace_id FROM workspace_members WHERE id = ?1)",
+        params![member_id, canonical_path],
+    )?;
+    conn.execute(
+        "UPDATE workspace_members SET canonical_path = ?2, display_name = ?3, origin = ?4 WHERE id = ?1",
+        params![member_id, canonical_path, display_name, enum_name(origin)?],
+    )?;
+    Ok(())
+}
+
+pub fn set_discovery_root(conn: &Connection, workspace_id: &str, root: &str) -> AppResult<()> {
+    conn.execute(
+        "UPDATE workspaces SET discovery_root = ?2 WHERE id = ?1",
+        params![workspace_id, root],
+    )?;
+    Ok(())
 }
 
 pub fn set_workspace_root(

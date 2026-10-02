@@ -3,6 +3,7 @@ import type {
   ChangeEntry,
   CommitFile,
   CommitSummary,
+  RelocationConcern,
   RepositorySummary,
 } from "./ipc";
 
@@ -258,4 +259,44 @@ export function olderThan(
   if (!iso) return false;
   const t = Date.parse(iso);
   return !Number.isNaN(t) && now - t > days * 86_400_000;
+}
+
+/** The folder containing `path`, where the Locate… picker opens. */
+export function parentFolder(path: string): string {
+  const trimmed = path.replace(/\/+$/, "");
+  const slash = trimmed.lastIndexOf("/");
+  return slash > 0 ? trimmed.slice(0, slash) : "/";
+}
+
+const CONCERN_TEXT: Record<RelocationConcern, (name: string) => string> = {
+  inside_repository: () =>
+    "The folder you chose is inside that repository, so Brainiac would use its top folder.",
+  unrelated_history: (name) =>
+    `It contains none of the commits Brainiac recorded for “${name}”, so it looks like a different repository. Its activity would start over.`,
+  unverified_history: (name) =>
+    `Brainiac has no recorded commit of “${name}” to compare with, so it cannot tell whether this is the same repository. Its activity would start over.`,
+};
+
+/** The question asked before a relocation that is not clearly the same repository. */
+export function relocationQuestion(
+  name: string,
+  root: string,
+  concerns: RelocationConcern[],
+): string {
+  return [
+    `Point “${name}” at ${root}?`,
+    ...concerns.map((c) => CONCERN_TEXT[c](name)),
+  ].join("\n\n");
+}
+
+/** The status-bar notice after a relocation. */
+export function relocatedNotice(
+  name: string,
+  root: string,
+  carried: string[],
+): string {
+  const along = carried.length
+    ? `, with ${plural(carried.length, "repository", "repositories")} inside it`
+    : "";
+  return `“${name}” now points to ${root}${along}`;
 }

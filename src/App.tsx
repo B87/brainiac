@@ -7,6 +7,7 @@ import RepositoryView from "./components/RepositoryView";
 import Sidebar, { type View } from "./components/Sidebar";
 import StatusBar from "./components/StatusBar";
 import UpdateBanner from "./components/UpdateBanner";
+import { shortPath } from "./lib/format";
 import {
   type AppSnapshot,
   errorMessage,
@@ -14,9 +15,15 @@ import {
   onMenu,
   onRepositoryChanged,
   type PinEntityType,
+  type SuggestedMove,
   type Workspace,
 } from "./lib/ipc";
-import { plural } from "./lib/repo";
+import {
+  parentFolder,
+  plural,
+  relocatedNotice,
+  relocationQuestion,
+} from "./lib/repo";
 import { workspaceRepositories } from "./lib/workspace";
 
 export default function App() {
@@ -184,6 +191,69 @@ export default function App() {
     [byId, guard],
   );
 
+  /** Points a registration at `path`, asking first when it may not be the same repository. */
+  const relocateTo = useCallback(
+    async (id: string, path: string) => {
+      const name = byId.get(id)?.name ?? "the repository";
+      try {
+        const request = { repository_id: id, path, confirmed_root: null };
+        let outcome = await ipc.relocateRepository(request);
+        if (outcome.outcome === "needs_confirmation") {
+          const confirmed = await ask(
+            relocationQuestion(name, shortPath(outcome.root), outcome.concerns),
+            {
+              title: "Locate Repository",
+              kind: "warning",
+              okLabel: "Use This Folder",
+            },
+          );
+          if (!confirmed) return;
+          outcome = await ipc.relocateRepository({
+            ...request,
+            confirmed_root: outcome.root,
+          });
+        }
+        if (outcome.outcome === "relocated") {
+          setNotice(
+            relocatedNotice(
+              name,
+              shortPath(outcome.repository.display_path),
+              outcome.carried,
+            ),
+          );
+          setBanner(null);
+        } else {
+          setBanner(
+            "The folder changed while you were deciding. Locate it again.",
+          );
+        }
+      } catch (e) {
+        setBanner(errorMessage(e));
+      }
+      await reloadSnapshot();
+    },
+    [byId, reloadSnapshot],
+  );
+
+  /** Asks for the folder a repository moved to. */
+  const locate = useCallback(
+    async (id: string) => {
+      const repo = byId.get(id);
+      try {
+        const dir = await open({
+          directory: true,
+          multiple: false,
+          title: `Locate “${repo?.name ?? "repository"}”`,
+          defaultPath: repo ? parentFolder(repo.display_path) : undefined,
+        });
+        if (typeof dir === "string") await relocateTo(id, dir);
+      } catch (e) {
+        setBanner(errorMessage(e));
+      }
+    },
+    [byId, relocateTo],
+  );
+
   const togglePin = useCallback(
     (entityType: PinEntityType, id: string) => {
       const pinned = !!snapshot?.pins.some(
@@ -194,39 +264,42 @@ export default function App() {
     [snapshot, guard],
   );
 
-  /** Lists repositories in a discovered workspace's folder that it does not track yet. */
+  /**
+   * Lists repositories in a discovered workspace's folder that it does not
+   * track yet, and members that seem to have moved there.
+   */
   const rescan = useCallback(async (ws: Workspace, explicit: boolean) => {
     if (ws.discovery_mode !== "discovered" || !ws.discovery_root) return;
     try {
-      const preview = await ipc.discoverRepositories(
-        ws.discovery_root,
-        ws.discovery_path ?? undefined,
-      );
-      const members = new Set(ws.members.map((m) => m.canonical_path));
-      const untracked = preview.entries.filter(
-        (e) => !members.has(e.resolved_path ?? e.configured_path),
-      );
+      const found = await ipc.rescanWorkspace(ws.id);
       const result: Discovered = {
         workspaceId: ws.id,
-        repositories: untracked
-          .filter((e) => e.status === "ok")
-          .map((e) => ({
-            name: e.display_name,
-            path: e.resolved_path ?? e.configured_path,
-          })),
-        skipped: untracked.filter(
-          (e) =>
-            e.status === "not_git" ||
-            e.status === "unsupported" ||
-            e.status === "nested",
-        ).length,
+        repositories: found.repositories.map((e) => ({
+          name: e.display_name,
+          path: e.resolved_path ?? e.configured_path,
+        })),
+        skipped: found.skipped,
+        moves: found.moves,
       };
-      // A background scan only speaks up when there is something to track.
-      if (explicit || result.repositories.length) setDiscovered(result);
+      // A background scan only speaks up when there is something to act on.
+      if (explicit || result.repositories.length || result.moves.length)
+        setDiscovered(result);
     } catch (e) {
       if (explicit) setBanner(errorMessage(e));
     }
   }, []);
+
+  const applyMoves = useCallback(
+    async (ws: Workspace, moves: SuggestedMove[]) => {
+      setDiscovered(null);
+      for (const m of moves) await relocateTo(m.repository_id, m.to);
+      const fresh = (await ipc.getAppSnapshot()).workspaces.find(
+        (w) => w.id === ws.id,
+      );
+      if (fresh) await rescan(fresh, false);
+    },
+    [relocateTo, rescan],
+  );
 
   // Check for new repositories whenever a discovered workspace is opened.
   const workspaceId = workspace?.id;
@@ -335,6 +408,7 @@ export default function App() {
               onPalette={() => setPaletteOpen(true)}
               onRefresh={() => void refresh()}
               onRemove={() => void removeRepository(selected.id)}
+              onLocate={() => void locate(selected.id)}
               onError={setBanner}
             />
           ) : (
@@ -370,6 +444,13 @@ export default function App() {
                 );
               }}
               onDismissDiscovered={() => setDiscovered(null)}
+              onDismissMoves={() =>
+                setDiscovered((d) => (d ? { ...d, moves: [] } : d))
+              }
+              onApplyMoves={(moves) =>
+                workspace && void applyMoves(workspace, moves)
+              }
+              onLocate={(id) => void locate(id)}
               onRemoveMember={(path) =>
                 workspace &&
                 void guard(() =>
@@ -439,6 +520,11 @@ export default function App() {
           onFetch={() => {
             setPaletteOpen(false);
             fetchScope();
+          }}
+          current={selected}
+          onLocate={(id) => {
+            setPaletteOpen(false);
+            void locate(id);
           }}
         />
       )}
