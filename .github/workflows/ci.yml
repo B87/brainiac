@@ -45,5 +45,9 @@ jobs:
         run: pnpm typecheck
       - name: Frontend tests
         run: pnpm test
+      - name: WebKit for the editor tests
+        run: pnpm exec playwright install webkit
+      - name: Editor tests in WebKit
+        run: pnpm test:editor
       - name: Frontend build
         run: pnpm build

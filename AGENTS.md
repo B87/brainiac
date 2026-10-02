@@ -38,6 +38,7 @@ Docs lifecycle: write a behavior change in `SPEC.md` first (or in the same commi
 - Frontend: `pnpm check:web` for Biome lint, formatting, and import checks; `pnpm check:fix` for safe fixes; `pnpm format` to format. Generated DTOs in `src/lib/generated/` are excluded from Biome; regenerate them with Rust tests rather than editing them.
 - Rust: `pnpm format:rust` to format; `pnpm format:rust:check`, `pnpm lint:rust`, and `pnpm test:rust` for individual checks. Rust tests also regenerate TypeScript bindings; commit them with the corresponding Rust changes.
 - `pnpm typecheck` and `pnpm test` for frontend types and tests; `pnpm build` for the frontend build only.
+- `pnpm test:editor` runs the note editor's tests in WebKit (Playwright, `e2e/editor/`); run it after changing `src/lib/editor/`. The first time, install the browser with `pnpm exec playwright install webkit`. CI runs it on every push.
 - `pnpm run` lists available scripts.
 - Releases: `pnpm release X.Y.Z` (tag + push, CI builds a draft), then `pnpm release:publish vX.Y.Z`. These wrap the scripts in `scripts/`; `pnpm version:check` verifies version agreement. Process in `docs/RELEASING.md`. Every user-visible change gets one short line under `## [Unreleased]` in `CHANGELOG.md`, saying what the user notices, not how it was done; internal changes get none. Do not create version sections by hand: `scripts/release.sh` turns Unreleased into the release's section and updates the links.
 

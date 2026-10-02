@@ -3,7 +3,9 @@
   "files": {
     "includes": [
       "src/**",
+      "e2e/**",
       "vite.config.ts",
+      "playwright.config.ts",
       "tsconfig*.json",
       "package.json",
       "biome.json",

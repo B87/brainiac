@@ -18,6 +18,7 @@
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:editor": "playwright test",
     "tauri": "tauri",
     "version:check": "scripts/check-version.sh",
     "release": "scripts/release.sh",
@@ -42,6 +43,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",
+    "@playwright/test": "^1.63.0",
     "@tailwindcss/vite": "^4",
     "@tauri-apps/cli": "^2",
     "@types/node": "^26.6.3",

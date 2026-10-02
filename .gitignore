@@ -4,6 +4,10 @@ dist/
 src-tauri/target/
 src-tauri/gen/schemas/
 
+# Editor test output (pnpm test:editor)
+test-results/
+playwright-report/
+
 # Logs
 *.log
 
