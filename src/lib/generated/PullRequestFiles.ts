@@ -2,6 +2,12 @@
 import type { ChangedFile } from "./ChangedFile";
 
 /**
- * The files a pull request changes, for its head commit.
+ * The files a pull request changes, for its head commit; or, since the
+ * account's last review, the files changed between that commit and the head.
  */
-export type PullRequestFiles = { reference: string, head_sha: string, files: Array<ChangedFile>, fetched_at: string, };
+export type PullRequestFiles = { reference: string, head_sha: string, 
+/**
+ * The commit the files are compared from: the target branch's tip, or
+ * the reviewed commit (`since_review`).
+ */
+base_sha: string, since_review: boolean, files: Array<ChangedFile>, fetched_at: string, };

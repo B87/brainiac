@@ -51,11 +51,16 @@ impl Requests {
 }
 
 async fn serve(routes: Vec<Route>) -> (String, Requests) {
+    serve_shared(Arc::new(Mutex::new(routes))).await
+}
+
+/// A server whose routes a test can replace while it runs, for answers that
+/// depend on commits made after the server started.
+async fn serve_shared(routes: Arc<Mutex<Vec<Route>>>) -> (String, Requests) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let requests = Requests::default();
     let seen = requests.clone();
-    let routes = Arc::new(routes);
     tokio::spawn(async move {
         loop {
             let Ok((mut socket, _)) = listener.accept().await else {
@@ -98,15 +103,18 @@ async fn serve(routes: Vec<Route>) -> (String, Requests) {
                 let path = first.next().unwrap_or("").to_string();
                 seen.0.lock().unwrap().push((path.clone(), body.clone()));
                 let lower = head.to_lowercase();
-                let route = routes.iter().find(|r| {
-                    r.method == method
-                        && path.starts_with(r.path)
-                        && lower.contains(r.head_contains)
-                        && body.contains(r.body_contains)
-                });
-                let (status, headers, body) = match route {
-                    Some(r) => (r.status, r.headers.clone(), r.body.clone()),
-                    None => (599, Vec::new(), format!("no route for {method} {path}")),
+                let (status, headers, body) = {
+                    let routes = routes.lock().unwrap();
+                    let route = routes.iter().find(|r| {
+                        r.method == method
+                            && path.starts_with(r.path)
+                            && lower.contains(r.head_contains)
+                            && body.contains(r.body_contains)
+                    });
+                    match route {
+                        Some(r) => (r.status, r.headers.clone(), r.body.clone()),
+                        None => (599, Vec::new(), format!("no route for {method} {path}")),
+                    }
                 };
                 let mut response = format!(
                     "HTTP/1.1 {status} X\r\ncontent-length: {}\r\ncontent-type: application/json\r\nconnection: close\r\n",
@@ -147,18 +155,33 @@ const BITBUCKET_SCOPES: (&str, &str) = (
 );
 
 fn github_pr(number: u64, updated: &str, head: &str) -> String {
+    github_pr_at(number, updated, head, &"b".repeat(40), None)
+}
+
+/// A pull request at `head` over `base`; `reviewed` is the commit the
+/// account's user (octo) approved, when they did.
+fn github_pr_at(
+    number: u64,
+    updated: &str,
+    head: &str,
+    base: &str,
+    reviewed: Option<&str>,
+) -> String {
+    let mine = reviewed
+        .map(|r| format!(r#", {{"state": "APPROVED", "commit": {{"oid": "{r}"}}, "author": {{"login": "octo", "databaseId": 42, "name": "Octo Cat"}}}}"#))
+        .unwrap_or_default();
     format!(
         r#"{{
-        "number": {number}, "title": "Add parser", "body": "Parses things.", "isDraft": false, "state": "OPEN",
+        "number": {number}, "title": "Add parser", "body": "Parses **things**.\n\n<script>x</script>", "isDraft": false, "state": "OPEN",
         "mergedAt": null, "closedAt": null, "createdAt": "2026-10-01T10:00:00Z", "updatedAt": "{updated}",
         "url": "https://github.com/acme/api/pull/{number}",
         "author": {{"login": "ada", "databaseId": 7, "name": "Ada"}},
         "headRefName": "feature", "headRefOid": "{head}", "headRepository": {{"nameWithOwner": "acme/api"}},
-        "baseRefName": "main", "mergeable": "MERGEABLE", "additions": 10, "deletions": 2, "changedFiles": 2,
+        "baseRefName": "main", "baseRefOid": "{base}", "mergeable": "MERGEABLE", "additions": 10, "deletions": 2, "changedFiles": 2,
         "commits": {{"totalCount": 3}}, "comments": {{"totalCount": 1}},
         "reviewThreads": {{"nodes": [{{"isResolved": false}}, {{"isResolved": true}}]}},
         "reviewRequests": {{"nodes": [{{"requestedReviewer": {{"__typename": "User", "login": "octo", "databaseId": 42, "name": "Octo Cat"}}}}]}},
-        "latestReviews": {{"nodes": [{{"state": "APPROVED", "author": {{"login": "bob", "databaseId": 9, "name": null}}}}]}},
+        "latestReviews": {{"nodes": [{{"state": "APPROVED", "commit": {{"oid": "{base}"}}, "author": {{"login": "bob", "databaseId": 9, "name": null}}}}{mine}]}},
         "lastCommit": {{"nodes": [{{"commit": {{"statusCheckRollup": {{"contexts": {{"nodes": [
             {{"__typename": "CheckRun", "name": "build", "status": "COMPLETED", "conclusion": "SUCCESS", "detailsUrl": "https://ci/1", "title": null}},
             {{"__typename": "StatusContext", "context": "lint", "state": "PENDING", "targetUrl": null, "description": "running"}}
@@ -215,12 +238,37 @@ const BITBUCKET_STATUSES: &str = r#"{"values": [
     {"key": "ci", "name": "Pipeline", "state": "FAILED", "description": "2 tests failed", "url": "https://ci/2"}
 ]}"#;
 const BITBUCKET_COMMENTS: &str = r#"{"values": [
-    {"id": 1, "parent": null, "inline": {"path": "login.js"}, "resolution": null, "pending": false, "deleted": false},
-    {"id": 2, "parent": {"id": 1}, "inline": {"path": "login.js"}, "resolution": null, "pending": false, "deleted": false},
-    {"id": 3, "parent": null, "inline": {"path": "login.js"}, "resolution": {"type": "resolution"}, "pending": false, "deleted": false},
-    {"id": 4, "parent": null, "inline": null, "resolution": null, "pending": false, "deleted": false},
-    {"id": 5, "parent": null, "inline": {"path": "login.js"}, "resolution": null, "pending": true, "deleted": false}
+    {"id": 1, "parent": null, "content": {"raw": "Is this right?"}, "inline": {"path": "login.js", "from": null, "to": 2, "outdated": false, "src_rev": "0123456789ab"}, "resolution": null, "pending": false, "deleted": false, "user": {"uuid": "{kim}", "nickname": "kim", "display_name": "Kim"}, "created_on": "2026-10-02T10:00:00.000000+00:00", "updated_on": "2026-10-02T10:00:00.000000+00:00", "links": {"html": {"href": "https://bitbucket.org/acme-team/web/pull-requests/5#comment-1"}}},
+    {"id": 2, "parent": {"id": 1}, "content": {"raw": "Yes: see https://example.com/doc."}, "inline": {"path": "login.js", "from": null, "to": 2}, "resolution": null, "pending": false, "deleted": false, "user": {"uuid": "{jo}", "nickname": "jo", "display_name": "Jo Doe"}, "created_on": "2026-10-02T10:05:00.000000+00:00", "updated_on": "2026-10-02T10:05:00.000000+00:00"},
+    {"id": 3, "parent": null, "content": {"raw": "fixed"}, "inline": {"path": "login.js", "from": 1, "to": null, "outdated": true}, "resolution": {"type": "resolution"}, "pending": false, "deleted": false, "user": {"uuid": "{kim}", "nickname": "kim"}, "created_on": "2026-10-01T10:00:00.000000+00:00"},
+    {"id": 4, "parent": null, "content": {"raw": "General remark"}, "inline": null, "resolution": null, "pending": false, "deleted": false, "user": {"uuid": "{lee}", "nickname": "lee"}, "created_on": "2026-10-02T11:00:00.000000+00:00"},
+    {"id": 5, "parent": null, "content": {"raw": "draft"}, "inline": {"path": "login.js", "to": 9}, "resolution": null, "pending": true, "deleted": false, "user": {"uuid": "{jo}"}, "created_on": "2026-10-02T12:00:00.000000+00:00"}
 ]}"#;
+const GITHUB_FILES_DIFF: &str = "diff --git a/src/parse.rs b/src/parse.rs\n--- a/src/parse.rs\n+++ b/src/parse.rs\n@@ -1 +1 @@\n-fn a() {}\n+fn a() { b() }\n";
+const BITBUCKET_DIFF: &str = "diff --git a/login.js b/login.js\nindex 1..2 100644\n--- a/login.js\n+++ b/login.js\n@@ -1,2 +1,2 @@\n-const a = 1;\n+const a = 2;\n export { a };\ndiff --git a/login.test.js b/login.test.js\nnew file mode 100644\n--- /dev/null\n+++ b/login.test.js\n@@ -0,0 +1 @@\n+test();\n";
+
+/// GitHub's conversation: a comment, two reviews (one says nothing), and
+/// two review threads, one resolved and outdated.
+const GITHUB_CONVERSATION: &str = r#"{"data": {"repository": {"pullRequest": {
+    "comments": {"nodes": [
+        {"databaseId": 100, "body": "Looks **good**", "createdAt": "2026-10-02T10:00:00Z", "updatedAt": "2026-10-02T10:00:00Z", "url": "https://github.com/acme/api/pull/1#issuecomment-100", "author": {"login": "bob", "databaseId": 9, "name": null}}
+    ]},
+    "reviews": {"nodes": [
+        {"databaseId": 200, "state": "APPROVED", "body": "", "submittedAt": "2026-10-02T11:00:00Z", "url": null, "commit": {"oid": "cccc"}, "author": {"login": "bob", "databaseId": 9, "name": null}},
+        {"databaseId": 201, "state": "COMMENTED", "body": "", "submittedAt": "2026-10-02T09:00:00Z", "url": null, "commit": null, "author": {"login": "octo", "databaseId": 42, "name": "Octo Cat"}}
+    ]},
+    "reviewThreads": {"pageInfo": {"hasNextPage": false, "endCursor": null}, "nodes": [
+        {"id": "T1", "isResolved": false, "isOutdated": false, "path": "src/parse.rs", "line": 12, "startLine": null, "diffSide": "RIGHT", "originalLine": 12, "originalStartLine": null,
+         "comments": {"nodes": [
+            {"databaseId": 300, "body": "Why?", "createdAt": "2026-10-02T08:00:00Z", "updatedAt": "2026-10-02T08:30:00Z", "url": null, "commit": {"oid": "cccc"}, "originalCommit": {"oid": "cccc"}, "author": {"login": "octo", "databaseId": 42, "name": "Octo Cat"}},
+            {"databaseId": 301, "body": "Because.", "createdAt": "2026-10-02T08:10:00Z", "updatedAt": "2026-10-02T08:10:00Z", "url": null, "commit": null, "originalCommit": {"oid": "cccc"}, "author": {"login": "ada", "databaseId": 7, "name": "Ada"}}
+         ]}},
+        {"id": "T2", "isResolved": true, "isOutdated": true, "path": "docs/new.md", "line": null, "startLine": null, "diffSide": "LEFT", "originalLine": 3, "originalStartLine": 1,
+         "comments": {"nodes": [
+            {"databaseId": 302, "body": "typo", "createdAt": "2026-10-01T12:00:00Z", "updatedAt": "2026-10-01T12:00:00Z", "url": null, "commit": null, "originalCommit": {"oid": "dddd"}, "author": null}
+         ]}}
+    ]}
+}}}}"#;
 
 // --- The harness ---------------------------------------------------------------
 
@@ -389,11 +437,19 @@ fn routes(github_prs: Vec<String>, bitbucket_prs: Vec<String>) -> Vec<Route> {
             ..route("GET", "/user", BITBUCKET_USER)
         },
         Route {
+            body_contains: "isOutdated",
+            ..route("POST", "/graphql", GITHUB_CONVERSATION)
+        },
+        Route {
             body_contains: "\"number\"",
             ..route("POST", "/graphql", github_get(&github_prs[0]))
         },
         route("POST", "/graphql", github_list(&github_prs)),
         route("GET", "/repos/acme/api/pulls/1/files", GITHUB_FILES),
+        Route {
+            head_contains: "accept: application/vnd.github.diff",
+            ..route("GET", "/repos/acme/api/pulls/1", GITHUB_FILES_DIFF)
+        },
         route(
             "GET",
             "/repositories/acme-team/web/pullrequests?state=OPEN",
@@ -408,6 +464,11 @@ fn routes(github_prs: Vec<String>, bitbucket_prs: Vec<String>) -> Vec<Route> {
             "GET",
             "/repositories/acme-team/web/pullrequests/5/comments",
             BITBUCKET_COMMENTS,
+        ),
+        route(
+            "GET",
+            "/repositories/acme-team/web/pullrequests/5/diff",
+            BITBUCKET_DIFF,
         ),
         route("GET", "/repositories/acme-team/web/pullrequests/5", {
             // `get` returns the same pull request (the route above wins for its sub-paths).
@@ -544,7 +605,7 @@ async fn a_workspace_lists_both_providers_and_caches_what_it_read() {
     // Files: Bitbucket's came with the diffstat; GitHub's are read from REST once.
     let files = h
         .pull_requests
-        .files("bitbucket.org/acme-team/web#5")
+        .files("bitbucket.org/acme-team/web#5", false)
         .await
         .unwrap();
     assert_eq!(files.files.len(), 2);
@@ -552,13 +613,13 @@ async fn a_workspace_lists_both_providers_and_caches_what_it_read() {
     assert_eq!(requests.count("/diffstat"), 1);
     let files = h
         .pull_requests
-        .files("github.com/acme/api#1")
+        .files("github.com/acme/api#1", false)
         .await
         .unwrap();
     assert_eq!(files.files[1].old_path.as_deref(), Some("docs/old.md"));
     assert_eq!(files.files[1].status, ChangedFileStatus::Renamed);
     h.pull_requests
-        .files("github.com/acme/api#1")
+        .files("github.com/acme/api#1", false)
         .await
         .unwrap();
     assert_eq!(requests.count("/pulls/1/files"), 1);
@@ -726,6 +787,225 @@ async fn a_workspace_with_pull_requests_off_asks_nothing() {
             repository_id: None,
             closed: true,
             max_age_seconds: 0,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::Validation);
+}
+
+/// A commit's full ID.
+fn rev(dir: &Path, name: &str) -> String {
+    let out = Command::new("git")
+        .args(["rev-parse", name])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    String::from_utf8(out.stdout).unwrap().trim().to_string()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn conversations_and_diffs_come_from_the_providers_or_local_git() {
+    let gh = github_pr(1, "2026-10-03T10:00:00Z", "a".repeat(40).as_str());
+    let bb = bitbucket_pr(5, "2026-10-03T09:00:00.000000+00:00", "0123456789ab");
+    let shared = Arc::new(Mutex::new(routes(vec![gh], vec![bb.clone()])));
+    let (base, requests) = serve_shared(Arc::clone(&shared)).await;
+    let h = harness(&base).await;
+    h.add_accounts().await;
+    let (ws, _api_id, _web_id) = h.workspace(h._tmp.path()).await;
+
+    // The GitHub pull request's branch is on the Mac: a commit on `feature`
+    // over `main`, which the account's user reviewed at `main`.
+    let api = h._tmp.path().join("api");
+    let main_sha = rev(&api, "main");
+    git(&api, &["checkout", "-q", "-b", "feature"]);
+    std::fs::write(api.join("README.md"), "hello\nworld\n").unwrap();
+    git(&api, &["commit", "-q", "-am", "say more"]);
+    let head_sha = rev(&api, "feature");
+    git(&api, &["checkout", "-q", "main"]);
+    let gh = github_pr_at(
+        1,
+        "2026-10-03T10:00:00Z",
+        &head_sha,
+        &main_sha,
+        Some(&main_sha),
+    );
+    *shared.lock().unwrap() = routes(vec![gh], vec![bb]);
+
+    h.list(&ws.id, 0).await;
+    let pr = h
+        .pull_requests
+        .get("github.com/acme/api#1", 300)
+        .await
+        .unwrap();
+    assert_eq!(pr.base_sha, main_sha);
+    assert_eq!(pr.reviewed_sha.as_deref(), Some(main_sha.as_str()));
+    assert_eq!(pr.commits_since_review, Some(1));
+    assert!(
+        pr.description_html.contains("<strong>things</strong>")
+            && !pr.description_html.contains("<script"),
+        "{}",
+        pr.description_html
+    );
+
+    // GitHub's conversation: oldest thread first, a review that says
+    // nothing left out, a resolved outdated thread kept as such.
+    let conversation = h
+        .pull_requests
+        .conversation("github.com/acme/api#1", 300)
+        .await
+        .unwrap();
+    let ids: Vec<&str> = conversation.threads.iter().map(|t| t.id.as_str()).collect();
+    assert_eq!(ids, ["T2", "T1", "comment:100", "review:200"]);
+    let t1 = &conversation.threads[1];
+    let anchor = t1.anchor.as_ref().unwrap();
+    assert_eq!(
+        (anchor.path.as_str(), anchor.line, anchor.side),
+        ("src/parse.rs", Some(12), DiffSide::New)
+    );
+    assert_eq!(anchor.commit.as_deref(), Some("cccc"));
+    assert!(!t1.resolved && !t1.outdated);
+    assert_eq!(t1.comments.len(), 2);
+    assert!(t1.comments[0].mine && !t1.comments[1].mine);
+    assert_eq!(
+        t1.comments[0].updated_at.as_deref(),
+        Some("2026-10-02T08:30:00.000Z")
+    );
+    assert_eq!(t1.comments[1].updated_at, None);
+    let t2 = &conversation.threads[0];
+    assert!(t2.resolved && t2.outdated);
+    assert_eq!(t2.anchor.as_ref().unwrap().line, Some(3));
+    assert_eq!(t2.anchor.as_ref().unwrap().side, DiffSide::Old);
+    assert_eq!(t2.comments[0].author.login, "ghost");
+    assert_eq!(
+        conversation.threads[2].comments[0].html.trim(),
+        "<p>Looks <strong>good</strong></p>"
+    );
+    assert_eq!(
+        conversation.threads[3].comments[0].review,
+        Some(ReviewState::Approved)
+    );
+    // Cached for its age, read again on request.
+    let before = requests.count("/graphql");
+    h.pull_requests
+        .conversation("github.com/acme/api#1", 300)
+        .await
+        .unwrap();
+    assert_eq!(requests.count("/graphql"), before);
+    h.pull_requests
+        .conversation("github.com/acme/api#1", 0)
+        .await
+        .unwrap();
+    assert_eq!(requests.count("/graphql"), before + 1);
+
+    // Bitbucket's conversation came with the detail: no new request.
+    let before = requests.count("/comments");
+    let conversation = h
+        .pull_requests
+        .conversation("bitbucket.org/acme-team/web#5", 300)
+        .await
+        .unwrap();
+    assert_eq!(requests.count("/comments"), before);
+    let ids: Vec<&str> = conversation.threads.iter().map(|t| t.id.as_str()).collect();
+    assert_eq!(ids, ["3", "1", "4"], "the pending draft is left out");
+    let inline = &conversation.threads[1];
+    assert_eq!(inline.comments.len(), 2);
+    assert!(inline.comments[1].mine);
+    assert!(inline.comments[1]
+        .html
+        .contains(r#"<a href="https://example.com/doc">"#));
+    assert_eq!(inline.anchor.as_ref().unwrap().line, Some(2));
+    assert!(conversation.threads[0].resolved && conversation.threads[0].outdated);
+    assert_eq!(
+        conversation.threads[0].anchor.as_ref().unwrap().side,
+        DiffSide::Old
+    );
+
+    // GitHub's diff from local Git, since both commits are here.
+    let request = |path: &str, since_review: bool| PullRequestDiffRequest {
+        reference: "github.com/acme/api#1".into(),
+        path: path.into(),
+        old_path: None,
+        since_review,
+        options: DiffOptions::default(),
+    };
+    let diff = h
+        .pull_requests
+        .diff(request("README.md", false))
+        .await
+        .unwrap();
+    assert_eq!(diff.source, DiffSource::Local);
+    assert_eq!(
+        (diff.base_sha.as_str(), diff.head_sha.as_str()),
+        (main_sha.as_str(), head_sha.as_str())
+    );
+    let DiffContent::Text { hunks, .. } = &diff.diff.content else {
+        panic!("text diff");
+    };
+    assert_eq!(hunks.len(), 1);
+    assert!(hunks[0]
+        .lines
+        .iter()
+        .any(|l| l.kind == DiffLineKind::Add && l.text == "world"));
+    assert!(matches!(diff.diff.selector, DiffSelector::Range { .. }));
+    // Since the review: the same, from the reviewed commit.
+    let diff = h
+        .pull_requests
+        .diff(request("README.md", true))
+        .await
+        .unwrap();
+    assert_eq!(diff.base_sha, main_sha);
+    let files = h
+        .pull_requests
+        .files("github.com/acme/api#1", true)
+        .await
+        .unwrap();
+    assert!(files.since_review);
+    assert_eq!(files.files.len(), 1);
+    assert_eq!(files.files[0].path, "README.md");
+    assert_eq!((files.files[0].additions, files.files[0].deletions), (1, 0));
+    assert_eq!(
+        requests.count("vnd.github"),
+        0,
+        "nothing asked of GitHub for a local diff"
+    );
+
+    // Bitbucket's head is not here: the provider's diff, read once and cut per file.
+    let request = |path: &str| PullRequestDiffRequest {
+        reference: "bitbucket.org/acme-team/web#5".into(),
+        path: path.into(),
+        old_path: None,
+        since_review: false,
+        options: DiffOptions::default(),
+    };
+    let diff = h.pull_requests.diff(request("login.js")).await.unwrap();
+    assert_eq!(diff.source, DiffSource::Provider);
+    let DiffContent::Text { hunks, .. } = &diff.diff.content else {
+        panic!("text diff");
+    };
+    assert_eq!(hunks[0].lines.len(), 3);
+    assert_eq!(hunks[0].lines[1].text, "const a = 2;");
+    let diff = h
+        .pull_requests
+        .diff(request("login.test.js"))
+        .await
+        .unwrap();
+    let DiffContent::Text { hunks, .. } = &diff.diff.content else {
+        panic!("text diff");
+    };
+    assert_eq!(hunks[0].lines[0].text, "test();");
+    let diff = h.pull_requests.diff(request("elsewhere.js")).await.unwrap();
+    assert!(matches!(&diff.diff.content, DiffContent::Text { hunks, .. } if hunks.is_empty()));
+    // The diffstat path starts the same way; the diff itself was read once.
+    assert_eq!(
+        requests.count("/pullrequests/5/diff") - requests.count("/pullrequests/5/diffstat"),
+        1
+    );
+    // Since the review is not possible without a reviewed commit.
+    let err = h
+        .pull_requests
+        .diff(PullRequestDiffRequest {
+            since_review: true,
+            ..request("login.js")
         })
         .await
         .unwrap_err();

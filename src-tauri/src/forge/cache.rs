@@ -5,9 +5,10 @@
 
 use rusqlite::{params, Connection, OptionalExtension};
 
+use super::patch::FilePatch;
 use crate::db::enum_name;
 use crate::models::{
-    AppResult, PullRequest, PullRequestChecks, PullRequestFiles, PullRequestState,
+    AppResult, Conversation, PullRequest, PullRequestChecks, PullRequestFiles, PullRequestState,
 };
 
 /// A closed pull request is forgotten this long after it closed.
@@ -175,6 +176,82 @@ pub fn put_checks(conn: &Connection, checks: &PullRequestChecks) -> AppResult<()
     Ok(())
 }
 
+pub fn conversation(conn: &Connection, reference: &str) -> AppResult<Option<Conversation>> {
+    let json: Option<String> = conn
+        .query_row(
+            "SELECT json FROM pull_request_conversations WHERE reference = ?1",
+            [reference],
+            |r| r.get(0),
+        )
+        .optional()?;
+    json.map(|j| Ok(serde_json::from_str(&j)?)).transpose()
+}
+
+pub fn put_conversation(conn: &Connection, conversation: &Conversation) -> AppResult<()> {
+    conn.execute(
+        "INSERT INTO pull_request_conversations (reference, json, fetched_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT (reference) DO UPDATE SET json = excluded.json, fetched_at = excluded.fetched_at",
+        params![
+            conversation.reference,
+            serde_json::to_string(conversation)?,
+            conversation.fetched_at
+        ],
+    )?;
+    Ok(())
+}
+
+/// The head commit whose provider diff is stored for a pull request.
+pub fn patch_set(conn: &Connection, reference: &str) -> AppResult<Option<String>> {
+    Ok(conn
+        .query_row(
+            "SELECT head_sha FROM pull_request_patch_sets WHERE reference = ?1",
+            [reference],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
+/// One file's part of the stored diff, by its path after or before the change.
+pub fn patch(conn: &Connection, reference: &str, path: &str) -> AppResult<Option<String>> {
+    Ok(conn
+        .query_row(
+            "SELECT patch FROM pull_request_patches WHERE reference = ?1 AND path = ?2",
+            params![reference, path],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
+/// Replace a pull request's stored diff with one read for `head_sha`. A
+/// renamed file is stored under both its paths.
+pub fn put_patch_set(
+    conn: &Connection,
+    reference: &str,
+    head_sha: &str,
+    files: &[FilePatch],
+    now: &str,
+) -> AppResult<()> {
+    conn.execute(
+        "DELETE FROM pull_request_patches WHERE reference = ?1",
+        [reference],
+    )?;
+    let mut insert = conn.prepare_cached(
+        "INSERT OR REPLACE INTO pull_request_patches (reference, path, patch) VALUES (?1, ?2, ?3)",
+    )?;
+    for f in files {
+        insert.execute(params![reference, f.path, f.text])?;
+        if let Some(old) = &f.old_path {
+            insert.execute(params![reference, old, f.text])?;
+        }
+    }
+    conn.execute(
+        "INSERT INTO pull_request_patch_sets (reference, head_sha, fetched_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT (reference) DO UPDATE SET head_sha = excluded.head_sha, fetched_at = excluded.fetched_at",
+        params![reference, head_sha, now],
+    )?;
+    Ok(())
+}
+
 /// Drop pull requests closed more than `KEEP_CLOSED_DAYS` ago, with their files and checks.
 pub fn prune(conn: &Connection, now: &str) -> AppResult<usize> {
     let cutoff = chrono::DateTime::parse_from_rfc3339(now)
@@ -189,9 +266,18 @@ pub fn prune(conn: &Connection, now: &str) -> AppResult<usize> {
         "DELETE FROM pull_request_files WHERE reference NOT IN (SELECT reference FROM pull_requests)",
         [],
     )?;
-    conn.execute(
-        "DELETE FROM pull_request_checks WHERE reference NOT IN (SELECT reference FROM pull_requests)",
-        [],
-    )?;
+    for table in [
+        "pull_request_checks",
+        "pull_request_conversations",
+        "pull_request_patch_sets",
+        "pull_request_patches",
+    ] {
+        conn.execute(
+            &format!(
+                "DELETE FROM {table} WHERE reference NOT IN (SELECT reference FROM pull_requests)"
+            ),
+            [],
+        )?;
+    }
     Ok(gone)
 }

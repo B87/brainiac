@@ -4,6 +4,7 @@
  */
 import { relativeTime } from "./format";
 import type {
+  ChangedFile,
   CheckState,
   ChecksSummary,
   ForgeKind,
@@ -13,6 +14,8 @@ import type {
   RepositorySummary,
   RequestBudget,
   ReviewState,
+  Thread,
+  ThreadAnchor,
 } from "./ipc";
 
 /** The workspace tab's filters, and the repository tab's `closed`. */
@@ -166,4 +169,89 @@ export function awaitingCount(groups: PullRequestGroup[]): number {
     (n, g) => n + g.pull_requests.filter((p) => p.awaiting_my_review).length,
     0,
   );
+}
+
+// --- The pull request view (SPEC.md, Pull request) ---------------------------
+
+/** "N new commits since your review", or null when there is nothing new. */
+export function sinceReviewLabel(pr: PullRequest): string | null {
+  if (!pr.reviewed_sha || pr.reviewed_sha === pr.head_sha) return null;
+  const n = pr.commits_since_review;
+  if (n === null) return "New commits since your review";
+  return `${n} new ${n === 1 ? "commit" : "commits"} since your review`;
+}
+
+/** Lock files, minified bundles, snapshots, and generated folders: folded in Files Changed. */
+export function isGenerated(path: string): boolean {
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  if (
+    /^(package-lock\.json|pnpm-lock\.yaml|yarn\.lock|Cargo\.lock|composer\.lock|Gemfile\.lock|poetry\.lock|go\.sum)$/.test(
+      name,
+    )
+  )
+    return true;
+  if (/\.(min\.(js|css)|snap|pb\.go|generated\.[a-z]+)$/.test(name))
+    return true;
+  return /(^|\/)(generated|__generated__|__snapshots__|dist|vendor)\//.test(
+    path,
+  );
+}
+
+/** What a viewed mark remembers of a file: when any of it changes, the mark clears. */
+export function fileKey(f: ChangedFile): string {
+  return `${f.status}:${f.additions}:${f.deletions}:${f.binary ? "b" : "t"}`;
+}
+
+export type ViewedMarks = Record<string, string>;
+
+const VIEWED_PREFIX = "brainiac.pr.viewed:";
+
+export function loadViewed(reference: string): ViewedMarks {
+  try {
+    const raw = localStorage.getItem(VIEWED_PREFIX + reference);
+    return raw ? (JSON.parse(raw) as ViewedMarks) : {};
+  } catch {
+    return {};
+  }
+}
+
+export function saveViewed(reference: string, marks: ViewedMarks): void {
+  try {
+    localStorage.setItem(VIEWED_PREFIX + reference, JSON.stringify(marks));
+  } catch {
+    // Private mode or a full store: the marks last for the session only.
+  }
+}
+
+/** Whether a file is marked viewed and unchanged since. */
+export function isViewed(marks: ViewedMarks, f: ChangedFile): boolean {
+  return marks[f.path] === fileKey(f);
+}
+
+/** Threads on each path: how many, and how many still open. */
+export function threadCounts(
+  threads: Thread[],
+): Map<string, { total: number; open: number }> {
+  const out = new Map<string, { total: number; open: number }>();
+  for (const t of threads) {
+    if (!t.anchor) continue;
+    const c = out.get(t.anchor.path) ?? { total: 0, open: 0 };
+    c.total++;
+    if (!t.resolved) c.open++;
+    out.set(t.anchor.path, c);
+  }
+  return out;
+}
+
+/** Inline threads still open, as the merge checklist counts them. */
+export function unresolvedThreads(threads: Thread[]): number {
+  return threads.filter((t) => t.anchor && !t.resolved).length;
+}
+
+/** "src/parse.rs:12", "docs/a.md:3–7", or the path alone. */
+export function anchorLabel(a: ThreadAnchor): string {
+  if (a.line === null) return a.path;
+  if (a.start_line !== null && a.start_line !== a.line)
+    return `${a.path}:${a.start_line}–${a.line}`;
+  return `${a.path}:${a.line}`;
 }

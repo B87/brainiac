@@ -6,16 +6,17 @@ use serde::Deserialize;
 
 use super::accounts::AccountCheck;
 use super::adapter::{
-    base_actions, normalize_time, read_error, summarize_checks, Client, ForgeAdapter, ListOutcome,
-    Session,
+    base_actions, edited, normalize_time, read_error, sort_threads, summarize_checks, Client,
+    ForgeAdapter, ListOutcome, Session,
 };
 use super::http::{unexpected, Auth, Http, Response};
 use super::keychain::Token;
+use super::markdown;
 use super::{ForgeRepository, PullRequestRef};
 use crate::models::{
     ActionAvailability, AppError, AppResult, ChangedFile, ChangedFileStatus, Check, CheckState,
-    ErrorCode, ForgeKind, ForgeTokenKind, ForgeUser, Mergeability, PullRequest, PullRequestCounts,
-    PullRequestState, ReviewState, Reviewer,
+    Comment, DiffSide, ErrorCode, ForgeKind, ForgeTokenKind, ForgeUser, Mergeability, PullRequest,
+    PullRequestCounts, PullRequestState, ReviewState, Reviewer, Thread, ThreadAnchor,
 };
 
 pub const API: &str = "https://api.github.com";
@@ -218,7 +219,7 @@ const PR_FRAGMENT: &str = r#"
 fragment pr on PullRequest {
   number title body isDraft state mergedAt closedAt createdAt updatedAt url
   author { login ... on User { databaseId name } }
-  headRefName headRefOid headRepository { nameWithOwner } baseRefName
+  headRefName headRefOid headRepository { nameWithOwner } baseRefName baseRefOid
   mergeable additions deletions changedFiles
   commits { totalCount }
   comments { totalCount }
@@ -226,7 +227,7 @@ fragment pr on PullRequest {
   reviewRequests(first: 50) {
     nodes { requestedReviewer { __typename ... on User { login databaseId name } ... on Team { name slug } } }
   }
-  latestReviews(first: 50) { nodes { state author { login ... on User { databaseId name } } } }
+  latestReviews(first: 50) { nodes { state commit { oid } author { login ... on User { databaseId name } } } }
   lastCommit: commits(last: 1) {
     nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
       __typename
@@ -293,13 +294,15 @@ struct PrNode {
     head_ref_oid: String,
     head_repository: Option<NameWithOwner>,
     base_ref_name: String,
+    #[serde(default)]
+    base_ref_oid: String,
     mergeable: Option<String>,
     additions: u32,
     deletions: u32,
     changed_files: u32,
     commits: Count,
     comments: Count,
-    review_threads: Nodes<Thread>,
+    review_threads: Nodes<ThreadCount>,
     review_requests: Nodes<ReviewRequest>,
     latest_reviews: Nodes<Review>,
     last_commit: Nodes<CommitNode>,
@@ -332,7 +335,7 @@ struct Nodes<T> {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct Thread {
+struct ThreadCount {
     is_resolved: bool,
 }
 
@@ -357,6 +360,12 @@ struct RequestedReviewer {
 struct Review {
     state: String,
     author: Option<Actor>,
+    commit: Option<Oid>,
+}
+
+#[derive(Deserialize)]
+struct Oid {
+    oid: String,
 }
 
 #[derive(Deserialize)]
@@ -548,6 +557,19 @@ fn pull_request(
         .flatten()
         .filter(|t| !t.is_resolved)
         .count() as u32;
+    // The commit the account's user last reviewed: their latest review's.
+    let reviewed_sha = node
+        .latest_reviews
+        .nodes
+        .iter()
+        .flatten()
+        .filter(|r| r.state != "PENDING")
+        .find(|r| {
+            r.author
+                .as_ref()
+                .is_some_and(|a| user(a).id == session.user_id)
+        })
+        .and_then(|r| r.commit.as_ref().map(|c| c.oid.clone()));
     let updated_at = normalize_time(&node.updated_at);
     PullRequest {
         reference: PullRequestRef {
@@ -558,6 +580,7 @@ fn pull_request(
         number: node.number,
         kind: ForgeKind::Github,
         title: node.title.clone(),
+        description_html: markdown::render(node.body.as_deref().unwrap_or_default()),
         description: node.body.clone().unwrap_or_default(),
         awaiting_my_review: reviewers
             .iter()
@@ -572,6 +595,7 @@ fn pull_request(
             .unwrap_or_else(|| format!("{}/{}", repository.owner, repository.name)),
         source_branch: node.head_ref_name.clone(),
         head_sha: node.head_ref_oid.clone(),
+        base_sha: node.base_ref_oid.clone(),
         target_branch: node.base_ref_name.clone(),
         reviewers,
         checks: summarize_checks(&checks),
@@ -598,6 +622,212 @@ fn pull_request(
         version: format!("{updated_at}:{}", node.head_ref_oid),
         updated_at,
         actions,
+        reviewed_sha,
+        commits_since_review: None,
+    }
+}
+
+// --- The conversation ---------------------------------------------------------
+
+/// Comments on the pull request, reviews, and review threads with their
+/// comments. The first page carries the comments and reviews; later pages of
+/// threads leave them out (`$top`).
+const CONVERSATION_QUERY: &str = r#"
+query($owner: String!, $name: String!, $number: Int!, $after: String, $top: Boolean!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      comments(first: 100) @include(if: $top) {
+        nodes { databaseId body createdAt updatedAt url author { login ... on User { databaseId name } } }
+      }
+      reviews(first: 100) @include(if: $top) {
+        nodes { databaseId state body submittedAt url commit { oid } author { login ... on User { databaseId name } } }
+      }
+      reviewThreads(first: 50, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id isResolved isOutdated path line startLine diffSide originalLine originalStartLine
+          comments(first: 100) {
+            nodes { databaseId body createdAt updatedAt url commit { oid } originalCommit { oid } author { login ... on User { databaseId name } } }
+          }
+        }
+      }
+    }
+  }
+}
+"#;
+
+#[derive(Deserialize)]
+struct ConversationData {
+    repository: Option<ConversationRepository>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConversationRepository {
+    pull_request: Option<ConversationPr>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConversationPr {
+    comments: Option<Nodes<CommentNode>>,
+    reviews: Option<Nodes<ReviewNode>>,
+    review_threads: ThreadConnection,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreadConnection {
+    page_info: PageInfo,
+    nodes: Vec<Option<ThreadNode>>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ThreadNode {
+    id: String,
+    is_resolved: bool,
+    is_outdated: bool,
+    path: String,
+    line: Option<u32>,
+    start_line: Option<u32>,
+    diff_side: Option<String>,
+    original_line: Option<u32>,
+    original_start_line: Option<u32>,
+    comments: Nodes<CommentNode>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CommentNode {
+    database_id: Option<u64>,
+    body: String,
+    created_at: String,
+    updated_at: Option<String>,
+    url: Option<String>,
+    author: Option<Actor>,
+    commit: Option<Oid>,
+    original_commit: Option<Oid>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReviewNode {
+    database_id: Option<u64>,
+    state: String,
+    body: String,
+    submitted_at: Option<String>,
+    url: Option<String>,
+    author: Option<Actor>,
+}
+
+fn ghost() -> ForgeUser {
+    ForgeUser {
+        id: String::new(),
+        login: "ghost".into(),
+        display_name: None,
+    }
+}
+
+fn comment_of(node: &CommentNode, me: &str) -> Comment {
+    let author = node.author.as_ref().map(user).unwrap_or_else(ghost);
+    Comment {
+        id: node
+            .database_id
+            .map(|id| id.to_string())
+            .unwrap_or_default(),
+        mine: author.id == me,
+        author,
+        html: markdown::render(&node.body),
+        body: node.body.clone(),
+        review: None,
+        created_at: normalize_time(&node.created_at),
+        updated_at: node
+            .updated_at
+            .as_deref()
+            .map(normalize_time)
+            .filter(|u| edited(&node.created_at, u)),
+        web_url: node.url.clone(),
+    }
+}
+
+/// A review's summary as a thread of one comment, when it says something:
+/// a verdict, or words.
+fn review_thread(node: &ReviewNode, me: &str) -> Option<Thread> {
+    let review = match node.state.as_str() {
+        "APPROVED" => Some(ReviewState::Approved),
+        "CHANGES_REQUESTED" => Some(ReviewState::ChangesRequested),
+        "COMMENTED" | "DISMISSED" => None,
+        // PENDING is an unsubmitted draft on GitHub's site.
+        _ => return None,
+    };
+    if review.is_none() && node.body.trim().is_empty() {
+        return None;
+    }
+    let author = node.author.as_ref().map(user).unwrap_or_else(ghost);
+    let id = node
+        .database_id
+        .map(|id| id.to_string())
+        .unwrap_or_default();
+    Some(Thread {
+        id: format!("review:{id}"),
+        anchor: None,
+        resolved: false,
+        outdated: false,
+        comments: vec![Comment {
+            id,
+            mine: author.id == me,
+            author,
+            html: markdown::render(&node.body),
+            body: node.body.clone(),
+            review,
+            created_at: node
+                .submitted_at
+                .as_deref()
+                .map(normalize_time)
+                .unwrap_or_default(),
+            updated_at: None,
+            web_url: node.url.clone(),
+        }],
+    })
+}
+
+fn review_thread_of(node: &ThreadNode, me: &str) -> Thread {
+    let comments: Vec<Comment> = node
+        .comments
+        .nodes
+        .iter()
+        .flatten()
+        .map(|c| comment_of(c, me))
+        .collect();
+    let commit = node
+        .comments
+        .nodes
+        .iter()
+        .flatten()
+        .next()
+        .and_then(|c| c.commit.as_ref().or(c.original_commit.as_ref()))
+        .map(|c| c.oid.clone());
+    Thread {
+        id: node.id.clone(),
+        anchor: Some(ThreadAnchor {
+            path: node.path.clone(),
+            side: if node.diff_side.as_deref() == Some("LEFT") {
+                DiffSide::Old
+            } else {
+                DiffSide::New
+            },
+            line: node.line.or(node.original_line),
+            // A one-line thread names its line as its start too.
+            start_line: node
+                .start_line
+                .or(node.original_start_line)
+                .filter(|s| Some(*s) != node.line.or(node.original_line)),
+            commit,
+        }),
+        resolved: node.is_resolved,
+        outdated: node.is_outdated,
+        comments,
     }
 }
 
@@ -793,6 +1023,84 @@ impl ForgeAdapter for Github {
             .and_then(|r| r.pull_request)
             .ok_or_else(|| AppError::not_found(format!("GitHub has no pull request {pr}.")))?;
         Ok(checks_of(&node))
+    }
+
+    async fn conversation(&self, session: &Session, pr: &PullRequestRef) -> AppResult<Vec<Thread>> {
+        let what = format!("the conversation of {pr}");
+        let me = session.user_id.as_str();
+        let mut threads = Vec::new();
+        let mut after: Option<String> = None;
+        for page in 0..MAX_PAGES {
+            let variables = serde_json::json!({
+                "owner": pr.repository.owner, "name": pr.repository.name, "number": pr.number,
+                "after": after, "top": page == 0,
+            });
+            let data: ConversationData = self
+                .query(session, CONVERSATION_QUERY, variables, &what)
+                .await?;
+            let node = data
+                .repository
+                .and_then(|r| r.pull_request)
+                .ok_or_else(|| AppError::not_found(format!("GitHub has no pull request {pr}.")))?;
+            for c in node.comments.iter().flat_map(|n| n.nodes.iter()).flatten() {
+                let comment = comment_of(c, me);
+                threads.push(Thread {
+                    id: format!("comment:{}", comment.id),
+                    anchor: None,
+                    resolved: false,
+                    outdated: false,
+                    comments: vec![comment],
+                });
+            }
+            threads.extend(
+                node.reviews
+                    .iter()
+                    .flat_map(|n| n.nodes.iter())
+                    .flatten()
+                    .filter_map(|r| review_thread(r, me)),
+            );
+            threads.extend(
+                node.review_threads
+                    .nodes
+                    .iter()
+                    .flatten()
+                    .map(|t| review_thread_of(t, me)),
+            );
+            if !node.review_threads.page_info.has_next_page {
+                break;
+            }
+            after = node.review_threads.page_info.end_cursor;
+        }
+        sort_threads(&mut threads);
+        Ok(threads)
+    }
+
+    async fn patch(&self, session: &Session, pr: &PullRequestRef) -> AppResult<String> {
+        let url = format!(
+            "{}/repos/{}/{}/pulls/{}",
+            self.client.api, pr.repository.owner, pr.repository.name, pr.number
+        );
+        let response = self
+            .client
+            .get(
+                session,
+                &url,
+                &[API_VERSION, ("Accept", "application/vnd.github.diff")],
+            )
+            .await?;
+        match response.status {
+            200 => Ok(String::from_utf8_lossy(&response.body).into_owned()),
+            // GitHub serves no diff past 300 files or 20,000 lines.
+            406 => Err(AppError::new(
+                ErrorCode::Validation,
+                format!("GitHub does not serve the diff of {pr}: it is too large. Fetch the repository to see it from local Git."),
+            )),
+            _ => Err(read_error(
+                ForgeKind::Github,
+                &format!("the diff of {pr}"),
+                &response,
+            )),
+        }
     }
 }
 

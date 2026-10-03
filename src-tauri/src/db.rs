@@ -120,10 +120,16 @@ pub const HISTORY: Store = Store {
 pub const FORGE: Store = Store {
     backup_prefix: "forge-",
     application_id: 0x4252_4E46,
-    migrations: &[(
-        "0001_forge",
-        include_str!("../migrations/forge/0001_forge.sql"),
-    )],
+    migrations: &[
+        (
+            "0001_forge",
+            include_str!("../migrations/forge/0001_forge.sql"),
+        ),
+        (
+            "0002_conversations",
+            include_str!("../migrations/forge/0002_conversations.sql"),
+        ),
+    ],
     backups: Backups::Never,
     adopt_unmarked: false,
     incremental_vacuum: true,

@@ -11,6 +11,7 @@ import type { AppSnapshot } from "./generated/AppSnapshot";
 import type { ChangesResult } from "./generated/ChangesResult";
 import type { CommitDetail } from "./generated/CommitDetail";
 import type { CommitPage } from "./generated/CommitPage";
+import type { Conversation } from "./generated/Conversation";
 import type { CreateNoteRequest } from "./generated/CreateNoteRequest";
 import type { CreateWorkspaceRequest } from "./generated/CreateWorkspaceRequest";
 import type { DiffOptions } from "./generated/DiffOptions";
@@ -36,6 +37,8 @@ import type { PinEntityType } from "./generated/PinEntityType";
 import type { PullRequest } from "./generated/PullRequest";
 import type { PullRequestChangedEvent } from "./generated/PullRequestChangedEvent";
 import type { PullRequestChecks } from "./generated/PullRequestChecks";
+import type { PullRequestDiff } from "./generated/PullRequestDiff";
+import type { PullRequestDiffRequest } from "./generated/PullRequestDiffRequest";
 import type { PullRequestFiles } from "./generated/PullRequestFiles";
 import type { PullRequestList } from "./generated/PullRequestList";
 import type { RefsResult } from "./generated/RefsResult";
@@ -87,10 +90,13 @@ export type { ChangeEntry } from "./generated/ChangeEntry";
 export type { Check } from "./generated/Check";
 export type { CheckState } from "./generated/CheckState";
 export type { ChecksSummary } from "./generated/ChecksSummary";
+export type { Comment } from "./generated/Comment";
 export type { CommitFile } from "./generated/CommitFile";
 export type { CommitSummary } from "./generated/CommitSummary";
 export type { DiffContent } from "./generated/DiffContent";
 export type { DiffLine } from "./generated/DiffLine";
+export type { DiffSide } from "./generated/DiffSide";
+export type { DiffSource } from "./generated/DiffSource";
 export type { DiscoveryMode } from "./generated/DiscoveryMode";
 export type { FolderEntry } from "./generated/FolderEntry";
 export type { ForgeAccount } from "./generated/ForgeAccount";
@@ -124,6 +130,8 @@ export type { SuggestedMove } from "./generated/SuggestedMove";
 export type { TaskNote } from "./generated/TaskNote";
 export type { TaskStatus } from "./generated/TaskStatus";
 export type { TextPart } from "./generated/TextPart";
+export type { Thread } from "./generated/Thread";
+export type { ThreadAnchor } from "./generated/ThreadAnchor";
 export type { UnresolvedLink } from "./generated/UnresolvedLink";
 export type { VaultInfo } from "./generated/VaultInfo";
 export type { WorkspaceMember } from "./generated/WorkspaceMember";
@@ -136,6 +144,7 @@ export type {
   ChangesResult,
   CommitDetail,
   CommitPage,
+  Conversation,
   CreateNoteRequest,
   CreateWorkspaceRequest,
   DiffOptions,
@@ -160,6 +169,8 @@ export type {
   PullRequest,
   PullRequestChangedEvent,
   PullRequestChecks,
+  PullRequestDiff,
+  PullRequestDiffRequest,
   PullRequestFiles,
   PullRequestList,
   RefsResult,
@@ -323,8 +334,21 @@ export const ipc = {
   /** One pull request, cached when younger than `maxAgeSeconds`. */
   getPullRequest: (reference: string, maxAgeSeconds: number) =>
     invoke<PullRequest>("get_pull_request", { reference, maxAgeSeconds }),
-  listPullRequestFiles: (reference: string) =>
-    invoke<PullRequestFiles>("list_pull_request_files", { reference }),
+  /** The files changed, or only those since the account's last review (local Git only). */
+  listPullRequestFiles: (reference: string, sinceReview = false) =>
+    invoke<PullRequestFiles>("list_pull_request_files", {
+      reference,
+      sinceReview,
+    }),
+  /** The threads and comments, cached when younger than `maxAgeSeconds`. */
+  getPullRequestConversation: (reference: string, maxAgeSeconds: number) =>
+    invoke<Conversation>("get_pull_request_conversation", {
+      reference,
+      maxAgeSeconds,
+    }),
+  /** One file's diff: local Git when both commits are on the Mac, else the provider's. */
+  getPullRequestDiff: (request: PullRequestDiffRequest) =>
+    invoke<PullRequestDiff>("get_pull_request_diff", { request }),
   getPullRequestChecks: (reference: string, maxAgeSeconds: number) =>
     invoke<PullRequestChecks>("get_pull_request_checks", {
       reference,

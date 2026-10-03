@@ -17,12 +17,16 @@ use super::budget::Budget;
 use super::cache;
 use super::github::Github;
 use super::http::Http;
+use super::patch::split_patch;
 use super::{Endpoints, ForgeRepository, PullRequestRef};
 use crate::db::{Db, RepositoryRow};
+use crate::git::{parse_unified_diff, validate_repo_path, GitService};
 use crate::models::{
-    now_rfc3339, AppError, AppResult, ForgeKind, ListPullRequestsRequest, PullRequest,
-    PullRequestChangeOrigin, PullRequestChangedEvent, PullRequestChecks, PullRequestFiles,
-    PullRequestGroup, PullRequestList,
+    now_rfc3339, AppError, AppResult, ChangeKind, ChangedFile, ChangedFileStatus, CommitFile,
+    Conversation, DiffContent, DiffResult, DiffSelector, DiffSource, ErrorCode, ForgeKind,
+    ListPullRequestsRequest, PullRequest, PullRequestChangeOrigin, PullRequestChangedEvent,
+    PullRequestChecks, PullRequestDiff, PullRequestDiffRequest, PullRequestFiles, PullRequestGroup,
+    PullRequestList,
 };
 use crate::workspaces::RepositoryService;
 
@@ -67,6 +71,34 @@ fn tracked(row: &RepositoryRow) -> Option<Tracked> {
         root,
         forge,
     })
+}
+
+/// A file of a local range as the neutral model lists it.
+fn changed_file(f: CommitFile) -> ChangedFile {
+    ChangedFile {
+        status: match f.kind {
+            ChangeKind::Added => ChangedFileStatus::Added,
+            ChangeKind::Deleted => ChangedFileStatus::Removed,
+            ChangeKind::Renamed => ChangedFileStatus::Renamed,
+            ChangeKind::Modified => ChangedFileStatus::Modified,
+            _ => ChangedFileStatus::Other,
+        },
+        path: f.path,
+        old_path: f.old_path,
+        additions: f.additions.unwrap_or(0) as u32,
+        deletions: f.deletions.unwrap_or(0) as u32,
+        binary: f.is_binary,
+    }
+}
+
+/// The commits are not on the Mac: what to do about it.
+fn not_local(what: &str) -> AppError {
+    AppError::new(
+        ErrorCode::NotFound,
+        format!(
+            "{what} are not on this Mac yet. Fetch the repository to compare since your review."
+        ),
+    )
 }
 
 /// Whether `fetched_at` is younger than `max_age` seconds.
@@ -168,8 +200,22 @@ impl PullRequestService {
         }
     }
 
+    /// Whether both commits are objects of the local repository, without
+    /// downloading anything (`git cat-file -e`).
+    async fn both_local(&self, root: &Path, a: &str, b: &str) -> bool {
+        let Some(git) = self.repositories.git_service() else {
+            return false;
+        };
+        if a.is_empty() || b.is_empty() {
+            return false;
+        }
+        git.object_exists(root, a).await.unwrap_or(false)
+            && git.object_exists(root, b).await.unwrap_or(false)
+    }
+
     /// Read one pull request from its provider, with what Bitbucket's list
-    /// leaves out when its version changed since `cached`.
+    /// leaves out when its version changed since `cached`, and how many
+    /// commits arrived since the account's last review when local Git can say.
     async fn read_one(
         &self,
         session: &Session,
@@ -189,16 +235,38 @@ impl PullRequestService {
                     pr.counts.unresolved_threads = c.counts.unresolved_threads;
                 }
                 _ => {
-                    let files = self.bitbucket.detail(session, &mut pr, reference).await?;
+                    let (files, threads) =
+                        self.bitbucket.detail(session, &mut pr, reference).await?;
+                    let now = now_rfc3339();
                     let files = PullRequestFiles {
                         reference: pr.reference.clone(),
                         head_sha: pr.head_sha.clone(),
+                        base_sha: pr.base_sha.clone(),
+                        since_review: false,
                         files,
-                        fetched_at: now_rfc3339(),
+                        fetched_at: now.clone(),
+                    };
+                    let conversation = Conversation {
+                        reference: pr.reference.clone(),
+                        threads,
+                        fetched_at: now,
                     };
                     self.cache
-                        .call(move |conn| cache::put_files(conn, &files))
+                        .call(move |conn| {
+                            cache::put_files(conn, &files)?;
+                            cache::put_conversation(conn, &conversation)
+                        })
                         .await?;
+                }
+            }
+        }
+        if let Some(reviewed) = pr.reviewed_sha.clone() {
+            if reviewed != pr.head_sha && self.both_local(root, &reviewed, &pr.head_sha).await {
+                if let Some(git) = self.repositories.git_service() {
+                    pr.commits_since_review = git
+                        .count_commits(root, &pr.head_sha, &[reviewed.as_str()])
+                        .await
+                        .ok();
                 }
             }
         }
@@ -509,9 +577,42 @@ impl PullRequestService {
         Ok(pr)
     }
 
-    /// The files a pull request changes, for its current head.
-    pub async fn files(&self, reference: &str) -> AppResult<PullRequestFiles> {
+    fn git(&self) -> AppResult<&GitService> {
+        self.repositories
+            .git_service()
+            .ok_or_else(|| AppError::dependency("Git was not found on this Mac."))
+    }
+
+    /// The files a pull request changes, for its current head; or, since
+    /// the account's last review, from local Git when the commits are here.
+    pub async fn files(&self, reference: &str, since_review: bool) -> AppResult<PullRequestFiles> {
         let pr = self.get(reference, LIST_MAX_AGE_SECONDS).await?;
+        if since_review {
+            let parsed: PullRequestRef = reference.parse()?;
+            let reviewed = pr
+                .reviewed_sha
+                .clone()
+                .ok_or_else(|| AppError::validation("You have not reviewed this pull request."))?;
+            let tracked = self.tracked_for(&parsed).await?;
+            if !self
+                .both_local(&tracked.root, &reviewed, &pr.head_sha)
+                .await
+            {
+                return Err(not_local("The new commits"));
+            }
+            let files = self
+                .git()?
+                .range_files(&tracked.root, &reviewed, &pr.head_sha)
+                .await?;
+            return Ok(PullRequestFiles {
+                reference: reference.to_string(),
+                head_sha: pr.head_sha,
+                base_sha: reviewed,
+                since_review: true,
+                files: files.into_iter().map(changed_file).collect(),
+                fetched_at: now_rfc3339(),
+            });
+        }
         let cached = {
             let reference = reference.to_string();
             self.cache
@@ -532,6 +633,8 @@ impl PullRequestService {
         let files = PullRequestFiles {
             reference: reference.to_string(),
             head_sha: pr.head_sha,
+            base_sha: pr.base_sha,
+            since_review: false,
             files,
             fetched_at: now_rfc3339(),
         };
@@ -540,6 +643,165 @@ impl PullRequestService {
             .call(move |conn| cache::put_files(conn, &stored))
             .await?;
         Ok(files)
+    }
+
+    /// The conversation: cached when younger than `max_age` seconds, read
+    /// anew otherwise; what was cached when the provider is unreachable.
+    pub async fn conversation(&self, reference: &str, max_age: u64) -> AppResult<Conversation> {
+        let parsed: PullRequestRef = reference.parse()?;
+        let cached = {
+            let reference = reference.to_string();
+            self.cache
+                .call(move |conn| cache::conversation(conn, &reference))
+                .await?
+        };
+        if let Some(c) = &cached {
+            if fresh(&c.fetched_at, max_age) {
+                return Ok(c.clone());
+            }
+        }
+        let kind = parsed.repository.kind;
+        let session = self.session_for(kind).await?;
+        let read = match kind {
+            ForgeKind::Github => self.github.conversation(&session, &parsed).await,
+            ForgeKind::BitbucketCloud => self.bitbucket.conversation(&session, &parsed).await,
+        };
+        let threads = match read {
+            Ok(threads) => threads,
+            Err(e) if e.retryable && cached.is_some() => {
+                tracing::warn!(reference, error = %e, "showing the cached conversation");
+                return Ok(cached.expect("cached"));
+            }
+            Err(e) => return Err(e),
+        };
+        let conversation = Conversation {
+            reference: reference.to_string(),
+            threads,
+            fetched_at: now_rfc3339(),
+        };
+        let stored = conversation.clone();
+        self.cache
+            .call(move |conn| cache::put_conversation(conn, &stored))
+            .await?;
+        Ok(conversation)
+    }
+
+    /// One file's diff: from local Git when both commits are on the Mac
+    /// (`base...head`, never downloading), otherwise the provider's patch.
+    /// Since the last review, only local Git can answer.
+    pub async fn diff(&self, request: PullRequestDiffRequest) -> AppResult<PullRequestDiff> {
+        validate_repo_path(&request.path)?;
+        let pr = self.get(&request.reference, LIST_MAX_AGE_SECONDS).await?;
+        let parsed: PullRequestRef = request.reference.parse()?;
+        let tracked = self.tracked_for(&parsed).await?;
+        let base = if request.since_review {
+            pr.reviewed_sha
+                .clone()
+                .ok_or_else(|| AppError::validation("You have not reviewed this pull request."))?
+        } else {
+            pr.base_sha.clone()
+        };
+        let head = pr.head_sha.clone();
+        let selector = DiffSelector::Range {
+            base: base.clone(),
+            head: head.clone(),
+            path: request.path.clone(),
+            old_path: request.old_path.clone(),
+        };
+        let limits = self.repositories.settings().diff_limits;
+        if self.both_local(&tracked.root, &base, &head).await {
+            match self
+                .git()?
+                .diff(&tracked.root, &selector, &limits, request.options)
+                .await
+            {
+                Ok(content) => {
+                    return Ok(PullRequestDiff {
+                        reference: request.reference,
+                        source: DiffSource::Local,
+                        base_sha: base,
+                        head_sha: head,
+                        diff: DiffResult {
+                            repository_id: tracked.repository_id,
+                            selector,
+                            content,
+                        },
+                    })
+                }
+                // No merge base, for one: the provider's patch is the answer.
+                Err(e) => tracing::debug!(error = %e, "local diff failed; asking the provider"),
+            }
+        }
+        if request.since_review {
+            return Err(not_local("The new commits"));
+        }
+        let patch = self
+            .provider_patch(&parsed, &pr, &request.path, request.old_path.as_deref())
+            .await?;
+        let content = match patch {
+            Some(text) => parse_unified_diff(text.as_bytes(), false, &limits),
+            None => DiffContent::Text {
+                old_path: request.old_path.clone(),
+                new_path: Some(request.path.clone()),
+                hunks: Vec::new(),
+                truncated: false,
+                total_lines: Some(0),
+            },
+        };
+        Ok(PullRequestDiff {
+            reference: request.reference,
+            source: DiffSource::Provider,
+            base_sha: base,
+            head_sha: head,
+            diff: DiffResult {
+                repository_id: tracked.repository_id,
+                selector,
+                content,
+            },
+        })
+    }
+
+    /// One file's part of the provider's diff, read whole once per head and
+    /// kept in the cache.
+    async fn provider_patch(
+        &self,
+        parsed: &PullRequestRef,
+        pr: &PullRequest,
+        path: &str,
+        old_path: Option<&str>,
+    ) -> AppResult<Option<String>> {
+        let reference = pr.reference.clone();
+        let stored = {
+            let reference = reference.clone();
+            self.cache
+                .call(move |conn| cache::patch_set(conn, &reference))
+                .await?
+        };
+        if stored.as_deref() != Some(pr.head_sha.as_str()) {
+            let session = self.session_for(parsed.repository.kind).await?;
+            let text = match parsed.repository.kind {
+                ForgeKind::Github => self.github.patch(&session, parsed).await?,
+                ForgeKind::BitbucketCloud => self.bitbucket.patch(&session, parsed).await?,
+            };
+            let files = split_patch(&text);
+            let head = pr.head_sha.clone();
+            let reference = reference.clone();
+            let now = now_rfc3339();
+            self.cache
+                .call(move |conn| cache::put_patch_set(conn, &reference, &head, &files, &now))
+                .await?;
+        }
+        let path = path.to_string();
+        let old = old_path.map(str::to_string);
+        self.cache
+            .call(move |conn| match cache::patch(conn, &reference, &path)? {
+                Some(p) => Ok(Some(p)),
+                None => match old {
+                    Some(old) => cache::patch(conn, &reference, &old),
+                    None => Ok(None),
+                },
+            })
+            .await
     }
 
     /// The checks of a pull request's head, read again after `max_age` seconds.

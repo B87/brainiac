@@ -18,6 +18,8 @@ into the release's section.
 - Pull requests: a workspace's Pull requests tab (⌘3) lists the open pull requests of its repositories on GitHub and Bitbucket Cloud, grouped by repository, with reviewers, checks, unresolved threads, size, and age, and filters for what needs your review, yours, others, and drafts. Off per workspace until turned on there.
 - Each repository's Pull requests tab (⌘5) shows its own, the checked-out branch's first, plus merged and closed ones of the last 30 days, and lets you point a fork at its upstream with Change…
 - Opening a pull request shows its overview, what it needs before merging, its reviewers, the files it changes, and its checks with links to their logs. The pull request on screen is read again every minute; workspace lists every five minutes.
+- The pull request's conversation: comments, reviews with their verdict, and threads on lines with their file and line, resolved ones folded; descriptions and comments are rendered as Markdown without loading anything from them.
+- Files Changed shows each file's diff, from local Git when the commits are on the Mac and from GitHub or Bitbucket otherwise, with a file tree that counts threads per file, marks files viewed when opened, and folds viewed and generated files. "N new commits since your review" and "Since your review" show what arrived after the commit you last reviewed on GitHub.
 
 ## [0.2.0] - 2026-10-02
 

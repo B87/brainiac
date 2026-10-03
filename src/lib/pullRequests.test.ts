@@ -1,11 +1,18 @@
 import { describe, expect, it } from "vitest";
-import type { PullRequest, RepositorySummary } from "./ipc";
+import type { PullRequest, RepositorySummary, Thread } from "./ipc";
 import {
+  anchorLabel,
   byLongestWait,
   checkedOutPullRequest,
   checksLabel,
+  fileKey,
+  isGenerated,
+  isViewed,
   matchesFilter,
+  sinceReviewLabel,
   sizeLabel,
+  threadCounts,
+  unresolvedThreads,
 } from "./pullRequests";
 
 function pr(over: Partial<PullRequest>): PullRequest {
@@ -45,6 +52,10 @@ function pr(over: Partial<PullRequest>): PullRequest {
     },
     mine: false,
     awaiting_my_review: false,
+    description_html: "",
+    base_sha: "b".repeat(40),
+    reviewed_sha: null,
+    commits_since_review: null,
     ...over,
   };
 }
@@ -128,5 +139,74 @@ describe("pull request lists", () => {
         }),
       ),
     ).toBe("+12 −3 in 1 file");
+  });
+
+  it("says what arrived since your review", () => {
+    expect(sinceReviewLabel(pr({}))).toBeNull();
+    expect(sinceReviewLabel(pr({ reviewed_sha: "a".repeat(40) }))).toBeNull();
+    expect(
+      sinceReviewLabel(
+        pr({ reviewed_sha: "c".repeat(40), commits_since_review: 1 }),
+      ),
+    ).toBe("1 new commit since your review");
+    expect(sinceReviewLabel(pr({ reviewed_sha: "c".repeat(40) }))).toBe(
+      "New commits since your review",
+    );
+  });
+
+  it("folds generated files and keeps viewed marks until a file changes", () => {
+    expect(isGenerated("pnpm-lock.yaml")).toBe(true);
+    expect(isGenerated("web/dist/app.min.js")).toBe(true);
+    expect(isGenerated("src/lib/generated/Task.ts")).toBe(true);
+    expect(isGenerated("src/lib/tasks.ts")).toBe(false);
+    const file = {
+      path: "a.rs",
+      old_path: null,
+      status: "modified" as const,
+      additions: 3,
+      deletions: 1,
+      binary: false,
+    };
+    const marks = { "a.rs": fileKey(file) };
+    expect(isViewed(marks, file)).toBe(true);
+    expect(isViewed(marks, { ...file, additions: 4 })).toBe(false);
+    expect(isViewed({}, file)).toBe(false);
+  });
+
+  it("counts threads per file and labels where they hang", () => {
+    const thread = (path: string, resolved: boolean, line = 3): Thread => ({
+      id: path + line,
+      anchor: { path, side: "new", line, start_line: null, commit: null },
+      resolved,
+      outdated: false,
+      comments: [],
+    });
+    const threads = [
+      thread("a.rs", false),
+      thread("a.rs", true, 9),
+      thread("b.rs", false),
+      { ...thread("c.rs", false), anchor: null },
+    ];
+    expect(threadCounts(threads).get("a.rs")).toEqual({ total: 2, open: 1 });
+    expect(threadCounts(threads).has("c.rs")).toBe(false);
+    expect(unresolvedThreads(threads)).toBe(2);
+    expect(
+      anchorLabel({
+        path: "a.rs",
+        side: "new",
+        line: 12,
+        start_line: 10,
+        commit: null,
+      }),
+    ).toBe("a.rs:10–12");
+    expect(
+      anchorLabel({
+        path: "a.rs",
+        side: "old",
+        line: null,
+        start_line: null,
+        commit: null,
+      }),
+    ).toBe("a.rs");
   });
 });

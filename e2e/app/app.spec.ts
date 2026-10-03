@@ -472,10 +472,52 @@ test("Pull requests: a workspace turns them on, lists them, and opens one", asyn
   await expect(
     page.getByRole("heading", { name: /Parse nested lists/ }),
   ).toBeVisible();
+  // The description and comments are rendered Markdown; a resolved thread
+  // is folded, an open one shows its file and line, and a review its verdict.
+  await expect(page.locator(".md strong", { hasText: "lists" })).toBeVisible();
+  await expect(page.getByText("2 new commits since your review")).toBeVisible();
+  const conversation = page.getByRole("region", { name: "Conversation" });
+  await expect(conversation.getByText("3 threads")).toBeVisible();
+  await expect(conversation.getByText("src/parse.ts:12")).toBeVisible();
+  await expect(conversation.getByText("Why not recurse here?")).toBeVisible();
+  await expect(conversation.getByText("edited")).toBeVisible();
+  await expect(conversation.getByText("approved")).toBeVisible();
+  await expect(conversation.getByText("typo")).toBeHidden();
+  await conversation.getByText("Resolved", { exact: true }).click();
+  await expect(conversation.getByText("typo")).toBeVisible();
   await expect(page.getByText("1 unresolved thread")).toBeVisible();
   await expect(page.getByRole("button", { name: "Merge" })).toBeDisabled();
+
+  // Files Changed: the first file (not the lock file, which is folded as
+  // generated) with the provider's diff, then one from local Git; a click
+  // marks a file viewed.
   await page.getByRole("tab", { name: /Files Changed/ }).click();
-  await expect(page.getByText("docs/list.md")).toBeVisible();
+  await expect(page.getByText("from GitHub", { exact: false })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Ignore whitespace" }),
+  ).toBeDisabled();
+  expect((await calls(page, "get_pull_request_diff")).at(-1)).toMatchObject({
+    request: { path: "docs/lists.md", old_path: "docs/list.md" },
+  });
+  await expect(page.getByText("1 generated file")).toBeVisible();
+  const docs = page.getByRole("checkbox", { name: "Viewed docs/lists.md" });
+  await expect(docs).not.toBeChecked();
+  const parse = page.getByRole("checkbox", { name: "Viewed src/parse.ts" });
+  await expect(parse).not.toBeChecked();
+  await page.getByRole("button", { name: /parse\.ts/ }).click();
+  await expect(parse).toBeChecked();
+  await expect(
+    page.getByText("from local Git", { exact: false }),
+  ).toBeVisible();
+  await expect(page.getByText("push(parse(item));")).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Ignore whitespace" }),
+  ).toBeEnabled();
+  await page.getByRole("tab", { name: "Since your review" }).click();
+  expect((await calls(page, "list_pull_request_files")).at(-1)).toMatchObject({
+    sinceReview: true,
+  });
+  await expect(page.getByText("1 file", { exact: true })).toBeVisible();
   await page.getByRole("tab", { name: "Checks" }).click();
   await expect(page.getByRole("button", { name: "Log" })).toBeVisible();
   await page.getByRole("button", { name: "Back" }).click();

@@ -950,8 +950,59 @@ impl GitService {
                 self.run_bounded(Some(root), &args, max_bytes.saturating_mul(2))
                     .await?
             }
+            DiffSelector::Range {
+                base,
+                head,
+                old_path,
+                ..
+            } => {
+                validate_revision(base)?;
+                validate_revision(head)?;
+                // `base...head`: from their merge base, as a pull request is shown.
+                let range = format!("{base}...{head}");
+                let mut args = vec!["diff"];
+                args.extend(common.iter().copied());
+                args.extend(["--end-of-options", &range, "--", path]);
+                if let Some(old) = old_path.as_deref().filter(|o| *o != path) {
+                    validate_repo_path(old)?;
+                    args.push(old);
+                }
+                self.run_bounded(Some(root), &args, max_bytes.saturating_mul(2))
+                    .await?
+            }
         };
         Ok(parse_unified_diff(&raw, truncated, limits))
+    }
+
+    /// The files `head` changed since it left `base` (`base...head`), with
+    /// their line counts, as a commit's files are listed.
+    pub async fn range_files(
+        &self,
+        root: &Path,
+        base: &str,
+        head: &str,
+    ) -> AppResult<Vec<CommitFile>> {
+        validate_revision(base)?;
+        validate_revision(head)?;
+        let range = format!("{base}...{head}");
+        let diff = |format: &'static str| {
+            vec![
+                "diff",
+                "-z",
+                "--no-ext-diff",
+                "--find-renames",
+                format,
+                "--end-of-options",
+                &range,
+                "--",
+            ]
+        };
+        let names = self.run_raw(Some(root), &diff("--name-status")).await?;
+        let stats = self.run_raw(Some(root), &diff("--numstat")).await?;
+        Ok(merge_file_stats(
+            parse_name_status(&names),
+            &parse_numstat(&stats),
+        ))
     }
 
     async fn untracked_preview(

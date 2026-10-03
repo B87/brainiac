@@ -358,6 +358,8 @@ pub fn run() {
             commands::get_pull_request,
             commands::list_pull_request_files,
             commands::get_pull_request_checks,
+            commands::get_pull_request_conversation,
+            commands::get_pull_request_diff,
         ])
         .build(context)
         .expect("error while running Brainiac")

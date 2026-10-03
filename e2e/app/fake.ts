@@ -6,12 +6,15 @@
  */
 import type {
   AppSnapshot,
+  Conversation,
   FolderEntry,
   ForgeAccountSlot,
   ListPullRequestsRequest,
   NoteContent,
   NoteSummary,
   PullRequest,
+  PullRequestDiff,
+  PullRequestDiffRequest,
   PullRequestList,
   RepositorySummary,
   SaveForgeAccountRequest,
@@ -127,12 +130,16 @@ export const pullRequests: PullRequest[] = [
     number: 12,
     kind: "github",
     title: "Parse nested lists",
-    description: "Handles lists inside lists.",
+    description: "Handles **lists** inside lists.",
+    description_html: "<p>Handles <strong>lists</strong> inside lists.</p>\n",
     author: { id: "7", login: "ada", display_name: "Ada" },
     state: "open",
     source_repository: "team/parser",
     source_branch: "nested-lists",
     head_sha: "a".repeat(40),
+    base_sha: "b".repeat(40),
+    reviewed_sha: "c".repeat(40),
+    commits_since_review: 2,
     target_branch: "main",
     reviewers: [
       {
@@ -176,11 +183,15 @@ export const pullRequests: PullRequest[] = [
     kind: "github",
     title: "Draft: faster tokenizer",
     description: "",
+    description_html: "",
     author: { id: "42", login: "octo", display_name: "Octo Cat" },
     state: "draft",
     source_repository: "team/parser",
     source_branch: "main",
     head_sha: "b".repeat(40),
+    base_sha: "b".repeat(40),
+    reviewed_sha: null,
+    commits_since_review: null,
     target_branch: "main",
     reviewers: [],
     checks: { state: null, total: 0, passed: 0, failed: 0, pending: 0 },
@@ -211,6 +222,179 @@ export const pullRequests: PullRequest[] = [
     awaiting_my_review: false,
   },
 ];
+
+const octo = { id: "42", login: "octo", display_name: "Octo Cat" };
+const ada = { id: "7", login: "ada", display_name: "Ada" };
+const conversation: Conversation = {
+  reference: "github.com/team/parser#12",
+  threads: [
+    {
+      id: "T2",
+      anchor: {
+        path: "docs/lists.md",
+        side: "new",
+        line: 3,
+        start_line: null,
+        commit: null,
+      },
+      resolved: true,
+      outdated: true,
+      comments: [
+        {
+          id: "302",
+          author: octo,
+          body: "typo",
+          html: "<p>typo</p>\n",
+          review: null,
+          created_at: "2026-09-30T12:00:00.000Z",
+          updated_at: null,
+          mine: true,
+          web_url: null,
+        },
+      ],
+    },
+    {
+      id: "T1",
+      anchor: {
+        path: "src/parse.ts",
+        side: "new",
+        line: 12,
+        start_line: null,
+        commit: "c".repeat(40),
+      },
+      resolved: false,
+      outdated: false,
+      comments: [
+        {
+          id: "300",
+          author: octo,
+          body: "Why not recurse here?",
+          html: "<p>Why not recurse here?</p>\n",
+          review: null,
+          created_at: "2026-10-01T08:00:00.000Z",
+          updated_at: "2026-10-01T08:30:00.000Z",
+          mine: true,
+          web_url: null,
+        },
+        {
+          id: "301",
+          author: ada,
+          body: "Stack depth, see https://example.com/why",
+          html: '<p>Stack depth, see <a href="https://example.com/why">https://example.com/why</a></p>\n',
+          review: null,
+          created_at: "2026-10-01T08:10:00.000Z",
+          updated_at: null,
+          mine: false,
+          web_url: null,
+        },
+      ],
+    },
+    {
+      id: "review:200",
+      anchor: null,
+      resolved: false,
+      outdated: false,
+      comments: [
+        {
+          id: "200",
+          author: { id: "9", login: "bob", display_name: null },
+          body: "LGTM",
+          html: "<p>LGTM</p>\n",
+          review: "approved",
+          created_at: "2026-10-01T09:00:00.000Z",
+          updated_at: null,
+          mine: false,
+          web_url: null,
+        },
+      ],
+    },
+  ],
+  fetched_at: NOW,
+};
+
+const changedFiles = [
+  {
+    path: "src/parse.ts",
+    old_path: null,
+    status: "modified" as const,
+    additions: 38,
+    deletions: 3,
+    binary: false,
+  },
+  {
+    path: "docs/lists.md",
+    old_path: "docs/list.md",
+    status: "renamed" as const,
+    additions: 2,
+    deletions: 0,
+    binary: false,
+  },
+  {
+    path: "pnpm-lock.yaml",
+    old_path: null,
+    status: "modified" as const,
+    additions: 120,
+    deletions: 80,
+    binary: false,
+  },
+];
+
+function pullRequestDiff(req: PullRequestDiffRequest): PullRequestDiff {
+  const local = req.path === "src/parse.ts";
+  return {
+    reference: req.reference,
+    source: local ? "local" : "provider",
+    base_sha: req.since_review ? "c".repeat(40) : "b".repeat(40),
+    head_sha: "a".repeat(40),
+    diff: {
+      repository_id: "repo-1",
+      selector: {
+        kind: "range",
+        base: "b".repeat(40),
+        head: "a".repeat(40),
+        path: req.path,
+        old_path: req.old_path,
+      },
+      content: {
+        kind: "text",
+        old_path: req.old_path,
+        new_path: req.path,
+        hunks: [
+          {
+            header: local ? "function parse()" : "",
+            old_start: 10,
+            old_lines: 2,
+            new_start: 10,
+            new_lines: 3,
+            lines: [
+              {
+                kind: "context",
+                old_no: 10,
+                new_no: 10,
+                text: "  if (open) {",
+              },
+              {
+                kind: "delete",
+                old_no: 11,
+                new_no: null,
+                text: "    push(item);",
+              },
+              {
+                kind: "add",
+                old_no: null,
+                new_no: 11,
+                text: "    push(parse(item));",
+              },
+              { kind: "add", old_no: null, new_no: 12, text: "    depth++;" },
+            ],
+          },
+        ],
+        truncated: false,
+        total_lines: 4,
+      },
+    },
+  };
+}
 
 let counter = 0;
 const uid = (prefix: string) => `${prefix}-${++counter}`;
@@ -683,26 +867,17 @@ export class FakeBackend {
         return {
           reference: args.reference,
           head_sha: "a".repeat(40),
-          files: [
-            {
-              path: "src/parse.ts",
-              old_path: null,
-              status: "modified",
-              additions: 38,
-              deletions: 3,
-              binary: false,
-            },
-            {
-              path: "docs/lists.md",
-              old_path: "docs/list.md",
-              status: "renamed",
-              additions: 2,
-              deletions: 0,
-              binary: false,
-            },
-          ],
+          base_sha: args.sinceReview ? "c".repeat(40) : "b".repeat(40),
+          since_review: !!args.sinceReview,
+          files: args.sinceReview ? changedFiles.slice(0, 1) : changedFiles,
           fetched_at: NOW,
         };
+      case "get_pull_request_conversation":
+        return args.reference === conversation.reference
+          ? conversation
+          : { reference: args.reference, threads: [], fetched_at: NOW };
+      case "get_pull_request_diff":
+        return pullRequestDiff(args.request as PullRequestDiffRequest);
       case "get_pull_request_checks":
         return {
           reference: args.reference,

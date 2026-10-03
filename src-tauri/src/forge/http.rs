@@ -109,14 +109,19 @@ impl Http {
         auth: Auth<'_>,
         headers: &[(&'static str, &str)],
     ) -> AppResult<Response> {
-        let mut request = request.header(ACCEPT, "application/json");
+        // JSON unless the caller asks for something else, such as a diff.
+        let mut map = HeaderMap::new();
+        map.insert(ACCEPT, HeaderValue::from_static("application/json"));
+        for (name, value) in headers {
+            let value = HeaderValue::from_str(value)
+                .map_err(|_| AppError::validation(format!("Bad value for the {name} header.")))?;
+            map.insert(*name, value);
+        }
+        let mut request = request.headers(map);
         request = match auth {
             Auth::Bearer(token) => request.header(AUTHORIZATION, bearer(token)?),
             Auth::Basic { user, token } => request.basic_auth(user, Some(token.expose())),
         };
-        for (name, value) in headers {
-            request = request.header(*name, *value);
-        }
         let response = request
             .send()
             .await

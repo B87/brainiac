@@ -14,6 +14,8 @@ mod cache;
 pub mod github;
 pub mod http;
 pub mod keychain;
+pub mod markdown;
+pub mod patch;
 mod service;
 mod store;
 

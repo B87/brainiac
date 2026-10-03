@@ -47,6 +47,8 @@ type Props = {
   stepper?: Stepper;
   ignoreWhitespace: boolean;
   onIgnoreWhitespace: (on: boolean) => void;
+  /** Why whitespace cannot be ignored for this patch (a provider's diff); the button is then off. */
+  ignoreWhitespaceNote?: string;
 };
 
 /** Must match `.diff-row` in index.css. */
@@ -84,6 +86,7 @@ export default function DiffView({
   stepper,
   ignoreWhitespace,
   onIgnoreWhitespace,
+  ignoreWhitespaceNote,
 }: Props) {
   const [wrap, setWrap] = usePref("brainiac.diff.wrap", false);
   const [layout, setLayout] = usePref<Layout>(
@@ -254,8 +257,12 @@ export default function DiffView({
           <button
             type="button"
             className="btn btn-sm"
-            aria-pressed={ignoreWhitespace}
-            title="Compare lines ignoring whitespace (git diff -w)"
+            aria-pressed={ignoreWhitespace && !ignoreWhitespaceNote}
+            disabled={!!ignoreWhitespaceNote}
+            title={
+              ignoreWhitespaceNote ??
+              "Compare lines ignoring whitespace (git diff -w)"
+            }
             onClick={() => onIgnoreWhitespace(!ignoreWhitespace)}
           >
             Ignore whitespace

@@ -440,6 +440,14 @@ pub enum DiffSelector {
         old_path: Option<String>,
         parent_index: u32,
     },
+    /// What `head` changed since it left `base`: `base...head`, from their
+    /// merge base, as a pull request's diff is shown (v0.3).
+    Range {
+        base: String,
+        head: String,
+        path: String,
+        old_path: Option<String>,
+    },
 }
 
 impl DiffSelector {
@@ -449,7 +457,8 @@ impl DiffSelector {
             | DiffSelector::WorktreeVsIndex { path }
             | DiffSelector::WorktreeVsHead { path }
             | DiffSelector::UntrackedPreview { path }
-            | DiffSelector::Commit { path, .. } => path,
+            | DiffSelector::Commit { path, .. }
+            | DiffSelector::Range { path, .. } => path,
         }
     }
 }
@@ -1968,6 +1977,10 @@ pub struct PullRequest {
     pub title: String,
     /// Markdown written by other people; sanitized when shown.
     pub description: String,
+    /// `description` rendered by `forge::markdown`: raw HTML shown as text,
+    /// images as links, so the WebView loads nothing from it.
+    #[serde(default)]
+    pub description_html: String,
     pub author: ForgeUser,
     pub state: PullRequestState,
     /// `owner/name` of the repository the source branch is in.
@@ -1975,6 +1988,10 @@ pub struct PullRequest {
     pub source_branch: String,
     /// The full head commit, or Bitbucket's short one until it is expanded.
     pub head_sha: String,
+    /// The target branch's tip when the pull request was read; with the
+    /// head, what a local diff compares (`base...head`).
+    #[serde(default)]
+    pub base_sha: String,
     pub target_branch: String,
     pub reviewers: Vec<Reviewer>,
     pub checks: ChecksSummary,
@@ -1991,6 +2008,14 @@ pub struct PullRequest {
     pub mine: bool,
     /// Its review was asked of the account's user and not given yet.
     pub awaiting_my_review: bool,
+    /// The head commit the account's user last reviewed (GitHub; Bitbucket
+    /// does not record it).
+    #[serde(default)]
+    pub reviewed_sha: Option<String>,
+    /// Commits the head has that `reviewed_sha` does not, counted with local
+    /// Git when both are on the Mac; `None` when unknown.
+    #[serde(default)]
+    pub commits_since_review: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -2015,14 +2040,122 @@ pub struct ChangedFile {
     pub binary: bool,
 }
 
-/// The files a pull request changes, for its head commit.
+/// The files a pull request changes, for its head commit; or, since the
+/// account's last review, the files changed between that commit and the head.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct PullRequestFiles {
     pub reference: String,
     pub head_sha: String,
+    /// The commit the files are compared from: the target branch's tip, or
+    /// the reviewed commit (`since_review`).
+    #[serde(default)]
+    pub base_sha: String,
+    #[serde(default)]
+    pub since_review: bool,
     pub files: Vec<ChangedFile>,
     pub fetched_at: String,
+}
+
+/// Which side of a diff a thread is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum DiffSide {
+    Old,
+    New,
+}
+
+/// Where in the diff a thread hangs (docs/architecture.md, Neutral model).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ThreadAnchor {
+    pub path: String,
+    pub side: DiffSide,
+    /// The last line of the range, or the one line; `None` when the provider
+    /// no longer places it.
+    pub line: Option<u32>,
+    pub start_line: Option<u32>,
+    /// The commit the lines were counted on.
+    pub commit: Option<String>,
+}
+
+/// One comment in a thread.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Comment {
+    /// The provider's ID, as replies and edits name it.
+    pub id: String,
+    pub author: ForgeUser,
+    /// Markdown as written.
+    pub body: String,
+    /// `body` rendered and sanitized (`forge::markdown`).
+    pub html: String,
+    /// Set when the comment is the summary of a review with that verdict.
+    pub review: Option<ReviewState>,
+    pub created_at: String,
+    pub updated_at: Option<String>,
+    pub mine: bool,
+    pub web_url: Option<String>,
+}
+
+/// A thread: a comment on the pull request, a review's summary, or a
+/// comment on a line with its replies.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Thread {
+    /// Opaque: GitHub's node ID or Bitbucket's root comment ID.
+    pub id: String,
+    pub anchor: Option<ThreadAnchor>,
+    pub resolved: bool,
+    /// The lines it was on changed since.
+    pub outdated: bool,
+    pub comments: Vec<Comment>,
+}
+
+/// A pull request's threads, oldest first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Conversation {
+    pub reference: String,
+    pub threads: Vec<Thread>,
+    pub fetched_at: String,
+}
+
+/// Where a pull request's diff came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum DiffSource {
+    /// Local Git: both commits are on the Mac.
+    Local,
+    /// The provider's patch.
+    Provider,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PullRequestDiffRequest {
+    pub reference: String,
+    pub path: String,
+    pub old_path: Option<String>,
+    /// Compare from the commit last reviewed instead of the target branch.
+    #[serde(default)]
+    pub since_review: bool,
+    #[serde(default)]
+    pub options: DiffOptions,
+}
+
+/// One file's diff in a pull request, as `DiffView` shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PullRequestDiff {
+    pub reference: String,
+    pub source: DiffSource,
+    pub base_sha: String,
+    pub head_sha: String,
+    /// `repository_id` is the local checkout's; the selector is a `Range`.
+    pub diff: DiffResult,
 }
 
 /// The checks of a pull request's head commit.

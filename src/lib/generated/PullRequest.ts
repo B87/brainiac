@@ -19,7 +19,12 @@ reference: string, number: number, kind: ForgeKind, title: string,
 /**
  * Markdown written by other people; sanitized when shown.
  */
-description: string, author: ForgeUser, state: PullRequestState, 
+description: string, 
+/**
+ * `description` rendered by `forge::markdown`: raw HTML shown as text,
+ * images as links, so the WebView loads nothing from it.
+ */
+description_html: string, author: ForgeUser, state: PullRequestState, 
 /**
  * `owner/name` of the repository the source branch is in.
  */
@@ -27,7 +32,12 @@ source_repository: string, source_branch: string,
 /**
  * The full head commit, or Bitbucket's short one until it is expanded.
  */
-head_sha: string, target_branch: string, reviewers: Array<Reviewer>, checks: ChecksSummary, mergeability: Mergeability, counts: PullRequestCounts, web_url: string, created_at: string, updated_at: string, closed_at: string | null, 
+head_sha: string, 
+/**
+ * The target branch's tip when the pull request was read; with the
+ * head, what a local diff compares (`base...head`).
+ */
+base_sha: string, target_branch: string, reviewers: Array<Reviewer>, checks: ChecksSummary, mergeability: Mergeability, counts: PullRequestCounts, web_url: string, created_at: string, updated_at: string, closed_at: string | null, 
 /**
  * The provider's update time plus the head commit; opaque to callers.
  */
@@ -39,4 +49,14 @@ mine: boolean,
 /**
  * Its review was asked of the account's user and not given yet.
  */
-awaiting_my_review: boolean, };
+awaiting_my_review: boolean, 
+/**
+ * The head commit the account's user last reviewed (GitHub; Bitbucket
+ * does not record it).
+ */
+reviewed_sha: string | null, 
+/**
+ * Commits the head has that `reviewed_sha` does not, counted with local
+ * Git when both are on the Mac; `None` when unknown.
+ */
+commits_since_review: number | null, };

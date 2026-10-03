@@ -17,6 +17,10 @@ use crate::models::{
     WorkspacePreview, WorkspaceRescan,
 };
 use crate::models::{
+    Conversation, ListPullRequestsRequest, PullRequest, PullRequestChecks, PullRequestDiff,
+    PullRequestDiffRequest, PullRequestFiles, PullRequestList,
+};
+use crate::models::{
     CreateNoteRequest, ExportResult, FolderListing, NoteContent, NoteContext, NoteLists,
     NoteRevision, NoteSummary, RenameNoteRequest, RenamePreview, RenameResult, RepositoryNotes,
     RestorePreview, RestoreRequest, RestoreResult, SaveNoteRequest, SaveNoteResult, SearchRequest,
@@ -26,9 +30,6 @@ use crate::models::{
 use crate::models::{
     ForgeAccountSlot, ForgeKind, SaveForgeAccountOutcome, SaveForgeAccountRequest,
     SetRepositoryForgeRequest,
-};
-use crate::models::{
-    ListPullRequestsRequest, PullRequest, PullRequestChecks, PullRequestFiles, PullRequestList,
 };
 use crate::notes::NoteService;
 use crate::tasks::TaskService;
@@ -741,9 +742,29 @@ pub async fn get_pull_request(
 #[tauri::command]
 pub async fn list_pull_request_files(
     reference: String,
+    since_review: bool,
     pull_requests: State<'_, PullRequests>,
 ) -> AppResult<PullRequestFiles> {
-    pull_requests.files(&reference).await
+    pull_requests.files(&reference, since_review).await
+}
+
+#[tauri::command]
+pub async fn get_pull_request_conversation(
+    reference: String,
+    max_age_seconds: u64,
+    pull_requests: State<'_, PullRequests>,
+) -> AppResult<Conversation> {
+    pull_requests
+        .conversation(&reference, max_age_seconds)
+        .await
+}
+
+#[tauri::command]
+pub async fn get_pull_request_diff(
+    request: PullRequestDiffRequest,
+    pull_requests: State<'_, PullRequests>,
+) -> AppResult<PullRequestDiff> {
+    pull_requests.diff(request).await
 }
 
 #[tauri::command]

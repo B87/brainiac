@@ -11,6 +11,7 @@ use super::{ForgeRepository, PullRequestRef};
 use crate::models::{
     ActionAvailability, AppError, AppResult, AvailableActions, ChangedFile, Check, CheckState,
     ChecksSummary, ForgeAccount, ForgeKind, PullRequest, PullRequestState, ReviewState, Reviewer,
+    Thread,
 };
 
 /// Who is asking, and with what.
@@ -66,6 +67,30 @@ pub trait ForgeAdapter {
         pr: &PullRequestRef,
         head_sha: &str,
     ) -> AppResult<Vec<Check>>;
+    /// The threads and comments, oldest first (`sort_threads`).
+    async fn conversation(&self, session: &Session, pr: &PullRequestRef) -> AppResult<Vec<Thread>>;
+    /// The provider's unified diff of the whole pull request, for a head
+    /// that is not on the Mac.
+    async fn patch(&self, session: &Session, pr: &PullRequestRef) -> AppResult<String>;
+}
+
+/// Whether `updated` is an edit: later than `created` by more than the
+/// moment a provider takes to store a comment (Bitbucket stamps both a few
+/// milliseconds apart).
+pub fn edited(created: &str, updated: &str) -> bool {
+    let parse = |t: &str| chrono::DateTime::parse_from_rfc3339(t).ok();
+    match (parse(created), parse(updated)) {
+        (Some(c), Some(u)) => (u - c).num_seconds() >= 2,
+        _ => created != updated,
+    }
+}
+
+/// Threads by the time of their first comment.
+pub fn sort_threads(threads: &mut [Thread]) {
+    threads.sort_by(|a, b| {
+        let first = |t: &Thread| t.comments.first().map(|c| c.created_at.clone());
+        first(a).cmp(&first(b))
+    });
 }
 
 /// The HTTP client of one provider, with its request budget: every request

@@ -3,19 +3,22 @@
 
 use serde::Deserialize;
 
+use std::collections::HashMap;
+
 use super::accounts::AccountCheck;
 use super::adapter::{
-    base_actions, normalize_time, read_error, summarize_checks, Client, ForgeAdapter, ListOutcome,
-    Session,
+    base_actions, edited, normalize_time, read_error, sort_threads, summarize_checks, Client,
+    ForgeAdapter, ListOutcome, Session,
 };
 use super::github::split_list;
 use super::http::{unexpected, Auth, Http, Response};
 use super::keychain::Token;
+use super::markdown;
 use super::{ForgeRepository, PullRequestRef};
 use crate::models::{
-    AppError, AppResult, ChangedFile, ChangedFileStatus, Check, CheckState, ErrorCode, ForgeKind,
-    ForgeTokenKind, ForgeUser, Mergeability, PullRequest, PullRequestCounts, PullRequestState,
-    ReviewState, Reviewer,
+    AppError, AppResult, ChangedFile, ChangedFileStatus, Check, CheckState, Comment, DiffSide,
+    ErrorCode, ForgeKind, ForgeTokenKind, ForgeUser, Mergeability, PullRequest, PullRequestCounts,
+    PullRequestState, ReviewState, Reviewer, Thread, ThreadAnchor,
 };
 
 pub const API: &str = "https://api.bitbucket.org/2.0";
@@ -254,21 +257,131 @@ struct Status {
     url: Option<String>,
 }
 
+/// A comment as Bitbucket lists it: a root one, or a reply through `parent`.
 #[derive(Deserialize)]
-struct Comment {
+struct CommentValue {
+    id: u64,
     parent: Option<Id>,
-    inline: Option<serde_json::Value>,
+    content: Option<Raw>,
+    inline: Option<Inline>,
     resolution: Option<serde_json::Value>,
     #[serde(default)]
     pending: bool,
     #[serde(default)]
     deleted: bool,
+    user: Option<Account>,
+    created_on: String,
+    updated_on: Option<String>,
+    links: Option<Links>,
 }
 
 #[derive(Deserialize)]
 struct Id {
-    #[allow(dead_code)]
     id: u64,
+}
+
+/// Where an inline comment hangs: `to` is a line of the new file, `from`
+/// of the old one; both for a line that is in both.
+#[derive(Deserialize)]
+struct Inline {
+    path: String,
+    from: Option<u32>,
+    to: Option<u32>,
+    #[serde(default)]
+    outdated: bool,
+    src_rev: Option<String>,
+}
+
+const COMMENT_FIELDS: &str = "next,values.id,values.parent.id,values.content.raw,values.inline,values.resolution.type,values.pending,values.deleted,values.user,values.created_on,values.updated_on,values.links.html.href";
+
+fn comment_of(c: &CommentValue, me: &str) -> Comment {
+    let author = c.user.as_ref().map(user).unwrap_or_else(|| ForgeUser {
+        id: String::new(),
+        login: "unknown".into(),
+        display_name: None,
+    });
+    let body = c
+        .content
+        .as_ref()
+        .map(|r| r.raw.clone())
+        .unwrap_or_default();
+    let created_at = normalize_time(&c.created_on);
+    Comment {
+        id: c.id.to_string(),
+        mine: author.id == me,
+        author,
+        html: markdown::render(&body),
+        body,
+        review: None,
+        updated_at: c
+            .updated_on
+            .as_deref()
+            .map(normalize_time)
+            .filter(|u| edited(&created_at, u)),
+        created_at,
+        web_url: c
+            .links
+            .as_ref()
+            .and_then(|l| l.html.as_ref())
+            .map(|h| h.href.clone()),
+    }
+}
+
+/// Root comments as threads with their replies, however deep the replies
+/// nest. Pending comments are drafts on Bitbucket's site and are left out.
+fn threads_of(comments: &[CommentValue], me: &str) -> Vec<Thread> {
+    let by_id: HashMap<u64, &CommentValue> = comments.iter().map(|c| (c.id, c)).collect();
+    // A named function rather than a closure, so the borrow checker can see
+    // the comment handed back lives as long as the slice it came from.
+    fn root_of<'a>(by_id: &HashMap<u64, &'a CommentValue>, mut c: &'a CommentValue) -> u64 {
+        let mut hops = 0;
+        while let Some(parent) = c.parent.as_ref().and_then(|p| by_id.get(&p.id)) {
+            c = parent;
+            hops += 1;
+            if hops > 100 {
+                break;
+            }
+        }
+        c.id
+    }
+    let mut threads: Vec<Thread> = Vec::new();
+    let mut index: HashMap<u64, usize> = HashMap::new();
+    for c in comments.iter().filter(|c| !c.deleted && !c.pending) {
+        let root = root_of(&by_id, c);
+        let at = match index.get(&root) {
+            Some(&i) => i,
+            None => {
+                let Some(root_comment) = by_id.get(&root) else {
+                    continue;
+                };
+                threads.push(Thread {
+                    id: root.to_string(),
+                    anchor: root_comment.inline.as_ref().map(|i| ThreadAnchor {
+                        path: i.path.clone(),
+                        side: if i.to.is_some() {
+                            DiffSide::New
+                        } else {
+                            DiffSide::Old
+                        },
+                        line: i.to.or(i.from),
+                        start_line: None,
+                        commit: i.src_rev.clone(),
+                    }),
+                    resolved: root_comment.resolution.is_some(),
+                    outdated: root_comment.inline.as_ref().is_some_and(|i| i.outdated),
+                    comments: Vec::new(),
+                });
+                index.insert(root, threads.len() - 1);
+                threads.len() - 1
+            }
+        };
+        threads[at].comments.push(comment_of(c, me));
+    }
+    for t in &mut threads {
+        t.comments.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+    }
+    sort_threads(&mut threads);
+    threads
 }
 
 fn user(a: &Account) -> ForgeUser {
@@ -339,6 +452,11 @@ fn pull_request(session: &Session, repository: &ForgeRepository, pr: &Pr) -> Pul
         .map(|c| c.hash.clone())
         .unwrap_or_default();
     let updated_at = normalize_time(&pr.updated_on);
+    let description = pr
+        .description
+        .clone()
+        .or_else(|| pr.summary.as_ref().map(|s| s.raw.clone()))
+        .unwrap_or_default();
     PullRequest {
         reference: PullRequestRef {
             repository: repository.clone(),
@@ -348,11 +466,8 @@ fn pull_request(session: &Session, repository: &ForgeRepository, pr: &Pr) -> Pul
         number: pr.id,
         kind: ForgeKind::BitbucketCloud,
         title: pr.title.clone(),
-        description: pr
-            .description
-            .clone()
-            .or_else(|| pr.summary.as_ref().map(|s| s.raw.clone()))
-            .unwrap_or_default(),
+        description_html: markdown::render(&description),
+        description,
         awaiting_my_review: reviewers
             .iter()
             .any(|r| r.is_me && r.state == ReviewState::Requested),
@@ -374,6 +489,12 @@ fn pull_request(session: &Session, repository: &ForgeRepository, pr: &Pr) -> Pul
             .unwrap_or_default(),
         version: format!("{updated_at}:{head_sha}"),
         head_sha,
+        base_sha: pr
+            .destination
+            .commit
+            .as_ref()
+            .map(|c| c.hash.clone())
+            .unwrap_or_default(),
         target_branch: pr
             .destination
             .branch
@@ -405,6 +526,9 @@ fn pull_request(session: &Session, repository: &ForgeRepository, pr: &Pr) -> Pul
             _ => None,
         },
         updated_at,
+        // Bitbucket does not record which commit a reviewer looked at.
+        reviewed_sha: None,
+        commits_since_review: None,
     }
 }
 
@@ -477,47 +601,33 @@ impl Bitbucket {
         Ok(out)
     }
 
-    /// What the list leaves out: the head's statuses, the diffstat, and how
-    /// many inline threads are unresolved. Three requests.
+    /// What the list leaves out: the head's statuses, the diffstat, and the
+    /// conversation, whose unresolved inline threads are counted. Three
+    /// requests; the files and threads are returned for the cache.
     pub async fn detail(
         &self,
         session: &Session,
         pr: &mut PullRequest,
         reference: &PullRequestRef,
-    ) -> AppResult<Vec<ChangedFile>> {
+    ) -> AppResult<(Vec<ChangedFile>, Vec<Thread>)> {
         let checks = self.checks(session, reference, &pr.head_sha).await?;
         pr.checks = summarize_checks(&checks);
         let files = self.files(session, reference).await?;
         pr.counts.additions = Some(files.iter().map(|f| f.additions).sum());
         pr.counts.deletions = Some(files.iter().map(|f| f.deletions).sum());
         pr.counts.changed_files = Some(files.len() as u32);
-        let url = format!(
-            "{}/pullrequests/{}/comments?pagelen=100&q=deleted=false&fields=next,values.parent.id,values.inline.path,values.resolution.type,values.pending,values.deleted",
-            self.repo_url(&reference.repository),
-            reference.number
-        );
-        let comments: Vec<Comment> = self
-            .pages(
-                session,
-                url,
-                &format!("the comments of {reference}"),
-                |_| true,
-            )
-            .await?;
-        pr.counts.unresolved_threads = Some(
-            comments
-                .iter()
-                .filter(|c| {
-                    c.parent.is_none()
-                        && c.inline.is_some()
-                        && c.resolution.is_none()
-                        && !c.pending
-                        && !c.deleted
-                })
-                .count() as u32,
-        );
-        Ok(files)
+        let threads = self.conversation(session, reference).await?;
+        pr.counts.unresolved_threads = Some(unresolved(&threads));
+        Ok((files, threads))
     }
+}
+
+/// Inline threads still open.
+pub fn unresolved(threads: &[Thread]) -> u32 {
+    threads
+        .iter()
+        .filter(|t| t.anchor.is_some() && !t.resolved)
+        .count() as u32
 }
 
 impl ForgeAdapter for Bitbucket {
@@ -633,11 +743,73 @@ impl ForgeAdapter for Bitbucket {
             })
             .collect())
     }
+
+    async fn conversation(&self, session: &Session, pr: &PullRequestRef) -> AppResult<Vec<Thread>> {
+        let url = format!(
+            "{}/pullrequests/{}/comments?pagelen=100&q=deleted=false&fields={COMMENT_FIELDS}",
+            self.repo_url(&pr.repository),
+            pr.number
+        );
+        let comments: Vec<CommentValue> = self
+            .pages(session, url, &format!("the comments of {pr}"), |_| true)
+            .await?;
+        Ok(threads_of(&comments, &session.user_id))
+    }
+
+    async fn patch(&self, session: &Session, pr: &PullRequestRef) -> AppResult<String> {
+        // Answers with a redirect to the diff itself, on the same host.
+        let url = format!(
+            "{}/pullrequests/{}/diff",
+            self.repo_url(&pr.repository),
+            pr.number
+        );
+        let response = self
+            .client
+            .get(session, &url, &[("Accept", "text/plain")])
+            .await?;
+        if response.status != 200 {
+            return Err(read_error(
+                ForgeKind::BitbucketCloud,
+                &format!("the diff of {pr}"),
+                &response,
+            ));
+        }
+        Ok(String::from_utf8_lossy(&response.body).into_owned())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replies_join_their_root_and_pending_comments_stay_out() {
+        let json = r#"[
+            {"id": 1, "parent": null, "content": {"raw": "root"}, "inline": {"path": "a.rs", "from": null, "to": 3}, "resolution": null, "user": {"uuid": "{u}", "nickname": "u"}, "created_on": "2026-10-01T10:00:00+00:00"},
+            {"id": 3, "parent": {"id": 2}, "content": {"raw": "reply to reply"}, "inline": {"path": "a.rs", "to": 3}, "resolution": null, "user": {"uuid": "{v}", "nickname": "v"}, "created_on": "2026-10-01T12:00:00+00:00"},
+            {"id": 2, "parent": {"id": 1}, "content": {"raw": "reply"}, "inline": {"path": "a.rs", "to": 3}, "resolution": null, "user": {"uuid": "{v}", "nickname": "v"}, "created_on": "2026-10-01T11:00:00+00:00"},
+            {"id": 4, "parent": null, "content": {"raw": "draft"}, "inline": null, "resolution": null, "pending": true, "user": {"uuid": "{u}"}, "created_on": "2026-10-01T09:00:00+00:00"},
+            {"id": 5, "parent": null, "content": {"raw": "general"}, "inline": null, "resolution": {"type": "resolution"}, "user": {"uuid": "{u}"}, "created_on": "2026-09-30T09:00:00+00:00"}
+        ]"#;
+        let comments: Vec<CommentValue> = serde_json::from_str(json).unwrap();
+        let threads = threads_of(&comments, "{u}");
+        assert_eq!(threads.len(), 2);
+        assert_eq!(threads[0].id, "5");
+        assert!(threads[0].resolved && threads[0].anchor.is_none());
+        let inline = &threads[1];
+        assert_eq!(
+            inline
+                .comments
+                .iter()
+                .map(|c| c.id.as_str())
+                .collect::<Vec<_>>(),
+            ["1", "2", "3"]
+        );
+        assert_eq!(inline.anchor.as_ref().unwrap().line, Some(3));
+        assert_eq!(inline.anchor.as_ref().unwrap().side, DiffSide::New);
+        assert!(inline.comments[0].mine && !inline.comments[1].mine);
+        assert_eq!(unresolved(&threads), 1);
+    }
 
     #[test]
     fn a_write_scope_counts_as_its_read_scope() {

@@ -175,6 +175,51 @@ async fn github_lists_reads_and_files_a_real_repository() {
     };
     let err = gh.get(&session, &missing).await.unwrap_err();
     println!("  missing: {:?} {}", err.code, err.message);
+    print_conversation(&gh.conversation(&session, &reference).await.unwrap());
+    let patch = gh.patch(&session, &reference).await.unwrap();
+    print_patch(&patch);
+}
+
+fn print_conversation(threads: &[brainiac_lib::models::Thread]) {
+    println!("  threads: {}", threads.len());
+    for t in threads {
+        println!(
+            "    {} anchor={:?} resolved={} outdated={} comments={}",
+            t.id,
+            t.anchor
+                .as_ref()
+                .map(|a| (&a.path, a.side, a.line, a.start_line)),
+            t.resolved,
+            t.outdated,
+            t.comments.len()
+        );
+        for c in &t.comments {
+            println!(
+                "      {} by {} ({:?}) mine={} at {} edited={:?}: {} chars, html {} chars",
+                c.id,
+                c.author.login,
+                c.review,
+                c.mine,
+                c.created_at,
+                c.updated_at,
+                c.body.len(),
+                c.html.len()
+            );
+        }
+    }
+}
+
+fn print_patch(patch: &str) {
+    let files = brainiac_lib::forge::patch::split_patch(patch);
+    println!("  patch: {} bytes, {} files", patch.len(), files.len());
+    for f in &files {
+        println!(
+            "    {} (old {:?}): {} bytes",
+            f.path,
+            f.old_path,
+            f.text.len()
+        );
+    }
 }
 
 #[tokio::test]
@@ -223,9 +268,12 @@ async fn bitbucket_lists_reads_and_files_a_real_repository() {
     let reference: PullRequestRef = first.reference.parse().unwrap();
     let mut got = bb.get(&session, &reference).await.unwrap();
     assert_eq!(got.version, first.version);
-    let files = bb.detail(&session, &mut got, &reference).await.unwrap();
+    let (files, threads) = bb.detail(&session, &mut got, &reference).await.unwrap();
     println!("  detail: checks={:?} counts={:?}", got.checks, got.counts);
     println!("  files: {:?}", files);
+    print_conversation(&threads);
+    let patch = bb.patch(&session, &reference).await.unwrap();
+    print_patch(&patch);
     let missing = PullRequestRef {
         repository: repo.clone(),
         number: 999_999,
