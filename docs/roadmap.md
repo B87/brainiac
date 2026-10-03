@@ -79,7 +79,7 @@ M0 landed on 1 October 2026 with 58 Rust tests and 3 frontend tests. Known M0 si
 
 The Git viewer and workspace tracking proved the most useful part of the app, so pull requests come before imports, capture, and AI. Design: `SPEC.md` section 10 and `architecture.md`, Pull requests — v0.3; started 3 October 2026 on the `v0.3-pull-requests` branch.
 
-- [ ] Spike S6: Bitbucket Cloud's draft pull requests, pending comments, multi-line inline anchors, merge behavior (conditional on a commit, asynchronous completion), and conditional requests, against a throwaway repository on each provider; measure the request cost of a workspace of about 30 repositories.
+- [x] Spike S6: Bitbucket Cloud's draft pull requests, pending comments, multi-line inline anchors, merge behavior (conditional on a commit, asynchronous completion), and conditional requests, against a throwaway repository on each provider; measure the request cost of a workspace of about 30 repositories (`docs/architecture.md`, Decisions).
 - [ ] Accounts: a GitHub token and a Bitbucket Cloud API token, kept in the Keychain, checked with one request, with their scopes and the hour's request use shown.
 - [ ] Forge mapping: each repository's pull requests come from its `origin`, with an override for an upstream or a fork; a per-workspace switch, off by default, turns tracking on and picks the account.
 - [ ] Provider-neutral `PullRequestService` over two adapters (GitHub REST plus GraphQL for review threads; Bitbucket Cloud REST 2.0), with a discardable cache, a per-account request budget, and `pr_changed` events.
@@ -148,7 +148,6 @@ Remote services require their own authentication, rate-limit, cache, error, and 
 | SQLite-vector integration compatibility | Build and query a bundled release executable | v0.5 |
 | `sqlite-vec` approximate indexes | Track whether ANN indexes reach a stable release; brute force is enough at personal scale | Only if a vault outgrows brute force |
 | Remote integrations and company data constraints | First providers chosen: GitHub and Bitbucket Cloud (v0.3). Confirm the scopes each employer allows and whether caching pull request content locally is acceptable | v0.3 accounts |
-| Bitbucket Cloud API behavior | Spike S6: draft field, pending comments, multi-line anchors, conditional and asynchronous merge, conditional requests | v0.3 adapters |
 | Where the daily view of pull requests lives | Use v0.3's workspace tab for a few weeks, then choose a pull requests inbox in the sidebar or a group in Today (Pull request follow-ups, below) | v0.3.x |
 | Preferred mail source and capture gesture | Choose `.eml`, connected mailbox, or optional forwarding workflow | Email connector implementation |
 | Jira deployment/authentication | Confirm Cloud versus Data Center and company-supported access | Jira connector implementation |

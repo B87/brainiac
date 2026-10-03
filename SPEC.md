@@ -456,8 +456,9 @@ Review and merge the pull requests of a workspace's repositories, on GitHub and 
 ### Accounts
 
 - **Settings → Accounts** lists one account per provider: its login, the kind of token, when it expires, and what it allows, with **Replace Token…** and **Remove**.
-- GitHub takes a fine-grained personal access token with pull requests read and write, contents read, and checks and commit statuses read. Bitbucket Cloud takes an Atlassian API token, with the account's email, scoped to `read:repository:bitbucket`, `read:pullrequest:bitbucket`, and `write:pullrequest:bitbucket`; Bitbucket's app passwords no longer work.
-- Adding an account checks the token with one request. A token that can read but not write is offered **Save as Read-Only**, and the message names the missing permission; pull requests are then shown without the review and merge actions.
+- GitHub takes a fine-grained personal access token with pull requests read and write, contents read, and checks and commit statuses read; merging and resolving threads also need contents read and write, which also lets the token push, so Accounts says so and leaves the choice to the user. Bitbucket Cloud takes an Atlassian API token, with the account's email, scoped to `read:user:bitbucket` (to know which pull requests are yours and wait on you), `read:repository:bitbucket`, `read:pullrequest:bitbucket`, and `write:pullrequest:bitbucket`; Bitbucket's app passwords no longer work.
+- Adding an account checks the token with one request. For Bitbucket that request also returns the token's scopes, so a missing one is named at once, and a token that can read but not write is offered **Save as Read-Only**. GitHub shows a fine-grained token's expiry but not its permissions, so a missing permission is found the first time GitHub refuses an action: that action is then turned off and the message names the permission to add.
+- An Atlassian API token is about 190 characters, longer than Terminal's hidden password prompt keeps (`security … -w` with nothing after it cuts the input short). Paste it into Accounts, or add it from Terminal from the clipboard with `security add-generic-password -U -s brainiac -a bitbucket -w "$(pbpaste)"`.
 - Tokens are kept in the macOS Keychain, in the item with service `brainiac` and account `github` or `bitbucket`, and sent only to the service they belong to, over HTTPS. They never appear in logs, exports, or the database.
 - A token already in that item, such as one added with `security add-generic-password -s brainiac -a github -w`, is found when Accounts opens and checked like a pasted one; Bitbucket still asks for the account's email. The first time Brainiac reads an item it did not create, macOS asks to allow it.
 
@@ -504,12 +505,12 @@ The fifth tab of a repository (`Cmd+5`, after Notes).
 ### Merging
 
 - **Merge** opens a confirmation with the checklist, the merge methods the repository allows, the commit message, and whether to close the source branch on the provider (the repository's default). The button names the commit being merged.
-- If new commits arrived since the dialog opened, nothing is merged and the new commits are offered for review.
+- If new commits arrived since the dialog opened, nothing is merged and the new commits are offered for review. GitHub refuses the merge itself when the commit changed. Bitbucket cannot be told which commit to merge and merges the branch as it is at that moment, so Brainiac checks the branch just before merging; a push in the second between that check and the merge is still merged.
 - Merging is done by GitHub or Bitbucket and cannot be undone from Brainiac. The local repository changes only when it is next fetched.
 
 ### Staying up to date
 
 - The pull request on screen is refreshed when opened and every 60 seconds while visible; workspace lists every 5 minutes while Brainiac is open. A fetch that moves a pull request's branch refreshes it at once.
-- Bitbucket allows each user about 1,000 requests an hour and GitHub 5,000. Brainiac spends them in order (the pull request on screen, then lists, then everything else), asks only for what changed, and shows each account's use. When a provider is out of requests or unreachable, Brainiac shows what it had with its age, says when it will try again, and the Git views keep working.
+- Bitbucket allows each user about 1,000 requests an hour and GitHub 5,000. A workspace of 30 repositories costs about 400 an hour on Bitbucket and far fewer on GitHub, where asking whether anything changed is free. Brainiac spends them in order (the pull request on screen, then lists, then everything else), asks only for what changed, and shows each account's use. When a provider is out of requests or unreachable, Brainiac shows what it had with its age, says when it will try again, and the Git views keep working.
 - Pull requests, files, and conversations are cached on the Mac so the tabs open at once. The cache is never backed up or exported, can be deleted, and forgets a pull request 14 days after it closes. Review drafts are the user's own text and are backed up with Brainiac's data.
 - An edit refused because the pull request changed since it was shown (new commits, or someone else's edit) shows the current pull request and keeps what the user wrote, like a note save conflict.
