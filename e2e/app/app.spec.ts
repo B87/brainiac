@@ -266,6 +266,49 @@ test("Settings turns agent access on and shows how to add Brainiac to Claude Cod
   await expect(settings.getByText("1 agent connected")).toBeVisible();
 });
 
+test("Settings adds a GitHub account and saves a Bitbucket token as read-only", async ({
+  page,
+}) => {
+  await setUpVault(page);
+  await page.evaluate(() => window.emitEvent("menu", { id: "settings" }));
+  const settings = page.getByRole("dialog", { name: "Settings" });
+
+  await settings.getByRole("button", { name: "Add Account…" }).click();
+  const token = settings.getByLabel("Fine-grained personal access token");
+  await token.fill("github_pat_example");
+  await settings.getByRole("button", { name: "Check and Add" }).click();
+  await expect(settings.getByText("octo")).toBeVisible();
+  await expect(
+    settings.getByText(/Fine-grained token · expires/),
+  ).toBeVisible();
+  expect((await calls(page, "save_forge_account")).at(-1)).toMatchObject({
+    request: { kind: "github", token: "github_pat_example", read_only: false },
+  });
+
+  // The Bitbucket token is already in the Keychain; only the email is asked.
+  await expect(settings.getByText("brainiac/bitbucket")).toBeVisible();
+  await settings.getByRole("button", { name: "Use This Token" }).click();
+  await settings.getByLabel("Atlassian account email").fill("jo@example.com");
+  await settings.getByRole("button", { name: "Check and Add" }).click();
+  await expect(
+    settings.getByText(/missing write:pullrequest:bitbucket/),
+  ).toBeVisible();
+  await settings.getByRole("button", { name: "Save as Read-Only" }).click();
+  await expect(settings.getByText(/^Read-only:/)).toBeVisible();
+  expect((await calls(page, "save_forge_account")).at(-1)).toMatchObject({
+    request: {
+      kind: "bitbucket_cloud",
+      token: null,
+      email: "jo@example.com",
+      read_only: true,
+    },
+  });
+
+  await settings.getByRole("button", { name: "Remove" }).first().click();
+  await settings.getByRole("button", { name: "Remove Account" }).click();
+  await expect(settings.getByText("No account.")).toBeVisible();
+});
+
 test("edits typed after a conflict survive leaving the note", async ({
   page,
 }) => {

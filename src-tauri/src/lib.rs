@@ -116,6 +116,15 @@ pub fn run() {
             }));
             app.manage(Arc::clone(&service));
 
+            // --- Pull request accounts (v0.3) -------------------------------
+            let accounts = forge::AccountService::new(
+                db.clone(),
+                Arc::new(forge::keychain::MacKeychain),
+                forge::http::Http::new()?,
+                forge::Endpoints::production(),
+            );
+            app.manage(Arc::new(accounts));
+
             // --- Notes, tasks, and search (v0.2) ----------------------------
             let stores = match notes::Stores::open(&data_dir, db) {
                 Ok(s) => s,
@@ -307,6 +316,9 @@ pub fn run() {
             commands::export_backup,
             commands::preview_restore,
             commands::restore_backup,
+            commands::list_forge_accounts,
+            commands::save_forge_account,
+            commands::remove_forge_account,
         ])
         .build(context)
         .expect("error while running Brainiac")

@@ -1,6 +1,6 @@
 //! Thin Tauri command handlers. Each one validates nothing beyond types and
 //! delegates to a service (`RepositoryService`, `NoteService`,
-//! `TaskService`); business rules live there.
+//! `TaskService`, `AccountService`); business rules live there.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -8,6 +8,7 @@ use std::sync::Arc;
 use tauri::State;
 
 use crate::db::RepositoryRow;
+use crate::forge::AccountService;
 use crate::models::{
     ActivitySettings, AppResult, AppSnapshot, ChangesResult, CommitDetail, CommitPage,
     CreateWorkspaceRequest, DiffOptions, DiffResult, DiffSelector, FetchResult, ListCommitsRequest,
@@ -21,6 +22,9 @@ use crate::models::{
     RestorePreview, RestoreRequest, RestoreResult, SaveNoteRequest, SaveNoteResult, SearchRequest,
     SearchResults, Task, TaskFields, TaskFilter, TodayView, TrashedNote, UpdateTaskRequest,
     VaultState,
+};
+use crate::models::{
+    ForgeAccountSlot, ForgeKind, SaveForgeAccountOutcome, SaveForgeAccountRequest,
 };
 use crate::notes::NoteService;
 use crate::tasks::TaskService;
@@ -658,4 +662,34 @@ pub async fn restore_backup(
     notes: State<'_, Notes>,
 ) -> AppResult<RestoreResult> {
     crate::backup::restore(&notes, request).await
+}
+
+// ---------------------------------------------------------------------------
+// v0.3: pull requests
+// ---------------------------------------------------------------------------
+
+pub type Accounts = Arc<AccountService>;
+
+/// Settings → Accounts: one entry per provider.
+#[tauri::command]
+pub async fn list_forge_accounts(
+    accounts: State<'_, Accounts>,
+) -> AppResult<Vec<ForgeAccountSlot>> {
+    accounts.list().await
+}
+
+#[tauri::command]
+pub async fn save_forge_account(
+    request: SaveForgeAccountRequest,
+    accounts: State<'_, Accounts>,
+) -> AppResult<SaveForgeAccountOutcome> {
+    accounts.save(request).await
+}
+
+#[tauri::command]
+pub async fn remove_forge_account(
+    kind: ForgeKind,
+    accounts: State<'_, Accounts>,
+) -> AppResult<Vec<ForgeAccountSlot>> {
+    accounts.remove(kind).await
 }

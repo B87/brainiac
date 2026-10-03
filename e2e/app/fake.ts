@@ -7,9 +7,11 @@
 import type {
   AppSnapshot,
   FolderEntry,
+  ForgeAccountSlot,
   NoteContent,
   NoteSummary,
   RepositorySummary,
+  SaveForgeAccountRequest,
   SearchHit,
   Settings,
   Task,
@@ -84,6 +86,11 @@ const versionOf = (text: string) => `v${text.length}-${++counter}`;
 
 export class FakeBackend {
   calls: Array<{ cmd: string; args: Record<string, unknown> }> = [];
+  /** Settings → Accounts: no GitHub account; a Bitbucket token stored from Terminal. */
+  accounts: ForgeAccountSlot[] = [
+    { kind: "github", account: null, keychain_token: false },
+    { kind: "bitbucket_cloud", account: null, keychain_token: true },
+  ];
   vault: VaultState = {
     vault: null,
     index: {
@@ -477,6 +484,39 @@ export class FakeBackend {
           executable: "/Applications/Brainiac.app/Contents/MacOS/brainiac",
           problem: null,
         };
+      case "list_forge_accounts":
+        return this.accounts;
+      case "save_forge_account": {
+        // A Bitbucket token that cannot write; any GitHub token is fine.
+        const req = args.request as SaveForgeAccountRequest;
+        const bitbucket = req.kind === "bitbucket_cloud";
+        const missing = bitbucket ? ["write:pullrequest:bitbucket"] : [];
+        if (missing.length && !req.read_only)
+          return { outcome: "read_only", login: "jo", missing };
+        const account = {
+          kind: req.kind,
+          login: bitbucket ? "jo" : "octo",
+          display_name: null,
+          email: req.email,
+          token_kind: bitbucket ? "api_token" : "fine_grained",
+          expires_at: bitbucket ? null : "2027-10-02T22:00:00.000Z",
+          scopes: bitbucket ? ["read:pullrequest:bitbucket"] : null,
+          read_only: missing.length > 0,
+          missing,
+          checked_at: NOW,
+        } as const;
+        this.accounts = this.accounts.map((s) =>
+          s.kind === req.kind ? { ...s, account, keychain_token: false } : s,
+        );
+        return { outcome: "saved", account };
+      }
+      case "remove_forge_account":
+        this.accounts = this.accounts.map((s) =>
+          s.kind === args.kind
+            ? { kind: s.kind, account: null, keychain_token: false }
+            : s,
+        );
+        return this.accounts;
       case "save_draft":
         this.drafts.set(String(args.noteId), {
           text: String(args.text),

@@ -15,13 +15,14 @@ import {
   ipc,
   type VaultState,
 } from "../lib/ipc";
+import AccountsSection from "./AccountsSection";
 import Dialog from "./Dialog";
 import VaultSetup from "./VaultSetup";
 
 /** How often the connected agents are counted while Settings is open. */
 const AGENT_POLL_MS = 2000;
 
-/** Settings: the vault, note identity, search, agent access, and backups. */
+/** Settings: the vault, note identity, accounts, agent access, search, and backups. */
 export default function SettingsDialog({
   snapshot,
   vault,
@@ -159,6 +160,7 @@ export default function SettingsDialog({
             </span>
           </label>
         </section>
+        <AccountsSection />
         <section className="flex flex-col gap-2">
           <h3 className="section-label m-0">Agent access</h3>
           <fieldset aria-label="Agent access" className="seg self-start">

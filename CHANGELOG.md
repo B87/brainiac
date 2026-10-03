@@ -14,6 +14,7 @@ into the release's section.
 - Agent access: Claude Code and other MCP agents can search your notes, read Today and your tasks, and, if you allow it in Settings, create notes and tasks and link notes to repositories. Off by default; an agent's note edits can be undone from the note's history.
 - A Claude Code plugin adds Brainiac to Claude Code in one step, with a skill for planning your day, tracking work as tasks, and writing up decisions as notes.
 - The cursor no longer slips out of view when images above it finish loading as you move through a note.
+- Settings → Accounts: add a GitHub or Bitbucket Cloud token for pull requests. It is checked once, kept in the macOS Keychain, and a token that cannot write can be saved as read-only.
 
 ## [0.2.0] - 2026-10-02
 

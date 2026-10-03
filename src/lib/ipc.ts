@@ -19,6 +19,8 @@ import type { DiffSelector } from "./generated/DiffSelector";
 import type { ExportResult } from "./generated/ExportResult";
 import type { FetchResult } from "./generated/FetchResult";
 import type { FolderListing } from "./generated/FolderListing";
+import type { ForgeAccountSlot } from "./generated/ForgeAccountSlot";
+import type { ForgeKind } from "./generated/ForgeKind";
 import type { IndexStatus } from "./generated/IndexStatus";
 import type { ListCommitsRequest } from "./generated/ListCommitsRequest";
 import type { MenuEvent } from "./generated/MenuEvent";
@@ -44,6 +46,8 @@ import type { ResolvedLink } from "./generated/ResolvedLink";
 import type { RestorePreview } from "./generated/RestorePreview";
 import type { RestoreRequest } from "./generated/RestoreRequest";
 import type { RestoreResult } from "./generated/RestoreResult";
+import type { SaveForgeAccountOutcome } from "./generated/SaveForgeAccountOutcome";
+import type { SaveForgeAccountRequest } from "./generated/SaveForgeAccountRequest";
 import type { SaveNoteRequest } from "./generated/SaveNoteRequest";
 import type { SaveNoteResult } from "./generated/SaveNoteResult";
 import type { SearchRequest } from "./generated/SearchRequest";
@@ -76,6 +80,8 @@ export type { DiffContent } from "./generated/DiffContent";
 export type { DiffLine } from "./generated/DiffLine";
 export type { DiscoveryMode } from "./generated/DiscoveryMode";
 export type { FolderEntry } from "./generated/FolderEntry";
+export type { ForgeAccount } from "./generated/ForgeAccount";
+export type { ForgeTokenKind } from "./generated/ForgeTokenKind";
 export type { Hunk } from "./generated/Hunk";
 export type { IndexState } from "./generated/IndexState";
 export type { LinkedRepository } from "./generated/LinkedRepository";
@@ -116,6 +122,8 @@ export type {
   ExportResult,
   FetchResult,
   FolderListing,
+  ForgeAccountSlot,
+  ForgeKind,
   IndexStatus,
   ListCommitsRequest,
   NoteChangedEvent,
@@ -139,6 +147,8 @@ export type {
   RestorePreview,
   RestoreRequest,
   RestoreResult,
+  SaveForgeAccountOutcome,
+  SaveForgeAccountRequest,
   SaveNoteRequest,
   SaveNoteResult,
   SearchRequest,
@@ -259,6 +269,16 @@ export const ipc = {
   /** Settings → Agent access: the mode, connected agents, and the helper's path. */
   getAgentAccessStatus: () =>
     invoke<AgentAccessStatus>("get_agent_access_status"),
+
+  // v0.3: pull request accounts
+  /** Settings → Accounts: one entry per provider. */
+  listForgeAccounts: () => invoke<ForgeAccountSlot[]>("list_forge_accounts"),
+  /** Checks the token with one request before saving anything. */
+  saveForgeAccount: (request: SaveForgeAccountRequest) =>
+    invoke<SaveForgeAccountOutcome>("save_forge_account", { request }),
+  /** Also deletes the token from the Keychain. */
+  removeForgeAccount: (kind: ForgeKind) =>
+    invoke<ForgeAccountSlot[]>("remove_forge_account", { kind }),
 
   // v0.2: vault and notes
   getVaultState: () => invoke<VaultState>("get_vault_state"),

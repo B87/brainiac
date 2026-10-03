@@ -1,22 +1,25 @@
 //! Pull requests (SPEC.md, section 10): GitHub and Bitbucket Cloud.
 //!
-//! This first part is identity, which needs no network: which hosted
-//! repository a local repository's `origin` names (a forge repository), and
-//! how a pull request is referred to (`github.com/acme/api#42`). The service,
-//! the adapters, and the cache follow (docs/architecture.md, Pull requests —
-//! v0.3).
+//! Identity needs no network: which hosted repository a local repository's
+//! `origin` names (a forge repository), and how a pull request is referred to
+//! (`github.com/acme/api#42`). Accounts are checked with one request and keep
+//! their token in the Keychain. The pull request service, the adapters, and
+//! the cache follow (docs/architecture.md, Pull requests — v0.3).
+
+mod accounts;
+pub mod bitbucket;
+pub mod github;
+pub mod http;
+pub mod keychain;
+mod store;
 
 use std::fmt;
 use std::str::FromStr;
 
 use crate::models::{AppError, AppResult};
 
-/// A hosting service Brainiac reads pull requests from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ForgeKind {
-    Github,
-    BitbucketCloud,
-}
+pub use crate::models::ForgeKind;
+pub use accounts::{AccountService, Endpoints};
 
 impl ForgeKind {
     /// The host its repositories live on, as written in a forge repository.
@@ -24,6 +27,22 @@ impl ForgeKind {
         match self {
             ForgeKind::Github => "github.com",
             ForgeKind::BitbucketCloud => "bitbucket.org",
+        }
+    }
+
+    /// The account name of its Keychain item (service `brainiac`).
+    pub fn keychain_account(self) -> &'static str {
+        match self {
+            ForgeKind::Github => "github",
+            ForgeKind::BitbucketCloud => "bitbucket",
+        }
+    }
+
+    /// The provider's name in messages.
+    pub fn label(self) -> &'static str {
+        match self {
+            ForgeKind::Github => "GitHub",
+            ForgeKind::BitbucketCloud => "Bitbucket",
         }
     }
 

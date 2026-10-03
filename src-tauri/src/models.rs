@@ -1666,3 +1666,106 @@ pub struct TaskChangedEvent {
 pub fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
+
+// ---------------------------------------------------------------------------
+// v0.3: pull requests (SPEC.md, section 10)
+// ---------------------------------------------------------------------------
+
+/// A hosting service Brainiac reads pull requests from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ForgeKind {
+    Github,
+    BitbucketCloud,
+}
+
+/// What kind of token an account uses, as far as Brainiac can tell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ForgeTokenKind {
+    /// A GitHub fine-grained personal access token (`github_pat_…`).
+    FineGrained,
+    /// A GitHub personal access token (classic) (`ghp_…`).
+    Classic,
+    /// An Atlassian API token.
+    ApiToken,
+    Other,
+}
+
+/// An account on GitHub or Bitbucket Cloud, as checked when it was added or
+/// its token replaced. The token itself is only in the Keychain.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ForgeAccount {
+    pub kind: ForgeKind,
+    pub login: String,
+    pub display_name: Option<String>,
+    /// Bitbucket Cloud: the Atlassian account email sent with the token.
+    pub email: Option<String>,
+    pub token_kind: ForgeTokenKind,
+    pub expires_at: Option<String>,
+    /// The token's scopes when the provider says (Bitbucket, and GitHub
+    /// classic tokens); `None` for a GitHub fine-grained token, whose
+    /// permissions GitHub does not reveal.
+    pub scopes: Option<Vec<String>>,
+    /// Saved with **Save as Read-Only**, or found unable to write since:
+    /// reviewing and merging are not offered.
+    pub read_only: bool,
+    /// Scopes or permissions to add to the token for what it cannot do.
+    pub missing: Vec<String>,
+    pub checked_at: String,
+}
+
+/// Settings → Accounts: one entry per provider.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ForgeAccountSlot {
+    pub kind: ForgeKind,
+    pub account: Option<ForgeAccount>,
+    /// The Keychain item (service `brainiac`, account `github` or
+    /// `bitbucket`) holds a token while no account was added, such as one
+    /// stored from Terminal. Found without reading the token.
+    pub keychain_token: bool,
+}
+
+/// Add an account or replace its token.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SaveForgeAccountRequest {
+    pub kind: ForgeKind,
+    /// A pasted token; `None` uses the one already in the Keychain item.
+    pub token: Option<String>,
+    /// Bitbucket Cloud only; `None` keeps the account's email.
+    pub email: Option<String>,
+    /// Save a token that can read but not write.
+    pub read_only: bool,
+}
+
+// Written by hand instead of derived so a pasted token never reaches a log.
+impl std::fmt::Debug for SaveForgeAccountRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SaveForgeAccountRequest")
+            .field("kind", &self.kind)
+            .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .field("email", &self.email)
+            .field("read_only", &self.read_only)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+#[ts(export)]
+pub enum SaveForgeAccountOutcome {
+    Saved {
+        account: ForgeAccount,
+    },
+    /// The token can read but not write. Nothing was saved; repeat the
+    /// request with `read_only` to save it as a read-only account.
+    ReadOnly {
+        login: String,
+        missing: Vec<String>,
+    },
+}

@@ -460,7 +460,8 @@ Review and merge the pull requests of a workspace's repositories, on GitHub and 
 - Adding an account checks the token with one request. For Bitbucket that request also returns the token's scopes, so a missing one is named at once, and a token that can read but not write is offered **Save as Read-Only**. GitHub shows a fine-grained token's expiry but not its permissions, so a missing permission is found the first time GitHub refuses an action: that action is then turned off and the message names the permission to add.
 - An Atlassian API token is about 190 characters, longer than Terminal's hidden password prompt keeps (`security … -w` with nothing after it cuts the input short). Paste it into Accounts, or add it from Terminal from the clipboard with `security add-generic-password -U -s brainiac -a bitbucket -w "$(pbpaste)"`.
 - Tokens are kept in the macOS Keychain, in the item with service `brainiac` and account `github` or `bitbucket`, and sent only to the service they belong to, over HTTPS. They never appear in logs, exports, or the database.
-- A token already in that item, such as one added with `security add-generic-password -s brainiac -a github -w`, is found when Accounts opens and checked like a pasted one; Bitbucket still asks for the account's email. The first time Brainiac reads an item it did not create, macOS asks to allow it.
+- A token already in that item, such as one added with `security add-generic-password -s brainiac -a github -w`, is found when Accounts opens without reading it, and **Use This Token** checks it like a pasted one; Bitbucket still asks for the account's email. The first time Brainiac reads an item it did not create, macOS asks to allow it.
+- A token is stored only once its check passes. **Remove** deletes the account and its token from the Keychain.
 
 ### Which pull requests a repository has
 

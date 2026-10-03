@@ -98,8 +98,8 @@ brainiac/
       backup.rs                Export, restore, and applying a restore at launch
       mcp.rs                   Agent access, v0.2.x: the socket, connections, and access mode
       mcp/                     The tools and their shapes, server instructions, the stdio helper
-      forge.rs                 Pull requests, v0.3: PullRequestService, accounts, forge identity
-      forge/                   One adapter per provider, the cache (forge.db), the request budget
+      forge.rs                 Pull requests, v0.3: forge identity, PullRequestService
+      forge/                   Accounts and the Keychain, the HTTP client, one adapter per provider, the cache (forge.db), the request budget
     tests/                     Integration tests; unit tests can live in modules
 ```
 
@@ -168,7 +168,7 @@ Only two things cannot be rebuilt: the vault's Markdown files and a small core d
 
 ### Data model
 
-Tables of v0.4 onward are in `docs/roadmap.md` and are not created before their release; v0.3's are created by the code that first uses them. IDs are UUID strings and timestamps are UTC instants. The v0.1 schema is `src-tauri/migrations/0001_init.sql`; v0.2's core tables arrive in `0002`, and `index.db` and `history.db` get their own migration lists.
+Tables of v0.4 onward are in `docs/roadmap.md` and are not created before their release; v0.3's are created by the code that first uses them. IDs are UUID strings and timestamps are UTC instants. The v0.1 schema is `src-tauri/migrations/0001_init.sql`; v0.2's core tables arrive in `0002`, v0.3's accounts in `0003`, and `index.db` and `history.db` get their own migration lists.
 
 | Entity | Essential fields and constraints | Release |
 | --- | --- | --- |
@@ -206,7 +206,7 @@ v0.3 adds:
 
 | Entity | File | Essential fields and constraints |
 | --- | --- | --- |
-| `forge_accounts` | core | `id`, kind (`github`, `bitbucket_cloud`), host, login, email (Bitbucket), token kind and expiry, scopes seen at the last check; the token itself only in the Keychain (Identity, under Pull requests — v0.3) |
+| `forge_accounts` | core | `id`, kind (`github`, `bitbucket_cloud`, unique: one account per provider), host, login, the provider's user ID (to recognize the user as author or reviewer), email (Bitbucket), token kind and expiry, scopes seen at the last check (none for a GitHub fine-grained token), what it is missing, read-only; the token itself only in the Keychain (Identity, under Pull requests — v0.3) |
 | `repository_forges` | core | `repository_id`, kind, host, owner, name, `derived` or `override`; refreshed from `remote_url` unless overridden |
 | `workspace_pull_requests` | core | `workspace_id`, enabled (default off), account per provider |
 | `review_drafts` | core | `id`, pull request reference, anchor (path, side, line, optional start line, commit), body, origin (`user`; `agent` later), the remote comment ID once sent; the user's unsent text, so it is kept and backed up |
@@ -381,7 +381,7 @@ Main WebView ── Tauri commands ──▶ PullRequestService   (neutral model
 
 - A **forge repository** comes from the `remote_url` Brainiac already stores without credentials (Storage layout): `github.com/acme/api`, `bitbucket.org/acme-team/api`, from the HTTPS, `ssh://`, and SCP-style (`git@host:owner/name.git`) forms. Hosts other than `github.com` and `bitbucket.org` map to nothing. An override in `repository_forges` covers pull requests that live on an upstream or a fork.
 - A **pull request reference** is `<forge repository>#<number>`; both providers number pull requests per repository.
-- An **account** is a kind, host, and login in `brainiac.db`; its token is in the Keychain (`security-framework`) as a generic password with service `brainiac` and account `github` or `bitbucket`, one per provider. The name is fixed and documented so a token can be added from Terminal, and a `tauri:dev` build uses the same one. An item made by `security` lists only that tool as trusted, so macOS asks once before Brainiac reads it; an unsigned or re-signed build may be asked again. GitHub tokens go in a `Bearer` header; Bitbucket API tokens with the account's email over Basic authentication. The check when an account is added is `GET /user` on both: GitHub's response carries the token's expiry (`github-authentication-token-expiration`) but not a fine-grained token's permissions, and the repository's `permissions` are the user's role, not the token's; Bitbucket's carries the token's scopes in `x-oauth-scopes`, and `/user` itself needs `read:user:bitbucket`. [Bitbucket Cloud API tokens](https://www.atlassian.com/blog/bitbucket/bitbucket-cloud-transitions-to-api-tokens-enhancing-security-with-app-password-deprecation)
+- An **account** is a kind, host, and login in `brainiac.db`; its token is in the Keychain (`security-framework`) as a generic password with service `brainiac` and account `github` or `bitbucket`, one per provider. The name is fixed and documented so a token can be added from Terminal, and a `tauri:dev` build uses the same one. An item made by `security` lists only that tool as trusted, so macOS asks once before Brainiac reads it; an unsigned or re-signed build may be asked again. GitHub tokens go in a `Bearer` header; Bitbucket API tokens with the account's email over Basic authentication. The check when an account is added is `GET /user` on both: GitHub's response carries the token's expiry (`github-authentication-token-expiration`) but not a fine-grained token's permissions, and the repository's `permissions` are the user's role, not the token's; Bitbucket's carries the token's scopes in `x-oauth-scopes`, and `/user` itself needs `read:user:bitbucket`; a write scope counts as its read scope. `AccountService` stores a token in the Keychain only after its check passes and runs Keychain calls on a blocking thread, since macOS may wait for the user to allow access; whether an item exists is found from its attributes, which never prompts. A `Token` type has no `Display` and a redacted `Debug`, so a token cannot reach a message or a log by accident. [Bitbucket Cloud API tokens](https://www.atlassian.com/blog/bitbucket/bitbucket-cloud-transitions-to-api-tokens-enhancing-security-with-app-password-deprecation)
 
 **Neutral model.**
 
