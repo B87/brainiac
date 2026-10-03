@@ -1003,3 +1003,89 @@
     border-radius: 2px;
   }
 }
+
+/* Pull request tables (SPEC.md, section 10). */
+@layer components {
+  .pr-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12.5px;
+  }
+  .pr-table th {
+    padding: 4px 8px;
+    text-align: left;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--muted);
+    border-bottom: 1px solid var(--line);
+    white-space: nowrap;
+  }
+  .pr-table td {
+    padding: 7px 8px;
+    border-bottom: 1px solid var(--line-soft);
+    vertical-align: middle;
+  }
+  .pr-table tbody tr {
+    cursor: pointer;
+  }
+  .pr-table tbody tr:hover {
+    background: color-mix(in srgb, var(--fg) 4%, transparent);
+  }
+  .pr-table tbody tr[data-waiting="true"] td:first-child {
+    box-shadow: inset 3px 0 0 var(--accent);
+  }
+  .pr-table tbody tr:focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: -2px;
+  }
+  /* A reviewer's or a check's state: an icon beside the name, never color alone. */
+  .state-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+  }
+  .state-icon[data-state="approved"],
+  .state-icon[data-state="success"] {
+    color: var(--add);
+  }
+  .state-icon[data-state="changes_requested"],
+  .state-icon[data-state="failure"] {
+    color: var(--del);
+  }
+  .state-icon[data-state="pending"],
+  .state-icon[data-state="requested"] {
+    color: var(--dirty);
+  }
+  .state-icon[data-state="commented"],
+  .state-icon[data-state="neutral"] {
+    color: var(--muted);
+  }
+  .pr-state {
+    display: inline-flex;
+    align-items: center;
+    height: 18px;
+    padding: 0 6px;
+    border-radius: 9px;
+    font-size: 11px;
+    font-weight: 600;
+    border: 1px solid var(--control-line);
+    color: var(--fg-2);
+  }
+  .pr-state[data-state="open"] {
+    color: var(--add);
+    border-color: color-mix(in srgb, var(--add) 40%, transparent);
+  }
+  .pr-state[data-state="merged"] {
+    color: var(--accent);
+    border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  }
+  .pr-state[data-state="closed"] {
+    color: var(--del);
+    border-color: color-mix(in srgb, var(--del) 40%, transparent);
+  }
+}

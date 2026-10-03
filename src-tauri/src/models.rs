@@ -315,6 +315,8 @@ pub enum RepositoryTab {
     History,
     Refs,
     Notes,
+    /// v0.3: the repository's pull requests.
+    PullRequests,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]

@@ -68,7 +68,7 @@ brainiac/
   src/                         React/TypeScript frontend
     main.tsx                   Mount the React app
     App.tsx                    Main layout
-    components/                Repository table, changes, history, diff, palette
+    components/                Repository table, changes, history, diff, palette; pull requests (v0.3): PullRequestsTab, PullRequestView, AccountsSection
     lib/                       Typed IPC client
   src-tauri/
     Cargo.toml                 Rust package metadata and dependencies

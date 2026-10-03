@@ -26,7 +26,7 @@ import type { RepoFocus } from "./RepositoryView";
 import type { TaskScope } from "./TasksView";
 
 /** A workspace dashboard's tabs. */
-export type WorkspaceTab = "overview" | "activity";
+export type WorkspaceTab = "overview" | "activity" | "pull_requests";
 
 /** What the main area shows. */
 export type View =
@@ -35,7 +35,9 @@ export type View =
   | { kind: "repository"; id: string; workspaceId?: string; focus?: RepoFocus }
   | { kind: "today" }
   | { kind: "tasks"; scope?: TaskScope }
-  | { kind: "notes"; noteId?: string };
+  | { kind: "notes"; noteId?: string }
+  /** One pull request (v0.3), and the view to go back to. */
+  | { kind: "pullRequest"; reference: string; back: View };
 
 type Props = {
   snapshot: AppSnapshot | null;

@@ -8,8 +8,11 @@ import type {
   AppSnapshot,
   FolderEntry,
   ForgeAccountSlot,
+  ListPullRequestsRequest,
   NoteContent,
   NoteSummary,
+  PullRequest,
+  PullRequestList,
   RepositorySummary,
   SaveForgeAccountRequest,
   SearchHit,
@@ -17,6 +20,7 @@ import type {
   Task,
   TaskFields,
   VaultState,
+  Workspace,
 } from "../../src/lib/ipc";
 
 type FakeNote = {
@@ -77,9 +81,136 @@ export const repository: RepositorySummary = {
   last_tab: null,
   last_fetch_at: NOW,
   fetch_error: null,
-  remote_url: "git@example.com:team/parser.git",
-  forge: null,
+  remote_url: "git@github.com:team/parser.git",
+  forge: {
+    kind: "github",
+    owner: "team",
+    name: "parser",
+    reference: "github.com/team/parser",
+    source: "origin",
+  },
 };
+
+/** A workspace of the one repository; pull requests off until a test turns them on. */
+export const workspace: Workspace = {
+  id: "ws-1",
+  name: "Team",
+  discovery_mode: "manual",
+  root_repository_id: null,
+  discovery_root: null,
+  discovery_path: null,
+  members: [
+    {
+      origin: "manual",
+      display_name: "parser",
+      canonical_path: "/code/parser",
+      repository_id: "repo-1",
+      status: "ok",
+    },
+  ],
+  activity: {
+    watched_branches: ["main"],
+    watched_tags: ["v*"],
+    auto_fetch: false,
+    notify_moves: false,
+    morning_digest: false,
+    warn_conflicts: true,
+  },
+  unseen_activity: 0,
+  pull_requests: false,
+};
+
+const ALLOWED = { allowed: true, reason: null };
+export const pullRequests: PullRequest[] = [
+  {
+    reference: "github.com/team/parser#12",
+    number: 12,
+    kind: "github",
+    title: "Parse nested lists",
+    description: "Handles lists inside lists.",
+    author: { id: "7", login: "ada", display_name: "Ada" },
+    state: "open",
+    source_repository: "team/parser",
+    source_branch: "nested-lists",
+    head_sha: "a".repeat(40),
+    target_branch: "main",
+    reviewers: [
+      {
+        user: { id: "42", login: "octo", display_name: "Octo Cat" },
+        state: "requested",
+        is_me: true,
+      },
+      {
+        user: { id: "9", login: "bob", display_name: null },
+        state: "approved",
+        is_me: false,
+      },
+    ],
+    checks: { state: "success", total: 2, passed: 2, failed: 0, pending: 0 },
+    mergeability: "mergeable",
+    counts: {
+      comments: 1,
+      unresolved_threads: 1,
+      additions: 40,
+      deletions: 3,
+      changed_files: 2,
+      commits: 3,
+    },
+    web_url: "https://github.com/team/parser/pull/12",
+    created_at: "2026-09-30T10:00:00.000Z",
+    updated_at: "2026-10-01T10:00:00.000Z",
+    closed_at: null,
+    version: "v1",
+    actions: {
+      comment: ALLOWED,
+      review: ALLOWED,
+      approve: ALLOWED,
+      merge: ALLOWED,
+    },
+    mine: false,
+    awaiting_my_review: true,
+  },
+  {
+    reference: "github.com/team/parser#13",
+    number: 13,
+    kind: "github",
+    title: "Draft: faster tokenizer",
+    description: "",
+    author: { id: "42", login: "octo", display_name: "Octo Cat" },
+    state: "draft",
+    source_repository: "team/parser",
+    source_branch: "main",
+    head_sha: "b".repeat(40),
+    target_branch: "main",
+    reviewers: [],
+    checks: { state: null, total: 0, passed: 0, failed: 0, pending: 0 },
+    mergeability: "computing",
+    counts: {
+      comments: 0,
+      unresolved_threads: 0,
+      additions: 5,
+      deletions: 5,
+      changed_files: 1,
+      commits: 1,
+    },
+    web_url: "https://github.com/team/parser/pull/13",
+    created_at: "2026-10-02T10:00:00.000Z",
+    updated_at: "2026-10-02T12:00:00.000Z",
+    closed_at: null,
+    version: "v2",
+    actions: {
+      comment: ALLOWED,
+      review: ALLOWED,
+      approve: {
+        allowed: false,
+        reason: "GitHub does not let you approve your own pull request.",
+      },
+      merge: { allowed: false, reason: "A draft cannot be merged." },
+    },
+    mine: true,
+    awaiting_my_review: false,
+  },
+];
 
 let counter = 0;
 const uid = (prefix: string) => `${prefix}-${++counter}`;
@@ -129,7 +260,7 @@ export class FakeBackend {
         message: null,
       },
       repositories: [repository],
-      workspaces: [],
+      workspaces: [workspace],
       pins: this.pins,
       recent_repository_ids: [],
       settings,
@@ -487,6 +618,106 @@ export class FakeBackend {
         };
       case "list_forge_accounts":
         return this.accounts;
+      case "update_workspace_pull_requests":
+        workspace.pull_requests = !!args.enabled;
+        return workspace;
+      case "set_repository_forge": {
+        const forge = (
+          args.request as {
+            forge: { kind: "github"; owner: string; name: string } | null;
+          }
+        ).forge;
+        repository.forge = forge
+          ? {
+              ...forge,
+              reference: `github.com/${forge.owner}/${forge.name}`,
+              source: "override",
+            }
+          : {
+              kind: "github",
+              owner: "team",
+              name: "parser",
+              reference: "github.com/team/parser",
+              source: "origin",
+            };
+        return repository;
+      }
+      case "list_pull_requests": {
+        const req = args.request as ListPullRequestsRequest;
+        const enabled = workspace.pull_requests;
+        const list: PullRequestList = {
+          enabled,
+          tracked_by: req.repository_id && enabled ? ["Team"] : [],
+          missing_accounts: this.accounts[0].account ? [] : ["github"],
+          groups: enabled
+            ? [
+                {
+                  repository_id: "repo-1",
+                  repository_name: "parser",
+                  forge: "github.com/team/parser",
+                  kind: "github",
+                  pull_requests: req.closed ? [] : pullRequests,
+                  fetched_at: NOW,
+                  error: null,
+                },
+              ]
+            : [],
+          budgets: [
+            {
+              kind: "github",
+              used: 12,
+              limit: 5000,
+              resets_at: null,
+              retry_at: null,
+            },
+          ],
+        };
+        return list;
+      }
+      case "get_pull_request":
+        return (
+          pullRequests.find((p) => p.reference === args.reference) ??
+          pullRequests[0]
+        );
+      case "list_pull_request_files":
+        return {
+          reference: args.reference,
+          head_sha: "a".repeat(40),
+          files: [
+            {
+              path: "src/parse.ts",
+              old_path: null,
+              status: "modified",
+              additions: 38,
+              deletions: 3,
+              binary: false,
+            },
+            {
+              path: "docs/lists.md",
+              old_path: "docs/list.md",
+              status: "renamed",
+              additions: 2,
+              deletions: 0,
+              binary: false,
+            },
+          ],
+          fetched_at: NOW,
+        };
+      case "get_pull_request_checks":
+        return {
+          reference: args.reference,
+          head_sha: "a".repeat(40),
+          checks: [
+            {
+              name: "build",
+              state: "success",
+              description: null,
+              url: "https://ci.example.com/1",
+            },
+            { name: "lint", state: "success", description: "clean", url: null },
+          ],
+          fetched_at: NOW,
+        };
       case "save_forge_account": {
         // A Bitbucket token that cannot write; any GitHub token is fine.
         const req = args.request as SaveForgeAccountRequest;

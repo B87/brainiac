@@ -234,3 +234,43 @@ export const PanelRightIcon = (p: IconProps) => (
     <path d="M10 3v10" />
   </Svg>
 );
+
+export const PullRequestIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="4" cy="3.5" r="1.5" />
+    <circle cx="4" cy="12.5" r="1.5" />
+    <circle cx="12" cy="12.5" r="1.5" />
+    <path d="M4 5v6M12 11V7a2 2 0 0 0-2-2H8" />
+    <path d="M9.5 3.5 8 5l1.5 1.5" />
+  </Svg>
+);
+
+export const CheckIcon = (p: IconProps) => (
+  <Svg {...p} strokeWidth={1.8}>
+    <path d="M3 8.5l3 3 7-7" />
+  </Svg>
+);
+
+export const CrossIcon = (p: IconProps) => (
+  <Svg {...p} strokeWidth={1.8}>
+    <path d="M4 4l8 8M12 4l-8 8" />
+  </Svg>
+);
+
+export const CommentIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z" />
+  </Svg>
+);
+
+export const CircleIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="8" cy="8" r="5" />
+  </Svg>
+);
+
+export const ChevronLeft = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M10 3.5 5.5 8 10 12.5" />
+  </Svg>
+);

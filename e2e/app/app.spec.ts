@@ -435,3 +435,93 @@ test("a dialog opened from a menu takes focus, so Escape closes it", async ({
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
 });
+
+test("Pull requests: a workspace turns them on, lists them, and opens one", async ({
+  page,
+}) => {
+  await page
+    .getByRole("navigation", { name: "Repositories and workspaces" })
+    .getByRole("button", { name: /^Team\b/ })
+    .click();
+  await page.getByRole("tab", { name: "Pull requests" }).click();
+  await page.getByRole("button", { name: "Turn On Pull Requests" }).click();
+  expect(
+    (await calls(page, "update_workspace_pull_requests")).at(-1),
+  ).toMatchObject({ workspaceId: "ws-1", enabled: true });
+
+  const row = page.getByRole("row", { name: "Parse nested lists #12" });
+  await expect(row).toBeVisible();
+  await expect(row.getByText("Needs your review")).toBeVisible();
+  await expect(row.getByRole("img", { name: "Approved" })).toBeVisible();
+  await expect(row.getByText("2 of 2 passed")).toBeVisible();
+  await expect(row.getByText("+40 −3 in 2 files")).toBeVisible();
+  // The fake has no GitHub account yet: the tab says so and offers Settings.
+  await expect(page.getByText(/No GitHub account yet/)).toBeVisible();
+  await expect(
+    page.getByText("GitHub: 12 of 5000 requests used this hour"),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "Yours" }).click();
+  await expect(
+    page.getByRole("row", { name: "Draft: faster tokenizer #13" }),
+  ).toBeVisible();
+  await expect(row).toBeHidden();
+  await page.getByRole("button", { name: "All open" }).click();
+
+  await row.click();
+  await expect(
+    page.getByRole("heading", { name: /Parse nested lists/ }),
+  ).toBeVisible();
+  await expect(page.getByText("1 unresolved thread")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Merge" })).toBeDisabled();
+  await page.getByRole("tab", { name: /Files Changed/ }).click();
+  await expect(page.getByText("docs/list.md")).toBeVisible();
+  await page.getByRole("tab", { name: "Checks" }).click();
+  await expect(page.getByRole("button", { name: "Log" })).toBeVisible();
+  await page.getByRole("button", { name: "Back" }).click();
+  await expect(
+    page.getByRole("tab", { name: "Pull requests" }),
+  ).toHaveAttribute("aria-selected", "true");
+});
+
+test("a repository's Pull requests tab names its forge and can point it elsewhere", async ({
+  page,
+}) => {
+  await page
+    .getByRole("navigation", { name: "Repositories and workspaces" })
+    .getByRole("button", { name: "parser" })
+    .click();
+  await page.getByRole("tab", { name: "Pull requests" }).click();
+  // Not tracked yet: the workspace it is in is offered.
+  await page.getByRole("button", { name: "Turn On for Team" }).click();
+  await expect(
+    page.getByRole("row", { name: "Parse nested lists #12" }),
+  ).toBeVisible();
+  const panel = page.getByRole("complementary", {
+    name: "Pull request settings",
+  });
+  await expect(panel.getByText("github.com/team/parser")).toBeVisible();
+  await expect(panel.getByText("Team", { exact: true })).toBeVisible();
+
+  await panel.getByRole("button", { name: "Change…" }).click();
+  await panel.getByLabel("Owner (user or organization)").fill("upstream");
+  await panel.getByLabel("Repository").fill("parser");
+  await panel.getByRole("button", { name: "Use This Repository" }).click();
+  expect((await calls(page, "set_repository_forge")).at(-1)).toMatchObject({
+    request: {
+      repository_id: "repo-1",
+      forge: { kind: "github", owner: "upstream", name: "parser" },
+    },
+  });
+  await expect(panel.getByText("github.com/upstream/parser")).toBeVisible();
+  await panel.getByRole("button", { name: "Use origin" }).click();
+  await expect(panel.getByText("github.com/team/parser")).toBeVisible();
+
+  await page.getByRole("button", { name: "Merged and closed" }).click();
+  expect((await calls(page, "list_pull_requests")).at(-1)).toMatchObject({
+    request: { repository_id: "repo-1", closed: true },
+  });
+  await expect(
+    page.getByText("No pull requests match this filter."),
+  ).toBeVisible();
+});

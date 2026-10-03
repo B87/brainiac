@@ -33,6 +33,7 @@ import {
   RefreshIcon,
 } from "./icons";
 import Popover from "./Popover";
+import PullRequestsTab from "./PullRequestsTab";
 import RepositoryNotesTab from "./RepositoryNotesTab";
 
 /** Where the viewer opens, for links from the activity feed. */
@@ -65,6 +66,11 @@ type Props = {
   onOpenNote: (noteId: string) => void;
   onNewNote: () => void;
   onEditTask: (task: Task) => void;
+  /** Pull requests (v0.3): open one, or Settings → Accounts. */
+  onOpenPullRequest: (reference: string) => void;
+  onOpenSettings: () => void;
+  /** Reload the snapshot after the forge or a workspace switch changed. */
+  onChanged: () => void;
 };
 
 export default function RepositoryView({
@@ -85,6 +91,9 @@ export default function RepositoryView({
   onOpenNote,
   onNewNote,
   onEditTask,
+  onOpenPullRequest,
+  onOpenSettings,
+  onChanged,
 }: Props) {
   const [tab, setTab] = useState<RepositoryTab>(
     focus?.tab ?? repository.last_tab ?? "changes",
@@ -155,6 +164,7 @@ export default function RepositoryView({
     "mod+2": () => changeTab("history"),
     "mod+3": () => changeTab("refs"),
     "mod+4": () => changeTab("notes"),
+    "mod+5": () => changeTab("pull_requests"),
   });
 
   const run = (p: Promise<unknown>) =>
@@ -219,6 +229,15 @@ export default function RepositoryView({
             onClick={() => changeTab("notes")}
           >
             Notes
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "pull_requests"}
+            title="Pull requests (⌘5)"
+            onClick={() => changeTab("pull_requests")}
+          >
+            Pull requests
           </button>
         </div>
         <div data-tauri-drag-region className="h-full flex-1" />
@@ -315,7 +334,16 @@ export default function RepositoryView({
         </div>
       </header>
 
-      {tab === "notes" ? (
+      {tab === "pull_requests" ? (
+        <PullRequestsTab
+          scope={{ kind: "repository", repository }}
+          snapshot={snapshot}
+          onOpen={onOpenPullRequest}
+          onOpenSettings={onOpenSettings}
+          onChanged={onChanged}
+          onError={onError}
+        />
+      ) : tab === "notes" ? (
         <RepositoryNotesTab
           repository={repository}
           snapshot={snapshot}

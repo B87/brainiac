@@ -9,6 +9,7 @@ import {
 import CommandPalette from "./components/CommandPalette";
 import Dashboard, { type Discovered } from "./components/Dashboard";
 import NotesView from "./components/NotesView";
+import PullRequestView from "./components/PullRequestView";
 import RepositoryView from "./components/RepositoryView";
 import SettingsDialog from "./components/SettingsDialog";
 import Sidebar, { type View } from "./components/Sidebar";
@@ -641,6 +642,13 @@ export default function App() {
               onAddRepository={() => void openRepositoryPicker()}
               onLocate={(id) => void locate(id)}
             />
+          ) : view.kind === "pullRequest" ? (
+            <PullRequestView
+              key={view.reference}
+              reference={view.reference}
+              onBack={() => setView(view.back)}
+              onError={setBanner}
+            />
           ) : selected ? (
             <RepositoryView
               key={`${selected.id}:${JSON.stringify(view.kind === "repository" ? (view.focus ?? null) : null)}`}
@@ -661,6 +669,11 @@ export default function App() {
               onOpenNote={openNote}
               onNewNote={() => void newNote()}
               onEditTask={editTask}
+              onOpenPullRequest={(reference) =>
+                setView({ kind: "pullRequest", reference, back: view })
+              }
+              onOpenSettings={() => setDialog("settings")}
+              onChanged={() => void reloadSnapshot()}
             />
           ) : (
             <Dashboard
@@ -743,6 +756,10 @@ export default function App() {
               }
               onChanged={() => void reloadSnapshot()}
               onError={setBanner}
+              onOpenPullRequest={(reference) =>
+                setView({ kind: "pullRequest", reference, back: view })
+              }
+              onOpenSettings={() => setDialog("settings")}
             />
           )}
         </main>

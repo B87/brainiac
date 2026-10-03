@@ -36,6 +36,7 @@ import {
   SearchIcon,
 } from "./icons";
 import Popover from "./Popover";
+import PullRequestsTab from "./PullRequestsTab";
 import { MenuButton, type RepoFocus } from "./RepositoryView";
 import type { WorkspaceTab } from "./Sidebar";
 
@@ -76,6 +77,9 @@ type Props = {
   /** Reload the snapshot after a change made from the Activity tab. */
   onChanged: () => void;
   onError: (message: string | null) => void;
+  /** Pull requests (v0.3): open one, or Settings → Accounts. */
+  onOpenPullRequest: (reference: string) => void;
+  onOpenSettings: () => void;
 };
 
 /** Result of a rescan: untracked repositories, skipped plain folders, and suggested moves. */
@@ -208,6 +212,7 @@ export default function Dashboard(props: Props) {
   useKeys({
     "mod+1": () => props.onTab("overview"),
     "mod+2": () => workspace && props.onTab("activity"),
+    "mod+3": () => workspace && props.onTab("pull_requests"),
   });
 
   /** A missing member with a registration can be located; a plain folder cannot. */
@@ -266,6 +271,15 @@ export default function Dashboard(props: Props) {
               {workspace.unseen_activity > 0 && (
                 <span className="badge">{workspace.unseen_activity}</span>
               )}
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === "pull_requests"}
+              title="Pull requests (⌘3)"
+              onClick={() => props.onTab("pull_requests")}
+            >
+              Pull requests
             </button>
           </div>
         ) : (
@@ -379,7 +393,17 @@ export default function Dashboard(props: Props) {
         )}
       </header>
 
-      {workspace && tab === "activity" ? (
+      {workspace && tab === "pull_requests" ? (
+        <PullRequestsTab
+          key={workspace.id}
+          scope={{ kind: "workspace", workspace }}
+          snapshot={snapshot}
+          onOpen={props.onOpenPullRequest}
+          onOpenSettings={props.onOpenSettings}
+          onChanged={props.onChanged}
+          onError={props.onError}
+        />
+      ) : workspace && tab === "activity" ? (
         <ActivityView
           snapshot={snapshot}
           workspace={workspace}
