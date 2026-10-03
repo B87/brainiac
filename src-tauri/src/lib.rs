@@ -5,6 +5,7 @@ pub mod backup;
 pub mod commands;
 pub mod db;
 pub mod fetcher;
+pub mod forge;
 pub mod git;
 pub mod index;
 pub mod mcp;
