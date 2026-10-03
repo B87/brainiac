@@ -10,8 +10,8 @@ use super::keychain::Token;
 use super::{ForgeRepository, PullRequestRef};
 use crate::models::{
     ActionAvailability, AppError, AppResult, AvailableActions, ChangedFile, Check, CheckState,
-    ChecksSummary, ErrorCode, ForgeAccount, ForgeKind, PullRequest, PullRequestState, ReviewDraft,
-    ReviewState, ReviewVerdict, Reviewer, Thread,
+    ChecksSummary, ErrorCode, ForgeAccount, ForgeKind, MergeOptions, MergeRequest, PullRequest,
+    PullRequestState, ReviewDraft, ReviewState, ReviewVerdict, Reviewer, Thread,
 };
 
 /// GitHub's fine-grained permissions, as its settings page names them; a
@@ -118,6 +118,21 @@ pub trait ForgeAdapter {
         review: &ReviewToSend<'_>,
         progress: &mut (dyn FnMut(SentPart) + Send),
     ) -> AppResult<()>;
+
+    // --- Merging (SPEC.md, Merging) ---
+
+    /// What the Merge confirmation offers: the methods the repository
+    /// allows and its default for deleting the source branch.
+    async fn merge_options(&self, session: &Session, pr: &PullRequest) -> AppResult<MergeOptions>;
+    /// Merge, for the head the user looked at; the service compared the
+    /// branch's tip first. Returns a warning when the merge went through but
+    /// the branch could not be deleted afterwards.
+    async fn merge(
+        &self,
+        session: &Session,
+        pr: &PullRequest,
+        request: &MergeRequest,
+    ) -> AppResult<Option<String>>;
 }
 
 /// A review as the adapters send it: the drafts still to post, the summary
@@ -226,6 +241,21 @@ impl Client {
         result
     }
 
+    pub async fn post_form(
+        &self,
+        session: &Session,
+        url: &str,
+        fields: &[(&str, &str)],
+    ) -> AppResult<Response> {
+        self.budget.check(self.kind)?;
+        let result = self
+            .http
+            .post_form(self.kind.label(), url, session.auth(), &[], fields)
+            .await;
+        self.budget.observe(self.kind, &result);
+        result
+    }
+
     pub async fn put_json(
         &self,
         session: &Session,
@@ -284,7 +314,8 @@ pub fn write_error(kind: ForgeKind, what: &str, permission: &str, response: &Res
             format!("{provider} did not {what}: the pull request changed meanwhile."),
         )
         .with_details(excerpt),
-        422 | 400 => AppError::new(
+        // 405: GitHub's "not mergeable" (conflicts, branch protection).
+        422 | 400 | 405 => AppError::new(
             ErrorCode::Validation,
             format!("{provider} did not {what}: {}", provider_message(&response.body)),
         )
@@ -377,6 +408,12 @@ pub fn summarize_checks(checks: &[Check]) -> ChecksSummary {
         failed,
         pending,
     }
+}
+
+/// Whether the source branch is in the pull request's own repository, so it
+/// can be deleted from here; a fork's branch is someone else's.
+pub fn own_branch(pr: &PullRequest, repository: &ForgeRepository) -> bool {
+    pr.source_repository == format!("{}/{}", repository.owner, repository.name)
 }
 
 /// What the account may do with a pull request, from what both providers

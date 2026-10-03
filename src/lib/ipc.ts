@@ -27,6 +27,10 @@ import type { IndexStatus } from "./generated/IndexStatus";
 import type { ListCommitsRequest } from "./generated/ListCommitsRequest";
 import type { ListPullRequestsRequest } from "./generated/ListPullRequestsRequest";
 import type { MenuEvent } from "./generated/MenuEvent";
+import type { MergeMethod } from "./generated/MergeMethod";
+import type { MergeOptions } from "./generated/MergeOptions";
+import type { MergeOutcome } from "./generated/MergeOutcome";
+import type { MergeRequest } from "./generated/MergeRequest";
 import type { NoteChangedEvent } from "./generated/NoteChangedEvent";
 import type { NoteContent } from "./generated/NoteContent";
 import type { NoteContext } from "./generated/NoteContext";
@@ -169,6 +173,10 @@ export type {
   IndexStatus,
   ListCommitsRequest,
   ListPullRequestsRequest,
+  MergeMethod,
+  MergeOptions,
+  MergeOutcome,
+  MergeRequest,
   NoteChangedEvent,
   NoteContent,
   NoteContext,
@@ -394,6 +402,11 @@ export const ipc = {
   /** Finish Review: the drafts, a summary, and a verdict, for the head the user looked at. */
   submitReview: (request: SubmitReviewRequest) =>
     invoke<WriteOutcome>("submit_review", { request }),
+  // Merging (SPEC.md, Merging): confirmed, for the head the user looked at.
+  getMergeOptions: (reference: string) =>
+    invoke<MergeOptions>("get_merge_options", { reference }),
+  mergePullRequest: (request: MergeRequest) =>
+    invoke<MergeOutcome>("merge_pull_request", { request }),
 
   // v0.2: vault and notes
   getVaultState: () => invoke<VaultState>("get_vault_state"),

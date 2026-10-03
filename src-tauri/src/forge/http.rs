@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT};
+use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
 
 use super::keychain::Token;
 use crate::models::{AppError, AppResult, ErrorCode};
@@ -105,6 +105,31 @@ impl Http {
             .await
     }
 
+    /// `POST url` with form fields (Bitbucket's `/src` takes a commit that
+    /// way; used by the live tests to make a branch to merge).
+    pub async fn post_form(
+        &self,
+        provider: &str,
+        url: &str,
+        auth: Auth<'_>,
+        headers: &[(&'static str, &str)],
+        fields: &[(&str, &str)],
+    ) -> AppResult<Response> {
+        // Encoded here: reqwest's form support is a feature Brainiac
+        // does not otherwise need.
+        let body = fields
+            .iter()
+            .map(|(k, v)| format!("{}={}", form_encode(k), form_encode(v)))
+            .collect::<Vec<_>>()
+            .join("&");
+        let request = self
+            .client
+            .post(url)
+            .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(body);
+        self.send(provider, request, auth, headers).await
+    }
+
     /// `PUT url` with a JSON body (GitHub's merge).
     pub async fn put_json(
         &self,
@@ -179,6 +204,20 @@ fn bearer(token: &Token) -> AppResult<HeaderValue> {
 
 /// A request that got no answer: no network, a name that does not resolve, a
 /// refused connection, or no answer in time.
+/// Percent-encode one form field, as `application/x-www-form-urlencoded`.
+fn form_encode(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
 fn unreachable(provider: &str, e: &reqwest::Error) -> AppError {
     // The URL in it is safe to show: tokens are only ever in headers.
     let details = format!("{e}");

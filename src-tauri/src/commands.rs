@@ -17,9 +17,10 @@ use crate::models::{
     WorkspacePreview, WorkspaceRescan,
 };
 use crate::models::{
-    CommentRequest, Conversation, ListPullRequestsRequest, PullRequest, PullRequestChecks,
-    PullRequestDiff, PullRequestDiffRequest, PullRequestFiles, PullRequestList, ReplyRequest,
-    ResolveThreadRequest, ReviewDrafts, SaveReviewDraftRequest, SubmitReviewRequest, WriteOutcome,
+    CommentRequest, Conversation, ListPullRequestsRequest, MergeOptions, MergeOutcome,
+    MergeRequest, PullRequest, PullRequestChecks, PullRequestDiff, PullRequestDiffRequest,
+    PullRequestFiles, PullRequestList, ReplyRequest, ResolveThreadRequest, ReviewDrafts,
+    SaveReviewDraftRequest, SubmitReviewRequest, WriteOutcome,
 };
 use crate::models::{
     CreateNoteRequest, ExportResult, FolderListing, NoteContent, NoteContext, NoteLists,
@@ -827,6 +828,25 @@ pub async fn submit_review(
     pull_requests: State<'_, PullRequests>,
 ) -> AppResult<WriteOutcome> {
     pull_requests.submit_review(request).await
+}
+
+// Merging (SPEC.md, Merging): confirmed in the UI, checked against the
+// branch's tip just before.
+
+#[tauri::command]
+pub async fn get_merge_options(
+    reference: String,
+    pull_requests: State<'_, PullRequests>,
+) -> AppResult<MergeOptions> {
+    pull_requests.merge_options(&reference).await
+}
+
+#[tauri::command]
+pub async fn merge_pull_request(
+    request: MergeRequest,
+    pull_requests: State<'_, PullRequests>,
+) -> AppResult<MergeOutcome> {
+    pull_requests.merge(request).await
 }
 
 #[tauri::command]

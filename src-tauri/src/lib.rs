@@ -370,6 +370,8 @@ pub fn run() {
             commands::reply_to_thread,
             commands::resolve_thread,
             commands::submit_review,
+            commands::get_merge_options,
+            commands::merge_pull_request,
         ])
         .build(context)
         .expect("error while running Brainiac")

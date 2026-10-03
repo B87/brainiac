@@ -2277,6 +2277,63 @@ pub struct WriteOutcome {
     pub conversation: Conversation,
 }
 
+// --- Merging (SPEC.md, Merging) ----------------------------------------------
+
+/// How the source branch goes into the target. GitHub has the first three;
+/// Bitbucket all four (its rebase is `rebase_fast_forward`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum MergeMethod {
+    MergeCommit,
+    Squash,
+    Rebase,
+    FastForward,
+}
+
+/// What the Merge confirmation offers, read from the provider when it opens.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct MergeOptions {
+    pub reference: String,
+    /// The methods the repository allows, in the order they are offered.
+    pub methods: Vec<MergeMethod>,
+    pub default_method: MergeMethod,
+    /// Whether the source branch can be deleted from here: it is in the
+    /// pull request's own repository, not a fork's.
+    pub can_delete_branch: bool,
+    /// The repository's default for deleting the source branch.
+    pub delete_branch: bool,
+    /// GitHub deletes the branch itself when the repository says so; there
+    /// is then nothing to choose.
+    pub deletes_branch_itself: bool,
+}
+
+/// **Merge**, confirmed, for the head commit the user looked at. A head that
+/// moved is `CONFLICT` and nothing is merged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct MergeRequest {
+    pub reference: String,
+    pub method: MergeMethod,
+    /// The merge commit's title; empty for a rebase or a fast-forward, and
+    /// on Bitbucket, whose message is one text.
+    pub commit_title: String,
+    pub commit_message: String,
+    pub delete_branch: bool,
+    pub expected_head_sha: String,
+}
+
+/// A merge that went through: the pull request and conversation read again,
+/// and what did not go through after it (deleting the branch), if anything.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct MergeOutcome {
+    pub pull_request: PullRequest,
+    pub conversation: Conversation,
+    pub warning: Option<String>,
+}
+
 /// The checks of a pull request's head commit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]

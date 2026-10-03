@@ -6,8 +6,9 @@ use serde::Deserialize;
 
 use super::accounts::AccountCheck;
 use super::adapter::{
-    base_actions, edited, normalize_time, read_error, sort_threads, summarize_checks, write_error,
-    Client, ForgeAdapter, ListOutcome, ReviewToSend, SentPart, Session, GITHUB_PULL_REQUESTS_WRITE,
+    base_actions, edited, normalize_time, own_branch, read_error, sort_threads, summarize_checks,
+    write_error, Client, ForgeAdapter, ListOutcome, ReviewToSend, SentPart, Session,
+    GITHUB_CONTENTS_WRITE, GITHUB_PULL_REQUESTS_WRITE,
 };
 use super::http::{unexpected, Auth, Http, Response};
 use super::keychain::Token;
@@ -15,9 +16,9 @@ use super::markdown;
 use super::{ForgeRepository, PullRequestRef};
 use crate::models::{
     ActionAvailability, AppError, AppResult, ChangedFile, ChangedFileStatus, Check, CheckState,
-    Comment, DiffSide, ErrorCode, ForgeKind, ForgeTokenKind, ForgeUser, Mergeability, PullRequest,
-    PullRequestCounts, PullRequestState, ReviewState, ReviewVerdict, Reviewer, Thread,
-    ThreadAnchor,
+    Comment, DiffSide, ErrorCode, ForgeKind, ForgeTokenKind, ForgeUser, MergeMethod, MergeOptions,
+    MergeRequest, Mergeability, PullRequest, PullRequestCounts, PullRequestState, ReviewState,
+    ReviewVerdict, Reviewer, Thread, ThreadAnchor,
 };
 
 pub const API: &str = "https://api.github.com";
@@ -880,6 +881,29 @@ struct Created {
 const RESOLVE_MUTATION: &str = r#"
 mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }
 "#;
+
+/// The repository's merge settings (SPEC.md, Merging).
+const MERGE_SETTINGS_QUERY: &str = r#"
+query($owner: String!, $name: String!) {
+  repository(owner: $owner, name: $name) {
+    mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed deleteBranchOnMerge
+  }
+}
+"#;
+
+#[derive(Deserialize)]
+struct MergeSettingsData {
+    repository: Option<MergeSettings>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MergeSettings {
+    merge_commit_allowed: bool,
+    squash_merge_allowed: bool,
+    rebase_merge_allowed: bool,
+    delete_branch_on_merge: bool,
+}
 const UNRESOLVE_MUTATION: &str = r#"
 mutation($id: ID!) { unresolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }
 "#;
@@ -1284,6 +1308,119 @@ impl ForgeAdapter for Github {
         self.create(session, &url, &body, "submit the review")
             .await?;
         Ok(())
+    }
+
+    async fn merge_options(&self, session: &Session, pr: &PullRequest) -> AppResult<MergeOptions> {
+        let reference: PullRequestRef = pr.reference.parse()?;
+        let data: MergeSettingsData = self
+            .query(
+                session,
+                MERGE_SETTINGS_QUERY,
+                serde_json::json!({ "owner": reference.repository.owner, "name": reference.repository.name }),
+                "read the repository's merge settings",
+            )
+            .await?;
+        let settings = data.repository.ok_or_else(|| {
+            AppError::not_found(format!(
+                "GitHub has no repository {} this account can see.",
+                reference.repository
+            ))
+        })?;
+        let methods: Vec<MergeMethod> = [
+            (settings.merge_commit_allowed, MergeMethod::MergeCommit),
+            (settings.squash_merge_allowed, MergeMethod::Squash),
+            (settings.rebase_merge_allowed, MergeMethod::Rebase),
+        ]
+        .into_iter()
+        .filter_map(|(allowed, method)| allowed.then_some(method))
+        .collect();
+        let default_method = *methods.first().ok_or_else(|| {
+            AppError::validation("The repository allows no merge method; change that on GitHub.")
+        })?;
+        // A fork's branch belongs to someone else's repository.
+        let can_delete_branch = own_branch(pr, &reference.repository);
+        Ok(MergeOptions {
+            reference: pr.reference.clone(),
+            methods,
+            default_method,
+            can_delete_branch,
+            delete_branch: can_delete_branch && settings.delete_branch_on_merge,
+            deletes_branch_itself: can_delete_branch && settings.delete_branch_on_merge,
+        })
+    }
+
+    /// `PUT /merge` with the full head commit, which GitHub enforces with
+    /// `409` when the branch moved. The branch is deleted afterwards when
+    /// asked, which GitHub may have done itself already.
+    async fn merge(
+        &self,
+        session: &Session,
+        pr: &PullRequest,
+        request: &MergeRequest,
+    ) -> AppResult<Option<String>> {
+        let reference: PullRequestRef = pr.reference.parse()?;
+        let method = match request.method {
+            MergeMethod::MergeCommit => "merge",
+            MergeMethod::Squash => "squash",
+            MergeMethod::Rebase => "rebase",
+            MergeMethod::FastForward => {
+                return Err(AppError::validation(
+                    "GitHub cannot fast-forward; choose another method.",
+                ))
+            }
+        };
+        let mut body =
+            serde_json::json!({ "sha": request.expected_head_sha, "merge_method": method });
+        // A rebase keeps the commits' own messages; a title or message
+        // given for it is refused.
+        if request.method != MergeMethod::Rebase {
+            if !request.commit_title.trim().is_empty() {
+                body["commit_title"] = serde_json::json!(request.commit_title.trim());
+            }
+            if !request.commit_message.trim().is_empty() {
+                body["commit_message"] = serde_json::json!(request.commit_message.trim());
+            }
+        }
+        let url = self.rest(&reference, &format!("pulls/{}/merge", reference.number));
+        let response = self
+            .client
+            .put_json(session, &url, &[API_VERSION, ACCEPT], &body)
+            .await?;
+        if response.status != 200 {
+            return Err(write_error(
+                ForgeKind::Github,
+                "merge the pull request",
+                GITHUB_CONTENTS_WRITE,
+                &response,
+            ));
+        }
+        if !request.delete_branch || !own_branch(pr, &reference.repository) {
+            return Ok(None);
+        }
+        let url = self.rest(&reference, &format!("git/refs/heads/{}", pr.source_branch));
+        let deleted = self
+            .client
+            .delete(session, &url, &[API_VERSION, ACCEPT])
+            .await;
+        Ok(match deleted {
+            // 404 and 422: the branch is gone already (GitHub deleted it).
+            Ok(r) if matches!(r.status, 204 | 404 | 422) => None,
+            Ok(r) => Some(format!(
+                "Merged, but the branch {} was not deleted: {}",
+                pr.source_branch,
+                write_error(
+                    ForgeKind::Github,
+                    "delete the branch",
+                    GITHUB_CONTENTS_WRITE,
+                    &r
+                )
+                .message
+            )),
+            Err(e) => Some(format!(
+                "Merged, but the branch {} was not deleted: {}",
+                pr.source_branch, e.message
+            )),
+        })
     }
 }
 

@@ -7,8 +7,9 @@ use std::collections::HashMap;
 
 use super::accounts::AccountCheck;
 use super::adapter::{
-    base_actions, edited, normalize_time, read_error, sort_threads, summarize_checks, write_error,
-    Client, ForgeAdapter, ListOutcome, ReviewToSend, SentPart, Session, BITBUCKET_WRITE,
+    base_actions, edited, normalize_time, own_branch, read_error, sort_threads, summarize_checks,
+    write_error, Client, ForgeAdapter, ListOutcome, ReviewToSend, SentPart, Session,
+    BITBUCKET_WRITE,
 };
 use super::github::split_list;
 use super::http::{unexpected, Auth, Http, Response};
@@ -17,8 +18,9 @@ use super::markdown;
 use super::{ForgeRepository, PullRequestRef};
 use crate::models::{
     AppError, AppResult, ChangedFile, ChangedFileStatus, Check, CheckState, Comment, DiffSide,
-    ErrorCode, ForgeKind, ForgeTokenKind, ForgeUser, Mergeability, PullRequest, PullRequestCounts,
-    PullRequestState, ReviewState, ReviewVerdict, Reviewer, Thread, ThreadAnchor,
+    ErrorCode, ForgeKind, ForgeTokenKind, ForgeUser, MergeMethod, MergeOptions, MergeRequest,
+    Mergeability, PullRequest, PullRequestCounts, PullRequestState, ReviewState, ReviewVerdict,
+    Reviewer, Thread, ThreadAnchor,
 };
 
 pub const API: &str = "https://api.bitbucket.org/2.0";
@@ -688,6 +690,31 @@ impl Bitbucket {
     }
 }
 
+/// Bitbucket's name for a merge strategy, and back. Its `rebase_merge` and
+/// `squash_fast_forward` have no counterpart on GitHub and are not offered.
+fn strategy_of(name: &str) -> Option<MergeMethod> {
+    match name {
+        "merge_commit" => Some(MergeMethod::MergeCommit),
+        "squash" => Some(MergeMethod::Squash),
+        "rebase_fast_forward" => Some(MergeMethod::Rebase),
+        "fast_forward" => Some(MergeMethod::FastForward),
+        _ => None,
+    }
+}
+
+fn strategy_name(method: MergeMethod) -> &'static str {
+    match method {
+        MergeMethod::MergeCommit => "merge_commit",
+        MergeMethod::Squash => "squash",
+        MergeMethod::Rebase => "rebase_fast_forward",
+        MergeMethod::FastForward => "fast_forward",
+    }
+}
+
+/// How long a merge task is followed before giving up on its answer.
+const MERGE_POLLS: usize = 60;
+const MERGE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// Inline threads still open.
 pub fn unresolved(threads: &[Thread]) -> u32 {
     threads
@@ -977,6 +1004,159 @@ impl ForgeAdapter for Bitbucket {
             }
         }
         Ok(())
+    }
+
+    /// The target branch lists the strategies the repository allows and its
+    /// default; the pull request carries its close-source-branch choice.
+    async fn merge_options(&self, session: &Session, pr: &PullRequest) -> AppResult<MergeOptions> {
+        let reference: PullRequestRef = pr.reference.parse()?;
+        let url = format!(
+            "{}/refs/branches/{}?fields=merge_strategies,default_merge_strategy",
+            self.repo_url(&reference.repository),
+            pr.target_branch
+        );
+        let response = self.client.get(session, &url, &[]).await?;
+        if response.status != 200 {
+            return Err(read_error(
+                ForgeKind::BitbucketCloud,
+                &format!("the branch {}", pr.target_branch),
+                &response,
+            ));
+        }
+        #[derive(Deserialize)]
+        struct Branch {
+            #[serde(default)]
+            merge_strategies: Vec<String>,
+            default_merge_strategy: Option<String>,
+        }
+        let branch: Branch = response.json(PROVIDER)?;
+        let methods: Vec<MergeMethod> = branch
+            .merge_strategies
+            .iter()
+            .filter_map(|s| strategy_of(s))
+            .collect();
+        let default_method = branch
+            .default_merge_strategy
+            .as_deref()
+            .and_then(strategy_of)
+            .filter(|m| methods.contains(m))
+            .or_else(|| methods.first().copied())
+            .ok_or_else(|| {
+                AppError::validation(
+                    "The repository allows no merge method Brainiac offers; merge it on Bitbucket.",
+                )
+            })?;
+
+        let url = self.pr_url(&reference, "?fields=close_source_branch");
+        let response = self.client.get(session, &url, &[]).await?;
+        if response.status != 200 {
+            return Err(read_error(
+                ForgeKind::BitbucketCloud,
+                &format!("pull request {reference}"),
+                &response,
+            ));
+        }
+        #[derive(Deserialize)]
+        struct Choice {
+            #[serde(default)]
+            close_source_branch: bool,
+        }
+        let choice: Choice = response.json(PROVIDER)?;
+        let can_delete_branch = own_branch(pr, &reference.repository);
+        Ok(MergeOptions {
+            reference: pr.reference.clone(),
+            methods,
+            default_method,
+            can_delete_branch,
+            delete_branch: can_delete_branch && choice.close_source_branch,
+            deletes_branch_itself: false,
+        })
+    }
+
+    /// `POST /merge?async=true`, then the task it names in `Location` is
+    /// followed until it succeeds. Bitbucket takes no commit and merges the
+    /// branch's tip of that moment; the service compared it just before.
+    async fn merge(
+        &self,
+        session: &Session,
+        pr: &PullRequest,
+        request: &MergeRequest,
+    ) -> AppResult<Option<String>> {
+        let reference: PullRequestRef = pr.reference.parse()?;
+        let message = match request.method {
+            MergeMethod::Rebase | MergeMethod::FastForward => String::new(),
+            _ => {
+                let title = request.commit_title.trim();
+                let text = request.commit_message.trim();
+                match (title.is_empty(), text.is_empty()) {
+                    (true, _) => text.to_string(),
+                    (false, true) => title.to_string(),
+                    (false, false) => format!("{title}\n\n{text}"),
+                }
+            }
+        };
+        let mut body = serde_json::json!({
+            "type": "pullrequest",
+            "close_source_branch": request.delete_branch,
+            "merge_strategy": strategy_name(request.method),
+        });
+        if !message.is_empty() {
+            body["message"] = serde_json::json!(message);
+        }
+        let what = "merge the pull request";
+        let url = self.pr_url(&reference, "/merge?async=true");
+        let response = self.client.post_json(session, &url, &[], &body).await?;
+        let location = match response.status {
+            200 => return Ok(None),
+            202 => response.header("location").map(str::to_string),
+            _ => {
+                return Err(write_error(
+                    ForgeKind::BitbucketCloud,
+                    what,
+                    BITBUCKET_WRITE,
+                    &response,
+                ))
+            }
+        };
+        let Some(task) = location else {
+            // Accepted without a task to follow: the service reads the pull
+            // request again and reports what it finds.
+            return Err(AppError::new(
+                ErrorCode::Timeout,
+                "Bitbucket accepted the merge but named no task to follow.",
+            ));
+        };
+        #[derive(Deserialize)]
+        struct Task {
+            task_status: String,
+        }
+        for _ in 0..MERGE_POLLS {
+            let response = self.client.get(session, &task, &[]).await?;
+            if response.status != 200 {
+                return Err(write_error(
+                    ForgeKind::BitbucketCloud,
+                    what,
+                    BITBUCKET_WRITE,
+                    &response,
+                ));
+            }
+            let task: Task = response.json(PROVIDER)?;
+            match task.task_status.as_str() {
+                "SUCCESS" => return Ok(None),
+                "PENDING" => tokio::time::sleep(MERGE_POLL_INTERVAL).await,
+                other => {
+                    return Err(AppError::new(
+                        ErrorCode::Validation,
+                        format!("Bitbucket did not {what}: the merge ended as {other}."),
+                    )
+                    .with_details(String::from_utf8_lossy(&response.body).into_owned()))
+                }
+            }
+        }
+        Err(AppError::new(
+            ErrorCode::Timeout,
+            "Bitbucket is still merging; Brainiac stopped waiting.",
+        ))
     }
 }
 

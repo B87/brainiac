@@ -22,6 +22,7 @@ into the release's section.
 - Files Changed shows each file's diff, from local Git when the commits are on the Mac and from GitHub or Bitbucket otherwise, with a file tree that counts threads per file, marks files viewed when opened, and folds viewed and generated files. "N new commits since your review" and "Since your review" show what arrived after the commit you last reviewed on GitHub.
 - Review from Brainiac: comment on the pull request, reply in a thread, resolve or reopen a thread, and comment on a line or a range from its + or with C. Line comments are drafts kept on the Mac and shown under their lines until Review Changes sends them with a summary and a verdict. New commits since the review started stop the submission, keep the drafts, and offer the new changes; a Bitbucket review cut off midway sends only what is left.
 - The pull request's side panel shows the local checkout, whether its branch is checked out, and the notes linked to the repository.
+- Merge a pull request from its Overview once its checklist is complete: the confirmation shows the merge methods the repository allows, the commit message, and whether to delete the branch, and names the commit it merges. Nothing is merged when new commits arrived meanwhile.
 
 ## [0.2.0] - 2026-10-02
 

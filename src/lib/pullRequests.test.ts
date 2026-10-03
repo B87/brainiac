@@ -10,12 +10,14 @@ import {
   byLongestWait,
   checkedOutPullRequest,
   checksLabel,
+  defaultMergeMessage,
   draftsBehind,
   fileKey,
   isGenerated,
   isViewed,
   lineNotes,
   matchesFilter,
+  mergeChecklist,
   reviewIncomplete,
   reviewStartCommit,
   sinceReviewLabel,
@@ -296,5 +298,81 @@ describe("pull request lists", () => {
     expect(notes.get("new:3")?.threads).toHaveLength(2);
     expect(notes.get("old:7")?.drafts).toEqual([draft]);
     expect(notes.size).toBe(2);
+  });
+
+  it("completes the merge checklist only when nothing blocks", () => {
+    const ready = pr({
+      checks: { state: "success", total: 1, passed: 1, failed: 0, pending: 0 },
+      reviewers: [],
+      mergeability: "mergeable",
+    });
+    const done = mergeChecklist(ready, 0);
+    expect(done.complete).toBe(true);
+    expect(done.items.map((i) => i.label)).toEqual([
+      "1 of 1 passed",
+      "No approvals yet",
+      "No unresolved threads",
+      "No conflicts",
+    ]);
+    expect(mergeChecklist(ready, 2).complete).toBe(false);
+    expect(mergeChecklist(ready, null).complete).toBe(true);
+    const running = pr({
+      ...ready,
+      checks: { state: "pending", total: 2, passed: 1, failed: 0, pending: 1 },
+    });
+    expect(mergeChecklist(running, 0).items[0]).toMatchObject({
+      state: "pending",
+      blocking: true,
+    });
+    const asked = pr({
+      ...ready,
+      reviewers: [
+        {
+          user: { id: "9", login: "bob", display_name: null },
+          state: "changes_requested",
+          is_me: false,
+        },
+      ],
+    });
+    expect(mergeChecklist(asked, 0).items[1]).toMatchObject({
+      label: "1 reviewer asked for changes",
+      blocking: true,
+    });
+    expect(
+      mergeChecklist(pr({ ...ready, mergeability: "unknown" }), 0).complete,
+    ).toBe(true);
+    expect(
+      mergeChecklist(pr({ ...ready, mergeability: "conflicting" }), 0).complete,
+    ).toBe(false);
+  });
+
+  it("prefills the commit message as the provider would", () => {
+    const github = pr({
+      number: 12,
+      title: "Parse nested lists",
+      description: "Lists inside lists.\n",
+      source_repository: "team/parser",
+      source_branch: "lists",
+    });
+    expect(defaultMergeMessage(github, "merge_commit")).toEqual({
+      title: "Merge pull request #12 from team/lists",
+      message: "Parse nested lists",
+    });
+    expect(defaultMergeMessage(github, "squash")).toEqual({
+      title: "Parse nested lists (#12)",
+      message: "Lists inside lists.",
+    });
+    expect(defaultMergeMessage(github, "rebase")).toEqual({
+      title: "",
+      message: "",
+    });
+    const bitbucket = pr({ ...github, kind: "bitbucket_cloud" });
+    expect(defaultMergeMessage(bitbucket, "merge_commit")).toEqual({
+      title: "",
+      message: "Merged in lists (pull request #12)\n\nParse nested lists",
+    });
+    expect(defaultMergeMessage(bitbucket, "squash").message).toBe(
+      "Parse nested lists (pull request #12)\n\nLists inside lists.",
+    );
   });
 });

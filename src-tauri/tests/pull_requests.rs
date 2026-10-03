@@ -1473,3 +1473,286 @@ async fn reviews_are_drafted_locally_and_sent_as_each_provider_takes_them() {
         1
     );
 }
+
+// --- Merging (SPEC.md, Merging) -----------------------------------------------
+
+const GITHUB_MERGE_SETTINGS: &str = r#"{"data": {"repository": {
+    "mergeCommitAllowed": true, "squashMergeAllowed": true, "rebaseMergeAllowed": false, "deleteBranchOnMerge": false
+}}}"#;
+const BITBUCKET_TARGET_BRANCH: &str = r#"{"merge_strategies": ["merge_commit", "squash", "fast_forward", "rebase_merge"], "default_merge_strategy": "squash"}"#;
+
+fn merge_routes(github_merge_status: u16) -> Vec<Route> {
+    vec![
+        Route {
+            body_contains: "mergeCommitAllowed",
+            ..route("POST", "/graphql", GITHUB_MERGE_SETTINGS)
+        },
+        Route {
+            status: github_merge_status,
+            ..route(
+                "PUT",
+                "/repos/acme/api/pulls/1/merge",
+                r#"{"sha": "m", "merged": true, "message": "Head branch was modified. Review and try the merge again."}"#,
+            )
+        },
+        Route {
+            status: 204,
+            ..route("DELETE", "/repos/acme/api/git/refs/heads/feature", "")
+        },
+        route(
+            "GET",
+            "/repositories/acme-team/web/refs/branches/main",
+            BITBUCKET_TARGET_BRANCH,
+        ),
+        route(
+            "GET",
+            "/repositories/acme-team/web/refs/branches/fix-login",
+            BITBUCKET_BRANCH,
+        ),
+        route(
+            "GET",
+            "/repositories/acme-team/web/pullrequests/5?fields=close_source_branch",
+            r#"{"close_source_branch": true}"#,
+        ),
+        route(
+            "GET",
+            "/repositories/acme-team/web/pullrequests/5/merge/task-status/7",
+            r#"{"task_status": "SUCCESS", "merge_result": {}}"#,
+        ),
+    ]
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn merges_are_confirmed_against_the_branch_tip_on_both_providers() {
+    let head = "a".repeat(40);
+    let gh = github_pr(1, "2026-10-03T10:00:00Z", &head);
+    let bb = bitbucket_pr(5, "2026-10-03T09:00:00.000000+00:00", "0123456789ab");
+    let mut all = merge_routes(200);
+    all.extend(routes(vec![gh.clone()], vec![bb.clone()]));
+    let shared = Arc::new(Mutex::new(all));
+    let (base, requests) = serve_shared(Arc::clone(&shared)).await;
+    // Bitbucket names the merge task in `Location`, an absolute URL.
+    let task: &'static str = Box::leak(
+        format!("{base}/repositories/acme-team/web/pullrequests/5/merge/task-status/7")
+            .into_boxed_str(),
+    );
+    shared.lock().unwrap().insert(
+        0,
+        Route {
+            status: 202,
+            headers: vec![("location", task)],
+            ..route(
+                "POST",
+                "/repositories/acme-team/web/pullrequests/5/merge",
+                "",
+            )
+        },
+    );
+    let h = harness(&base).await;
+    h.add_accounts().await;
+    let (ws, _, _) = h.workspace(h._tmp.path()).await;
+    h.list(&ws.id, 0).await;
+    let gh_ref = "github.com/acme/api#1";
+    let bb_ref = "bitbucket.org/acme-team/web#5";
+
+    // What the confirmation offers comes from the repository's settings.
+    let options = h.pull_requests.merge_options(gh_ref).await.unwrap();
+    assert_eq!(
+        options.methods,
+        vec![MergeMethod::MergeCommit, MergeMethod::Squash]
+    );
+    assert_eq!(options.default_method, MergeMethod::MergeCommit);
+    assert!(options.can_delete_branch && !options.delete_branch && !options.deletes_branch_itself);
+    let options = h.pull_requests.merge_options(bb_ref).await.unwrap();
+    assert_eq!(
+        options.methods,
+        vec![
+            MergeMethod::MergeCommit,
+            MergeMethod::Squash,
+            MergeMethod::FastForward
+        ],
+        "a strategy without a counterpart on GitHub is not offered"
+    );
+    assert_eq!(options.default_method, MergeMethod::Squash);
+    assert!(options.delete_branch && !options.deletes_branch_itself);
+
+    // The head the user looked at is behind: nothing is merged.
+    let merge = |reference: &str, expected: &str| MergeRequest {
+        reference: reference.into(),
+        method: MergeMethod::Squash,
+        commit_title: "Add parser (#1)".into(),
+        commit_message: "Parses things.".into(),
+        delete_branch: true,
+        expected_head_sha: expected.into(),
+    };
+    let err = h
+        .pull_requests
+        .merge(merge(gh_ref, &"b".repeat(40)))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::Conflict);
+    assert_eq!(requests.count("/pulls/1/merge"), 0);
+    let err = h
+        .pull_requests
+        .merge(merge(gh_ref, "nonsense"))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::Validation);
+
+    // GitHub: one PUT naming the full head commit and the method, then the
+    // branch is deleted as asked.
+    let outcome = h
+        .pull_requests
+        .merge(merge(gh_ref, &head[..12]))
+        .await
+        .unwrap();
+    assert!(outcome.warning.is_none());
+    let bodies = requests.bodies("/pulls/1/merge");
+    assert_eq!(bodies.len(), 1);
+    let sent: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
+    assert_eq!(sent["sha"], head);
+    assert_eq!(sent["merge_method"], "squash");
+    assert_eq!(sent["commit_title"], "Add parser (#1)");
+    assert_eq!(sent["commit_message"], "Parses things.");
+    assert_eq!(requests.count("/git/refs/heads/feature"), 1);
+    assert!(h
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|e| e.reference == gh_ref && e.origin == PullRequestChangeOrigin::App));
+    // A rebase takes no message; a branch in a fork is left alone.
+    h.pull_requests
+        .merge(MergeRequest {
+            method: MergeMethod::Rebase,
+            ..merge(gh_ref, &head)
+        })
+        .await
+        .unwrap();
+    let sent: serde_json::Value =
+        serde_json::from_str(requests.bodies("/pulls/1/merge").last().unwrap()).unwrap();
+    assert_eq!(sent["merge_method"], "rebase");
+    assert!(sent.get("commit_title").is_none() && sent.get("commit_message").is_none());
+    // GitHub refused: the branch moved between the check and the merge
+    // (409), or protection stands in the way (405).
+    for (status, code) in [(409, ErrorCode::Conflict), (405, ErrorCode::Validation)] {
+        let mut all = merge_routes(status);
+        all.extend(routes(vec![gh.clone()], vec![bb.clone()]));
+        *shared.lock().unwrap() = all;
+        let err = h
+            .pull_requests
+            .merge(merge(gh_ref, &head))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, code, "{}", err.message);
+    }
+    // A refusal for a missing permission turns merging off for the account.
+    {
+        let mut all = merge_routes(403);
+        all[1].body = r#"{"message": "Resource not accessible by personal access token"}"#.into();
+        all.extend(routes(vec![gh.clone()], vec![bb.clone()]));
+        *shared.lock().unwrap() = all;
+    }
+    let err = h
+        .pull_requests
+        .merge(merge(gh_ref, &head))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::PermissionDenied);
+    assert!(
+        err.message.contains("Contents: Read and write"),
+        "{}",
+        err.message
+    );
+    let pr = h.pull_requests.get(gh_ref, 0).await.unwrap();
+    assert!(!pr.actions.merge.allowed && pr.actions.comment.allowed);
+    let err = h
+        .pull_requests
+        .merge(merge(gh_ref, &head))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::PermissionDenied);
+
+    // Bitbucket: the branch's tip is compared first, then the merge task
+    // is followed to its end. The message is one text.
+    let err = h
+        .pull_requests
+        .merge(merge(bb_ref, "9999999999"))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::Conflict);
+    assert_eq!(requests.count("/pullrequests/5/merge"), 0);
+    let mut all = merge_routes(200);
+    all.extend(routes(vec![gh.clone()], vec![bb.clone()]));
+    all.insert(
+        0,
+        Route {
+            status: 202,
+            headers: vec![("location", task)],
+            ..route(
+                "POST",
+                "/repositories/acme-team/web/pullrequests/5/merge",
+                "",
+            )
+        },
+    );
+    *shared.lock().unwrap() = all;
+    let outcome = h
+        .pull_requests
+        .merge(merge(bb_ref, "0123456789ab"))
+        .await
+        .unwrap();
+    assert!(outcome.warning.is_none());
+    let bodies: Vec<String> = requests
+        .bodies("/pullrequests/5/merge?async=true")
+        .into_iter()
+        .filter(|b| !b.is_empty())
+        .collect();
+    assert_eq!(bodies.len(), 1);
+    let sent: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
+    assert_eq!(sent["merge_strategy"], "squash");
+    assert_eq!(sent["close_source_branch"], true);
+    assert_eq!(sent["message"], "Add parser (#1)\n\nParses things.");
+    assert_eq!(requests.count("/merge/task-status/7"), 1);
+
+    // An answer that never came: the pull request is read again, and
+    // merged counts as merged.
+    let mut all = merge_routes(200);
+    all.extend(routes(vec![gh.clone()], vec![bb.clone()]));
+    all.insert(
+        0,
+        Route {
+            status: 202,
+            delay_ms: 4_000,
+            ..route(
+                "POST",
+                "/repositories/acme-team/web/pullrequests/5/merge",
+                "",
+            )
+        },
+    );
+    *shared.lock().unwrap() = all;
+    let merged = bb
+        .replace(r#""state": "OPEN""#, r#""state": "MERGED""#)
+        .replace(
+            r#""closed_on": null"#,
+            r#""closed_on": "2026-10-03T12:00:00.000000+00:00""#,
+        );
+    let swap = Arc::clone(&shared);
+    tokio::spawn(async move {
+        // Bitbucket merged while Brainiac was still waiting for its answer.
+        tokio::time::sleep(std::time::Duration::from_millis(1_000)).await;
+        swap.lock()
+            .unwrap()
+            .iter_mut()
+            .find(|r| r.path == "/repositories/acme-team/web/pullrequests/5" && r.method == "GET")
+            .unwrap()
+            .body = merged;
+    });
+    let outcome = h
+        .pull_requests
+        .merge(merge(bb_ref, "0123456789ab"))
+        .await
+        .unwrap();
+    assert_eq!(outcome.pull_request.state, PullRequestState::Merged);
+}

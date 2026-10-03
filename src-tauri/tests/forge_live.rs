@@ -437,3 +437,302 @@ async fn bitbucket_takes_a_comment_a_review_a_reply_and_a_resolution() {
         .expect("session");
     live_writes(&bitbucket::Bitbucket::new(client), &session, &repo).await;
 }
+
+// --- Merges against real repositories (SPEC.md, Merging) ---------------------
+//
+// Each test makes a branch with one commit and a pull request for it on the
+// repository, then merges it from the adapter and checks the branch is gone.
+// Everything it makes is named "brainiac-merge-<time>".
+
+use brainiac_lib::models::{MergeMethod, MergeRequest, PullRequestState};
+
+/// Standard base64, for GitHub's contents API; small enough to not need a crate.
+fn base64(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let n = chunk.iter().fold(0u32, |acc, b| (acc << 8) | *b as u32) << (8 * (3 - chunk.len()));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(TABLE[((n >> (18 - 6 * i)) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+fn expect_json(response: &brainiac_lib::forge::http::Response, what: &str) -> serde_json::Value {
+    assert!(
+        matches!(response.status, 200 | 201),
+        "{what}: {} {}",
+        response.status,
+        String::from_utf8_lossy(&response.body)
+    );
+    serde_json::from_slice(&response.body).expect(what)
+}
+
+/// A branch with one new file and a pull request for it, on GitHub.
+async fn github_make_pull_request(
+    client: &Client,
+    session: &Session,
+    repo: &ForgeRepository,
+    branch: &str,
+) -> PullRequestRef {
+    let api = format!("{}/repos/{}/{}", client.api, repo.owner, repo.name);
+    let headers = [("Accept", "application/vnd.github+json")];
+    let repository = expect_json(
+        &client.get(session, &api, &headers).await.unwrap(),
+        "repository",
+    );
+    let default_branch = repository["default_branch"].as_str().unwrap().to_string();
+    let tip = expect_json(
+        &client
+            .get(
+                session,
+                &format!("{api}/git/ref/heads/{default_branch}"),
+                &headers,
+            )
+            .await
+            .unwrap(),
+        "default branch",
+    );
+    let sha = tip["object"]["sha"].as_str().unwrap().to_string();
+    expect_json(
+        &client
+            .post_json(
+                session,
+                &format!("{api}/git/refs"),
+                &headers,
+                &serde_json::json!({ "ref": format!("refs/heads/{branch}"), "sha": sha }),
+            )
+            .await
+            .unwrap(),
+        "branch",
+    );
+    expect_json(
+        &client
+            .put_json(
+                session,
+                &format!("{api}/contents/{branch}.txt"),
+                &headers,
+                &serde_json::json!({
+                    "message": format!("Brainiac live test: {branch}"),
+                    "content": base64(format!("made by {branch}\n").as_bytes()),
+                    "branch": branch,
+                }),
+            )
+            .await
+            .unwrap(),
+        "commit",
+    );
+    let pr = expect_json(
+        &client
+            .post_json(
+                session,
+                &format!("{api}/pulls"),
+                &headers,
+                &serde_json::json!({
+                    "title": format!("Brainiac live test: merge {branch}"),
+                    "head": branch, "base": default_branch,
+                    "body": "Made and merged by Brainiac's live test.",
+                }),
+            )
+            .await
+            .unwrap(),
+        "pull request",
+    );
+    PullRequestRef {
+        repository: repo.clone(),
+        number: pr["number"].as_u64().unwrap(),
+    }
+}
+
+/// The same on Bitbucket: the branch, then a commit on it through `/src`.
+async fn bitbucket_make_pull_request(
+    client: &Client,
+    session: &Session,
+    repo: &ForgeRepository,
+    branch: &str,
+) -> PullRequestRef {
+    let api = format!("{}/repositories/{}/{}", client.api, repo.owner, repo.name);
+    let repository = expect_json(&client.get(session, &api, &[]).await.unwrap(), "repository");
+    let main = repository["mainbranch"]["name"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let tip = expect_json(
+        &client
+            .get(session, &format!("{api}/refs/branches/{main}"), &[])
+            .await
+            .unwrap(),
+        "main branch",
+    );
+    let hash = tip["target"]["hash"].as_str().unwrap().to_string();
+    expect_json(
+        &client
+            .post_json(
+                session,
+                &format!("{api}/refs/branches"),
+                &[],
+                &serde_json::json!({ "name": branch, "target": { "hash": hash } }),
+            )
+            .await
+            .unwrap(),
+        "branch",
+    );
+    let file = format!("{branch}.txt");
+    let content = format!("made by {branch}\n");
+    let message = format!("Brainiac live test: {branch}");
+    let committed = client
+        .post_form(
+            session,
+            &format!("{api}/src"),
+            &[("branch", branch), ("message", &message), (&file, &content)],
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(committed.status, 200 | 201),
+        "commit: {} {}",
+        committed.status,
+        String::from_utf8_lossy(&committed.body)
+    );
+    let pr = expect_json(
+        &client
+            .post_json(
+                session,
+                &format!("{api}/pullrequests"),
+                &[],
+                &serde_json::json!({
+                    "title": format!("Brainiac live test: merge {branch}"),
+                    "source": { "branch": { "name": branch } },
+                    "destination": { "branch": { "name": main } },
+                    "description": "Made and merged by Brainiac's live test.",
+                }),
+            )
+            .await
+            .unwrap(),
+        "pull request",
+    );
+    PullRequestRef {
+        repository: repo.clone(),
+        number: pr["id"].as_u64().unwrap(),
+    }
+}
+
+async fn live_merge<A: ForgeAdapter>(
+    adapter: &A,
+    session: &Session,
+    reference: &PullRequestRef,
+    branch_gone: impl Fn(&str) -> String,
+    client: &Client,
+) {
+    let pr = adapter.get(session, reference).await.unwrap();
+    println!("merging {} (head {})", pr.reference, pr.head_sha);
+    assert!(pr.actions.merge.allowed, "{:?}", pr.actions.merge.reason);
+    let options = adapter.merge_options(session, &pr).await.unwrap();
+    println!(
+        "  methods: {:?}, default {:?}, delete branch {} (itself: {})",
+        options.methods,
+        options.default_method,
+        options.delete_branch,
+        options.deletes_branch_itself
+    );
+    assert!(options.can_delete_branch);
+    let head = adapter.current_head(session, &pr).await.unwrap();
+    let method = if options.methods.contains(&MergeMethod::Squash) {
+        MergeMethod::Squash
+    } else {
+        options.default_method
+    };
+    let warning = adapter
+        .merge(
+            session,
+            &pr,
+            &MergeRequest {
+                reference: pr.reference.clone(),
+                method,
+                commit_title: format!("{} (#{})", pr.title, pr.number),
+                commit_message: "Merged by Brainiac's live test.".into(),
+                delete_branch: true,
+                expected_head_sha: head,
+            },
+        )
+        .await
+        .unwrap();
+    println!("  merged with {method:?}; warning: {warning:?}");
+    assert!(warning.is_none());
+    let merged = adapter.get(session, reference).await.unwrap();
+    assert_eq!(merged.state, PullRequestState::Merged);
+    assert!(!merged.actions.merge.allowed);
+    let gone = client
+        .get(session, &branch_gone(&pr.source_branch), &[])
+        .await
+        .unwrap();
+    println!("  branch {} answers {}", pr.source_branch, gone.status);
+    assert_eq!(gone.status, 404, "the branch was deleted");
+}
+
+#[tokio::test]
+#[ignore = "writes to a real repository: needs BRAINIAC_LIVE_WRITE=1 and the GitHub variables"]
+async fn github_merges_a_pull_request_it_made() {
+    if !live_write() {
+        eprintln!("skipped: set BRAINIAC_LIVE_WRITE=1 to write to the repository");
+        return;
+    }
+    let repo = live_repo("BRAINIAC_LIVE_GITHUB_REPO", ForgeKind::Github).expect("repo env");
+    let (session, client) = live_session(ForgeKind::Github).await.expect("session");
+    let branch = format!(
+        "brainiac-merge-{}",
+        chrono::Utc::now().format("%Y%m%d-%H%M%S")
+    );
+    let reference = github_make_pull_request(&client, &session, &repo, &branch).await;
+    println!("made {reference} on {branch}");
+    let api = format!("{}/repos/{}/{}", client.api, repo.owner, repo.name);
+    let adapter = github::Github::new(client);
+    let client = live_session(ForgeKind::Github).await.expect("session").1;
+    live_merge(
+        &adapter,
+        &session,
+        &reference,
+        |b| format!("{api}/git/ref/heads/{b}"),
+        &client,
+    )
+    .await;
+}
+
+#[tokio::test]
+#[ignore = "writes to a real repository: needs BRAINIAC_LIVE_WRITE=1 and the Bitbucket variables"]
+async fn bitbucket_merges_a_pull_request_it_made() {
+    if !live_write() {
+        eprintln!("skipped: set BRAINIAC_LIVE_WRITE=1 to write to the repository");
+        return;
+    }
+    let repo =
+        live_repo("BRAINIAC_LIVE_BITBUCKET_REPO", ForgeKind::BitbucketCloud).expect("repo env");
+    let (session, client) = live_session(ForgeKind::BitbucketCloud)
+        .await
+        .expect("session");
+    let branch = format!(
+        "brainiac-merge-{}",
+        chrono::Utc::now().format("%Y%m%d-%H%M%S")
+    );
+    let reference = bitbucket_make_pull_request(&client, &session, &repo, &branch).await;
+    println!("made {reference} on {branch}");
+    let api = format!("{}/repositories/{}/{}", client.api, repo.owner, repo.name);
+    let adapter = bitbucket::Bitbucket::new(client);
+    let client = live_session(ForgeKind::BitbucketCloud)
+        .await
+        .expect("session")
+        .1;
+    live_merge(
+        &adapter,
+        &session,
+        &reference,
+        |b| format!("{api}/refs/branches/{b}"),
+        &client,
+    )
+    .await;
+}

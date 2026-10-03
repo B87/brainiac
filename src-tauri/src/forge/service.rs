@@ -28,11 +28,11 @@ use crate::git::{parse_unified_diff, validate_repo_path, GitService};
 use crate::models::{
     now_rfc3339, AppError, AppResult, ChangeKind, ChangedFile, ChangedFileStatus, CommentRequest,
     CommitFile, Conversation, DiffContent, DiffResult, DiffSelector, DiffSource, ErrorCode,
-    ForgeKind, ListPullRequestsRequest, PullRequest, PullRequestChangeOrigin,
-    PullRequestChangedEvent, PullRequestChecks, PullRequestDiff, PullRequestDiffRequest,
-    PullRequestFiles, PullRequestGroup, PullRequestList, ReplyRequest, RepositorySummary,
-    ResolveThreadRequest, ReviewDrafts, ReviewVerdict, SaveReviewDraftRequest, SubmitReviewRequest,
-    Thread, WriteOutcome,
+    ForgeKind, ListPullRequestsRequest, MergeOptions, MergeOutcome, MergeRequest, PullRequest,
+    PullRequestChangeOrigin, PullRequestChangedEvent, PullRequestChecks, PullRequestDiff,
+    PullRequestDiffRequest, PullRequestFiles, PullRequestGroup, PullRequestList, PullRequestState,
+    ReplyRequest, RepositorySummary, ResolveThreadRequest, ReviewDrafts, ReviewVerdict,
+    SaveReviewDraftRequest, SubmitReviewRequest, Thread, WriteOutcome,
 };
 use crate::workspaces::RepositoryService;
 
@@ -1292,6 +1292,91 @@ impl PullRequestService {
                 .await?;
         }
         self.after_write(&reference).await
+    }
+
+    // --- Merging (SPEC.md, Merging) ---
+
+    /// What the Merge confirmation offers, read from the provider.
+    pub async fn merge_options(&self, reference: &str) -> AppResult<MergeOptions> {
+        let parsed: PullRequestRef = reference.parse()?;
+        let kind = parsed.repository.kind;
+        let pr = self.get(reference, LIST_MAX_AGE_SECONDS).await?;
+        let session = self.session_for(kind).await?;
+        match kind {
+            ForgeKind::Github => self.github.merge_options(&session, &pr).await,
+            ForgeKind::BitbucketCloud => self.bitbucket.merge_options(&session, &pr).await,
+        }
+    }
+
+    /// Merge, for the head the user looked at. The branch's tip is read
+    /// again first; nothing is merged when it moved. An answer that never
+    /// came is checked against the pull request read again: merged counts.
+    pub async fn merge(&self, request: MergeRequest) -> AppResult<MergeOutcome> {
+        let parsed: PullRequestRef = request.reference.parse()?;
+        let reference = parsed.to_string();
+        let kind = parsed.repository.kind;
+        validate_sha(&request.expected_head_sha)?;
+        let pr = self.get(&reference, 0).await?;
+        if !pr.actions.merge.allowed {
+            return Err(AppError::new(
+                ErrorCode::PermissionDenied,
+                pr.actions.merge.reason.unwrap_or_default(),
+            ));
+        }
+        let session = self.session_for(kind).await?;
+        let head = match kind {
+            ForgeKind::Github => self.github.current_head(&session, &pr).await?,
+            ForgeKind::BitbucketCloud => self.bitbucket.current_head(&session, &pr).await?,
+        };
+        if !same_commit(&head, &request.expected_head_sha) || !same_commit(&head, &pr.head_sha) {
+            if let Ok(fresh) = self.get(&reference, 0).await {
+                self.emit(&fresh);
+            }
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "New commits arrived since you looked at this pull request. Nothing was merged; look at the new changes first.",
+            ));
+        }
+        // GitHub wants the full 40 characters; the branch read gives them.
+        let request = MergeRequest {
+            expected_head_sha: head,
+            ..request
+        };
+        let result = match kind {
+            ForgeKind::Github => self.github.merge(&session, &pr, &request).await,
+            ForgeKind::BitbucketCloud => self.bitbucket.merge(&session, &pr, &request).await,
+        };
+        let warning = match result {
+            Ok(warning) => warning,
+            Err(e) if e.code == ErrorCode::Timeout => {
+                let merged = self
+                    .get(&reference, 0)
+                    .await
+                    .is_ok_and(|p| p.state == PullRequestState::Merged);
+                if !merged {
+                    return Err(AppError::new(
+                        ErrorCode::Timeout,
+                        format!(
+                            "{} did not answer in time, and the pull request is not merged. Try again.",
+                            kind.label()
+                        ),
+                    )
+                    .with_details(e.message));
+                }
+                None
+            }
+            Err(e) => {
+                self.note_refusal(kind, true, &e).await;
+                return Err(e);
+            }
+        };
+        tracing::info!(reference, method = ?request.method, "pull request merged");
+        let outcome = self.after_write(&reference).await?;
+        Ok(MergeOutcome {
+            pull_request: outcome.pull_request,
+            conversation: outcome.conversation,
+            warning,
+        })
     }
 
     async fn record_sent(&self, reference: &str, parts: Vec<SentPart>) -> AppResult<()> {

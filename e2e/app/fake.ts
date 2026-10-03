@@ -12,6 +12,7 @@ import type {
   FolderEntry,
   ForgeAccountSlot,
   ListPullRequestsRequest,
+  MergeRequest,
   NoteContent,
   NoteSummary,
   PullRequest,
@@ -1045,6 +1046,35 @@ export class FakeBackend {
             r.is_me ? { ...r, state: "approved" } : r,
           );
         return this.outcome(req.reference);
+      }
+      case "get_merge_options":
+        return {
+          reference: args.reference,
+          methods: ["merge_commit", "squash", "rebase"],
+          default_method: "squash",
+          can_delete_branch: true,
+          delete_branch: true,
+          deletes_branch_itself: false,
+        };
+      case "merge_pull_request": {
+        const req = args.request as MergeRequest;
+        const pr = pullRequests.find((p) => p.reference === req.reference);
+        if (!pr) throw { code: "NOT_FOUND", message: "No such pull request." };
+        if (pr.head_sha !== req.expected_head_sha)
+          throw {
+            code: "CONFLICT",
+            message:
+              "New commits arrived since you looked at this pull request. Nothing was merged.",
+          };
+        pr.state = "merged";
+        pr.closed_at = NOW;
+        pr.actions = {
+          ...pr.actions,
+          merge: { allowed: false, reason: "The pull request is merged." },
+          review: { allowed: false, reason: "The pull request is merged." },
+          approve: { allowed: false, reason: "The pull request is merged." },
+        };
+        return { ...this.outcome(req.reference), warning: null };
       }
       case "get_pull_request_diff":
         return pullRequestDiff(args.request as PullRequestDiffRequest);

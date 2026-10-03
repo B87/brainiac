@@ -9,6 +9,7 @@ import type {
   ChecksSummary,
   DiffSide,
   ForgeKind,
+  MergeMethod,
   PullRequest,
   PullRequestGroup,
   PullRequestState,
@@ -20,6 +21,7 @@ import type {
   Thread,
   ThreadAnchor,
 } from "./ipc";
+import { plural } from "./repo";
 
 /** The workspace tab's filters, and the repository tab's `closed`. */
 export type PullRequestFilter =
@@ -340,4 +342,131 @@ export function lineNotes(
   }
   for (const d of drafts) at(d.anchor)?.drafts.push(d);
   return out;
+}
+
+// --- Merging (SPEC.md, Merging) ----------------------------------------------
+
+export const MERGE_METHOD_LABEL: Record<MergeMethod, string> = {
+  merge_commit: "Create a merge commit",
+  squash: "Squash and merge",
+  rebase: "Rebase and merge",
+  fast_forward: "Fast-forward",
+};
+
+/** One line of the side panel's checklist; `state` is a `StateIcon` state. */
+export type ChecklistItem = {
+  key: "checks" | "reviews" | "threads" | "conflicts";
+  state: "success" | "failure" | "pending" | "neutral" | "requested";
+  label: string;
+  /** Unmet, and the merge waits for it. */
+  blocking: boolean;
+};
+
+/**
+ * What the pull request needs before merging. Complete when nothing blocks:
+ * no failed or running checks, no reviewer asking for changes, no unresolved
+ * thread, no conflicts. Approvals are shown, not required.
+ */
+export function mergeChecklist(
+  pr: PullRequest,
+  unresolved: number | null,
+): { items: ChecklistItem[]; complete: boolean } {
+  const checks = pr.checks.state;
+  const approvals = pr.reviewers.filter((r) => r.state === "approved").length;
+  const changesRequested = pr.reviewers.some(
+    (r) => r.state === "changes_requested",
+  );
+  const items: ChecklistItem[] = [
+    {
+      key: "checks",
+      state:
+        checks === null || checks === "success"
+          ? "success"
+          : checks === "failure"
+            ? "failure"
+            : checks === "pending"
+              ? "pending"
+              : "neutral",
+      label: checksLabel(pr.checks),
+      blocking: checks === "failure" || checks === "pending",
+    },
+    {
+      key: "reviews",
+      state: changesRequested
+        ? "failure"
+        : approvals > 0
+          ? "success"
+          : "requested",
+      label: changesRequested
+        ? `${plural(pr.reviewers.filter((r) => r.state === "changes_requested").length, "reviewer")} asked for changes`
+        : approvals === 0
+          ? "No approvals yet"
+          : plural(approvals, "approval"),
+      blocking: changesRequested,
+    },
+    {
+      key: "threads",
+      state:
+        unresolved === 0
+          ? "success"
+          : unresolved === null
+            ? "neutral"
+            : "pending",
+      label:
+        unresolved === null
+          ? "Threads not read yet"
+          : unresolved === 0
+            ? "No unresolved threads"
+            : plural(unresolved, "unresolved thread"),
+      blocking: unresolved !== null && unresolved > 0,
+    },
+    {
+      key: "conflicts",
+      state:
+        pr.mergeability === "mergeable"
+          ? "success"
+          : pr.mergeability === "conflicting"
+            ? "failure"
+            : "neutral",
+      label:
+        pr.mergeability === "mergeable"
+          ? "No conflicts"
+          : pr.mergeability === "conflicting"
+            ? "Has conflicts with the target"
+            : pr.mergeability === "computing"
+              ? "Checking for conflicts…"
+              : "Conflicts are found when merging",
+      blocking: pr.mergeability === "conflicting",
+    },
+  ];
+  return { items, complete: items.every((i) => !i.blocking) };
+}
+
+/**
+ * The commit message as the provider would write it: a merge commit names
+ * the pull request with the title below; a squash is titled with the title
+ * and number and carries the description; a rebase or fast-forward keeps
+ * the commits' own messages. Bitbucket takes one text.
+ */
+export function defaultMergeMessage(
+  pr: PullRequest,
+  method: MergeMethod,
+): { title: string; message: string } {
+  if (method === "rebase" || method === "fast_forward")
+    return { title: "", message: "" };
+  if (pr.kind === "bitbucket_cloud") {
+    return {
+      title: "",
+      message:
+        method === "squash"
+          ? `${pr.title} (pull request #${pr.number})\n\n${pr.description.trim()}`.trim()
+          : `Merged in ${pr.source_branch} (pull request #${pr.number})\n\n${pr.title}`,
+    };
+  }
+  return method === "squash"
+    ? { title: `${pr.title} (#${pr.number})`, message: pr.description.trim() }
+    : {
+        title: `Merge pull request #${pr.number} from ${pr.source_repository.split("/")[0]}/${pr.source_branch}`,
+        message: pr.title,
+      };
 }

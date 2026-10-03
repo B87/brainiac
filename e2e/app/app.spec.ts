@@ -593,6 +593,46 @@ test("Pull requests: a workspace turns them on, lists them, and opens one", asyn
   await page.getByRole("tab", { name: "Overview" }).click();
   await expect(conversation.getByText("Ship it")).toBeVisible();
   await expect(conversation.getByText("Recursion depth?")).toBeVisible();
+
+  // Merge waits for the checklist: the line comment just sent opened a
+  // thread, so it is resolved first. Then the confirmation opens with the
+  // repository's methods and names the commit.
+  const readiness = page.getByRole("complementary", {
+    name: "Merge readiness and reviewers",
+  });
+  await expect(readiness.getByText("1 unresolved thread")).toBeVisible();
+  await expect(readiness.getByRole("button", { name: "Merge" })).toBeDisabled();
+  await conversation
+    .locator(".thread", { hasText: "Recursion depth?" })
+    .getByRole("button", { name: "Resolve" })
+    .click();
+  await expect(readiness.getByText("No unresolved threads")).toBeVisible();
+  await readiness.getByRole("button", { name: "Merge" }).click();
+  const merge = page.getByRole("dialog", { name: "Merge Pull Request" });
+  await expect(
+    merge.getByRole("radio", { name: "Squash and merge" }),
+  ).toBeChecked();
+  await expect(merge.getByLabel("Commit title")).toHaveValue(
+    "Parse nested lists (#12)",
+  );
+  await merge.getByRole("radio", { name: "Create a merge commit" }).check();
+  await expect(merge.getByLabel("Commit title")).toHaveValue(
+    "Merge pull request #12 from team/nested-lists",
+  );
+  await expect(merge.getByRole("checkbox")).toBeChecked();
+  await merge.getByRole("button", { name: "Merge aaaaaaaaaa" }).click();
+  expect((await calls(page, "merge_pull_request")).at(-1)).toMatchObject({
+    request: {
+      reference: "github.com/team/parser#12",
+      method: "merge_commit",
+      commit_title: "Merge pull request #12 from team/nested-lists",
+      delete_branch: true,
+      expected_head_sha: "a".repeat(40),
+    },
+  });
+  await expect(merge).toBeHidden();
+  await expect(page.getByText("Merged", { exact: true }).first()).toBeVisible();
+  await expect(readiness.getByRole("button", { name: "Merge" })).toBeDisabled();
   await page.getByRole("tab", { name: "Checks" }).click();
   await expect(page.getByRole("button", { name: "Log" })).toBeVisible();
   await page.getByRole("button", { name: "Back" }).click();

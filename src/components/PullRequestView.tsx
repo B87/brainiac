@@ -9,6 +9,9 @@ import {
   errorMessage,
   ipc,
   isAppError,
+  type MergeMethod,
+  type MergeOptions,
+  type MergeOutcome,
   onPullRequestChanged,
   type PullRequest,
   type PullRequestChecks,
@@ -28,7 +31,9 @@ import { usePref } from "../lib/prefs";
 import {
   anchorLabel,
   CHECK_LABEL,
+  type ChecklistItem,
   checksLabel,
+  defaultMergeMessage,
   draftsBehind,
   fileKey,
   isGenerated,
@@ -36,6 +41,8 @@ import {
   lineKey,
   lineNotes,
   loadViewed,
+  MERGE_METHOD_LABEL,
+  mergeChecklist,
   PROVIDER_LABEL,
   REVIEW_LABEL,
   reviewIncomplete,
@@ -115,6 +122,7 @@ export default function PullRequestView({
   const [notes, setNotes] = useState<RepositoryNotes | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
+  const [mergeOpen, setMergeOpen] = useState(false);
   const latest = useRef(createLatest()).current;
   const conversationLatest = useRef(createLatest()).current;
   const draftsLatest = useRef(createLatest()).current;
@@ -386,6 +394,7 @@ export default function PullRequestView({
           onOpenNote={onOpenNote}
           onOutcome={applyOutcome}
           onReview={() => setReviewOpen(true)}
+          onMerge={() => setMergeOpen(true)}
           onError={onError}
           onShowSinceReview={() => {
             setScope("review");
@@ -408,6 +417,28 @@ export default function PullRequestView({
           onShowNewChanges={showNewSinceDrafts}
         />
       )}
+      {mergeOpen && pr && (
+        <MergeDialog
+          pr={pr}
+          unresolved={
+            conversation
+              ? unresolvedThreads(conversation.threads)
+              : pr.counts.unresolved_threads
+          }
+          onClose={() => setMergeOpen(false)}
+          onMerged={(outcome) => {
+            applyOutcome(outcome);
+            setMergeOpen(false);
+            if (outcome.warning) onError(outcome.warning);
+          }}
+          onConflict={() => load(0)}
+          onShowChanges={() => {
+            setMergeOpen(false);
+            setScope(pr.reviewed_sha ? "review" : "all");
+            setTab("files");
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -423,6 +454,7 @@ function Overview({
   onOpenNote,
   onOutcome,
   onReview,
+  onMerge,
   onError,
   onShowSinceReview,
 }: {
@@ -434,6 +466,7 @@ function Overview({
   onOpenNote: (noteId: string) => void;
   onOutcome: (outcome: WriteOutcome) => void;
   onReview: () => void;
+  onMerge: () => void;
   onError: (message: string | null) => void;
   onShowSinceReview: () => void;
 }) {
@@ -447,6 +480,14 @@ function Overview({
     !!repository?.head &&
     repository.head.kind === "branch" &&
     repository.head.branch === pr.source_branch;
+  // Merge waits for the checklist and for the provider (SPEC.md, Merging).
+  const checklist = mergeChecklist(pr, unresolved);
+  const canMerge = pr.actions.merge.allowed && checklist.complete;
+  const mergeReason =
+    pr.actions.merge.reason ??
+    (checklist.complete
+      ? null
+      : "Merge waits until the list above is complete.");
   return (
     <div className="flex min-h-0 flex-1">
       <section
@@ -544,87 +585,22 @@ function Overview({
       >
         <div className="flex flex-col gap-2 border-b px-[18px] py-3.5">
           <span className="section-label text-fg-2">Before merging</span>
-          <ul className="m-0 flex list-none flex-col gap-1.5 p-0 text-[12.5px]">
-            <li className="flex items-center gap-2">
-              <StateIcon
-                state={
-                  pr.checks.state === null || pr.checks.state === "success"
-                    ? "success"
-                    : pr.checks.state
-                }
-                label={
-                  pr.checks.state ? CHECK_LABEL[pr.checks.state] : "No checks"
-                }
-              />
-              {checksLabel(pr.checks)}
-            </li>
-            <li className="flex items-center gap-2">
-              <StateIcon
-                state={
-                  pr.reviewers.some((r) => r.state === "changes_requested")
-                    ? "changes_requested"
-                    : pr.reviewers.some((r) => r.state === "approved")
-                      ? "approved"
-                      : "requested"
-                }
-                label="Reviews"
-              />
-              {pr.reviewers.filter((r) => r.state === "approved").length === 0
-                ? "No approvals yet"
-                : plural(
-                    pr.reviewers.filter((r) => r.state === "approved").length,
-                    "approval",
-                  )}
-            </li>
-            <li className="flex items-center gap-2">
-              <StateIcon
-                state={
-                  unresolved === 0
-                    ? "success"
-                    : unresolved === null
-                      ? "neutral"
-                      : "pending"
-                }
-                label="Threads"
-              />
-              {unresolved === null
-                ? "Threads not read yet"
-                : unresolved === 0
-                  ? "No unresolved threads"
-                  : plural(unresolved, "unresolved thread")}
-            </li>
-            <li className="flex items-center gap-2">
-              <StateIcon
-                state={
-                  pr.mergeability === "mergeable"
-                    ? "success"
-                    : pr.mergeability === "conflicting"
-                      ? "failure"
-                      : "neutral"
-                }
-                label="Conflicts"
-              />
-              {pr.mergeability === "mergeable"
-                ? "No conflicts"
-                : pr.mergeability === "conflicting"
-                  ? "Has conflicts with the target"
-                  : pr.mergeability === "computing"
-                    ? "Checking for conflicts…"
-                    : "Conflicts are found when merging"}
-            </li>
-          </ul>
+          <Checklist items={checklist.items} />
           <button
             type="button"
             className="btn btn-primary self-start"
-            disabled
-            title={pr.actions.merge.reason ?? "Merging comes in a later step."}
+            disabled={!canMerge}
+            title={
+              mergeReason ??
+              `Merge ${pr.source_branch} into ${pr.target_branch}`
+            }
+            onClick={onMerge}
           >
             Merge
           </button>
-          <span className="text-[11.5px] text-muted">
-            {pr.actions.merge.reason ??
-              "Merging from Brainiac comes in a later step."}
-          </span>
+          {mergeReason && (
+            <span className="text-[11.5px] text-muted">{mergeReason}</span>
+          )}
         </div>
         <div className="flex flex-col gap-1.5 border-b px-[18px] py-3.5">
           <span className="section-label text-fg-2">Reviewers</span>
@@ -2053,6 +2029,254 @@ function ReviewDialog({
             </div>
           ))}
         </div>
+      </div>
+    </Dialog>
+  );
+}
+
+// --- Merging (SPEC.md, Merging) ----------------------------------------------
+
+/** What the pull request needs before merging, with an icon per line. */
+function Checklist({ items }: { items: ChecklistItem[] }) {
+  return (
+    <ul className="m-0 flex list-none flex-col gap-1.5 p-0 text-[12.5px]">
+      {items.map((item) => (
+        <li key={item.key} className="flex items-center gap-2">
+          <StateIcon
+            state={item.state}
+            label={
+              item.state === "success"
+                ? "Done"
+                : item.blocking
+                  ? "Blocks merging"
+                  : "Not required"
+            }
+          />
+          {item.label}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function MergeDialog({
+  pr,
+  unresolved,
+  onClose,
+  onMerged,
+  onConflict,
+  onShowChanges,
+}: {
+  pr: PullRequest;
+  unresolved: number | null;
+  onClose: () => void;
+  onMerged: (outcome: MergeOutcome) => void;
+  /** The head moved while the dialog was open: read the pull request again. */
+  onConflict: () => void;
+  onShowChanges: () => void;
+}) {
+  const [options, setOptions] = useState<MergeOptions | null>(null);
+  const [method, setMethod] = useState<MergeMethod | null>(null);
+  const [title, setTitle] = useState("");
+  const [message, setMessage] = useState("");
+  const [deleteBranch, setDeleteBranch] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // The pull request as it was when the dialog opened: the message is
+  // prefilled from it once, and a head that differs means new commits.
+  const opened = useRef(pr).current;
+  const moved = !sameCommit(opened.head_sha, pr.head_sha);
+  const checklist = mergeChecklist(pr, unresolved);
+
+  useEffect(() => {
+    let cancelled = false;
+    void ipc
+      .getMergeOptions(opened.reference)
+      .then((o) => {
+        if (cancelled) return;
+        setOptions(o);
+        setMethod(o.default_method);
+        setDeleteBranch(o.delete_branch);
+        const text = defaultMergeMessage(opened, o.default_method);
+        setTitle(text.title);
+        setMessage(text.message);
+      })
+      .catch((e) => !cancelled && setError(errorMessage(e)));
+    return () => {
+      cancelled = true;
+    };
+  }, [opened]);
+
+  const choose = (m: MergeMethod) => {
+    setMethod(m);
+    const text = defaultMergeMessage(pr, m);
+    setTitle(text.title);
+    setMessage(text.message);
+  };
+  const takesMessage = method === "merge_commit" || method === "squash";
+  const blocked = moved
+    ? "New commits arrived; look at them before merging."
+    : !pr.actions.merge.allowed
+      ? pr.actions.merge.reason
+      : !checklist.complete
+        ? "The checklist is not complete."
+        : !options || !method
+          ? "Reading what the repository allows…"
+          : null;
+
+  const submit = () => {
+    if (busy || blocked || !method) return;
+    setBusy(true);
+    setError(null);
+    void ipc
+      .mergePullRequest({
+        reference: pr.reference,
+        method,
+        commit_title: takesMessage ? title : "",
+        commit_message: takesMessage ? message : "",
+        delete_branch: deleteBranch && !!options?.can_delete_branch,
+        expected_head_sha: pr.head_sha,
+      })
+      .then(onMerged)
+      .catch((e) => {
+        setError(errorMessage(e));
+        if (isAppError(e) && e.code === "CONFLICT") onConflict();
+      })
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <Dialog
+      title="Merge Pull Request"
+      width={600}
+      onClose={onClose}
+      footer={
+        <>
+          {error && (
+            <span className="flex-1 text-[12px] text-del" role="alert">
+              {error}
+            </span>
+          )}
+          <button
+            type="button"
+            className="btn"
+            disabled={busy}
+            onClick={onClose}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={busy || !!blocked}
+            title={blocked ?? "Merging cannot be undone from Brainiac"}
+            onClick={submit}
+          >
+            {busy ? "Merging…" : `Merge ${pr.head_sha.slice(0, 10)}`}
+          </button>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-3.5 text-[13px]">
+        <span className="text-[12.5px] text-fg-2">
+          Merging{" "}
+          <span className="mono" title={pr.head_sha}>
+            {pr.head_sha.slice(0, 10)}
+          </span>{" "}
+          of <span className="mono">{pr.source_branch}</span> into{" "}
+          <span className="mono">{pr.target_branch}</span> on{" "}
+          {PROVIDER_LABEL[pr.kind]}. {PROVIDER_LABEL[pr.kind]} does the merge;
+          the local checkout changes when it is next fetched.
+        </span>
+        {moved && (
+          <div className="flex flex-col gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-100">
+            <span>
+              New commits arrived since you opened this:{" "}
+              <span className="mono">{opened.head_sha.slice(0, 10)}</span> is
+              now <span className="mono">{pr.head_sha.slice(0, 10)}</span>.
+              Nothing was merged.
+            </span>
+            <button
+              type="button"
+              className="btn btn-sm self-start"
+              disabled={busy}
+              onClick={onShowChanges}
+            >
+              Show New Changes
+            </button>
+          </div>
+        )}
+        <Checklist items={checklist.items} />
+        <fieldset className="m-0 flex flex-col gap-1.5 border-0 p-0">
+          <legend className="mb-1 p-0 text-[12px] text-fg-2">Method</legend>
+          {!options ? (
+            <span className="text-[12.5px] text-muted">
+              Reading what the repository allows…
+            </span>
+          ) : (
+            options.methods.map((m) => (
+              <label key={m} className="flex items-center gap-2">
+                <input
+                  type="radio"
+                  name="merge-method"
+                  value={m}
+                  checked={method === m}
+                  disabled={busy}
+                  onChange={() => choose(m)}
+                />
+                {MERGE_METHOD_LABEL[m]}
+              </label>
+            ))
+          )}
+        </fieldset>
+        {takesMessage && (
+          <div className="flex flex-col gap-2">
+            {pr.kind === "github" && (
+              <label className="flex flex-col gap-1">
+                <span className="text-[12px] text-fg-2">Commit title</span>
+                <input
+                  className="text-input"
+                  value={title}
+                  disabled={busy}
+                  onChange={(e) => setTitle(e.target.value)}
+                />
+              </label>
+            )}
+            <label className="flex flex-col gap-1">
+              <span className="text-[12px] text-fg-2">Commit message</span>
+              <textarea
+                className="text-area min-h-[70px]"
+                value={message}
+                disabled={busy}
+                onChange={(e) => setMessage(e.target.value)}
+              />
+            </label>
+          </div>
+        )}
+        {options?.can_delete_branch && (
+          <label
+            className="flex items-center gap-2"
+            title={
+              options.deletes_branch_itself
+                ? `${PROVIDER_LABEL[pr.kind]} deletes the branch itself when merging; the repository says so.`
+                : undefined
+            }
+          >
+            <input
+              type="checkbox"
+              checked={deleteBranch}
+              disabled={busy || options.deletes_branch_itself}
+              onChange={(e) => setDeleteBranch(e.target.checked)}
+            />
+            Delete the branch <span className="mono">{pr.source_branch}</span>{" "}
+            on {PROVIDER_LABEL[pr.kind]}
+            {options.deletes_branch_itself && (
+              <span className="text-[11.5px] text-muted">
+                (the repository does this itself)
+              </span>
+            )}
+          </label>
+        )}
       </div>
     </Dialog>
   );
