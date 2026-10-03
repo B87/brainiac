@@ -20,8 +20,10 @@ Rust owns application behavior and persistence. The UI remains a web frontend in
 | Serialization/errors | **`serde`, `serde_json`, `thiserror`** | IPC DTOs, configuration, structured errors |
 | Identity/content versions | **`uuid`, `sha2`** | Stable IDs and SHA-256 content hashes |
 | Agent access, v0.2.x | **`rmcp`**, the official MCP Rust SDK | The MCP server agents reach over a Unix socket |
+| HTTP, v0.3 | **`reqwest`** with rustls | GitHub and Bitbucket Cloud APIs; later Ollama |
+| Credentials, v0.3 | **`security-framework`** | Account tokens in the macOS Keychain |
 | Git inspection, v0.1 | **System Git CLI invoked from Rust** | Status, discovery, history, refs, file contents, and diffs |
-| Local inference, later | **Ollama via `reqwest`** | Embeddings and streamed generation |
+| Local inference, later | **Ollama via the same `reqwest`** | Embeddings and streamed generation |
 | Vector storage, later | **`sqlite-vec` Rust binding** | Local nearest-neighbor retrieval |
 | Diagnostics | **`tracing`** | Local structured logs and timings |
 
@@ -45,6 +47,7 @@ flowchart TD
     Watch[notify watchers] --> Queue[Debounced work queues]
     Queue --> Services
     Services --> Git[Git subprocesses, v0.1]
+    Services --> Forges[GitHub and Bitbucket Cloud, v0.3]
     Services --> AI[Ollama, v0.5+]
     DB --> Search[FTS5, v0.2; vectors, v0.5]
     Services --> Events[Committed change events]
@@ -95,6 +98,8 @@ brainiac/
       backup.rs                Export, restore, and applying a restore at launch
       mcp.rs                   Agent access, v0.2.x: the socket, connections, and access mode
       mcp/                     The tools and their shapes, server instructions, the stdio helper
+      forge.rs                 Pull requests, v0.3: PullRequestService, accounts, forge identity
+      forge/                   One adapter per provider, the cache (forge.db), the request budget
     tests/                     Integration tests; unit tests can live in modules
 ```
 
@@ -133,6 +138,8 @@ Files become modules through declarations such as `mod notes;` in `lib.rs`. A di
 | Note bodies, search, links between notes | `index.db` | Yes, from the vault |
 | Chunks and embeddings | `index.db` | Yes, from the vault and model configuration |
 | Revisions and unsaved editor drafts | `history.db` | Recovery data, not the saved note |
+| Forge accounts, repository overrides, per-workspace pull request settings, review drafts | `brainiac.db` (tokens in the Keychain) | Requires backup/export; tokens are never exported |
+| Pull requests, files, conversations, checks | `forge.db` | Yes, from GitHub and Bitbucket |
 
 This ownership table covers the full roadmap. In v0.1, persist workspace membership, repository registration, pins, and settings; cache Git observations with timestamps; keep the activity feed's ref tips and events. Note/task/import stores are introduced at their later milestones.
 
@@ -152,6 +159,7 @@ Only two things cannot be rebuilt: the vault's Markdown files and a small core d
 | `brainiac.db` | Settings, repositories, workspaces, pins, activity, vaults, note identity, tasks and their search table, note-to-repository links | No | Snapshots before migrations and daily, and export |
 | `index.db` | Note bodies, the notes search table, parsed links between notes; chunks and vectors from v0.5 | Yes, from the vault | Never; rebuilt after a restore |
 | `history.db` | Note revisions and draft checkpoints | No, but optional | Its own snapshots, less often than `brainiac.db` |
+| `forge.db`, v0.3 | Cached pull requests, files, conversations, checks, and each request's ETag | Yes, from the providers | Never |
 
 - Under WAL, a transaction across attached database files is atomic within each file but not across them; a crash during commit can leave one file updated and another not. [SQLite ATTACH](https://www.sqlite.org/lang_attach.html) The split is safe only because `index.db` is rebuildable: each indexed row records the content hash it was built from, and startup re-indexes rows whose hash no longer matches `brainiac.db`.
 - The split keeps snapshots small (copies of the core, not of every note body and revision) and lets indexing write to `index.db` on its own connection instead of queueing behind Git queries on the core database's worker. One indexing worker owns every write to `index.db`: it commits in transactions of at most 200 notes or 4 MB of text, a larger note commits alone, and a save's index update runs before its next batch. SQLite does not queue writers fairly, so a second writing connection can wait behind several batches (Decisions, 2 Oct 2026). `index.db` is created with incremental auto-vacuum and reclaims free pages after a scan that rewrote many notes. Search and list queries use a read-only connection.
@@ -160,7 +168,7 @@ Only two things cannot be rebuilt: the vault's Markdown files and a small core d
 
 ### Data model
 
-Tables of v0.3 onward are in `docs/roadmap.md` and are not created before their release. IDs are UUID strings and timestamps are UTC instants. The v0.1 schema is `src-tauri/migrations/0001_init.sql`; v0.2's core tables arrive in `0002`, and `index.db` and `history.db` get their own migration lists.
+Tables of v0.4 onward are in `docs/roadmap.md` and are not created before their release; v0.3's are created by the code that first uses them. IDs are UUID strings and timestamps are UTC instants. The v0.1 schema is `src-tauri/migrations/0001_init.sql`; v0.2's core tables arrive in `0002`, and `index.db` and `history.db` get their own migration lists.
 
 | Entity | Essential fields and constraints | Release |
 | --- | --- | --- |
@@ -193,6 +201,16 @@ v0.2 adds, with the file each lives in:
 | `note_links` | index | `source_note_id`, `target_note_id?`, `raw_target`, `kind` (`markdown`, `wikilink`), `start_offset` and `end_offset` (bytes), `line`; unresolved links retained |
 | `note_revisions` | history | `id`, `note_id`, `content`, `content_hash`, `created_at`, `reason` (`app_save`, `external_change`, `restore`; `agent` from v0.2.x) |
 | `drafts` | history | `note_id`, `base_hash`, `content`, `updated_at`; one per note with unsaved edits |
+
+v0.3 adds:
+
+| Entity | File | Essential fields and constraints |
+| --- | --- | --- |
+| `forge_accounts` | core | `id`, kind (`github`, `bitbucket_cloud`), host, login, email (Bitbucket), token kind and expiry, scopes seen at the last check; the token itself only in the Keychain under the account ID |
+| `repository_forges` | core | `repository_id`, kind, host, owner, name, `derived` or `override`; refreshed from `remote_url` unless overridden |
+| `workspace_pull_requests` | core | `workspace_id`, enabled (default off), account per provider |
+| `review_drafts` | core | `id`, pull request reference, anchor (path, side, line, optional start line, commit), body, origin (`user`; `agent` later), the remote comment ID once sent; the user's unsent text, so it is kept and backed up |
+| pull request cache | `forge.db` | Pull requests, files, threads, checks, and each request's ETag, keyed by pull request reference; pruned 14 days after a pull request closes |
 
 `planned_date` and `due_date` are local calendar dates (`YYYY-MM-DD`), not UTC instants, so Today does not shift with time zones or daylight saving. Completing a task sets `completed_at`; reopening clears it; a task is to sort while `triaged_at` is empty. Every task write carries the expected `version` and fails with `CONFLICT` when it changed.
 
@@ -260,7 +278,7 @@ git -c gc.auto=0 -c maintenance.auto=false -c fetch.prune=false -c fetch.pruneTa
 
 ## IPC
 
-The app exposes repository and workspace registration, Git queries, fetching, the activity feed, settings and pins, and application snapshots; v0.2 adds the vault, notes, tasks, search, and backups. Commands of v0.3 onward are in `docs/roadmap.md`.
+The app exposes repository and workspace registration, Git queries, fetching, the activity feed, settings and pins, and application snapshots; v0.2 adds the vault, notes, tasks, search, and backups; v0.3 adds accounts and pull requests. Commands of v0.4 onward are in `docs/roadmap.md`.
 
 Commands are thin adapters over Rust services. Use `#[tauri::command]`, serializable request/response DTOs, and a typed TypeScript client. Generate DTO types from Rust or verify shared schemas in CI; do not assume Tauri automatically creates complete TypeScript bindings. [Tauri command documentation](https://v2.tauri.app/develop/calling-rust/)
 
@@ -287,6 +305,9 @@ Commands are thin adapters over Rust services. Use `#[tauri::command]`, serializ
 | `export_backup` / `preview_restore` / `restore_backup` | v0.2: a parent folder; an export checked before anything changes; the export, the vault folder, and whether to copy notes into it |
 | `open_vault_file` / `reveal_vault_path` / `update_settings` | v0.2: files Brainiac does not edit open in their default app; settings |
 | `get_agent_access_status` | v0.2.x: the access mode, connected agents, the executable agents run, and why agents cannot connect, if they cannot |
+| `list_forge_accounts` / `save_forge_account` / `remove_forge_account` / `set_repository_forge` / `update_workspace_pull_requests` | v0.3: accounts checked with one request; a repository's forge override; a workspace's switch and accounts |
+| `list_pull_requests` / `get_pull_request` / `list_pull_request_files` / `get_pull_request_diff` / `get_pull_request_conversation` | v0.3: workspace or repository scope and a filter (merged and closed ones of the last 30 days for one repository, loaded when asked for), or a pull request reference; cached results with their age and version; diffs identified by base and head commit |
+| `save_review_draft` / `discard_review_draft` / `submit_review` / `comment_on_pull_request` / `reply_to_thread` / `resolve_thread` / `merge_pull_request` | v0.3: expected head commit on submit, approve, and merge, expected version on edits; `CONFLICT` with the current state when either moved |
 
 Errors expose stable codes: `VALIDATION`, `NOT_FOUND`, `CONFLICT`, `PERMISSION_DENIED`, `IO`, `DB`, `DEPENDENCY_UNAVAILABLE`, `TIMEOUT`, and `CANCELLED`. Include a user-facing message and retryability, keeping low-level diagnostics in local logs.
 
@@ -302,7 +323,7 @@ The request and response types are defined once, in `src-tauri/src/models.rs`, a
 
 Commands map onto these as follows: `get_app_snapshot → AppSnapshot`; `register_repository(path) → RepositorySummary`; `remove_repository(id)`; `open_repository(id)` marks it recent; `set_repository_tab(id, tab)`; `open_in_editor(id, path?, line?)`; `reveal_in_finder(id, path?)`; `discover_repositories(folder_path, discovery_path?) → WorkspacePreview`; `rescan_workspace(workspace_id) → WorkspaceRescan`; `relocate_repository(RelocateRepositoryRequest) → RelocationOutcome` fails with `CONFLICT` when another registration has the folder, writes nothing when it returns `needs_confirmation`, and re-watches every registration that moved; `create_workspace(CreateWorkspaceRequest) → Workspace`; `update_workspace_membership(UpdateWorkspaceMembershipRequest) → Workspace`; `rename_workspace(workspace_id, name) → Workspace`; `remove_workspace(workspace_id)` also deletes its pin and keeps member registrations; `set_pinned(entity_type, entity_id, pinned)`; `refresh_repository(id) → RepositorySummary`; `list_changes(id) → ChangesResult`; `get_diff(id, DiffSelector, DiffOptions?) → DiffResult`; `list_commits(ListCommitsRequest) → CommitPage`; `get_commit(id, commit_id, parent_index?) → CommitDetail`; `list_refs(id) → RefsResult`; `fetch_repository(id) → FetchResult` fails with `CONFLICT` when another Git process holds a lock and `PERMISSION_DENIED` when the remote needs sign-in; `get_workspace_activity(workspace_id) → WorkspaceActivity`; `get_team_pulse(workspace_id) → TeamPulse`; `mark_activity_seen(workspace_id, event_ids?)` marks the given events, or all of the workspace's, as seen; `update_activity_settings(workspace_id, ActivitySettings) → Workspace`. Every result carries the repository ID so a late response for a previously selected repository can be discarded by the frontend.
 
-Events are `repository_changed` and `menu`; v0.2 adds `note_changed`, `note_missing`, `task_changed`, and `index_status_changed`, each emitted by the domain service that committed the change. Scope payloads to the authorized window. Do not broadcast note contents through global events. Commands return definitive state even if an event is missed. [Tauri frontend events](https://v2.tauri.app/develop/calling-frontend/)
+Events are `repository_changed` and `menu`; v0.2 adds `note_changed`, `note_missing`, `task_changed`, and `index_status_changed`, and v0.3 `pr_changed`, each emitted by the domain service that committed the change. Scope payloads to the authorized window. Do not broadcast note contents through global events. Commands return definitive state even if an event is missed. [Tauri frontend events](https://v2.tauri.app/develop/calling-frontend/)
 
 ## Agent access — v0.2.x
 
@@ -343,6 +364,68 @@ flowchart LR
 
 **The Claude Code plugin.** `plugins/brainiac/` is a Claude Code plugin, and `.claude-plugin/marketplace.json` makes the repository its marketplace. Its `.mcp.json` runs `/Applications/Brainiac.app/Contents/MacOS/brainiac mcp`, where the DMG and `scripts/install.sh` put the app; the Settings command covers any other location. Its skill (`skills/brainiac/SKILL.md`) carries what the server's instructions cannot: when to reach for Brainiac and the workflows (planning the day, tracking work as tasks, writing up decisions), while the instructions keep the rules every client needs. The plugin declares no version, so Claude Code updates it to each commit, and the app's version stays only in `Cargo.toml`; `claude plugin validate` reports that as its one warning.
 
+## Pull requests — v0.3
+
+What the user sees is `SPEC.md`, section 10. One provider-neutral model serves the UI, and later agents; each provider is an adapter behind it.
+
+```text
+Main WebView ── Tauri commands ──▶ PullRequestService   (neutral model, versions, drafts, cache, budget, events)
+                                     ├─ ForgeAdapter: GitHub           (REST; GraphQL for review threads)
+                                     ├─ ForgeAdapter: Bitbucket Cloud  (REST 2.0)
+                                     └─ GitService: diffs and commits when both SHAs exist locally
+```
+
+`ForgeAdapter` is a trait with `list`, `get`, `files`, `patch`, `conversation`, `checks`, and `write`; each adapter maps the provider's shapes onto the neutral model and declares what it cannot do. HTTP runs in Rust only (`reqwest` with rustls); the WebView gets no HTTP access, as for every other service. The code lives in `forge.rs` and `forge/`, one file per adapter.
+
+**Identity.**
+
+- A **forge repository** comes from the `remote_url` Brainiac already stores without credentials (Storage layout): `github.com/acme/api`, `bitbucket.org/acme-team/api`, from the HTTPS, `ssh://`, and SCP-style (`git@host:owner/name.git`) forms. Hosts other than `github.com` and `bitbucket.org` map to nothing. An override in `repository_forges` covers pull requests that live on an upstream or a fork.
+- A **pull request reference** is `<forge repository>#<number>`; both providers number pull requests per repository.
+- An **account** is a kind, host, and login in `brainiac.db`; its token is in the Keychain (`security-framework`), under the service `<app identifier>.forge` and the account's ID, so a `tauri:dev` build keeps its own. GitHub tokens go in a `Bearer` header; Bitbucket API tokens with the account's email over Basic authentication. [Bitbucket Cloud API tokens](https://www.atlassian.com/blog/bitbucket/bitbucket-cloud-transitions-to-api-tokens-enhancing-security-with-app-password-deprecation)
+
+**Neutral model.**
+
+| Entity | Fields | Provider notes |
+| --- | --- | --- |
+| Pull request | reference, title, description (Markdown), author, state (`open`, `draft`, `merged`, `closed`), source repository, branch, and `head_sha`, target branch, reviewers with their state (`requested`, `approved`, `changes_requested`, `commented`), checks summary, mergeability, counts, web URL, `version`, `available_actions` | Bitbucket's declined is `closed`; GitHub's `mergeable: null` is `computing`. The source repository, branch, and head are stored from the start so a later In flight view needs no migration |
+| Changed file | path, old path, status, additions, deletions | GitHub `/files`; Bitbucket `/diffstat` |
+| Diff | identified by `(base_sha, head_sha)` | Local Git when both objects exist (`git cat-file -e`, which never downloads), otherwise the provider's patch |
+| Thread | opaque ID, optional anchor, resolved, outdated, comments | GitHub GraphQL `reviewThreads`; Bitbucket a root comment and its replies |
+| Anchor | path, side (`old`, `new`), line, optional start line, commit | GitHub `side`, `line`, `start_line`, `commit_id`; Bitbucket `inline.from` (old) or `inline.to` (new) |
+| Check | name, state, URL | GitHub check runs and the combined status; Bitbucket commit statuses |
+
+`available_actions` says, per pull request and viewer, which actions are possible and why not, so provider differences reach the UI as data: GitHub cannot withdraw an approval, a declined Bitbucket pull request cannot be reopened, branch protection can block a merge, a read-only token can do nothing.
+
+**Operations.**
+
+| Operation | Precondition | GitHub | Bitbucket Cloud |
+| --- | --- | --- | --- |
+| Comment on the pull request | none | `POST /issues/{n}/comments` | `POST /comments` |
+| Reply to a thread | none | `POST /pulls/{n}/comments/{id}/replies` | `POST /comments` with `parent.id` |
+| Resolve or reopen a thread | none | GraphQL `resolveReviewThread` / `unresolveReviewThread`; REST cannot | `POST` / `DELETE /comments/{id}/resolve` |
+| Save a review draft | none; stored locally | — | — |
+| Submit a review (comment, approve, request changes) | expected `head_sha` | One `POST /reviews` with `commit_id`, the event, and every draft | Check the head, post each draft, then `/approve` or `/request-changes` |
+| Merge | expected `head_sha` | `PUT /merge` with `sha`, which GitHub enforces | Read again and compare the head, then `POST /merge`, which may finish asynchronously (spike S6) |
+
+Edit, close, reopen, and create are in the model but not in v0.3's interface.
+
+**Consistency.**
+
+- **Two preconditions.** `version` (the provider's update time plus `head_sha`, opaque to callers) guards edits to a pull request's fields. `expected_head_sha` guards everything that means "I looked at this code": submitting a review, approving, merging. Either one that moved returns `CONFLICT` with the current state, as a note save does.
+- **Drafts are local until submitted.** The same pending-review behavior on both providers, kept across restarts in `review_drafts`. GitHub receives a review in one request. Bitbucket receives several, so submitting works like an outbox: each draft records its remote comment ID once sent, and a submission cut off midway resumes with what is left, never posting a comment twice.
+- **No blind retries.** A write that times out returns `TIMEOUT` ("may have been applied"); the service reads the conversation again and matches it against the drafts before offering a retry.
+
+**Sync, cache, and request budget.**
+
+- Bitbucket Cloud allows about 1,000 repository-data requests per hour per user; GitHub allows 5,000, and a conditional request answered `304` does not count. [Bitbucket API request limits](https://support.atlassian.com/bitbucket-cloud/docs/api-request-limits/) Each account has a request budget spent in order: the pull request on screen (on open and every 60 seconds while visible), workspace lists (every 5 minutes while Brainiac is open), everything else. Requests are conditional where the provider supports it, filtered by update time, and trimmed with `fields=`; `Retry-After` and reset headers become `DEPENDENCY_UNAVAILABLE` with a retry time.
+- A fetch that moves `refs/remotes/<remote>/<branch>` marks the pull requests whose source is that branch stale and refreshes them, at no request cost.
+- The cache is `forge.db` (`forge.sqlite3`, application ID "BRNF") in the data folder: rebuildable from the providers, so outside `brainiac.db`, and not derived from the vault, so outside `index.db`. It is deleted and created again when it comes from a newer version or cannot be opened, never snapshotted or exported, and prunes a pull request 14 days after it closes.
+
+**Errors and events.**
+
+- Existing codes: `PERMISSION_DENIED` for "needs sign-in" or "not allowed", `CONFLICT` for a moved version or head, `DEPENDENCY_UNAVAILABLE` for the network, an outage, or an exhausted budget (with `retry_after`), and `NOT_FOUND`, `TIMEOUT`, and `VALIDATION` as elsewhere.
+- `pr_changed` carries the reference, the version, and its origin (`app` or `remote`); commands return definitive state.
+
 ## Security, privacy, and distribution
 
 Tauri capabilities constrain which windows can access core/plugin APIs. Define separate main and capture capabilities, explicitly select them in configuration, and avoid permissions shared unintentionally across windows. [Tauri capabilities](https://v2.tauri.app/security/capabilities/)
@@ -354,9 +437,10 @@ Tauri capabilities constrain which windows can access core/plugin APIs. Define s
 - Vault images are served through Brainiac's `vault:` URL scheme (`vault://localhost/<path>`), which returns image files inside the active vault and nothing else, an SVG with a policy that blocks scripts; the content security policy allows `vault:` images and no remote ones, so opening a note makes no network request.
 - Open approved `http`/`https` links externally; never treat a note link as a shell command.
 - Invoke Git/editor executables with fixed argument arrays and bounded execution. Imported workspace content never supplies arbitrary executable code.
-- Keep credentials in macOS Keychain when remote integrations arrive. Logs exclude note bodies, model prompts, tokens, and credentials. Fetching uses Git's own credential configuration and never asks for or stores credentials itself.
+- Keep credentials in the macOS Keychain. Account tokens (v0.3) are read only by the forge adapters and sent only to their own provider's API host over HTTPS; they never reach the WebView, logs, the database, snapshots, or exports. Logs exclude note bodies, model prompts, tokens, and credentials. Fetching uses Git's own credential configuration and never asks for or stores credentials itself.
 - macOS notifications (`tauri-plugin-notification`) are sent from Rust only, for workspaces that turned them on; the WebView gets no notification permission.
 - Agent access (v0.2.x) is off by default and local only: a Unix socket closed to other users, never a network port. Agents get the narrow tools of `SPEC.md`, section 9, through the domain services; no tool deletes, touches Git, opens files, runs commands, or changes settings.
+- Pull requests (v0.3) are off by default per workspace; nothing is requested from a provider for a workspace that has not turned them on. Pull request Markdown is sanitized like notes and its remote images are not loaded.
 - No telemetry or remote inference by default. Local storage is ordinary plaintext; application-level encryption is future scope.
 
 Proposed support target is macOS 13+ on Apple Silicon, validated against the selected Tauri dependencies. Intel support requires its own build and test pass before being claimed. Distribute a direct-download `.app`/DMG initially; App Store sandboxing is a separate decision. [Tauri macOS bundles](https://v2.tauri.app/distribute/macos-application-bundle/)
@@ -450,3 +534,4 @@ Decisions already made. Add new ones at the end with a date; do not edit an acce
 - **2 Oct 2026 — v0.2 as built.** The trash is `trash/<vault>/<note>/<time>/` in the data folder, so trashing a note again keeps the earlier copy. Notes of an earlier vault count as missing rather than being read from the current vault's folder. A note that goes missing keeps its last indexed text as a revision, stored when the burst ends so a `git checkout` does not store thousands. Today carries over open tasks planned for an earlier day. A restore is staged in the data folder and applied at the next launch, before the core database opens, because the database worker holds it open; registrations made on the new Mac are kept. Vault images reach the editor through a `vault:` URL scheme limited to image files of the active vault, instead of opening the WebView's asset access to the filesystem. Clicked links are resolved in the backend (`resolve_link`) with the same rules as stored links. The palette matches repositories and workspaces from the snapshot and asks the backend only for notes and tasks.
 - **3 Oct 2026 — Agents reach Brainiac through MCP over a Unix socket, served with `rmcp`, and the stdio helper is the app's own executable (spike S5).** `rmcp` 3.5 served a tool over a `tokio` `UnixStream` with no adapter; Claude Code 2.1.288, started with a configuration that runs the helper, negotiated protocol 2025-11-25, listed the tool, and called it through the helper's byte pipe. Peer credentials gave the connecting process's user ID. `rmcp` adds eight small crates beside what Tauri already brings (it uses the same `schemars`) and needs Rust 1.88, so `rust-version` rises from 1.85. Two findings shape the design: a socket under a long folder failed to bind (`path must be shorter than SUN_LEN`), hence the fallback in `/tmp/brainiac-<uid>/`; and Claude Code warns about the `uint32` format `schemars` writes for unsigned integers, hence formats are removed from tool schemas. A separate `brainiac-mcp` binary, as the roadmap proposed, would need Tauri's `externalBin` with a binary per target triple merged with `lipo` for the universal build; the main executable checks for `mcp` before starting Tauri instead, ships with no bundling change, and can open its own bundle when the app is closed. Streamable HTTP on `localhost` was rejected: it needs a port and a token, and any local process or web page can try to reach it, while the socket is closed to other users. Tool shapes live in `mcp/tools.rs`, outside `models.rs`, because they are a contract with agents rather than with the frontend. No tool deletes or trashes anything.
 - **3 Oct 2026 — Pull requests on GitHub and Bitbucket Cloud become v0.3, and the releases after it move one number on.** The Git viewer and workspace tracking proved the most useful part of the app, so reviewing and merging a workspace's pull requests comes before imports and capture (now v0.4, with authenticated import adapters in v0.4.x), semantic search (now v0.5), and grounded AI answers (now v0.6). Release numbers in the entries above refer to the earlier plan: "external imports and global capture in v0.3" and "no Inbox view until v0.3" now mean v0.4. The design is in `docs/roadmap.md`, Pull requests — v0.3; writing to GitHub and Bitbucket and the new dependencies it needs are recorded when that release starts.
+- **3 Oct 2026 — v0.3 writes to GitHub and Bitbucket on an explicit action, and adds `reqwest` and `security-framework`.** Commenting, replying, resolving threads, submitting reviews, and merging write to the hosting service, each a visible action the user takes, and merging asks for confirmation. This is separate from the rule that fetching is the only write to a local repository, which stays: Brainiac still never checks out, pushes, or deletes a branch. HTTP runs only in Rust, through `reqwest` with rustls (the client already planned for local models), and account tokens live in the macOS Keychain through `security-framework`. The design moved from `docs/roadmap.md` into `SPEC.md`, section 10, and Pull requests — v0.3 above. Spike S6 (Bitbucket Cloud's behavior) is recorded separately when it runs.

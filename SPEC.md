@@ -38,7 +38,7 @@ The product can eventually include PR and CI status, calendar context, recurring
 
 ## 2. Release boundaries
 
-**v0.1 — Git viewer and single/multi-repository tracker** shipped as 0.1.3. **v0.2 — knowledge, tasks, and code context** shipped as 0.2.0: one Markdown vault, tasks, Today, keyword search, and links between notes, tasks, and the repositories v0.1 tracks (sections 5–8). **v0.2.x — agent access** is the current release: agents such as Claude Code work with Brainiac's notes, tasks, and repository links through a local MCP server (section 9). **v0.3 — pull requests** comes next, because the Git features proved the most useful: reviewing and merging the pull requests of a workspace's repositories on GitHub and Bitbucket Cloud. Content imports, global capture, and AI follow it.
+**v0.1 — Git viewer and single/multi-repository tracker** shipped as 0.1.3. **v0.2 — knowledge, tasks, and code context** shipped as 0.2.0: one Markdown vault, tasks, Today, keyword search, and links between notes, tasks, and the repositories v0.1 tracks (sections 5–8). **v0.2.x — agent access** lets agents such as Claude Code work with Brainiac's notes, tasks, and repository links through a local MCP server (section 9). **v0.3 — pull requests** is the current release, because the Git features proved the most useful: reviewing and merging the pull requests of a workspace's repositories on GitHub and Bitbucket Cloud (section 10). Content imports, global capture, and AI follow it.
 
 | Capability | Release | Scope |
 | --- | --- | --- |
@@ -65,7 +65,7 @@ The product can eventually include PR and CI status, calendar context, recurring
 | Grounded AI answers | v0.6 | Citation-backed local RAG |
 | Other pull request providers, CI beyond pull request checks, other Git mutations, sync, plugins | Later | Separate features after the v0.3 providers are useful |
 
-v0.1 requires a usable local Git binary. Detect it on startup and provide a clear setup message when absent; do not silently install developer tools. Core Git viewing works offline and requires no Markdown vault, Ollama instance, remote-service account, or elevated macOS permissions. Ahead/behind information reflects existing local refs and may be stale relative to the remote server until someone fetches: the user, their editor, or Brainiac's Fetch now and opt-in auto-fetch (section 4, Fetching). Fetching is the only operation that writes to a repository, and it touches remote-tracking refs and objects only.
+v0.1 requires a usable local Git binary. Detect it on startup and provide a clear setup message when absent; do not silently install developer tools. Core Git viewing works offline and requires no Markdown vault, Ollama instance, remote-service account, or elevated macOS permissions. Ahead/behind information reflects existing local refs and may be stale relative to the remote server until someone fetches: the user, their editor, or Brainiac's Fetch now and opt-in auto-fetch (section 4, Fetching). Fetching is the only operation that writes to a repository, and it touches remote-tracking refs and objects only. From v0.3, pull requests are reviewed and merged on GitHub or Bitbucket, never in the local repository (section 10).
 
 Brainiac keeps its own data in a local database and snapshots it before each upgrade of its format and once a day, keeping seven. It refuses to open data saved by a newer version of Brainiac, or a file that is not Brainiac's, and says where the snapshots are; it never runs on data it cannot read correctly.
 
@@ -101,7 +101,7 @@ The sidebar gains a section level above the repository tree: **Today**, **Tasks*
 
 - Brainiac reopens the section that was open when it quit. The first launch after upgrading to v0.2 opens Workspaces as before, and the sidebar shows one **Set up your vault** row until a vault is chosen.
 - Today, Tasks, and Notes are never shown empty: before a vault is chosen they offer the vault setup, and Today and Tasks work without a vault.
-- Settings (`Cmd+,`) chooses the vault, holds the note-ID setting and **Rebuild Index**, and offers **Export…** and **Restore from Export…**, which the File menu also has. From v0.2.x it also holds **Agent access** (section 9).
+- Settings (`Cmd+,`) chooses the vault, holds the note-ID setting and **Rebuild Index**, and offers **Export…** and **Restore from Export…**, which the File menu also has. From v0.2.x it also holds **Agent access** (section 9), and from v0.3 **Accounts** (section 10).
 - Repositories, notes, and tasks each have one icon, used in the sidebar, ⌘K, chips, and side panels. A repository is always shown the same way wherever it appears: name, branch, a status dot with its words (clean, *N* changed, conflicted, missing), ahead and behind when not zero, and how fresh the data is ("checked 1 min ago", or "fetched 2 h ago" in amber when stale).
 - Edit times read as relative for the last seven days ("edited 2 hours ago") and as dates after that ("edited 14 Sep"). Due and planned dates are always dates ("Due Fri 3 Oct"); an overdue task says "Overdue" in words and with an icon, not by color alone.
 
@@ -136,7 +136,8 @@ Repository name/path filtering and commit-message/hash filtering belong to the G
 | `Cmd+K` | Palette: repositories, workspaces, notes, and tasks (notes and tasks from v0.2) |
 | `Cmd+O` | Add/open a local repository |
 | `Cmd+R` | Refresh selected repository or workspace |
-| `Cmd+1` … `Cmd+4` | Repository tabs: Changes, History, Branches & tags, Notes (v0.2) |
+| `Cmd+1` … `Cmd+5` | Repository tabs: Changes, History, Branches & tags, Notes (v0.2), Pull requests (v0.3) |
+| `Cmd+1` … `Cmd+3` | Workspace tabs: Overview, Activity, Pull requests (v0.3) |
 | `Cmd+N`, v0.2 | New note; in a repository's Notes tab, a new note linked to it |
 | `Cmd+Shift+N`, v0.2 | New task |
 | `Cmd+S`, v0.2 | Save the note now |
@@ -440,3 +441,74 @@ Agents such as Claude Code can already read and edit the vault's Markdown files,
 - Every note an agent saves keeps its previous text in revision history, marked **Changed by an agent**, as its own version even when saves follow each other, so any agent edit can be undone like the app's own. A note an agent creates gets a `brainiac_id` like any new note.
 - Notes may hold text from elsewhere, and later imported articles and emails. Brainiac tells agents to treat note and task text as the user's data, never as instructions.
 - **Claude Code plugin:** `/plugin marketplace add B87/brainiac`, then `/plugin install brainiac@brainiac`, adds the server and a skill that teaches Claude Code how to use Brainiac: planning the day from Today, turning work in a repository into tasks linked to it, and writing up decisions as notes linked to the repositories they concern. The plugin expects the app in Applications; for an app elsewhere, use the command from Settings instead. Use one or the other, not both, or Claude Code connects twice.
+
+## 10. Pull requests — v0.3
+
+Review and merge the pull requests of a workspace's repositories, on GitHub and Bitbucket Cloud, without leaving Brainiac. Both providers look and behave the same; the provider is a small label, and what one of them cannot do is simply not offered. Brainiac's own advantage is the local checkout: diffs come from local Git when the commits are on the Mac, and a fetch that moves a pull request's branch refreshes it.
+
+### Boundaries
+
+- **Off by default, per workspace.** Nothing is requested from GitHub or Bitbucket for a workspace that has not turned pull requests on, and every other feature works without an account or a network.
+- **Nothing is written to a local repository.** Brainiac never checks out, pushes, or deletes a branch for a pull request. Commenting, reviewing, resolving threads, and merging are writes to GitHub or Bitbucket only, each an explicit, visible action; merging asks for confirmation.
+- **Providers:** GitHub (github.com) and Bitbucket Cloud (bitbucket.org). GitLab, Bitbucket Data Center, and GitHub Enterprise Server are later.
+- Agents get no pull request tools in v0.3.
+
+### Accounts
+
+- **Settings → Accounts** lists one account per provider: its login, the kind of token, when it expires, and what it allows, with **Replace Token…** and **Remove**.
+- GitHub takes a fine-grained personal access token with pull requests read and write, contents read, and checks and commit statuses read. Bitbucket Cloud takes an Atlassian API token, with the account's email, scoped to `read:repository:bitbucket`, `read:pullrequest:bitbucket`, and `write:pullrequest:bitbucket`; Bitbucket's app passwords no longer work.
+- Adding an account checks the token with one request. A token that can read but not write is offered **Save as Read-Only**, and the message names the missing permission; pull requests are then shown without the review and merge actions.
+- Tokens are kept in the macOS Keychain and sent only to the service they belong to, over HTTPS. They never appear in logs, exports, or the database.
+
+### Which pull requests a repository has
+
+- A repository's pull requests come from the hosting service its `origin` points to: `git@github.com:acme/api.git` and `https://bitbucket.org/acme-team/api` both name a repository there. A repository whose pull requests live elsewhere, such as the upstream of a fork, can be pointed at it with **Change…**; Brainiac keeps that choice when `origin` changes.
+- A workspace turns pull requests on in its side panel and picks the account to use for each provider. A repository belongs to the workspaces it is in; its pull requests are tracked when any of them has pull requests on.
+
+### Workspace → Pull requests
+
+The third tab of a workspace (`Cmd+3`, after Overview and Activity).
+
+- Every open pull request of the workspace's repositories, grouped by repository, in a table with column headings: title and number, author, reviewers, checks, unresolved threads, size, and age. Reviewers show their state (requested, approved, changes requested, commented) with an icon as well as color. Rows waiting on your review are marked.
+- Filters: all open, needs your review, yours, others, drafts. Sorted by what has waited longest.
+- A side panel like Activity's holds the workspace's switch, its accounts, and how much of the hour's request allowance each has used.
+- **States:** a first load shows skeleton rows; a workspace with pull requests off explains what turning them on does and offers it; a workspace without an account for one of its providers offers to add one; when a provider is unreachable or out of requests, the tab keeps showing what it had, says how old it is and when Brainiac retries; a repository that fails (removed, no access) shows its error in its group while the others keep working.
+- The sidebar shows each workspace's count of pull requests waiting on your review.
+
+### Repository → Pull requests
+
+The fifth tab of a repository (`Cmd+5`, after Notes).
+
+- Only that repository's pull requests, in the workspace tab's table without grouping. Filters: open, needs your review, yours, drafts, and merged and closed in the last 30 days, which are loaded when the filter is chosen and not kept up to date.
+- The checked-out branch's pull request comes first, with its state and the commits the checkout has that the pull request does not (not yet pushed). It is found through the branch's upstream only, so a branch without one shows nothing there.
+- A side panel says where the pull requests come from (`origin`, or the repository chosen with **Change…**) and which workspace tracks them.
+- **States:** a repository no workspace tracks names the workspace to turn on, with **Turn On for** *workspace*; a repository whose `origin` is on neither provider offers **Choose Repository…**.
+
+### Pull request
+
+- The header carries back, the repository and number, the provider, the tabs **Overview**, **Files Changed**, and **Checks**, and one primary action: **Review Changes**.
+- **Overview:** title, state, source and target branches, the head commit, and "N new commits since your review" when there are; the description; the conversation, with resolved threads folded and threads on changed code marked; a comment box. A side panel lists what the pull request needs before it can be merged, as a checklist with **Merge**, which stays disabled until the list is complete; its reviewers; and the local checkout and the notes linked to the repository.
+- **Files Changed:** a file tree with change kinds and comment counts and a filter; clicking a file's row marks it viewed, and a change to the file clears the mark. Show all changes or only those since your last review, or pick commits; unified or split; ignore whitespace. Generated files, and files viewed and unchanged since, are folded. The diff says where it came from (local Git or the provider).
+- **Checks:** each check's name, state, and a link to its log on the provider.
+- Pull request text is Markdown written by other people. It is sanitized like notes and its remote images are not loaded.
+
+### Reviewing
+
+- Comment on a line from its gutter button, or with `C` on the selected line, on a range of lines, or on the whole pull request; reply to a thread; resolve or reopen a thread. A suggested change is a comment.
+- Line comments are drafts until the review is finished. Drafts are kept on the Mac, survive a restart, and are sent together.
+- **Finish Review** shows a summary, the verdict (comment, approve, or request changes), the drafts to send, and the commit being reviewed. If new commits arrived since the review started, nothing is sent: approving is turned off, the drafts are kept, and the new commits are offered for review.
+- On Bitbucket a review is sent as several requests. A review cut off midway (a lost connection, Brainiac quitting) shows what was sent and sends the rest, never posting a comment twice.
+- A comment whose sending timed out may have been posted. Brainiac reads the conversation again before offering to send it again.
+
+### Merging
+
+- **Merge** opens a confirmation with the checklist, the merge methods the repository allows, the commit message, and whether to close the source branch on the provider (the repository's default). The button names the commit being merged.
+- If new commits arrived since the dialog opened, nothing is merged and the new commits are offered for review.
+- Merging is done by GitHub or Bitbucket and cannot be undone from Brainiac. The local repository changes only when it is next fetched.
+
+### Staying up to date
+
+- The pull request on screen is refreshed when opened and every 60 seconds while visible; workspace lists every 5 minutes while Brainiac is open. A fetch that moves a pull request's branch refreshes it at once.
+- Bitbucket allows each user about 1,000 requests an hour and GitHub 5,000. Brainiac spends them in order (the pull request on screen, then lists, then everything else), asks only for what changed, and shows each account's use. When a provider is out of requests or unreachable, Brainiac shows what it had with its age, says when it will try again, and the Git views keep working.
+- Pull requests, files, and conversations are cached on the Mac so the tabs open at once. The cache is never backed up or exported, can be deleted, and forgets a pull request 14 days after it closes. Review drafts are the user's own text and are backed up with Brainiac's data.
+- An edit refused because the pull request changed since it was shown (new commits, or someone else's edit) shows the current pull request and keeps what the user wrote, like a note save conflict.

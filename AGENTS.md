@@ -2,11 +2,11 @@
 
 Brainiac is an open-source macOS desktop app: Rust backend inside a Tauri v2 shell, React + TypeScript + Vite frontend. What the app does is `SPEC.md`; how it is built is `docs/architecture.md`; milestones and later releases are `docs/roadmap.md`.
 
-## Current scope: v0.2.x — agent access
+## Current scope: v0.3 — pull requests
 
-v0.1 (the Git viewer and repository tracker) shipped as 0.1.3 and v0.2 (vault, notes, tasks, Today, keyword search, links, export/restore) as 0.2.0; both are maintained. Build v0.2.x: the local MCP server agents reach through `brainiac mcp`, its tools over the existing domain services, Settings → Agent access, and the Claude Code plugin with its skill (`SPEC.md` section 9; `docs/architecture.md`, Agent access). Nothing from v0.3 onward (pull requests, imports, global capture, embeddings, AI) is in scope. Do not add dependencies or tables for later releases.
+v0.1 (the Git viewer and repository tracker) shipped as 0.1.3 and v0.2 (vault, notes, tasks, Today, keyword search, links, export/restore) as 0.2.0; both are maintained, and v0.2.x (agent access over MCP, `SPEC.md` section 9) is merged and awaits release. Build v0.3: GitHub and Bitbucket Cloud accounts, per-workspace pull request tracking, the workspace's and each repository's Pull requests tab, the pull request overview, files changed, review, and merge (`SPEC.md` section 10; `docs/architecture.md`, Pull requests — v0.3). Ship read-only first, then the review writes, merge last. Nothing from v0.3.x onward (a daily pull request view, agent tools for pull requests, imports, global capture, embeddings, AI) is in scope. Do not add dependencies or tables for later releases.
 
-Read `SPEC.md` and `docs/architecture.md` for v0.2.x work. Open `docs/roadmap.md` only for planning or milestone checklists.
+Read `SPEC.md` and `docs/architecture.md` for v0.3 work. Open `docs/roadmap.md` only for planning or milestone checklists.
 
 Docs lifecycle: write a behavior change in `SPEC.md` first (or in the same commit as the code); update `docs/architecture.md` in the same commit as the code it describes; add decisions at the end of its Decisions section and never edit an accepted one; when a release starts, move its design from `docs/roadmap.md` into `SPEC.md` and `docs/architecture.md`.
 
@@ -21,6 +21,7 @@ Docs lifecycle: write a behavior change in `SPEC.md` first (or in the same commi
 - v0.2 storage: the vault's Markdown files are the source of truth for notes; `brainiac.db` holds what cannot be rebuilt; `index.db` holds everything derived from the vault and can be deleted; `history.db` holds revisions and drafts (`docs/architecture.md`, Storage layout).
 - Every write goes through a domain service, which emits the committed change event; task writes carry the expected version.
 - Agent access (v0.2.x): MCP served by `rmcp` over a Unix socket closed to other users, reached through `brainiac mcp` (the app's own executable as a stdio byte pipe). MCP tool shapes live in `src-tauri/src/mcp/tools.rs`, not `models.rs`. Tools call the domain services; none deletes, touches Git, or changes settings.
+- Pull requests (v0.3): a provider-neutral `PullRequestService` over one `ForgeAdapter` per provider, HTTP only in Rust (`reqwest` with rustls), tokens only in the Keychain (`security-framework`), a deletable cache in `forge.db`. Writes to GitHub and Bitbucket happen only on an explicit user action; review, approve, and merge carry the expected head commit.
 
 ## Hard rules
 

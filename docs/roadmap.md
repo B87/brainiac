@@ -77,7 +77,7 @@ M0 landed on 1 October 2026 with 58 Rust tests and 3 frontend tests. Known M0 si
 
 ### v0.3 — Pull requests for GitHub and Bitbucket Cloud
 
-The Git viewer and workspace tracking proved the most useful part of the app, so pull requests come before imports, capture, and AI. Design: Pull requests — v0.3, below.
+The Git viewer and workspace tracking proved the most useful part of the app, so pull requests come before imports, capture, and AI. Design: `SPEC.md` section 10 and `architecture.md`, Pull requests — v0.3; started 3 October 2026 on the `v0.3-pull-requests` branch.
 
 - [ ] Spike S6: Bitbucket Cloud's draft pull requests, pending comments, multi-line inline anchors, merge behavior (conditional on a commit, asynchronous completion), and conditional requests, against a throwaway repository on each provider; measure the request cost of a workspace of about 30 repositories.
 - [ ] Accounts: a GitHub token and a Bitbucket Cloud API token, kept in the Keychain, checked with one request, with their scopes and the hour's request use shown.
@@ -128,7 +128,7 @@ Ship it in two steps: read-only first (accounts, mapping, the tab, overview, fil
 
 ### Later — Life management and integrations
 
-Expand the v0.4 import adapters and consider pull requests on GitLab and Bitbucket Data Center; CI beyond the checks a pull request shows; the In flight view of each change from local branch to merged (Pull requests — v0.3, Deferred); Linear references; local calendar context; recurring tasks and reminders; daily/weekly review templates; optional graph navigation; explicit branch/dev-server actions; multiple vaults; sync; automation or plugin APIs.
+Expand the v0.4 import adapters and consider pull requests on GitLab and Bitbucket Data Center; CI beyond the checks a pull request shows; the In flight view of each change from local branch to merged (Pull request follow-ups, below); Linear references; local calendar context; recurring tasks and reminders; daily/weekly review templates; optional graph navigation; explicit branch/dev-server actions; multiple vaults; sync; automation or plugin APIs.
 
 Remote services require their own authentication, rate-limit, cache, error, and privacy requirements. Polling with backoff is sufficient for an initial desktop integration; webhooks need an explicitly designed delivery mechanism. Do not make these dependencies of the core app.
 
@@ -149,7 +149,7 @@ Remote services require their own authentication, rate-limit, cache, error, and 
 | `sqlite-vec` approximate indexes | Track whether ANN indexes reach a stable release; brute force is enough at personal scale | Only if a vault outgrows brute force |
 | Remote integrations and company data constraints | First providers chosen: GitHub and Bitbucket Cloud (v0.3). Confirm the scopes each employer allows and whether caching pull request content locally is acceptable | v0.3 accounts |
 | Bitbucket Cloud API behavior | Spike S6: draft field, pending comments, multi-line anchors, conditional and asynchronous merge, conditional requests | v0.3 adapters |
-| Where the daily view of pull requests lives | Use v0.3's workspace tab for a few weeks, then choose a pull requests inbox in the sidebar or a group in Today (Pull requests — v0.3, Deferred) | v0.3.x |
+| Where the daily view of pull requests lives | Use v0.3's workspace tab for a few weeks, then choose a pull requests inbox in the sidebar or a group in Today (Pull request follow-ups, below) | v0.3.x |
 | Preferred mail source and capture gesture | Choose `.eml`, connected mailbox, or optional forwarding workflow | Email connector implementation |
 | Jira deployment/authentication | Confirm Cloud versus Data Center and company-supported access | Jira connector implementation |
 | Article extraction and transcript availability | Evaluate representative pages/videos; document fallback coverage | Rich import compatibility claims |
@@ -159,19 +159,14 @@ These unknowns do not prevent implementing the core domain and persistence servi
 
 ## Designs for later releases
 
-v0.2's design (views, notes, tasks, search, storage, and backups) moved to [`SPEC.md`](../SPEC.md) sections 5–8 and [`architecture.md`](architecture.md) when the release started, and v0.2.x's agent access to `SPEC.md` section 9 and `architecture.md`, Agent access.
+v0.2's design (views, notes, tasks, search, storage, and backups) moved to [`SPEC.md`](../SPEC.md) sections 5–8 and [`architecture.md`](architecture.md) when the release started, v0.2.x's agent access to `SPEC.md` section 9 and `architecture.md`, Agent access, and v0.3's pull requests to `SPEC.md` section 10 and `architecture.md`, Pull requests — v0.3.
 
-### Additions of v0.3 onward to storage and contracts
+### Additions of v0.4 onward to storage and contracts
 
 #### Data model of later releases
 
 | Entity | File | Essential fields and constraints | Release |
 | --- | --- | --- | --- |
-| `forge_accounts` | core | `id`, kind (`github`, `bitbucket_cloud`), host, login, scopes seen at the last check; the token itself only in the Keychain under the account ID | v0.3 |
-| `repository_forges` | core | `repository_id`, kind, host, owner, name, `derived` or `override`; refreshed from `origin` unless overridden | v0.3 |
-| `workspace_pull_requests` | core | `workspace_id`, enabled (default off), account per provider | v0.3 |
-| `review_drafts` | core | `id`, pull request reference, anchor (path, side, line, optional start line, commit), body, origin (`user` or `agent`), the remote comment ID once sent; the user's unsent text, so it is kept and backed up | v0.3 |
-| pull request cache | `forge.db` | Pull requests, files, threads, checks, and each request's ETag, keyed by pull request reference; deletable, never backed up or exported, pruned 14 days after a pull request closes | v0.3 |
 | `note_sources` | core | `note_id`, source type, canonical URL/provider ID, source time, import time, content scope, source hash; derived from note provenance | v0.4 |
 | `import_jobs` | core | `id`, input reference, adapter, state, staged payload reference, error, result note ID, idempotency key | v0.4 |
 | `embedding_profiles` | core | `id`, provider, model name and digest, dimensions, distance metric, normalization, chunker version, state | v0.5 |
@@ -182,9 +177,6 @@ v0.2's design (views, notes, tasks, search, storage, and backups) moved to [`SPE
 
 | Command | Important input/output |
 | --- | --- |
-| `list_forge_accounts` / `save_forge_account` / `remove_forge_account` / `set_repository_forge` / `update_workspace_pull_requests` | v0.3: accounts checked with one request; a repository's forge override; a workspace's switch and accounts |
-| `list_pull_requests` / `get_pull_request` / `list_pull_request_files` / `get_pull_request_diff` / `get_pull_request_conversation` | v0.3: workspace or repository scope and a filter (merged and closed ones of the last 30 days for one repository, loaded when asked for), or a pull request reference; cached results with their age and version; diffs identified by base and head commit |
-| `save_review_draft` / `discard_review_draft` / `submit_review` / `comment_on_pull_request` / `reply_to_thread` / `resolve_thread` / `merge_pull_request` | v0.3: expected head commit on submit, approve, and merge, expected version on edits; `CONFLICT` with the current state when either moved |
 | `prepare_import` / `commit_import` / `list_import_jobs` | Source input or job ID; preview/provenance, duplicate choice, resulting note, retry state |
 | `configure_shortcut` | v0.4: validated binding and registration result |
 | `semantic_search` / `ask_brain` / `cancel_job` | v0.5+: profile/request IDs, results or response channel |
@@ -195,102 +187,15 @@ v0.2's design (views, notes, tasks, search, storage, and backups) moved to [`SPE
 | --- | --- |
 | `Cmd+Shift+Space`, v0.4 | Configurable global quick capture |
 
-### Pull requests — v0.3
+### Pull request follow-ups — v0.3.x and later
 
-Review and merge the pull requests of a workspace's repositories, on GitHub and Bitbucket Cloud, without leaving Brainiac. One provider-neutral model serves the UI, and later agents; each provider is an adapter behind it. Brainiac's own advantage is the local checkout: diffs come from local Git when the commits are present, and fetches that move a pull request's branch refresh it.
-
-#### Boundaries
-
-- Tracking is per workspace and off by default. Nothing is requested from GitHub or Bitbucket for a workspace that has not turned it on, and the rest of the app never depends on it.
-- Brainiac never writes to a local repository for a pull request: no checkout, no push, no branch deletion. Reviewing, commenting, and merging are writes to the hosting service only, each an explicit, visible action; merge asks for confirmation.
-- Bitbucket Data Center, GitLab, and GitHub Enterprise Server are later adapters. Bitbucket Data Center differs in paths and requires a `version` on pull request updates.
-- Agents get nothing in v0.3; their tools are a v0.3.x follow-up (Deferred, below).
-
-#### Services and adapters
-
-```text
-Main WebView ── Tauri commands ──▶ PullRequestService   (neutral model, versions, drafts, cache, budget, events)
-                                     ├─ ForgeAdapter: GitHub           (REST; GraphQL for review threads)
-                                     ├─ ForgeAdapter: Bitbucket Cloud  (REST 2.0)
-                                     └─ GitService: diffs and commits when both SHAs exist locally
-```
-
-`ForgeAdapter` is a trait with `list`, `get`, `files`, `patch`, `conversation`, `checks`, and `write`; each adapter maps the provider's shapes onto the neutral model and declares what it cannot do. HTTP runs in Rust only; the WebView gets no HTTP access, as for every other service.
-
-#### Identity
-
-- A **forge repository** comes from the `remote_url` Brainiac already stores without credentials: `github.com/acme/api`, `bitbucket.org/acme-team/api`. An override covers pull requests that live on an upstream or a fork.
-- A **pull request reference** is `<forge repository>#<number>`; both providers number pull requests per repository.
-- An **account** is a kind, host, and login in `brainiac.db`; its token is in the Keychain. GitHub takes a fine-grained personal access token (pull requests read and write, contents read, checks and statuses read). Bitbucket Cloud takes an Atlassian API token with `read:repository:bitbucket`, `read:pullrequest:bitbucket`, and `write:pullrequest:bitbucket`, sent with the account's email over Basic authentication; app passwords stopped working in July 2026. [Bitbucket Cloud API tokens](https://www.atlassian.com/blog/bitbucket/bitbucket-cloud-transitions-to-api-tokens-enhancing-security-with-app-password-deprecation) Without the write scope, pull requests are read-only.
-
-#### Neutral model
-
-| Entity | Fields | Provider notes |
-| --- | --- | --- |
-| Pull request | reference, title, description (Markdown), author, state (`open`, `draft`, `merged`, `closed`), source repository, branch, and `head_sha`, target branch, reviewers with their state (`requested`, `approved`, `changes_requested`, `commented`), checks summary, mergeability, counts, web URL, `version`, `available_actions` | Bitbucket's declined is `closed`; GitHub's `mergeable: null` is `computing` |
-| Changed file | path, old path, status, additions, deletions | GitHub `/files`; Bitbucket `/diffstat` |
-| Diff | identified by `(base_sha, head_sha)` | Local Git when both objects exist (`git cat-file -e`, which never downloads), otherwise the provider's patch |
-| Thread | opaque ID, optional anchor, resolved, outdated, comments | GitHub GraphQL `reviewThreads`; Bitbucket a root comment and its replies |
-| Anchor | path, side (`old`, `new`), line, optional start line, commit | GitHub `side`, `line`, `start_line`, `commit_id`; Bitbucket `inline.from` (old) or `inline.to` (new) |
-| Check | name, state, URL | GitHub check runs and the combined status; Bitbucket commit statuses |
-
-`available_actions` says, per pull request and viewer, which actions are possible and why not, so provider differences reach the UI as data: GitHub cannot withdraw an approval, a declined Bitbucket pull request cannot be reopened, branch protection can block a merge.
-
-#### Operations
-
-| Operation | Precondition | GitHub | Bitbucket Cloud |
-| --- | --- | --- | --- |
-| Comment on the pull request | none | `POST /issues/{n}/comments` | `POST /comments` |
-| Reply to a thread | none | `POST /pulls/{n}/comments/{id}/replies` | `POST /comments` with `parent.id` |
-| Resolve or reopen a thread | none | GraphQL `resolveReviewThread` / `unresolveReviewThread`; REST cannot | `POST` / `DELETE /comments/{id}/resolve` |
-| Save a review draft | none; stored locally | — | — |
-| Submit a review (comment, approve, request changes) | expected `head_sha` | One `POST /reviews` with `commit_id`, the event, and every draft | Check the head, post each draft, then `/approve` or `/request-changes` |
-| Merge | expected `head_sha` | `PUT /merge` with `sha`, which GitHub enforces | Read again and compare the head, then `POST /merge`, which may finish asynchronously (S6) |
-
-Edit, close, reopen, and create are in the protocol but not in v0.3's interface (Deferred).
-
-#### Consistency
-
-- **Two preconditions.** `version` (the provider's update time plus `head_sha`, opaque to callers) guards edits to a pull request's fields. `expected_head_sha` guards everything that means "I looked at this code": submitting a review, approving, merging. Either one that moved returns `CONFLICT` with the current state, as a note save does.
-- **Drafts are local until submitted.** The same pending-review behavior on both providers, kept across restarts. GitHub receives a review in one request. Bitbucket receives several, so submitting works like an outbox: each draft records its remote comment ID once sent, and a submission cut off midway resumes with what is left, never posting a comment twice.
-- **No blind retries.** A write that times out returns `TIMEOUT` ("may have been applied"); the service reads the conversation again and matches it against the drafts before offering a retry.
-
-#### Sync, cache, and request budget
-
-- Bitbucket Cloud allows about 1,000 repository-data requests per hour per user; GitHub allows 5,000, and a conditional request answered `304` does not count. [Bitbucket API request limits](https://support.atlassian.com/bitbucket-cloud/docs/api-request-limits/) Each account has a request budget spent in order: the pull request on screen (on open and every 60 seconds while visible), workspace lists (every 5 minutes while Brainiac is open), everything else. Requests are conditional where the provider supports it, filtered by update time, and trimmed with `fields=`; `Retry-After` and reset headers become `DEPENDENCY_UNAVAILABLE` with a retry time.
-- A fetch that moves `refs/remotes/<remote>/<branch>` marks the pull requests whose source is that branch stale and refreshes them, at no request cost.
-- The cache is `forge.db` in the data folder: rebuildable from the providers, so outside `brainiac.db`, and not derived from the vault, so outside `index.db`.
-
-#### Errors and events
-
-- Existing codes: `PERMISSION_DENIED` for "needs sign-in" or "not allowed", `CONFLICT` for a moved version or head, `DEPENDENCY_UNAVAILABLE` for the network, an outage, or an exhausted budget (with `retry_after`), and `NOT_FOUND`, `TIMEOUT`, and `VALIDATION` as elsewhere.
-- `pr_changed` carries the reference, the version, and its origin (`app` or `remote`); commands return definitive state.
-
-#### Interface
-
-- **Workspace → Pull requests** (`Cmd+3`, beside Overview and Activity): every open pull request of the workspace grouped by repository, as a table with column headings; filters (all open, needs your review, yours, others, drafts) and a sort (waiting longest first); reviewers with their state shown by an icon as well as color, checks, unresolved threads, size, and age; rows waiting on your review marked. A side panel like Activity's holds the workspace's switch, its accounts, and the hour's request use. The tab has a loading state, an off state that offers to turn tracking on, a no-account state, a stale state when a provider is unreachable or out of requests (showing what Brainiac had and when it retries), and a per-repository error that leaves the other repositories working.
-- **Repository → Pull requests** (`Cmd+5`, after Notes): only that repository's pull requests, in the workspace tab's table without grouping; filters (open, needs your review, yours, drafts, and merged and closed in the last 30 days, which are loaded when the filter is chosen and not kept up to date). The checked-out branch's pull request comes first, with the commits the checkout has that the pull request does not; it is found through the branch's upstream only, so a branch without one shows nothing there. A side panel says where the pull requests come from (`origin`, or the override, with Change…) and which workspace's switch tracks them. It has a not-tracked state that names the workspace to turn on and a no-remote state that offers to choose another repository.
-- **Pull request overview:** the header of the repository view (back, `web #482`, the provider, tabs for Overview, Files changed, and Checks, one primary action: Review Changes); title, state, source and target, head commit; "N new commits since your review"; description; conversation with resolved threads folded and threads on changed code marked; a comment box. A side panel: what it needs to merge as a checklist with the Merge button, disabled until it is complete; reviewers; the local checkout and the notes linked to its repository.
-- **Files changed:** a file tree whose whole rows mark files viewed (cleared when a file changes again), with change kinds, comment counts, and a filter; all changes or only those since your review, a commit picker, unified or split, ignore whitespace; a line's comment button in its gutter, also reached with `C`; drafts with suggested changes; generated files and files viewed and unchanged since are folded; the diff's source shown (local Git or provider).
-- **Finish review:** summary, verdict, and the drafts to send; it names the commit being reviewed. A head that moved turns Approve off and offers the new commits; a cut-off Bitbucket submission shows what was sent and sends the rest.
-- **Merge:** the checklist, the methods the repository allows, the commit message, closing the source branch on the provider, and the commit being merged.
-- **Settings → Accounts:** a section of the Settings dialog; each account with its token's kind, expiry, and scopes; adding one checks the token with one request and says which scope is missing, offering to save it read-only.
-- The sidebar shows each workspace's count of reviews waiting on you.
-- Every screen uses the app's tokens and component classes, in light and dark; dialogs use the app's dialog. Pull request Markdown is sanitized like notes; remote images are not loaded.
-
-#### Deferred
+v0.3's design moved to `SPEC.md` section 10 and `architecture.md`, Pull requests — v0.3. These were designed with it and left out:
 
 - **The daily view of what waits on you, across workspaces (v0.3.x).** Two designs were compared: a Pull requests inbox in the sidebar, with Today unchanged; or a "Pull requests waiting on you" group in Today, folded like To sort, with a review you submitted listed under Completed today and `Cmd+K` finding any pull request. Choose after using v0.3's workspace tab; either is a filter over data v0.3 already has.
 - **A task's pull request (v0.3.x):** an explicit link from a task to a pull request, shown with its state in Today and Tasks.
 - **Create a pull request from a pushed branch (v0.3.x):** title from a linked task, description from the commits, reviewers suggested from local history; Brainiac does not push.
 - **Agent tools (v0.3.x):** read pull requests, diffs, and conversations, and add review drafts the user opens and sends; agents never submit, approve, merge, or close. Pull request text is written by other people, so agents are told to treat it as data.
 - **In flight (Later):** each of your changes from local branch to merged (local only, pushed without a pull request, in review, needs changes, ready, merged), with the reviews you owe beside them. It needs every local branch's commits ahead of the default branch and matching branches to pull requests across forks and reused names, which is where most of its cost lies. Store each pull request's head repository, branch, and commit from v0.3 so it needs no migration.
-
-#### Decisions to record when the release starts
-
-- Brainiac writes to GitHub and Bitbucket on an explicit action: reviews, comments, thread resolution, and merge. This is separate from the rule that fetching is the only write to a local repository, which stays.
-- New dependencies: an HTTP client (`reqwest` with rustls, already planned for local models) and Keychain access (`security-framework`).
-- The outcome of spike S6, and any Bitbucket behavior it rules out.
 
 ### Capture and imports — v0.4
 
