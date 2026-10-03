@@ -400,6 +400,17 @@ async fn a_stale_socket_is_replaced_and_a_missing_app_is_reported() {
     // A socket left behind by an app that crashed.
     drop(std::os::unix::net::UnixListener::bind(&socket).unwrap());
     assert!(socket.exists());
+    // On macOS a socket is marked close-on-exec only after it is created, so
+    // a process another test starts at that moment (git, the helper) can
+    // inherit it and keep it accepting until it exits. Wait until it is stale.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while std::os::unix::net::UnixStream::connect(&socket).is_ok() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the socket stays live"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     server.bind(&socket).await.unwrap();
 
     // Not a socket: never removed.

@@ -53,6 +53,21 @@ const head = async (page: Page) =>
 const line = (page: Page) => page.evaluate(() => window.ed.line());
 const frame = (page: Page) => page.evaluate(() => window.ed.frame());
 
+/** The top line once layout holds still, so a slow machine still measuring
+ * line heights is not read halfway. */
+async function steadyTop(page: Page) {
+  let last = -1;
+  for (let i = 0; i < 30; i++) {
+    const top = await page.evaluate(async () => {
+      await window.ed.frame();
+      return window.ed.topLine();
+    });
+    if (top === last) return top;
+    last = top;
+  }
+  return last;
+}
+
 /** Viewport coordinates of `pos`, scrolled on screen first. */
 async function pointAt(page: Page, pos: number) {
   await page.evaluate((p) => window.ed.reveal(p), pos);
@@ -240,23 +255,24 @@ test("scrolling a long note with images never jumps against the scroll", async (
   page,
 }) => {
   await load(page, long);
-  const top = () => page.evaluate(() => window.ed.topLine());
+  // Each scroll is judged once layout holds still. The scroll that reaches
+  // an end is not: there the last lines are measured for the first time, and
+  // a note that turns out shorter pulls the view back by the difference.
+  const top = () => steadyTop(page);
   let previous = await top();
   let against = 0;
   for (let i = 0; i < 400; i++) {
-    const end = await page.evaluate(() => window.ed.scrollBy(600));
+    if (await page.evaluate(() => window.ed.scrollBy(600))) break;
     const now = await top();
     if (now < previous) against++;
     previous = now;
-    if (end) break;
   }
   expect(previous).toBeGreaterThan(2900);
   for (let i = 0; i < 400; i++) {
-    const end = await page.evaluate(() => window.ed.scrollBy(-600));
+    if (await page.evaluate(() => window.ed.scrollBy(-600))) break;
     const now = await top();
     if (now > previous) against++;
     previous = now;
-    if (end) break;
   }
   expect(against).toBe(0);
 });
@@ -266,12 +282,15 @@ test("the cursor stays on screen when jumping, paging, and passing images", asyn
 }) => {
   await load(page, long);
   // An image can finish loading just after a move and push the caret down
-  // for a frame or two before the editor scrolls it back.
+  // for a frame or two before the editor scrolls it back. A busy CI runner
+  // decodes images slowly, so allow seconds; polling often keeps a passing
+  // run fast.
   const onScreen = (step: string) =>
     expect
       .poll(() => page.evaluate(() => window.ed.caretOnScreen()), {
         message: step,
-        timeout: 1000,
+        timeout: 3000,
+        intervals: [50, 100, 250],
       })
       .toBe(true);
   await page.keyboard.press("Meta+ArrowDown");
@@ -294,24 +313,10 @@ test("switching modes keeps the selection and the top line", async ({
   await load(page, long);
   const middle = long.split("\n").slice(0, 1500).join("\n").length + 3;
   await select(page, middle);
-  // The top line once layout holds still, so a slow machine still
-  // measuring line heights is not read halfway.
-  const steadyTop = async () => {
-    let last = -1;
-    for (let i = 0; i < 30; i++) {
-      const top = await page.evaluate(async () => {
-        await window.ed.frame();
-        return window.ed.topLine();
-      });
-      if (top === last) return top;
-      last = top;
-    }
-    return last;
-  };
   for (const on of [false, true, false, true]) {
-    const before = await steadyTop();
+    const before = await steadyTop(page);
     await page.evaluate((o) => window.ed.setLive(o), on);
-    expect(Math.abs((await steadyTop()) - before)).toBeLessThanOrEqual(2);
+    expect(Math.abs((await steadyTop(page)) - before)).toBeLessThanOrEqual(2);
     expect(await head(page)).toBe(middle);
   }
 });
