@@ -34,6 +34,7 @@ import {
   WORKSPACE_FILTERS,
 } from "../lib/pullRequests";
 import { plural } from "../lib/repo";
+import { useSidePanel } from "../lib/sidePanel";
 import { createLatest } from "../lib/stale";
 import { Avatar } from "./HistoryTab";
 import {
@@ -72,6 +73,7 @@ export default function PullRequestsTab({
   onChanged,
   onError,
 }: Props) {
+  const { open: panelOpen } = useSidePanel();
   const scopeId =
     scope.kind === "workspace" ? scope.workspace.id : scope.repository.id;
   const [filter, setFilter] = usePref<PullRequestFilter>(
@@ -267,32 +269,34 @@ export default function PullRequestsTab({
         )}
       </section>
 
-      <aside
-        aria-label="Pull request settings"
-        className="flex w-[300px] shrink-0 flex-col overflow-y-auto border-l bg-panel"
-      >
-        {scope.kind === "workspace" ? (
-          <WorkspacePanel
-            workspace={scope.workspace}
-            list={list}
-            onToggle={(on) =>
-              guard(ipc.updateWorkspacePullRequests(scope.workspace.id, on))
-            }
-            onOpenSettings={onOpenSettings}
-          />
-        ) : (
-          <RepositoryPanel
-            repository={scope.repository}
-            list={list}
-            onChanged={() => {
-              onChanged();
-              load(LIST_MAX_AGE);
-            }}
-            onError={onError}
-            onOpenSettings={onOpenSettings}
-          />
-        )}
-      </aside>
+      {panelOpen && (
+        <aside
+          aria-label="Pull request settings"
+          className="flex w-[300px] shrink-0 flex-col overflow-y-auto border-l bg-panel"
+        >
+          {scope.kind === "workspace" ? (
+            <WorkspacePanel
+              workspace={scope.workspace}
+              list={list}
+              onToggle={(on) =>
+                guard(ipc.updateWorkspacePullRequests(scope.workspace.id, on))
+              }
+              onOpenSettings={onOpenSettings}
+            />
+          ) : (
+            <RepositoryPanel
+              repository={scope.repository}
+              list={list}
+              onChanged={() => {
+                onChanged();
+                load(LIST_MAX_AGE);
+              }}
+              onError={onError}
+              onOpenSettings={onOpenSettings}
+            />
+          )}
+        </aside>
+      )}
     </div>
   );
 }

@@ -529,12 +529,19 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
         true,
         Some("CmdOrCtrl+Shift+E"),
     )?;
+    let toggle_sidebar = MenuItem::with_id(
+        app,
+        "toggle_sidebar",
+        "Show or Hide Sidebar",
+        true,
+        Some("CmdOrCtrl+B"),
+    )?;
     let toggle_context = MenuItem::with_id(
         app,
         "toggle_context",
-        "Show or Hide Context Panel",
+        "Show or Hide Side Panel",
         true,
-        Some("Alt+CmdOrCtrl+0"),
+        Some("Alt+CmdOrCtrl+B"),
     )?;
     let show_today = MenuItem::with_id(app, "show_today", "Today", true, None::<&str>)?;
     let show_tasks = MenuItem::with_id(app, "show_tasks", "Tasks", true, None::<&str>)?;
@@ -610,8 +617,9 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
             &fetch,
             &palette,
             &PredefinedMenuItem::separator(app)?,
-            &toggle_source,
+            &toggle_sidebar,
             &toggle_context,
+            &toggle_source,
             &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::fullscreen(app, None)?,
         ],

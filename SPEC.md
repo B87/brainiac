@@ -149,7 +149,9 @@ Repository name/path filtering and commit-message/hash filtering belong to the G
 | `Cmd+Shift+N`, v0.2 | New task |
 | `Cmd+S`, v0.2 | Save the note now |
 | `Cmd+Shift+E`, v0.2 | Switch the note editor between Live Preview and Source |
-| `Option+Cmd+0`, v0.2 | Show or hide the context panel in Notes |
+| `Cmd+B` | Show or hide the sidebar |
+| `Option+Cmd+B` | Show or hide the side panel |
+| `Option+Cmd+0`, v0.2 | Show or hide the context panel in Notes (the same panel as `Option+Cmd+B`) |
 | `Space`, v0.2 | Mark the selected task done or not done |
 | `J` / `K` (or arrow keys) | Next / previous row in the focused list, without clicking it first |
 | `[` / `]` | Previous / next file in a commit or the changes list |
@@ -157,6 +159,8 @@ Repository name/path filtering and commit-message/hash filtering belong to the G
 | `/` | Focus the filter of the current list |
 | `Cmd+,` | Settings |
 | `Escape` | Dismiss the palette, a dialog, or a menu |
+
+`Cmd+B` shows or hides the sidebar; hidden, it takes no room at all, and View › Show or Hide Sidebar brings it back too. `Option+Cmd+B` shows or hides the side panel on the right. Brainiac remembers both. That panel is the selected repository's preview, a branch or tag's history, the repositories in today's work, activity and pull-request settings, a pull request's merge checklist, and a note's context panel.
 
 Avoid overriding standard text-editing shortcuts. Essential actions have a menu or visible control. Error messages describe the failed action and offer a concrete recovery action.
 
@@ -349,7 +353,7 @@ The Activity tab of a workspace answers "what did the team merge or release sinc
 ### Notes view
 
 - A vault tree with folders, pinned and recent notes, and a filter (`/`); the editor; and a context panel. The context panel lists the note's linked repositories (each with its live state and Open / Open in Editor), its tasks, its backlinks, its unresolved links (with **Create**), and suggestions: a registered repository the note mentions can be linked with one click or dismissed. Brainiac never links anything by itself.
-- The context panel can be hidden (`Option+Cmd+0`); when hidden, the header shows how many repositories and tasks the note has. It hides by itself when the window is too narrow for the editor.
+- The context panel can be hidden (`Option+Cmd+B`, or `Option+Cmd+0`); when hidden, the header shows how many repositories and tasks the note has. It hides by itself when the window is too narrow for the editor. That narrow-window choice is not the one `Option+Cmd+B` remembers for a wide window.
 - Checkboxes in a note (`- [ ]`) are square and remain note text. They never become tasks and never appear in Today; tasks are round (section 6).
 
 ### Editing

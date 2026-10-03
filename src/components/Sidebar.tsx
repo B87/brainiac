@@ -19,6 +19,7 @@ import {
   ChevronRight,
   GridIcon,
   NoteIcon,
+  PanelLeftIcon,
   PlusIcon,
   TaskIcon,
   TodayIcon,
@@ -50,6 +51,9 @@ type Props = {
   view: View;
   onView: (view: View) => void;
   onAdd: () => void;
+  /** Whether the sidebar is expanded. ⌘B toggles it. */
+  open?: boolean;
+  onToggle?: () => void;
 };
 
 type PinItem =
@@ -73,6 +77,8 @@ export default function Sidebar({
   view,
   onView,
   onAdd,
+  open = true,
+  onToggle,
 }: Props) {
   const [collapsed, setCollapsed] = useState(readCollapsed);
   const repos = snapshot?.repositories ?? [];
@@ -118,13 +124,26 @@ export default function Sidebar({
   const repoCurrent = (id: string) =>
     view.kind === "repository" && view.id === id;
 
+  if (!open) return null;
+
   return (
     <nav
       aria-label="Repositories and workspaces"
       className="flex w-[232px] shrink-0 flex-col border-r bg-sidebar"
     >
       {/* Room for the window's traffic lights; dragging here moves the window. */}
-      <div data-tauri-drag-region className="h-12 shrink-0" />
+      <div className="flex h-12 shrink-0 items-center pr-1.5">
+        <div data-tauri-drag-region className="h-full flex-1" />
+        <button
+          type="button"
+          className="btn btn-ghost icon-btn"
+          aria-label="Hide sidebar"
+          title="Sidebar (⌘B)"
+          onClick={onToggle}
+        >
+          <PanelLeftIcon />
+        </button>
+      </div>
       <div className="flex min-h-0 flex-1 flex-col gap-px overflow-y-auto px-2.5 py-1">
         <button
           type="button"

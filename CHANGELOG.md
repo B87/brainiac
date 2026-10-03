@@ -11,6 +11,8 @@ into the release's section.
 
 ## [Unreleased]
 
+- The sidebar hides and shows with ⌘B, and the side panel on the right with ⌥⌘B. Brainiac remembers both.
+
 ## [0.3.0] - 2026-10-03
 
 - Agent access: Claude Code and other MCP agents can search your notes, read Today and your tasks, and, if you allow it in Settings, create notes and tasks and link notes to repositories. Off by default.

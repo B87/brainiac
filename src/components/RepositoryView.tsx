@@ -19,6 +19,7 @@ import {
   upstreamLabel,
   upstreamTarget,
 } from "../lib/repo";
+import { useSidePanel } from "../lib/sidePanel";
 import { createLatest } from "../lib/stale";
 import BranchesTab from "./BranchesTab";
 import ChangesTab from "./ChangesTab";
@@ -35,6 +36,7 @@ import {
 import Popover from "./Popover";
 import PullRequestsTab from "./PullRequestsTab";
 import RepositoryNotesTab from "./RepositoryNotesTab";
+import SidePanelButton from "./SidePanelButton";
 
 /** Where the viewer opens, for links from the activity feed. */
 export type RepoFocus = {
@@ -106,6 +108,7 @@ export default function RepositoryView({
   );
   const [refs, setRefs] = useState<RefsResult | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const { open: panelOpen, toggle: togglePanel } = useSidePanel();
 
   // One stale-guard per data source, so a slow response cannot clobber a newer one.
   const changesLatest = useRef(createLatest()).current;
@@ -179,7 +182,7 @@ export default function RepositoryView({
     <div className="flex min-h-0 flex-1 flex-col">
       <header
         data-tauri-drag-region
-        className="flex h-12 shrink-0 items-center gap-3 border-b bg-header pr-3 pl-4"
+        className="flex h-12 shrink-0 items-center gap-3 border-b bg-header pr-3 pl-4 pl-lead"
       >
         <button
           type="button"
@@ -283,6 +286,9 @@ export default function RepositoryView({
           <ExternalIcon size={13} />
           Open in editor
         </button>
+        {(tab === "pull_requests" || tab === "refs") && (
+          <SidePanelButton open={panelOpen} onToggle={togglePanel} />
+        )}
         <div className="relative">
           <button
             type="button"

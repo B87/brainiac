@@ -46,6 +46,34 @@ async function setUpVault(page: Page) {
   await expect(page.getByRole("navigation", { name: "Notes" })).toBeVisible();
 }
 
+test("⌘B hides the sidebar and ⌥⌘B hides the side panel", async ({ page }) => {
+  const sidebar = page.getByRole("navigation", {
+    name: "Repositories and workspaces",
+  });
+  await expect(sidebar.getByRole("button", { name: "Today" })).toBeVisible();
+  await page.keyboard.press("Meta+b");
+  await expect(sidebar).toHaveCount(0);
+  // Two presses inside 80 ms count as one (a menu accelerator and the key listener).
+  await page.waitForTimeout(100);
+  await page.keyboard.press("Meta+b");
+  await expect(sidebar.getByRole("button", { name: "Today" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Today" }).click();
+  const todayPanel = page.getByRole("complementary", {
+    name: "Repositories in today's work",
+  });
+  await expect(todayPanel).toBeVisible();
+  await page.keyboard.press("Alt+Meta+b");
+  await expect(todayPanel).toBeHidden();
+  await page.getByRole("button", { name: "Show side panel" }).click();
+  await expect(todayPanel).toBeVisible();
+
+  await page.getByRole("button", { name: "Hide sidebar" }).click();
+  await expect(sidebar).toHaveCount(0);
+  await page.keyboard.press("Meta+b");
+  await expect(sidebar.getByRole("button", { name: "Notes" })).toBeVisible();
+});
+
 test("Today and Tasks work without a vault, and Notes offers the setup", async ({
   page,
 }) => {
