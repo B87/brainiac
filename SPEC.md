@@ -458,7 +458,8 @@ Review and merge the pull requests of a workspace's repositories, on GitHub and 
 - **Settings → Accounts** lists one account per provider: its login, the kind of token, when it expires, and what it allows, with **Replace Token…** and **Remove**.
 - GitHub takes a fine-grained personal access token with pull requests read and write, contents read, and checks and commit statuses read. Bitbucket Cloud takes an Atlassian API token, with the account's email, scoped to `read:repository:bitbucket`, `read:pullrequest:bitbucket`, and `write:pullrequest:bitbucket`; Bitbucket's app passwords no longer work.
 - Adding an account checks the token with one request. A token that can read but not write is offered **Save as Read-Only**, and the message names the missing permission; pull requests are then shown without the review and merge actions.
-- Tokens are kept in the macOS Keychain and sent only to the service they belong to, over HTTPS. They never appear in logs, exports, or the database.
+- Tokens are kept in the macOS Keychain, in the item with service `brainiac` and account `github` or `bitbucket`, and sent only to the service they belong to, over HTTPS. They never appear in logs, exports, or the database.
+- A token already in that item, such as one added with `security add-generic-password -s brainiac -a github -w`, is found when Accounts opens and checked like a pasted one; Bitbucket still asks for the account's email. The first time Brainiac reads an item it did not create, macOS asks to allow it.
 
 ### Which pull requests a repository has
 

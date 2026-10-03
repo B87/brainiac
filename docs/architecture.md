@@ -206,7 +206,7 @@ v0.3 adds:
 
 | Entity | File | Essential fields and constraints |
 | --- | --- | --- |
-| `forge_accounts` | core | `id`, kind (`github`, `bitbucket_cloud`), host, login, email (Bitbucket), token kind and expiry, scopes seen at the last check; the token itself only in the Keychain under the account ID |
+| `forge_accounts` | core | `id`, kind (`github`, `bitbucket_cloud`), host, login, email (Bitbucket), token kind and expiry, scopes seen at the last check; the token itself only in the Keychain (Identity, under Pull requests — v0.3) |
 | `repository_forges` | core | `repository_id`, kind, host, owner, name, `derived` or `override`; refreshed from `remote_url` unless overridden |
 | `workspace_pull_requests` | core | `workspace_id`, enabled (default off), account per provider |
 | `review_drafts` | core | `id`, pull request reference, anchor (path, side, line, optional start line, commit), body, origin (`user`; `agent` later), the remote comment ID once sent; the user's unsent text, so it is kept and backed up |
@@ -381,7 +381,7 @@ Main WebView ── Tauri commands ──▶ PullRequestService   (neutral model
 
 - A **forge repository** comes from the `remote_url` Brainiac already stores without credentials (Storage layout): `github.com/acme/api`, `bitbucket.org/acme-team/api`, from the HTTPS, `ssh://`, and SCP-style (`git@host:owner/name.git`) forms. Hosts other than `github.com` and `bitbucket.org` map to nothing. An override in `repository_forges` covers pull requests that live on an upstream or a fork.
 - A **pull request reference** is `<forge repository>#<number>`; both providers number pull requests per repository.
-- An **account** is a kind, host, and login in `brainiac.db`; its token is in the Keychain (`security-framework`), under the service `<app identifier>.forge` and the account's ID, so a `tauri:dev` build keeps its own. GitHub tokens go in a `Bearer` header; Bitbucket API tokens with the account's email over Basic authentication. [Bitbucket Cloud API tokens](https://www.atlassian.com/blog/bitbucket/bitbucket-cloud-transitions-to-api-tokens-enhancing-security-with-app-password-deprecation)
+- An **account** is a kind, host, and login in `brainiac.db`; its token is in the Keychain (`security-framework`) as a generic password with service `brainiac` and account `github` or `bitbucket`, one per provider. The name is fixed and documented so a token can be added from Terminal, and a `tauri:dev` build uses the same one. An item made by `security` lists only that tool as trusted, so macOS asks once before Brainiac reads it; an unsigned or re-signed build may be asked again. GitHub tokens go in a `Bearer` header; Bitbucket API tokens with the account's email over Basic authentication. [Bitbucket Cloud API tokens](https://www.atlassian.com/blog/bitbucket/bitbucket-cloud-transitions-to-api-tokens-enhancing-security-with-app-password-deprecation)
 
 **Neutral model.**
 
