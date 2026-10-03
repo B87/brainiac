@@ -11,6 +11,8 @@ into the release's section.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-03
+
 - New app icon: a white brain on Brainiac blue, with a transparent background.
 - The sidebar hides and shows with ⌘B, and the side panel on the right with ⌥⌘B. Brainiac remembers both.
 - Settings → General: pick VS Code, Cursor, Warp, or ChatGPT for Open in Editor, or set up any other program under Custom.
@@ -125,7 +127,8 @@ First public build: a read-only Git viewer and multi-repository tracker for macO
 - The Branches tab is a placeholder.
 - Not signed with an Apple Developer certificate; the first launch needs right-click > Open (see the README).
 
-[Unreleased]: https://github.com/B87/brainiac/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/B87/brainiac/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/B87/brainiac/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/B87/brainiac/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/B87/brainiac/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/B87/brainiac/compare/v0.1.2...v0.1.3
