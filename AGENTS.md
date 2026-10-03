@@ -4,7 +4,7 @@ Brainiac is an open-source macOS desktop app: Rust backend inside a Tauri v2 she
 
 ## Current scope: v0.2.x — agent access
 
-v0.1 (the Git viewer and repository tracker) shipped as 0.1.3 and v0.2 (vault, notes, tasks, Today, keyword search, links, export/restore) as 0.2.0; both are maintained. Build v0.2.x: the local MCP server agents reach through `brainiac mcp`, its tools over the existing domain services, Settings → Agent access, and the Claude Code plugin with its skill (`SPEC.md` section 9; `docs/architecture.md`, Agent access). Nothing from v0.3 onward (imports, global capture, embeddings, AI) is in scope. Do not add dependencies or tables for later releases.
+v0.1 (the Git viewer and repository tracker) shipped as 0.1.3 and v0.2 (vault, notes, tasks, Today, keyword search, links, export/restore) as 0.2.0; both are maintained. Build v0.2.x: the local MCP server agents reach through `brainiac mcp`, its tools over the existing domain services, Settings → Agent access, and the Claude Code plugin with its skill (`SPEC.md` section 9; `docs/architecture.md`, Agent access). Nothing from v0.3 onward (pull requests, imports, global capture, embeddings, AI) is in scope. Do not add dependencies or tables for later releases.
 
 Read `SPEC.md` and `docs/architecture.md` for v0.2.x work. Open `docs/roadmap.md` only for planning or milestone checklists.
 

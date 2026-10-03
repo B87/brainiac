@@ -75,7 +75,26 @@ M0 landed on 1 October 2026 with 58 Rust tests and 3 frontend tests. Known M0 si
 
 **Exit gate:** an agent such as Claude Code finds notes, creates and completes a task, and links a note to a repository while the app is open; the UI updates live, a concurrent UI edit produces a conflict rather than an overwrite, and the agent's note edits can be undone from revision history.
 
-### v0.3 — Content imports and global capture
+### v0.3 — Pull requests for GitHub and Bitbucket Cloud
+
+The Git viewer and workspace tracking proved the most useful part of the app, so pull requests come before imports, capture, and AI. Design: Pull requests — v0.3, below.
+
+- [ ] Spike S6: Bitbucket Cloud's draft pull requests, pending comments, multi-line inline anchors, merge behavior (conditional on a commit, asynchronous completion), and conditional requests, against a throwaway repository on each provider; measure the request cost of a workspace of about 30 repositories.
+- [ ] Accounts: a GitHub token and a Bitbucket Cloud API token, kept in the Keychain, checked with one request, with their scopes and the hour's request use shown.
+- [ ] Forge mapping: each repository's pull requests come from its `origin`, with an override for an upstream or a fork; a per-workspace switch, off by default, turns tracking on and picks the account.
+- [ ] Provider-neutral `PullRequestService` over two adapters (GitHub REST plus GraphQL for review threads; Bitbucket Cloud REST 2.0), with a discardable cache, a per-account request budget, and `pr_changed` events.
+- [ ] Read: the workspace's Pull requests tab with filters, the pull request overview (description, conversation, checks, what it needs to merge), files changed with viewed marks and "since your review", and diffs from local Git when both commits are on the Mac.
+- [ ] Review: comment, reply, resolve, local review drafts, and submitting a review or an approval tied to the commit that was reviewed; a head that moved stops the submission and keeps the drafts.
+- [ ] Merge, confirmed, with only the methods the repository allows, refused when the head moved.
+- [ ] A count of reviews waiting on you on each workspace in the sidebar.
+
+Ship it in two steps: read-only first (accounts, mapping, the tab, overview, files, checks), which proves both adapters, authentication, and the request budget against real repositories; then the review writes, with merge last.
+
+**Exit gate:** for a week, review real pull requests on both providers from Brainiac: find what waits on you from the workspace tab, review only what changed since your last review, comment and approve without opening the browser, and merge one pull request. A push during a review stops the submission without losing drafts; a Bitbucket submission cut off midway resumes without duplicate comments; losing the network or exhausting the request budget leaves the Git views working; and nothing is written to a local repository.
+
+**v0.3.x follow-ups, chosen by use:** the daily view of what waits on you, either a pull requests inbox in the sidebar or a group in Today (open question below); the repository's Pull requests tab with the checked-out branch's pull request; a task's linked pull request shown with its state; Create pull request from a pushed branch; MCP tools for agents to read pull requests and add review drafts the user sends.
+
+### v0.4 — Content imports and global capture
 
 - [ ] Inbox view for captured and imported items, with triage: file or move, link to a task or repository, create a task.
 - [ ] Text/selection capture, URL bookmarks, Markdown copies, source provenance, resumable import jobs.
@@ -88,9 +107,9 @@ M0 landed on 1 October 2026 with 58 Rust tests and 3 frontend tests. Known M0 si
 
 **Exit gate:** import representative articles/emails/issue excerpts/video references, find their captured content offline, identify metadata-only items, preserve annotations, retry failed imports without duplicates, and capture from another app without losing drafts or main-window updates.
 
-**v0.3.x follow-up:** add one authenticated source adapter chosen by daily use, Jira or the email provider. Validate its authentication/deployment and selected-item import before expanding providers. Native share/browser entry points and a forwarding service remain separate follow-ups.
+**v0.4.x follow-up:** add one authenticated source adapter chosen by daily use, Jira or the email provider. Validate its authentication/deployment and selected-item import before expanding providers. Native share/browser entry points and a forwarding service remain separate follow-ups.
 
-### v0.4 — Semantic retrieval
+### v0.5 — Semantic retrieval
 
 - [ ] Validate sqlite-vec/Rust/bundled-SQLite release integration.
 - [ ] Choose and document a local embedding profile using actual notes.
@@ -99,7 +118,7 @@ M0 landed on 1 October 2026 with 58 Rust tests and 3 frontend tests. Known M0 si
 
 **Exit gate:** a labeled set of roughly 30 real queries demonstrates useful retrieval beyond keyword search; deleted/stale chunks are excluded and Ollama failure leaves core search functional.
 
-### v0.5 — Grounded AI answers
+### v0.6 — Grounded AI answers
 
 - [ ] Context assembly, generation model configuration, streamed channel output.
 - [ ] Openable citations, stale-source labeling, insufficient-evidence behavior.
@@ -109,7 +128,7 @@ M0 landed on 1 October 2026 with 58 Rust tests and 3 frontend tests. Known M0 si
 
 ### Later — Life management and integrations
 
-Expand the v0.3 import adapters and consider GitHub/GitLab PR and CI summaries; Linear references; local calendar context; recurring tasks and reminders; daily/weekly review templates; optional graph navigation; explicit branch/dev-server actions; multiple vaults; sync; automation or plugin APIs.
+Expand the v0.4 import adapters and consider pull requests on GitLab and Bitbucket Data Center; CI beyond the checks a pull request shows; the In flight view of each change from local branch to merged (Pull requests — v0.3, Deferred); Linear references; local calendar context; recurring tasks and reminders; daily/weekly review templates; optional graph navigation; explicit branch/dev-server actions; multiple vaults; sync; automation or plugin APIs.
 
 Remote services require their own authentication, rate-limit, cache, error, and privacy requirements. Polling with backoff is sufficient for an initial desktop integration; webhooks need an explicitly designed delivery mechanism. Do not make these dependencies of the core app.
 
@@ -120,15 +139,17 @@ Remote services require their own authentication, rate-limit, cache, error, and 
 | Syntax in vaults brought from other tools | No existing vault to sample: a fixture vault covers CommonMark, GFM, wikilinks, and common Obsidian syntax (callouts, footnotes, embeds), which is kept as text; document what Brainiac does not style | v0.2 compatibility claim |
 | macOS minimum and Intel requirement | Verify target hardware, dependencies, and packaged builds | Release distribution |
 | Real-world workspace size and Git cost | Benchmark representative workspace/repositories | v0.1 watcher tuning |
-| Quick-capture focus behavior | macOS/Spaces/fullscreen prototype | v0.3 |
+| Quick-capture focus behavior | macOS/Spaces/fullscreen prototype | v0.4 |
 | Vault size and note sizes | Generated vaults of 1,000 and 10,000 notes measured (S3; `docs/architecture.md`, Decisions); check against the real vault after a month of use, with a cold file cache | Confirming v0.2 batch sizes and revision budget |
 | Snapshot size and retention | Measure `brainiac.db` and `history.db` on a real vault after a month | v0.2 backup defaults |
 | Restore onto another Mac | Fixture: vault and snapshot restored where paths and repository locations differ | v0.2 restore |
-| Embedding model and dimensions | Local retrieval evaluation, model availability and license review | v0.4 schema/profile selection |
-| Chunking notes, code, and imports | Labelled set of about 30 real queries; compare heading-aware splits, size caps, and overlap by recall@k | v0.4 chunker version 1 |
-| SQLite-vector integration compatibility | Build and query a bundled release executable | v0.4 |
+| Embedding model and dimensions | Local retrieval evaluation, model availability and license review | v0.5 schema/profile selection |
+| Chunking notes, code, and imports | Labelled set of about 30 real queries; compare heading-aware splits, size caps, and overlap by recall@k | v0.5 chunker version 1 |
+| SQLite-vector integration compatibility | Build and query a bundled release executable | v0.5 |
 | `sqlite-vec` approximate indexes | Track whether ANN indexes reach a stable release; brute force is enough at personal scale | Only if a vault outgrows brute force |
-| Remote integrations and company data constraints | Choose the first provider and its allowed scopes | Integration release |
+| Remote integrations and company data constraints | First providers chosen: GitHub and Bitbucket Cloud (v0.3). Confirm the scopes each employer allows and whether caching pull request content locally is acceptable | v0.3 accounts |
+| Bitbucket Cloud API behavior | Spike S6: draft field, pending comments, multi-line anchors, conditional and asynchronous merge, conditional requests | v0.3 adapters |
+| Where the daily view of pull requests lives | Use v0.3's workspace tab for a few weeks, then choose a pull requests inbox in the sidebar or a group in Today (Pull requests — v0.3, Deferred) | v0.3.x |
 | Preferred mail source and capture gesture | Choose `.eml`, connected mailbox, or optional forwarding workflow | Email connector implementation |
 | Jira deployment/authentication | Confirm Cloud versus Data Center and company-supported access | Jira connector implementation |
 | Article extraction and transcript availability | Evaluate representative pages/videos; document fallback coverage | Rich import compatibility claims |
@@ -146,27 +167,131 @@ v0.2's design (views, notes, tasks, search, storage, and backups) moved to [`SPE
 
 | Entity | File | Essential fields and constraints | Release |
 | --- | --- | --- | --- |
-| `note_sources` | core | `note_id`, source type, canonical URL/provider ID, source time, import time, content scope, source hash; derived from note provenance | v0.3 |
-| `import_jobs` | core | `id`, input reference, adapter, state, staged payload reference, error, result note ID, idempotency key | v0.3 |
-| `embedding_profiles` | core | `id`, provider, model name and digest, dimensions, distance metric, normalization, chunker version, state | v0.4 |
-| `note_chunks` | index | `id`, `note_id`, profile, source hash, heading, byte/line range, text, chunk hash | v0.4 |
-| vector tables | index | One `vec0` table per embedding profile: chunk ID, embedding, filter columns | v0.4 |
+| `forge_accounts` | core | `id`, kind (`github`, `bitbucket_cloud`), host, login, scopes seen at the last check; the token itself only in the Keychain under the account ID | v0.3 |
+| `repository_forges` | core | `repository_id`, kind, host, owner, name, `derived` or `override`; refreshed from `origin` unless overridden | v0.3 |
+| `workspace_pull_requests` | core | `workspace_id`, enabled (default off), account per provider | v0.3 |
+| `review_drafts` | core | `id`, pull request reference, anchor (path, side, line, optional start line, commit), body, origin (`user` or `agent`), the remote comment ID once sent; the user's unsent text, so it is kept and backed up | v0.3 |
+| pull request cache | `forge.db` | Pull requests, files, threads, checks, and each request's ETag, keyed by pull request reference; deletable, never backed up or exported, pruned 14 days after a pull request closes | v0.3 |
+| `note_sources` | core | `note_id`, source type, canonical URL/provider ID, source time, import time, content scope, source hash; derived from note provenance | v0.4 |
+| `import_jobs` | core | `id`, input reference, adapter, state, staged payload reference, error, result note ID, idempotency key | v0.4 |
+| `embedding_profiles` | core | `id`, provider, model name and digest, dimensions, distance metric, normalization, chunker version, state | v0.5 |
+| `note_chunks` | index | `id`, `note_id`, profile, source hash, heading, byte/line range, text, chunk hash | v0.5 |
+| vector tables | index | One `vec0` table per embedding profile: chunk ID, embedding, filter columns | v0.5 |
 
 #### Commands of later releases
 
 | Command | Important input/output |
 | --- | --- |
+| `list_forge_accounts` / `save_forge_account` / `remove_forge_account` / `set_repository_forge` / `update_workspace_pull_requests` | v0.3: accounts checked with one request; a repository's forge override; a workspace's switch and accounts |
+| `list_pull_requests` / `get_pull_request` / `list_pull_request_files` / `get_pull_request_diff` / `get_pull_request_conversation` | v0.3: workspace scope and filter, or a pull request reference; cached results with their age and version; diffs identified by base and head commit |
+| `save_review_draft` / `discard_review_draft` / `submit_review` / `comment_on_pull_request` / `reply_to_thread` / `resolve_thread` / `merge_pull_request` | v0.3: expected head commit on submit, approve, and merge, expected version on edits; `CONFLICT` with the current state when either moved |
 | `prepare_import` / `commit_import` / `list_import_jobs` | Source input or job ID; preview/provenance, duplicate choice, resulting note, retry state |
-| `configure_shortcut` | v0.3: validated binding and registration result |
-| `semantic_search` / `ask_brain` / `cancel_job` | v0.4+: profile/request IDs, results or response channel |
+| `configure_shortcut` | v0.4: validated binding and registration result |
+| `semantic_search` / `ask_brain` / `cancel_job` | v0.5+: profile/request IDs, results or response channel |
 
 #### Shortcuts of later releases
 
 | Shortcut | Action |
 | --- | --- |
-| `Cmd+Shift+Space`, v0.3 | Configurable global quick capture |
+| `Cmd+Shift+Space`, v0.4 | Configurable global quick capture |
 
-### Capture and imports — v0.3
+### Pull requests — v0.3
+
+Review and merge the pull requests of a workspace's repositories, on GitHub and Bitbucket Cloud, without leaving Brainiac. One provider-neutral model serves the UI, and later agents; each provider is an adapter behind it. Brainiac's own advantage is the local checkout: diffs come from local Git when the commits are present, and fetches that move a pull request's branch refresh it.
+
+#### Boundaries
+
+- Tracking is per workspace and off by default. Nothing is requested from GitHub or Bitbucket for a workspace that has not turned it on, and the rest of the app never depends on it.
+- Brainiac never writes to a local repository for a pull request: no checkout, no push, no branch deletion. Reviewing, commenting, and merging are writes to the hosting service only, each an explicit, visible action; merge asks for confirmation.
+- Bitbucket Data Center, GitLab, and GitHub Enterprise Server are later adapters. Bitbucket Data Center differs in paths and requires a `version` on pull request updates.
+- Agents get nothing in v0.3; their tools are a v0.3.x follow-up (Deferred, below).
+
+#### Services and adapters
+
+```text
+Main WebView ── Tauri commands ──▶ PullRequestService   (neutral model, versions, drafts, cache, budget, events)
+                                     ├─ ForgeAdapter: GitHub           (REST; GraphQL for review threads)
+                                     ├─ ForgeAdapter: Bitbucket Cloud  (REST 2.0)
+                                     └─ GitService: diffs and commits when both SHAs exist locally
+```
+
+`ForgeAdapter` is a trait with `list`, `get`, `files`, `patch`, `conversation`, `checks`, and `write`; each adapter maps the provider's shapes onto the neutral model and declares what it cannot do. HTTP runs in Rust only; the WebView gets no HTTP access, as for every other service.
+
+#### Identity
+
+- A **forge repository** comes from the `remote_url` Brainiac already stores without credentials: `github.com/acme/api`, `bitbucket.org/acme-team/api`. An override covers pull requests that live on an upstream or a fork.
+- A **pull request reference** is `<forge repository>#<number>`; both providers number pull requests per repository.
+- An **account** is a kind, host, and login in `brainiac.db`; its token is in the Keychain. GitHub takes a fine-grained personal access token (pull requests read and write, contents read, checks and statuses read). Bitbucket Cloud takes an Atlassian API token with `read:repository:bitbucket`, `read:pullrequest:bitbucket`, and `write:pullrequest:bitbucket`, sent with the account's email over Basic authentication; app passwords stopped working in July 2026. [Bitbucket Cloud API tokens](https://www.atlassian.com/blog/bitbucket/bitbucket-cloud-transitions-to-api-tokens-enhancing-security-with-app-password-deprecation) Without the write scope, pull requests are read-only.
+
+#### Neutral model
+
+| Entity | Fields | Provider notes |
+| --- | --- | --- |
+| Pull request | reference, title, description (Markdown), author, state (`open`, `draft`, `merged`, `closed`), source repository, branch, and `head_sha`, target branch, reviewers with their state (`requested`, `approved`, `changes_requested`, `commented`), checks summary, mergeability, counts, web URL, `version`, `available_actions` | Bitbucket's declined is `closed`; GitHub's `mergeable: null` is `computing` |
+| Changed file | path, old path, status, additions, deletions | GitHub `/files`; Bitbucket `/diffstat` |
+| Diff | identified by `(base_sha, head_sha)` | Local Git when both objects exist (`git cat-file -e`, which never downloads), otherwise the provider's patch |
+| Thread | opaque ID, optional anchor, resolved, outdated, comments | GitHub GraphQL `reviewThreads`; Bitbucket a root comment and its replies |
+| Anchor | path, side (`old`, `new`), line, optional start line, commit | GitHub `side`, `line`, `start_line`, `commit_id`; Bitbucket `inline.from` (old) or `inline.to` (new) |
+| Check | name, state, URL | GitHub check runs and the combined status; Bitbucket commit statuses |
+
+`available_actions` says, per pull request and viewer, which actions are possible and why not, so provider differences reach the UI as data: GitHub cannot withdraw an approval, a declined Bitbucket pull request cannot be reopened, branch protection can block a merge.
+
+#### Operations
+
+| Operation | Precondition | GitHub | Bitbucket Cloud |
+| --- | --- | --- | --- |
+| Comment on the pull request | none | `POST /issues/{n}/comments` | `POST /comments` |
+| Reply to a thread | none | `POST /pulls/{n}/comments/{id}/replies` | `POST /comments` with `parent.id` |
+| Resolve or reopen a thread | none | GraphQL `resolveReviewThread` / `unresolveReviewThread`; REST cannot | `POST` / `DELETE /comments/{id}/resolve` |
+| Save a review draft | none; stored locally | — | — |
+| Submit a review (comment, approve, request changes) | expected `head_sha` | One `POST /reviews` with `commit_id`, the event, and every draft | Check the head, post each draft, then `/approve` or `/request-changes` |
+| Merge | expected `head_sha` | `PUT /merge` with `sha`, which GitHub enforces | Read again and compare the head, then `POST /merge`, which may finish asynchronously (S6) |
+
+Edit, close, reopen, and create are in the protocol but not in v0.3's interface (Deferred).
+
+#### Consistency
+
+- **Two preconditions.** `version` (the provider's update time plus `head_sha`, opaque to callers) guards edits to a pull request's fields. `expected_head_sha` guards everything that means "I looked at this code": submitting a review, approving, merging. Either one that moved returns `CONFLICT` with the current state, as a note save does.
+- **Drafts are local until submitted.** The same pending-review behavior on both providers, kept across restarts. GitHub receives a review in one request. Bitbucket receives several, so submitting works like an outbox: each draft records its remote comment ID once sent, and a submission cut off midway resumes with what is left, never posting a comment twice.
+- **No blind retries.** A write that times out returns `TIMEOUT` ("may have been applied"); the service reads the conversation again and matches it against the drafts before offering a retry.
+
+#### Sync, cache, and request budget
+
+- Bitbucket Cloud allows about 1,000 repository-data requests per hour per user; GitHub allows 5,000, and a conditional request answered `304` does not count. [Bitbucket API request limits](https://support.atlassian.com/bitbucket-cloud/docs/api-request-limits/) Each account has a request budget spent in order: the pull request on screen (on open and every 60 seconds while visible), workspace lists (every 5 minutes while Brainiac is open), everything else. Requests are conditional where the provider supports it, filtered by update time, and trimmed with `fields=`; `Retry-After` and reset headers become `DEPENDENCY_UNAVAILABLE` with a retry time.
+- A fetch that moves `refs/remotes/<remote>/<branch>` marks the pull requests whose source is that branch stale and refreshes them, at no request cost.
+- The cache is `forge.db` in the data folder: rebuildable from the providers, so outside `brainiac.db`, and not derived from the vault, so outside `index.db`.
+
+#### Errors and events
+
+- Existing codes: `PERMISSION_DENIED` for "needs sign-in" or "not allowed", `CONFLICT` for a moved version or head, `DEPENDENCY_UNAVAILABLE` for the network, an outage, or an exhausted budget (with `retry_after`), and `NOT_FOUND`, `TIMEOUT`, and `VALIDATION` as elsewhere.
+- `pr_changed` carries the reference, the version, and its origin (`app` or `remote`); commands return definitive state.
+
+#### Interface
+
+- **Workspace → Pull requests** (`Cmd+3`, beside Overview and Activity): every open pull request of the workspace grouped by repository, filters (all open, needs your review, yours, others, drafts), reviewers with their state, checks, unresolved threads, size, and age; counts at the top (open, waiting on your review, typical wait for a first review, no activity for a week).
+- **Pull request overview:** title, state, source and target, head commit; "N new commits since your review"; description; conversation with resolved threads folded and threads on changed code marked; what it needs to merge as a checklist; reviewers; the local checkout, linked tasks, and linked notes.
+- **Files changed:** a file tree with viewed marks (cleared when a file changes again), comment markers, and a filter; all changes or only those since your review; unified or split; drafts with suggested changes; the diff's source shown (local Git or provider).
+- **Finish review:** summary, verdict, and the drafts to send; it names the commit being reviewed. A head that moved turns Approve off and offers the new commits; a cut-off Bitbucket submission shows what was sent and sends the rest.
+- **Merge:** the checklist, the methods the repository allows, the commit message, closing the source branch on the provider, and the commit being merged.
+- **Settings → Accounts** and the workspace's switch; the sidebar shows each workspace's count of reviews waiting on you.
+- Pull request Markdown is sanitized like notes; remote images are not loaded.
+
+#### Deferred
+
+- **The daily view of what waits on you, across workspaces (v0.3.x).** Two designs were compared: a Pull requests inbox in the sidebar, with Today unchanged; or a "Pull requests waiting on you" group in Today, folded like To sort, with a review you submitted listed under Completed today and `Cmd+K` finding any pull request. Choose after using v0.3's workspace tab; either is a filter over data v0.3 already has.
+- **Repository → Pull requests tab (v0.3.x):** the checked-out branch's pull request first, with the commits the pull request does not have yet; this needs branch-to-pull-request matching only for the current branch, through its upstream.
+- **A task's pull request (v0.3.x):** an explicit link from a task to a pull request, shown with its state in Today and Tasks.
+- **Create a pull request from a pushed branch (v0.3.x):** title from a linked task, description from the commits, reviewers suggested from local history; Brainiac does not push.
+- **Agent tools (v0.3.x):** read pull requests, diffs, and conversations, and add review drafts the user opens and sends; agents never submit, approve, merge, or close. Pull request text is written by other people, so agents are told to treat it as data.
+- **In flight (Later):** each of your changes from local branch to merged (local only, pushed without a pull request, in review, needs changes, ready, merged), with the reviews you owe beside them. It needs every local branch's commits ahead of the default branch and matching branches to pull requests across forks and reused names, which is where most of its cost lies. Store each pull request's head repository, branch, and commit from v0.3 so it needs no migration.
+
+#### Decisions to record when the release starts
+
+- Brainiac writes to GitHub and Bitbucket on an explicit action: reviews, comments, thread resolution, and merge. This is separate from the rule that fetching is the only write to a local repository, which stays.
+- New dependencies: an HTTP client (`reqwest` with rustls, already planned for local models) and Keychain access (`security-framework`).
+- The outcome of spike S6, and any Bitbucket behavior it rules out.
+
+### Capture and imports — v0.4
 
 Import is a core way to create knowledge, available from the same capture interface as writing a note. Sources feed a common Rust ingestion pipeline and become ordinary Markdown notes in the Inbox. Importers do not create separate knowledge silos or require AI to produce a useful result.
 
@@ -182,12 +307,12 @@ Later, the same capture action can be reached from global quick capture, a brows
 
 | Source | Captured note | Initial path | Richer integration |
 | --- | --- | --- | --- |
-| Pasted text/selection | Supplied text, optional source URL, and personal comment | v0.3 paste | Browser extension supplies selected text and page metadata |
-| Markdown file | Independent copy in the vault, preserving original source reference | v0.3 picker/drop | Batch import with preview |
-| Web page | Article title, source URL, author/date when available, extracted readable body | v0.3 URL bookmark; v0.3 extraction | Browser capture for authenticated or client-rendered pages |
-| Email | Subject, sender/recipients/date, selected message body, message identity | Paste in v0.3; `.eml` in v0.3 | Selected-message import through an authorized mailbox connector |
-| Jira issue | Issue key/title, description, status/assignee snapshot, source link | Paste text or bookmark in v0.3 | Explicit fetch through configured Jira deployment/account |
-| YouTube video | Video link/title and user's notes; timestamped transcript when supplied/available | Bookmark and pasted transcript in v0.3 | Metadata and supported transcript acquisition |
+| Pasted text/selection | Supplied text, optional source URL, and personal comment | v0.4 paste | Browser extension supplies selected text and page metadata |
+| Markdown file | Independent copy in the vault, preserving original source reference | v0.4 picker/drop | Batch import with preview |
+| Web page | Article title, source URL, author/date when available, extracted readable body | v0.4 URL bookmark; v0.4 extraction | Browser capture for authenticated or client-rendered pages |
+| Email | Subject, sender/recipients/date, selected message body, message identity | Paste in v0.4; `.eml` in v0.4 | Selected-message import through an authorized mailbox connector |
+| Jira issue | Issue key/title, description, status/assignee snapshot, source link | Paste text or bookmark in v0.4 | Explicit fetch through configured Jira deployment/account |
+| YouTube video | Video link/title and user's notes; timestamped transcript when supplied/available | Bookmark and pasted transcript in v0.4 | Metadata and supported transcript acquisition |
 
 Saving a URL is distinct from capturing its contents. Every import has a `content_scope`: `full_text`, `excerpt`, `transcript`, or `metadata_only`. A bookmark-only note must not appear to have the full article or video available for search or RAG.
 
@@ -220,7 +345,7 @@ Job states are `queued`, `acquiring`, `extracting`, `awaiting_review`, `saving`,
 - Embed a `brainiac_source` frontmatter object containing source type, stable source ID/URL, imported time, source modified time when known, content scope, and source-content hash. Keep provider-specific metadata in a namespaced object.
 - Put personal commentary in a clearly separate section from captured source text. Summaries, when added later, are labeled generated content and never replace the source body.
 - Keep source material useful offline after import. Original web content may later change or disappear; Open original is navigation, not the storage strategy.
-- Retain raw originals such as `.eml` in a vault-local `attachments/imports/<import-id>/` folder in v0.3. Save relative references in frontmatter and include them in export/restore. Unsupported attachments stay as originals, with no implied indexing.
+- Retain raw originals such as `.eml` in a vault-local `attachments/imports/<import-id>/` folder in v0.4. Save relative references in frontmatter and include them in export/restore. Unsupported attachments stay as originals, with no implied indexing.
 - Imported Markdown copies get a new Brainiac ID; preserve any original ID as source metadata so copying does not create identity collisions. Do not modify the source file. Detect dependencies such as relative images and warn when they cannot be copied/resolved by the supported importer.
 - Source caches are reconstructible from provenance. Pending acquisition credentials and job state stay outside note files.
 
@@ -244,16 +369,16 @@ Snapshot import is the default. Live synchronization, scheduled bulk acquisition
 
 #### Import rollout
 
-1. **v0.3 core:** text/selection capture, URL bookmarks, Markdown copies, provenance, Inbox triage, duplicate/retry handling.
-2. **v0.3 source adapters:** public-page extraction and `.eml` parsing/original retention, with explicit bookmark/paste fallback.
-3. **v0.3.x:** one authenticated connector, selected by daily use—Jira or the email provider—and validated video metadata/transcript improvements.
+1. **v0.4 core:** text/selection capture, URL bookmarks, Markdown copies, provenance, Inbox triage, duplicate/retry handling.
+2. **v0.4 source adapters:** public-page extraction and `.eml` parsing/original retention, with explicit bookmark/paste fallback.
+3. **v0.4.x:** one authenticated connector, selected by daily use—Jira or the email provider—and validated video metadata/transcript improvements.
 4. **Later:** browser/share entry points, optional forwarding service, batches, and explicit synchronization.
 
-All external content-import behavior starts in v0.3. Selecting local repositories and discovering them inside a folder in v0.1 is workspace configuration, separate from importing knowledge content.
+All external content-import behavior starts in v0.4. Selecting local repositories and discovering them inside a folder in v0.1 is workspace configuration, separate from importing knowledge content.
 
 **Acceptance scenario:** capture an email, an issue excerpt, an article, and a video reference into the Inbox; add commentary, create a task from one item, find captured material offline, open each original source, retry an interrupted import without duplicates, and identify which items contain only metadata.
 
-### Global capture and window state — v0.3
+### Global capture and window state — v0.4
 
 Use the official `tauri-plugin-global-shortcut` from Rust. Default to `Cmd+Shift+Space`, allow rebinding, and show shortcut registration conflicts. Handle pressed events once; key release must not trigger a second capture. [Tauri global shortcut plugin](https://v2.tauri.app/plugin/global-shortcut/)
 
@@ -272,7 +397,7 @@ Rust is the shared authority across windows:
 
 Events invalidate caches; they are not a durable event log. Include entity ID, version, and origin window. Frontends discard older events and unsubscribe on teardown. Dirty editors use the conflict contract even when a change originated in another app window.
 
-### Semantic search — v0.4
+### Semantic search — v0.5
 
 Keep lexical search fully functional when semantic search is disabled, indexing is incomplete, or Ollama is unavailable.
 
@@ -303,7 +428,7 @@ Use the `sqlite-vec` Rust binding with the same bundled SQLite used by `rusqlite
 - Start with notes only. Task, commit-message, and source-code embeddings are separate future scope.
 - Model installation is an explicit user action. Show download/storage requirements, indexing progress, pause, cancellation, and retry.
 
-### Ask my brain — v0.5
+### Ask my brain — v0.6
 
 RAG uses hybrid retrieval to answer questions about saved notes. It adds synthesis after retrieval is useful and measured.
 

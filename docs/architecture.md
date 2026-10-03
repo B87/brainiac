@@ -38,15 +38,15 @@ flowchart TD
     Main[Main WebView] --> IPC[Tauri commands]
     Agent[Agent through brainiac mcp, v0.2.x] --> MCP[MCP server]
     MCP --> Services
-    Capture[Quick capture WebView, v0.3] --> IPC
+    Capture[Quick capture WebView, v0.4] --> IPC
     IPC --> Services[Rust domain services]
     Services --> Files[Markdown files, v0.2]
     Services --> DB[SQLite worker]
     Watch[notify watchers] --> Queue[Debounced work queues]
     Queue --> Services
     Services --> Git[Git subprocesses, v0.1]
-    Services --> AI[Ollama, v0.4+]
-    DB --> Search[FTS5, v0.2; vectors, v0.4]
+    Services --> AI[Ollama, v0.5+]
+    DB --> Search[FTS5, v0.2; vectors, v0.5]
     Services --> Events[Committed change events]
     Events --> Main
     Events --> Capture
@@ -100,7 +100,7 @@ brainiac/
 
 The Claude Code plugin is outside the Cargo project: `.claude-plugin/marketplace.json` at the repository root lists `plugins/brainiac/`, which holds `.claude-plugin/plugin.json`, `.mcp.json`, and `skills/brainiac/SKILL.md`.
 
-Create modules as their behavior is implemented; the scaffold does not need empty placeholders for every file. Add `imports.rs` in v0.3, then AI modules at their milestones.
+Create modules as their behavior is implemented; the scaffold does not need empty placeholders for every file. Add `imports.rs` in v0.4, then AI modules at their milestones.
 
 In Rust, a **package** is described by `Cargo.toml`; a **crate** is a compilation unit, such as its library or executable; a **module** organizes code within a crate. Tauri's scaffold has a small desktop binary (`main.rs`) that delegates to the application library (`lib.rs`). This is scaffold reuse, not a separate backend service.
 
@@ -115,7 +115,7 @@ Files become modules through declarations such as `mod notes;` in `lib.rs`. A di
 - Start with two concurrent Git status jobs and one embedding job; adjust after measurement.
 - On sleep, suspend timers; on wake and application activation, reconcile stale state.
 - On quit, flush accepted saves and draft checkpoints, cancel jobs, close the database, and unregister shortcuts. If flushing fails, preserve the draft and offer retry or quit with recovery.
-- Support a single application instance. Before v0.3, closing the last window quits after flushing. In v0.3, closing the window may keep capture available in the menu bar; `Cmd+Q` still quits.
+- Support a single application instance. Before v0.4, closing the last window quits after flushing. In v0.4, closing the window may keep capture available in the menu bar; `Cmd+Q` still quits.
 
 ## Storage
 
@@ -150,7 +150,7 @@ Only two things cannot be rebuilt: the vault's Markdown files and a small core d
 | --- | --- | --- | --- |
 | Vault (`.md` files) | Note text, frontmatter including `brainiac_id`, links written in notes | Source of truth | By the user, and in Brainiac's export |
 | `brainiac.db` | Settings, repositories, workspaces, pins, activity, vaults, note identity, tasks and their search table, note-to-repository links | No | Snapshots before migrations and daily, and export |
-| `index.db` | Note bodies, the notes search table, parsed links between notes; chunks and vectors from v0.4 | Yes, from the vault | Never; rebuilt after a restore |
+| `index.db` | Note bodies, the notes search table, parsed links between notes; chunks and vectors from v0.5 | Yes, from the vault | Never; rebuilt after a restore |
 | `history.db` | Note revisions and draft checkpoints | No, but optional | Its own snapshots, less often than `brainiac.db` |
 
 - Under WAL, a transaction across attached database files is atomic within each file but not across them; a crash during commit can leave one file updated and another not. [SQLite ATTACH](https://www.sqlite.org/lang_attach.html) The split is safe only because `index.db` is rebuildable: each indexed row records the content hash it was built from, and startup re-indexes rows whose hash no longer matches `brainiac.db`.
@@ -226,7 +226,7 @@ An export is a new folder `Brainiac Export <date> <time>` holding `manifest.json
 - Migrations stay append-only and run at startup after a pre-migration snapshot; an app refuses a database newer than it knows (Storage, above). That is enough for one user on one machine.
 - Rows use UUIDs, notes are identified by vault ID plus relative path, and unknown frontmatter keys are preserved, so multiple vaults or sync can be added later without rewriting identity. Absolute paths stay only where they are local by nature, such as a repository's folder; its remote URL is the identity that travels.
 - Sync, if it comes, cannot migrate every device at once, because devices run different app versions: record a format version on synced records and translate on read. [Ink & Switch: Cambria](https://www.inkandswitch.com/cambria/)
-- New embedding models or chunkers (v0.4) add a profile; they never change existing vectors in place.
+- New embedding models or chunkers (v0.5) add a profile; they never change existing vectors in place.
 
 ## Git
 
@@ -376,7 +376,7 @@ These are initial targets to measure, not framework guarantees. Use a release bu
 | Local note edit reflected in an idle editor, v0.2 | Within 2 seconds when watcher delivery succeeds |
 | Selected text diff / first 100 history records, v0.1 | p95 under 500 ms on representative repos, with visible loading beyond that |
 | Local Git change reflected in viewer, v0.1 | Within 2 seconds after event delivery on representative repos; stale state visible otherwise |
-| Quick-capture activation, v0.3 | p95 under 250 ms with warm window |
+| Quick-capture activation, v0.4 | p95 under 250 ms with warm window |
 | Idle CPU with dashboard/AI inactive | Under 1% averaged over five minutes |
 | Core app memory, AI runtime excluded | Initial budget under 250 MiB, measured across app/WebView processes |
 
@@ -449,3 +449,4 @@ Decisions already made. Add new ones at the end with a date; do not edit an acce
 - **2 Oct 2026 — The vault watcher processes changes in batches, and a missing note stays matchable until the burst ends (spike S4).** This replaces the per-note 300 ms debounce. One recursive watcher on a generated vault of 10,000 notes, itself a Git repository, saw every change made by an in-place write, a temporary file renamed over the note, a `renamex_np` swap, vim, Neovim, `mv`, a case-only rename, a decomposed accented name, folder renames and moves, a folder moved out of the vault and back, `rm -rf`, a find-and-replace across 4,818 notes, and `git` fast-forwards and checkouts of up to 40,600 events in 1.5 s, with no dropped events or rescan requests. An edit reached the index 320–370 ms after the write. Debounced per note, a pull kept only the 353 of 1,965 renamed notes that had a `brainiac_id`, and a checkout touching every note kept 417 of 3,000, because Git deletes the old paths before writing the new ones and the two sides were processed in different batches. Processing all queued paths together kept 1,965 of 1,965 and 3,000 of 3,000. In a slower pull that took 8 s, matching a missing note for a fixed 5 s kept 980 of 1,000 renames, and matching until the burst ended kept all 1,000. After 8 seconds without events between a delete and a create, as a sync tool may cause, only notes with a `brainiac_id` keep their identity, as `SPEC.md` allows. With `stat` as the existence check, a case-only rename produced a duplicate note that a full reconciliation could not remove, so existence is read from folder listings. A whole-vault checkout cost about 1 s of reading and hashing.
 - **2 Oct 2026 — v0.2 as built.** The trash is `trash/<vault>/<note>/<time>/` in the data folder, so trashing a note again keeps the earlier copy. Notes of an earlier vault count as missing rather than being read from the current vault's folder. A note that goes missing keeps its last indexed text as a revision, stored when the burst ends so a `git checkout` does not store thousands. Today carries over open tasks planned for an earlier day. A restore is staged in the data folder and applied at the next launch, before the core database opens, because the database worker holds it open; registrations made on the new Mac are kept. Vault images reach the editor through a `vault:` URL scheme limited to image files of the active vault, instead of opening the WebView's asset access to the filesystem. Clicked links are resolved in the backend (`resolve_link`) with the same rules as stored links. The palette matches repositories and workspaces from the snapshot and asks the backend only for notes and tasks.
 - **3 Oct 2026 — Agents reach Brainiac through MCP over a Unix socket, served with `rmcp`, and the stdio helper is the app's own executable (spike S5).** `rmcp` 3.5 served a tool over a `tokio` `UnixStream` with no adapter; Claude Code 2.1.288, started with a configuration that runs the helper, negotiated protocol 2025-11-25, listed the tool, and called it through the helper's byte pipe. Peer credentials gave the connecting process's user ID. `rmcp` adds eight small crates beside what Tauri already brings (it uses the same `schemars`) and needs Rust 1.88, so `rust-version` rises from 1.85. Two findings shape the design: a socket under a long folder failed to bind (`path must be shorter than SUN_LEN`), hence the fallback in `/tmp/brainiac-<uid>/`; and Claude Code warns about the `uint32` format `schemars` writes for unsigned integers, hence formats are removed from tool schemas. A separate `brainiac-mcp` binary, as the roadmap proposed, would need Tauri's `externalBin` with a binary per target triple merged with `lipo` for the universal build; the main executable checks for `mcp` before starting Tauri instead, ships with no bundling change, and can open its own bundle when the app is closed. Streamable HTTP on `localhost` was rejected: it needs a port and a token, and any local process or web page can try to reach it, while the socket is closed to other users. Tool shapes live in `mcp/tools.rs`, outside `models.rs`, because they are a contract with agents rather than with the frontend. No tool deletes or trashes anything.
+- **3 Oct 2026 — Pull requests on GitHub and Bitbucket Cloud become v0.3, and the releases after it move one number on.** The Git viewer and workspace tracking proved the most useful part of the app, so reviewing and merging a workspace's pull requests comes before imports and capture (now v0.4, with authenticated import adapters in v0.4.x), semantic search (now v0.5), and grounded AI answers (now v0.6). Release numbers in the entries above refer to the earlier plan: "external imports and global capture in v0.3" and "no Inbox view until v0.3" now mean v0.4. The design is in `docs/roadmap.md`, Pull requests — v0.3; writing to GitHub and Bitbucket and the new dependencies it needs are recorded when that release starts.
