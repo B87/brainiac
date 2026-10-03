@@ -11,6 +11,8 @@ into the release's section.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-03
+
 - Agent access: Claude Code and other MCP agents can search your notes, read Today and your tasks, and, if you allow it in Settings, create notes and tasks and link notes to repositories. Off by default.
 - A Claude Code plugin adds Brainiac to Claude Code in one step, with a skill for planning your day, tracking work as tasks, and writing up decisions as notes.
 - The cursor stays in view when images above it finish loading as you move through a note.
@@ -119,7 +121,8 @@ First public build: a read-only Git viewer and multi-repository tracker for macO
 - The Branches tab is a placeholder.
 - Not signed with an Apple Developer certificate; the first launch needs right-click > Open (see the README).
 
-[Unreleased]: https://github.com/B87/brainiac/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/B87/brainiac/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/B87/brainiac/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/B87/brainiac/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/B87/brainiac/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/B87/brainiac/compare/v0.1.1...v0.1.2
