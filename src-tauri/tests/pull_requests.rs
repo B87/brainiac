@@ -1756,3 +1756,147 @@ async fn merges_are_confirmed_against_the_branch_tip_on_both_providers() {
         .unwrap();
     assert_eq!(outcome.pull_request.state, PullRequestState::Merged);
 }
+
+// --- The sidebar count, and a fetch that moves a branch -----------------------
+
+/// Swap the answer of the first route matching `body_contains`.
+fn replace_route(routes: &Arc<Mutex<Vec<Route>>>, body_contains: &str, status: u16, body: String) {
+    let mut routes = routes.lock().unwrap();
+    let route = routes
+        .iter_mut()
+        .find(|r| r.body_contains == body_contains)
+        .expect("route");
+    route.status = status;
+    route.body = body;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fetch_that_moves_a_branch_refreshes_its_pull_request_and_the_count() {
+    let gh = github_pr(1, "2026-10-03T10:00:00Z", "a".repeat(40).as_str());
+    let bb = bitbucket_pr(5, "2026-10-03T09:00:00.000000+00:00", "0123456789ab");
+    let routes = Arc::new(Mutex::new(routes(vec![gh], vec![bb])));
+    let (base, requests) = serve_shared(Arc::clone(&routes)).await;
+    let h = harness(&base).await;
+    h.add_accounts().await;
+
+    // A checkout of a local bare remote, its pull requests tracked on GitHub
+    // through the override, as a fork pointed at its upstream would be.
+    let tmp = h._tmp.path();
+    let seed = tmp.join("seed");
+    std::fs::create_dir_all(&seed).unwrap();
+    git(&seed, &["init", "-q", "-b", "main"]);
+    std::fs::write(seed.join("README.md"), "hello\n").unwrap();
+    git(&seed, &["add", "."]);
+    git(&seed, &["commit", "-q", "-m", "initial"]);
+    git(tmp, &["clone", "-q", "--bare", "seed", "remote.git"]);
+    git(tmp, &["clone", "-q", "remote.git", "api"]);
+    git(tmp, &["clone", "-q", "remote.git", "mate"]);
+    let api = tmp.join("api");
+    let api_id = h.repositories.register(&api).await.unwrap().id;
+    let ws = h
+        .repositories
+        .create_workspace(CreateWorkspaceRequest {
+            name: "Acme".into(),
+            discovery_mode: DiscoveryMode::Manual,
+            discovery_root: None,
+            discovery_path: None,
+            paths: vec![api.display().to_string()],
+        })
+        .await
+        .unwrap()
+        .workspace;
+    h.repositories
+        .set_forge(SetRepositoryForgeRequest {
+            repository_id: api_id.clone(),
+            forge: Some(ForgeTarget {
+                kind: ForgeKind::Github,
+                owner: "acme".into(),
+                name: "api".into(),
+            }),
+        })
+        .await
+        .unwrap();
+
+    // Nothing is counted while the workspace has pull requests off.
+    assert!(h.pull_requests.review_counts().await.unwrap().is_empty());
+    h.repositories
+        .set_pull_requests(&ws.id, true)
+        .await
+        .unwrap();
+    let list = h.list(&ws.id, 300).await;
+    assert_eq!(list.groups.len(), 1);
+    assert!(list.groups[0].pull_requests[0].awaiting_my_review);
+    let counts = h.pull_requests.review_counts().await.unwrap();
+    assert_eq!(
+        counts,
+        vec![ReviewCount {
+            workspace_id: ws.id.clone(),
+            awaiting: 1
+        }]
+    );
+    // Counted from the cache: no request was made.
+    let before = requests.total();
+    h.pull_requests.review_counts().await.unwrap();
+    assert_eq!(requests.total(), before);
+
+    // A teammate pushes to the pull request's branch; the fetch tells the listener.
+    let (tx, rx) = std::sync::mpsc::channel();
+    h.repositories
+        .set_fetch_listener(Arc::new(move |result| tx.send(result).unwrap()));
+    let mate = tmp.join("mate");
+    git(&mate, &["checkout", "-q", "-b", "feature"]);
+    std::fs::write(mate.join("parser.rs"), "fn parse() {}\n").unwrap();
+    git(&mate, &["add", "."]);
+    git(&mate, &["commit", "-q", "-m", "parser"]);
+    git(&mate, &["push", "-q", "origin", "feature"]);
+    let fetched = h.repositories.fetch(&api_id, false).await.unwrap();
+    assert_eq!(fetched.moved, vec!["origin/feature"]);
+    assert_eq!(rx.try_recv().unwrap().moved, fetched.moved);
+
+    // The provider cannot be reached: the pull request is marked stale, so
+    // the next read with any maximum age asks again.
+    let reference = "github.com/acme/api#1";
+    replace_route(&routes, "\"number\"", 503, "{}".into());
+    let before = requests.total();
+    let read = h.pull_requests.branches_moved(&fetched).await;
+    assert!(read.is_empty());
+    assert_eq!(requests.total(), before + 1);
+    let moved = github_pr(1, "2026-10-03T11:00:00Z", "c".repeat(40).as_str());
+    replace_route(&routes, "\"number\"", 200, github_get(&moved));
+    let events = h.events.lock().unwrap().len();
+    let pr = h.pull_requests.get(reference, 300).await.unwrap();
+    assert_eq!(pr.head_sha, "c".repeat(40));
+    assert_eq!(requests.total(), before + 2);
+    assert_eq!(h.events.lock().unwrap().len(), events + 1);
+
+    // Reached: read at once, and fresh again afterwards.
+    let later = github_pr(1, "2026-10-03T12:00:00Z", "d".repeat(40).as_str());
+    replace_route(&routes, "\"number\"", 200, github_get(&later));
+    let read = h.pull_requests.branches_moved(&fetched).await;
+    assert_eq!(read, vec![reference.to_string()]);
+    let before = requests.total();
+    let pr = h.pull_requests.get(reference, 300).await.unwrap();
+    assert_eq!(pr.head_sha, "d".repeat(40));
+    assert_eq!(requests.total(), before);
+
+    // Other refs leave the pull requests alone: another branch, a tag, a
+    // branch of another remote.
+    for moved in ["origin/other", "v1.0", "upstream/feature"] {
+        let other = FetchResult {
+            moved: vec![moved.into()],
+            ..fetched.clone()
+        };
+        assert!(
+            h.pull_requests.branches_moved(&other).await.is_empty(),
+            "{moved}"
+        );
+    }
+    assert_eq!(requests.total(), before);
+
+    // Off again: the workspace drops out of the counts.
+    h.repositories
+        .set_pull_requests(&ws.id, false)
+        .await
+        .unwrap();
+    assert!(h.pull_requests.review_counts().await.unwrap().is_empty());
+}

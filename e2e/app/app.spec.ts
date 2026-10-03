@@ -448,6 +448,17 @@ test("Pull requests: a workspace turns them on, lists them, and opens one", asyn
   expect(
     (await calls(page, "update_workspace_pull_requests")).at(-1),
   ).toMatchObject({ workspaceId: "ws-1", enabled: true });
+  // The sidebar counts the reviews waiting, and opening the workspace from
+  // it lands on this tab while there are some.
+  const sidebar = page.getByRole("navigation", {
+    name: "Repositories and workspaces",
+  });
+  await expect(sidebar.getByText("1 to review")).toBeVisible();
+  await page.getByRole("tab", { name: "Overview" }).click();
+  await sidebar.getByRole("button", { name: /^Team\b/ }).click();
+  await expect(
+    page.getByRole("tab", { name: "Pull requests", selected: true }),
+  ).toBeVisible();
 
   const row = page.getByRole("row", { name: "Parse nested lists #12" });
   await expect(row).toBeVisible();
@@ -632,6 +643,8 @@ test("Pull requests: a workspace turns them on, lists them, and opens one", asyn
   });
   await expect(merge).toBeHidden();
   await expect(page.getByText("Merged", { exact: true }).first()).toBeVisible();
+  // Merged: it no longer waits on anyone.
+  await expect(sidebar.getByText("1 to review")).toBeHidden();
   await expect(readiness.getByRole("button", { name: "Merge" })).toBeDisabled();
   await page.getByRole("tab", { name: "Checks" }).click();
   await expect(page.getByRole("button", { name: "Log" })).toBeVisible();

@@ -62,6 +62,7 @@ import type { ResolveThreadRequest } from "./generated/ResolveThreadRequest";
 import type { RestorePreview } from "./generated/RestorePreview";
 import type { RestoreRequest } from "./generated/RestoreRequest";
 import type { RestoreResult } from "./generated/RestoreResult";
+import type { ReviewCount } from "./generated/ReviewCount";
 import type { ReviewDrafts } from "./generated/ReviewDrafts";
 import type { SaveForgeAccountOutcome } from "./generated/SaveForgeAccountOutcome";
 import type { SaveForgeAccountRequest } from "./generated/SaveForgeAccountRequest";
@@ -207,6 +208,7 @@ export type {
   RestorePreview,
   RestoreRequest,
   RestoreResult,
+  ReviewCount,
   ReviewDrafts,
   SaveForgeAccountOutcome,
   SaveForgeAccountRequest,
@@ -407,6 +409,8 @@ export const ipc = {
     invoke<MergeOptions>("get_merge_options", { reference }),
   mergePullRequest: (request: MergeRequest) =>
     invoke<MergeOutcome>("merge_pull_request", { request }),
+  /** Each workspace's count of pull requests waiting on your review, from the cache. */
+  getReviewCounts: () => invoke<ReviewCount[]>("get_review_counts"),
 
   // v0.2: vault and notes
   getVaultState: () => invoke<VaultState>("get_vault_state"),

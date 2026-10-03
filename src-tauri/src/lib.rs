@@ -150,6 +150,15 @@ pub fn run() {
                 pr_emitter,
             ));
             app.manage(Arc::clone(&pull_requests));
+            // A fetch that moves a pull request's branch refreshes it at once
+            // (SPEC.md, Staying up to date), off the fetch's own task.
+            let moved_handle = Arc::clone(&pull_requests);
+            service.set_fetch_listener(Arc::new(move |result| {
+                let pull_requests = Arc::clone(&moved_handle);
+                tauri::async_runtime::spawn(async move {
+                    pull_requests.branches_moved(&result).await;
+                });
+            }));
             // Workspace lists every five minutes while Brainiac is open (SPEC.md, Staying up to date).
             tauri::async_runtime::spawn(async move {
                 let mut ticker = tokio::time::interval(SCHEDULE_TICK);
@@ -372,6 +381,7 @@ pub fn run() {
             commands::submit_review,
             commands::get_merge_options,
             commands::merge_pull_request,
+            commands::get_review_counts,
         ])
         .build(context)
         .expect("error while running Brainiac")

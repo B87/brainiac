@@ -86,7 +86,9 @@ The Git viewer and workspace tracking proved the most useful part of the app, so
 - [x] Read: the workspace's Pull requests tab with filters, each repository's Pull requests tab with the checked-out branch's pull request first, the pull request overview (description, conversation, checks, what it needs to merge), files changed with viewed marks and "since your review", and diffs from local Git when both commits are on the Mac.
 - [x] Review: comment, reply, resolve, local review drafts, and submitting a review or an approval tied to the commit that was reviewed; a head that moved stops the submission and keeps the drafts.
 - [x] Merge, confirmed, with only the methods the repository allows, refused when the head moved.
-- [ ] A count of reviews waiting on you on each workspace in the sidebar.
+- [x] A count of reviews waiting on you on each workspace in the sidebar.
+
+**Status, 3 October 2026:** everything above is on the `v0.3-pull-requests` branch: both adapters, the cache and budget, the tabs and the pull request view, review writes, merging, the sidebar count, and the refresh after a fetch. Verified by the service tests over a local stand-in for both providers, the WebKit tests over the fake backend, and opt-in live tests against a throwaway repository on each provider, which created, reviewed, and merged pull requests there. Left: merge into `main`, release 0.3.0, and the exit gate by hand over a week of real use.
 
 Ship it in two steps: read-only first (accounts, mapping, the tab, overview, files, checks), which proves both adapters, authentication, and the request budget against real repositories; then the review writes, with merge last.
 

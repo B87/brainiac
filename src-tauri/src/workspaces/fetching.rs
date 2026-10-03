@@ -42,16 +42,23 @@ impl RepositoryService {
         };
         let timeout = Duration::from_secs(self.settings().fetch_timeout_seconds.max(10));
         let outcome = self.fetcher.fetch(&git, &checkout, scope, timeout).await;
-        if outcome.changed_state() {
+        let ran = outcome.changed_state();
+        if ran {
             self.refresh_store(&store).await;
         }
         let fetched = outcome.into_result()?;
-        Ok(FetchResult {
+        let result = FetchResult {
             repository_id: id.to_string(),
             remote: fetched.remote,
             fetched_at: fetched.fetched_at,
             moved: fetched.moved,
-        })
+        };
+        // Pull requests whose branch moved are refreshed by whoever listens:
+        // once per fetch, not again for a caller that joined it.
+        if ran {
+            self.fetch_moved(&result);
+        }
+        Ok(result)
     }
 
     fn auto_fetch_interval(&self) -> Duration {

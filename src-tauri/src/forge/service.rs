@@ -12,8 +12,8 @@ use tokio::task::JoinSet;
 
 use super::accounts::AccountService;
 use super::adapter::{
-    find_posted, Client, ForgeAdapter, ReviewToSend, SentPart, Session, BITBUCKET_WRITE,
-    GITHUB_CONTENTS_WRITE, GITHUB_PULL_REQUESTS_WRITE,
+    find_posted, own_branch, Client, ForgeAdapter, ReviewToSend, SentPart, Session,
+    BITBUCKET_WRITE, GITHUB_CONTENTS_WRITE, GITHUB_PULL_REQUESTS_WRITE,
 };
 use super::bitbucket::Bitbucket;
 use super::budget::Budget;
@@ -28,11 +28,11 @@ use crate::git::{parse_unified_diff, validate_repo_path, GitService};
 use crate::models::{
     now_rfc3339, AppError, AppResult, ChangeKind, ChangedFile, ChangedFileStatus, CommentRequest,
     CommitFile, Conversation, DiffContent, DiffResult, DiffSelector, DiffSource, ErrorCode,
-    ForgeKind, ListPullRequestsRequest, MergeOptions, MergeOutcome, MergeRequest, PullRequest,
-    PullRequestChangeOrigin, PullRequestChangedEvent, PullRequestChecks, PullRequestDiff,
-    PullRequestDiffRequest, PullRequestFiles, PullRequestGroup, PullRequestList, PullRequestState,
-    ReplyRequest, RepositorySummary, ResolveThreadRequest, ReviewDrafts, ReviewVerdict,
-    SaveReviewDraftRequest, SubmitReviewRequest, Thread, WriteOutcome,
+    FetchResult, ForgeKind, ListPullRequestsRequest, MergeOptions, MergeOutcome, MergeRequest,
+    PullRequest, PullRequestChangeOrigin, PullRequestChangedEvent, PullRequestChecks,
+    PullRequestDiff, PullRequestDiffRequest, PullRequestFiles, PullRequestGroup, PullRequestList,
+    PullRequestState, ReplyRequest, RepositorySummary, ResolveThreadRequest, ReviewCount,
+    ReviewDrafts, ReviewVerdict, SaveReviewDraftRequest, SubmitReviewRequest, Thread, WriteOutcome,
 };
 use crate::workspaces::RepositoryService;
 
@@ -1455,5 +1455,116 @@ impl PullRequestService {
                 tracing::debug!(repository = group.forge, error = %e, "pull request sync");
             }
         }
+    }
+
+    /// How many open pull requests wait on the account's user in each
+    /// workspace with pull requests on, for the sidebar. Counted from the
+    /// cache only, so it costs no request: the lists are kept fresh by
+    /// `sync_tick`, and `pr_changed` tells the UI when to count again.
+    pub async fn review_counts(&self) -> AppResult<Vec<ReviewCount>> {
+        let mut counts = Vec::new();
+        for ws in self.repositories.workspaces().await? {
+            if !ws.pull_requests {
+                continue;
+            }
+            // Two checkouts of one repository share its pull requests: count
+            // each hosted repository once.
+            let mut forges: Vec<String> = Vec::new();
+            for id in ws.members.iter().filter_map(|m| m.repository_id.as_ref()) {
+                let Ok(row) = self.repositories.row(id).await else {
+                    continue;
+                };
+                if let Some(t) = tracked(&row) {
+                    let forge = t.forge.to_string();
+                    if !forges.contains(&forge) {
+                        forges.push(forge);
+                    }
+                }
+            }
+            let awaiting = self
+                .cache
+                .call(move |conn| {
+                    let mut n = 0u32;
+                    for forge in &forges {
+                        n += cache::list(conn, forge, false)?
+                            .iter()
+                            .filter(|pr| pr.awaiting_my_review)
+                            .count() as u32;
+                    }
+                    Ok(n)
+                })
+                .await?;
+            counts.push(ReviewCount {
+                workspace_id: ws.id,
+                awaiting,
+            });
+        }
+        Ok(counts)
+    }
+
+    /// A fetch moved branches on the remote: the open pull requests whose
+    /// source is one of them are marked stale and read again now, so the
+    /// head on screen moves with the branch without waiting for the next
+    /// list refresh (SPEC.md, Staying up to date). Returns what was read
+    /// anew; the rest stays stale until the provider answers again.
+    pub async fn branches_moved(&self, fetched: &FetchResult) -> Vec<String> {
+        let prefix = format!("{}/", fetched.remote);
+        let branches: Vec<&str> = fetched
+            .moved
+            .iter()
+            .filter_map(|r| r.strip_prefix(prefix.as_str()))
+            .collect();
+        if branches.is_empty() {
+            return Vec::new();
+        }
+        let Ok(row) = self.repositories.row(&fetched.repository_id).await else {
+            return Vec::new();
+        };
+        let Some(t) = tracked(&row) else {
+            return Vec::new();
+        };
+        // The branch lives in the remote that was fetched: the tracked
+        // repository, or `origin` when the pull requests are tracked
+        // elsewhere (a fork pointed at its upstream).
+        let origin = row
+            .remote_url
+            .as_deref()
+            .and_then(ForgeRepository::from_remote_url);
+        let forge = t.forge.to_string();
+        let cached = self
+            .cache
+            .call(move |conn| cache::list(conn, &forge, false))
+            .await
+            .unwrap_or_default();
+        let references: Vec<String> = cached
+            .iter()
+            .filter(|pr| branches.contains(&pr.source_branch.as_str()))
+            .filter(|pr| {
+                own_branch(pr, &t.forge) || origin.as_ref().is_some_and(|o| own_branch(pr, o))
+            })
+            .map(|pr| pr.reference.clone())
+            .collect();
+        if references.is_empty() {
+            return Vec::new();
+        }
+        let stale = references.clone();
+        if let Err(e) = self
+            .cache
+            .call(move |conn| cache::mark_stale(conn, &stale))
+            .await
+        {
+            tracing::warn!(error = %e, "could not mark pull requests stale");
+        }
+        for reference in &references {
+            // An unreachable provider answers with the cached pull request,
+            // which stays marked stale for the next read.
+            if let Err(e) = self.get(reference, 0).await {
+                tracing::debug!(reference, error = %e, "refresh after fetch did not complete");
+            }
+        }
+        self.cache
+            .call(move |conn| cache::read_again(conn, &references))
+            .await
+            .unwrap_or_default()
     }
 }

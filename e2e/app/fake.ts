@@ -864,6 +864,19 @@ export class FakeBackend {
       case "update_workspace_pull_requests":
         workspace.pull_requests = !!args.enabled;
         return workspace;
+      case "get_review_counts":
+        return workspace.pull_requests
+          ? [
+              {
+                workspace_id: workspace.id,
+                awaiting: pullRequests.filter(
+                  (p) =>
+                    p.awaiting_my_review &&
+                    (p.state === "open" || p.state === "draft"),
+                ).length,
+              },
+            ]
+          : [];
       case "set_repository_forge": {
         const forge = (
           args.request as {
@@ -1074,6 +1087,12 @@ export class FakeBackend {
           review: { allowed: false, reason: "The pull request is merged." },
           approve: { allowed: false, reason: "The pull request is merged." },
         };
+        // The service emits the committed change after every write.
+        this.later("pr_changed", {
+          reference: req.reference,
+          version: pr.version,
+          origin: "app",
+        });
         return { ...this.outcome(req.reference), warning: null };
       }
       case "get_pull_request_diff":

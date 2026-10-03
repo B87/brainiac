@@ -113,6 +113,33 @@ pub fn list(conn: &Connection, forge: &str, closed: bool) -> AppResult<Vec<PullR
     Ok(out)
 }
 
+/// The read time of a pull request marked stale: older than any maximum age.
+const STALE_AT: &str = "1970-01-01T00:00:00Z";
+
+/// Make pull requests older than any maximum age, so the next read of each
+/// asks the provider: their branch moved on the remote (SPEC.md, Staying up
+/// to date), which the cache cannot know by itself.
+pub fn mark_stale(conn: &Connection, references: &[String]) -> AppResult<()> {
+    let stale = serde_json::to_string(references)?;
+    conn.execute(
+        "UPDATE pull_requests SET fetched_at = ?1
+         WHERE reference IN (SELECT value FROM json_each(?2))",
+        params![STALE_AT, stale],
+    )?;
+    Ok(())
+}
+
+/// Of `references`, those read since they were marked stale.
+pub fn read_again(conn: &Connection, references: &[String]) -> AppResult<Vec<String>> {
+    let wanted = serde_json::to_string(references)?;
+    let mut stmt = conn.prepare_cached(
+        "SELECT reference FROM pull_requests
+         WHERE reference IN (SELECT value FROM json_each(?1)) AND fetched_at != ?2",
+    )?;
+    let rows = stmt.query_map(params![wanted, STALE_AT], |r| r.get::<_, String>(0))?;
+    Ok(rows.collect::<Result<_, _>>()?)
+}
+
 /// Forget the open pull requests of a repository that a fresh list no longer
 /// names: they were merged or closed elsewhere, and come back as such when
 /// the closed list is read.

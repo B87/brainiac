@@ -7,7 +7,7 @@ import type {
   Workspace,
   WorkspaceMember,
 } from "../lib/ipc";
-import { repoTone, TONE_LABEL } from "../lib/repo";
+import { plural, repoTone, TONE_LABEL } from "../lib/repo";
 import {
   totals,
   workspaceLayout,
@@ -41,6 +41,8 @@ export type View =
 
 type Props = {
   snapshot: AppSnapshot | null;
+  /** Pull requests waiting on your review, by workspace (SPEC.md, Workspace → Pull requests). */
+  reviewCounts: ReadonlyMap<string, number>;
   vault: VaultState | null;
   view: View;
   onView: (view: View) => void;
@@ -63,6 +65,7 @@ function readCollapsed(): Set<string> {
 
 export default function Sidebar({
   snapshot,
+  reviewCounts,
   vault,
   view,
   onView,
@@ -201,6 +204,7 @@ export default function Sidebar({
             key={w.id}
             workspace={w}
             byId={byId}
+            awaiting={reviewCounts.get(w.id) ?? 0}
             open={!collapsed.has(w.id)}
             view={view}
             onToggle={() => toggle(w.id)}
@@ -215,8 +219,16 @@ export default function Sidebar({
               key={`w:${p.workspace.id}`}
               workspace={p.workspace}
               byId={byId}
+              awaiting={reviewCounts.get(p.workspace.id) ?? 0}
               current={view.kind === "workspace" && view.id === p.workspace.id}
-              onClick={() => onView({ kind: "workspace", id: p.workspace.id })}
+              onClick={() =>
+                onView(
+                  openWorkspace(
+                    p.workspace,
+                    reviewCounts.get(p.workspace.id) ?? 0,
+                  ),
+                )
+              }
             />
           ) : (
             <RepoRow
@@ -278,9 +290,25 @@ function SectionLabel({
   );
 }
 
+/** Opening a workspace from the sidebar lands where its news is: unread
+ * activity first, then reviews waiting; otherwise the tab it had. */
+function openWorkspace(w: Workspace, awaiting: number): View {
+  return {
+    kind: "workspace",
+    id: w.id,
+    tab:
+      w.unseen_activity > 0
+        ? "activity"
+        : awaiting > 0
+          ? "pull_requests"
+          : undefined,
+  };
+}
+
 function WorkspaceTree({
   workspace: w,
   byId,
+  awaiting,
   open,
   view,
   onToggle,
@@ -288,6 +316,7 @@ function WorkspaceTree({
 }: {
   workspace: Workspace;
   byId: Map<string, RepositorySummary>;
+  awaiting: number;
   open: boolean;
   view: View;
   onToggle: () => void;
@@ -313,17 +342,11 @@ function WorkspaceTree({
       <WorkspaceRow
         workspace={w}
         byId={byId}
+        awaiting={awaiting}
         open={open}
         onToggle={onToggle}
         current={view.kind === "workspace" && view.id === w.id}
-        onClick={() =>
-          onView({
-            kind: "workspace",
-            id: w.id,
-            // Unread news opens the Activity tab, so it is seen.
-            tab: w.unseen_activity > 0 ? "activity" : undefined,
-          })
-        }
+        onClick={() => onView(openWorkspace(w, awaiting))}
       />
       {open && (
         <>
@@ -352,6 +375,7 @@ function WorkspaceTree({
 function WorkspaceRow({
   workspace: w,
   byId,
+  awaiting,
   open,
   current,
   onToggle,
@@ -359,6 +383,7 @@ function WorkspaceRow({
 }: {
   workspace: Workspace;
   byId: Map<string, RepositorySummary>;
+  awaiting: number;
   open?: boolean;
   current: boolean;
   onToggle?: () => void;
@@ -384,7 +409,15 @@ function WorkspaceRow({
             {w.unseen_activity} new
           </span>
         )}
-        {w.unseen_activity > 0 &&
+        {awaiting > 0 && (
+          <span
+            className="badge"
+            title={`${plural(awaiting, "pull request")} waiting on your review`}
+          >
+            {awaiting} to review
+          </span>
+        )}
+        {(w.unseen_activity > 0 || awaiting > 0) &&
         t.conflictedRepos === 0 ? null : t.conflictedRepos > 0 ? (
           <span
             className="text-[12px] font-semibold text-conflict"

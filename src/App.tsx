@@ -26,6 +26,7 @@ import {
   ipc,
   onIndexStatusChanged,
   onMenu,
+  onPullRequestChanged,
   onRepositoryChanged,
   type PinEntityType,
   type SuggestedMove,
@@ -95,6 +96,10 @@ export default function App() {
   const [fetching, setFetching] = useState<ReadonlySet<string>>(new Set());
   /** Short-lived outcome shown in the status bar, such as "2 refs updated". */
   const [notice, setNotice] = useState<string | null>(null);
+  /** Pull requests waiting on your review, per workspace, for the sidebar. */
+  const [reviewCounts, setReviewCounts] = useState<ReadonlyMap<string, number>>(
+    new Map(),
+  );
   const viewRef = useRef(view);
   viewRef.current = view;
   const livePreviewRef = useRef(livePreview);
@@ -103,6 +108,17 @@ export default function App() {
   contextOpenRef.current = contextOpen;
   /** Notes' own toggle while it is shown: a narrow window keeps its own state. */
   const toggleContextRef = useRef<(() => void) | null>(null);
+
+  // Counted from the cache, so it is cheap; a failure only leaves the
+  // sidebar's count as it was.
+  const reloadReviewCounts = useCallback(async () => {
+    try {
+      const counts = await ipc.getReviewCounts();
+      setReviewCounts(new Map(counts.map((c) => [c.workspace_id, c.awaiting])));
+    } catch {
+      // The Pull requests tab reports the provider's problem itself.
+    }
+  }, []);
 
   const reloadSnapshot = useCallback(async () => {
     try {
@@ -114,7 +130,9 @@ export default function App() {
     } catch (e) {
       setBanner(errorMessage(e));
     }
-  }, []);
+    // Workspaces turn pull requests on and off with the snapshot.
+    void reloadReviewCounts();
+  }, [reloadReviewCounts]);
 
   /** The note open in Notes, so coming back to Notes shows it again. */
   const lastNote = useRef<string | undefined>(
@@ -533,6 +551,17 @@ export default function App() {
         }, 150);
       }
     }).then((u) => (disposed ? u() : unlisteners.push(u)));
+    let counting = false;
+    void onPullRequestChanged(() => {
+      // A review given, asked for, or a pull request merged: count again, once per burst.
+      if (!counting) {
+        counting = true;
+        setTimeout(() => {
+          counting = false;
+          void reloadReviewCounts();
+        }, 150);
+      }
+    }).then((u) => (disposed ? u() : unlisteners.push(u)));
     void onMenu((e) => {
       if (e.id === "open_repository") setAddMode({ kind: "choose" });
       if (e.id === "refresh") void actions.current.refresh();
@@ -558,7 +587,7 @@ export default function App() {
       disposed = true;
       for (const unlisten of unlisteners) unlisten();
     };
-  }, [reloadSnapshot, setLivePreview, setContextOpen]);
+  }, [reloadSnapshot, reloadReviewCounts, setLivePreview, setContextOpen]);
 
   const isPinned = (type: PinEntityType, id: string) =>
     !!snapshot?.pins.some((p) => p.entity_type === type && p.entity_id === id);
@@ -568,6 +597,7 @@ export default function App() {
       <div className="flex min-h-0 flex-1">
         <Sidebar
           snapshot={snapshot}
+          reviewCounts={reviewCounts}
           vault={vault}
           view={view}
           onView={showView}

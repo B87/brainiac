@@ -476,7 +476,7 @@ The third tab of a workspace (`Cmd+3`, after Overview and Activity).
 - Filters: all open, needs your review, yours, others, drafts. Sorted by what has waited longest.
 - A side panel like Activity's holds the workspace's switch, its accounts, and how much of the hour's request allowance each has used.
 - **States:** a first load shows skeleton rows; a workspace with pull requests off explains what turning them on does and offers it; a workspace without an account for one of its providers offers to add one; when a provider is unreachable or out of requests, the tab keeps showing what it had, says how old it is and when Brainiac retries; a repository that fails (removed, no access) shows its error in its group while the others keep working.
-- The sidebar shows each workspace's count of pull requests waiting on your review.
+- The sidebar shows each workspace's count of pull requests waiting on your review. Opening the workspace from the sidebar shows this tab while there are some, unless unread activity opens Activity first.
 
 ### Repository → Pull requests
 

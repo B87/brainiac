@@ -2401,6 +2401,16 @@ pub struct PullRequestList {
     pub budgets: Vec<RequestBudget>,
 }
 
+/// A workspace's count of open pull requests waiting on the account's user,
+/// for the sidebar (SPEC.md, Workspace → Pull requests). Counted from the
+/// cache; only workspaces with pull requests on are listed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ReviewCount {
+    pub workspace_id: String,
+    pub awaiting: u32,
+}
+
 /// Emitted as `pr_changed` when a pull request was read anew or written.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]

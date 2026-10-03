@@ -27,9 +27,9 @@ use crate::fetcher::Fetcher;
 use crate::git::{GitService, LogQuery};
 use crate::models::{
     now_rfc3339, AppError, AppResult, AppSnapshot, ChangeGroup, ChangeOrigin, ChangesResult,
-    CommitDetail, CommitPage, DiffOptions, DiffResult, DiffSelector, GitInfo, ListCommitsRequest,
-    RefsResult, RepositoryChangedEvent, RepositoryState, RepositorySummary, RepositoryTab,
-    Settings,
+    CommitDetail, CommitPage, DiffOptions, DiffResult, DiffSelector, FetchResult, GitInfo,
+    ListCommitsRequest, RefsResult, RepositoryChangedEvent, RepositoryState, RepositorySummary,
+    RepositoryTab, Settings,
 };
 pub use membership::WorkspaceChange;
 pub use relocation::Relocation;
@@ -48,6 +48,11 @@ pub type Emitter = Arc<dyn Fn(RepositoryChangedEvent) + Send + Sync>;
 /// so the service stays independent of Tauri; tests leave it unset.
 pub type Notifier = Arc<dyn Fn(String, String) + Send + Sync>;
 
+/// Told about every fetch that moved a ref, with its outcome. Injected like
+/// `Notifier`: the pull request service listens, and this service stays
+/// unaware of it (docs/architecture.md, Sync, cache, and request budget).
+pub type FetchListener = Arc<dyn Fn(FetchResult) + Send + Sync>;
+
 /// Per-repository refresh bookkeeping: at most one running job and one pending request.
 #[derive(Default)]
 struct RefreshSlot {
@@ -65,6 +70,7 @@ pub struct RepositoryService {
     slots: Mutex<HashMap<String, RefreshSlot>>,
     status_jobs: Arc<Semaphore>,
     notifier: Mutex<Option<Notifier>>,
+    fetch_listener: Mutex<Option<FetchListener>>,
     fetcher: Fetcher,
     tracker: ActivityTracker,
 }
@@ -111,12 +117,32 @@ impl RepositoryService {
             slots: Mutex::new(HashMap::new()),
             status_jobs: Arc::new(Semaphore::new(STATUS_CONCURRENCY)),
             notifier: Mutex::new(None),
+            fetch_listener: Mutex::new(None),
         }
     }
 
     /// Install the function that shows macOS notifications.
     pub fn set_notifier(&self, notifier: Notifier) {
         *self.notifier.lock().expect("notifier lock") = Some(notifier);
+    }
+
+    /// Install the function told about fetches that moved a ref.
+    pub fn set_fetch_listener(&self, listener: FetchListener) {
+        *self.fetch_listener.lock().expect("fetch listener lock") = Some(listener);
+    }
+
+    pub(crate) fn fetch_moved(&self, result: &FetchResult) {
+        if result.moved.is_empty() {
+            return;
+        }
+        let listener = self
+            .fetch_listener
+            .lock()
+            .expect("fetch listener lock")
+            .clone();
+        if let Some(l) = listener {
+            l(result.clone());
+        }
     }
 
     fn notify(&self, title: String, body: String) {
