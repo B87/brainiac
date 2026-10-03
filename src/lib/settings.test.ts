@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { argsText, parseArgs, parseInRange, sectionLabel } from "./settings";
+import {
+  argsText,
+  EDITOR_PRESETS,
+  editorPreset,
+  hasPathArgument,
+  parseArgs,
+  parseInRange,
+  sectionLabel,
+} from "./settings";
 
 describe("editor arguments", () => {
   it("round-trips through the text field", () => {
@@ -33,4 +41,33 @@ describe("parseInRange", () => {
 
 it("labels sections", () => {
   expect(sectionLabel("agents")).toBe("Agent Access");
+});
+
+describe("editorPreset", () => {
+  it("recognizes each preset, and Brainiac's default as VS Code", () => {
+    for (const p of EDITOR_PRESETS) expect(editorPreset(p.editor)).toBe(p.id);
+    expect(
+      editorPreset({
+        executable: "code",
+        repo_args: ["{path}"],
+        file_args: ["-g", "{path}:{line}"],
+      }),
+    ).toBe("vscode");
+  });
+
+  it("calls anything else Custom", () => {
+    expect(
+      editorPreset({
+        executable: "/usr/bin/open",
+        repo_args: ["-a", "Zed", "{path}"],
+        file_args: ["-a", "Zed", "{path}"],
+      }),
+    ).toBeNull();
+  });
+});
+
+it("needs the path in some form", () => {
+  expect(hasPathArgument(["warp://x?path={path_url}"])).toBe(true);
+  expect(hasPathArgument(["-g", "{path}:{line}"])).toBe(true);
+  expect(hasPathArgument(["-g"])).toBe(false);
 });

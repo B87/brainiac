@@ -13,6 +13,7 @@ into the release's section.
 
 - New app icon: a white brain on Brainiac blue, with a transparent background.
 - The sidebar hides and shows with ⌘B, and the side panel on the right with ⌥⌘B. Brainiac remembers both.
+- Settings → General: pick VS Code, Cursor, Warp, or ChatGPT for Open in Editor, or set up any other program under Custom.
 
 ## [0.3.0] - 2026-10-03
 

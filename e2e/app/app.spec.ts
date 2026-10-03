@@ -311,6 +311,27 @@ test("Settings checks a value before saving it, and saves it when the field is l
     .getByRole("navigation", { name: "Settings" })
     .getByRole("button", { name: "General" })
     .click();
+  // Brainiac's default is VS Code; a preset sets all three fields at once.
+  const editors = page.getByRole("group", { name: "Editor" });
+  await expect(
+    editors.getByRole("button", { name: "VS Code" }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await editors.getByRole("button", { name: "Warp" }).click();
+  expect((await calls(page, "update_settings")).at(-1)).toMatchObject({
+    settings: {
+      editor: {
+        executable: "/usr/bin/open",
+        repo_args: ["warp://action/new_tab?path={path_url}"],
+      },
+    },
+  });
+  await expect(page.getByText(/new tab of Warp/)).toBeVisible();
+  await editors.getByRole("button", { name: "Cursor" }).click();
+  await editors.getByRole("button", { name: "Custom" }).click();
+  await expect(page.getByLabel("Program")).toHaveValue(
+    "/Applications/Cursor.app/Contents/Resources/app/bin/cursor",
+  );
+
   const fileArgs = page.getByLabel("Arguments for a file at a line");
   await expect(fileArgs).toHaveValue("-g {path}:{line}");
   await fileArgs.fill("--wait");
