@@ -748,3 +748,36 @@ async fn an_agent_edit_is_versioned_kept_in_history_and_leaves_the_users_draft_a
     assert_eq!(draft.base_version, v1);
     client.cancel().await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_edit_never_gives_a_note_another_notes_identity() {
+    let h = Harness::new(false).await;
+    h.write(
+        "Plan.md",
+        "---\nbrainiac_id: plan-1\n---\n# Plan\n- ship the parser\n",
+    );
+    // A note without an ID of its own in its frontmatter.
+    h.write("Loose.md", "# Loose\n");
+    h.scan().await;
+    let server = server(&h, AgentAccess::ReadWrite).await;
+    let (client, _) = connect(&server).await;
+    let loose = call(&client, "read_note", json!({"path": "Loose.md"}))
+        .await
+        .unwrap();
+    let id = loose["id"].as_str().unwrap();
+
+    // Text based on Plan.md, frontmatter included.
+    call(
+        &client,
+        "edit_note",
+        json!({"note_id": id, "expected_version": loose["version"],
+               "text": "---\nbrainiac_id: plan-1\n---\n# Loose\n- ship the parser\n"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        h.read("Loose.md"),
+        format!("---\nbrainiac_id: {id}\n---\n# Loose\n- ship the parser\n")
+    );
+    client.cancel().await.unwrap();
+}

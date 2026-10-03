@@ -11,7 +11,7 @@ into the release's section.
 
 ## [Unreleased]
 
-- Agent access: Claude Code and other MCP agents can search your notes, read Today and your tasks, and, if you allow it in Settings, create notes and tasks and link notes to repositories. Off by default; every agent edit can be undone from the note's history.
+- Agent access: Claude Code and other MCP agents can search your notes, read Today and your tasks, and, if you allow it in Settings, create notes and tasks and link notes to repositories. Off by default; an agent's note edits can be undone from the note's history.
 - A Claude Code plugin adds Brainiac to Claude Code in one step, with a skill for planning your day, tracking work as tasks, and writing up decisions as notes.
 
 ## [0.2.0] - 2026-10-02

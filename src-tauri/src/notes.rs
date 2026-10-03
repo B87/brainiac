@@ -855,7 +855,8 @@ impl NoteService {
     /// Replace a note's text for an agent, provided the file still has
     /// `expected_version`. Unlike `save`, it never touches the note's draft,
     /// which holds the user's unsaved edits; its previous text is always kept
-    /// as its own `agent` revision; and the note keeps its `brainiac_id`.
+    /// as its own `agent` revision; and the note keeps its `brainiac_id` and
+    /// never takes another note's.
     pub async fn save_for_agent(
         self: &Arc<Self>,
         note_id: &str,
@@ -881,6 +882,8 @@ impl NoteService {
         let text = match (&row.embedded_id, index::frontmatter(text).brainiac_id) {
             (Some(id), None) => index::with_embedded_id(text, id),
             (Some(id), Some(other)) if *id != other => index::replace_embedded_id(text, id),
+            // An ID the note does not have belongs to another note.
+            (None, Some(other)) if other != row.id => index::replace_embedded_id(text, &row.id),
             _ => text.to_string(),
         };
         self.write_text(&vault, &row, expected_version, &text, RevisionReason::Agent)
