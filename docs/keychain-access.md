@@ -57,33 +57,40 @@ builds, so one "Always Allow" lasts.
    - Name: `Brainiac Dev` (any name works; it stays on your machine)
    - Identity Type: **Self Signed Root**
    - Certificate Type: **Code Signing**
-2. Check that it is available for signing:
+2. Trust it for code signing. Certificate Assistant leaves the new certificate
+   untrusted, so the next command reports `0 valid identities found` until you
+   do this. In Keychain Access, select the **login** keychain and **My
+   Certificates**, double-click **Brainiac Dev**, open **Trust**, and set
+   **Code Signing** to **Always Trust**. Close the window and authenticate.
+   Without `-v`, the same certificate shows up as `CSSMERR_TP_NOT_TRUSTED`.
+3. Check that it is available for signing:
 
    ```sh
    security find-identity -v -p codesigning
    ```
 
-3. Sign a packaged build with it:
+4. Sign a packaged build with it:
 
    ```sh
    APPLE_SIGNING_IDENTITY="Brainiac Dev" pnpm tauri build
    ```
 
    Tauri signs the `.app` with that identity.
-4. `pnpm tauri dev` runs the bare binary from `target/` without bundling it,
-   so Tauri does not sign it. To give it a stable signature, have Cargo sign
-   the binary before starting it, using a
-   [`runner`](https://doc.rust-lang.org/cargo/reference/config.html#targettriplerunner)
-   that runs, for example:
+5. `pnpm tauri dev` and `pnpm tauri:dev` run the bare binary from `target/`
+   without bundling it, so Tauri does not sign it. On macOS those commands
+   install `scripts/codesign-run.sh` as the Cargo
+   [runner](https://doc.rust-lang.org/cargo/reference/config.html#targettriplerunner).
+   It signs the binary before starting it when `BRAINIAC_CODESIGN_IDENTITY`
+   is set, and leaves the binary untouched when the variable is unset, so
+   nothing specific to one machine is committed and CI stays unsigned:
 
    ```sh
-   codesign --force --sign "$BRAINIAC_CODESIGN_IDENTITY" \
-     --identifier dev.brainiac.desktop "$binary" && exec "$binary" "$@"
+   BRAINIAC_CODESIGN_IDENTITY="Brainiac Dev" pnpm tauri dev
    ```
 
-   Make it opt-in through an environment variable so nothing specific to one
-   machine is committed, and skip signing when the variable is not set.
-5. Start the signed build and choose **Always Allow** once more. Later rebuilds
+   The signature uses the identifier `dev.brainiac.desktop`, the same one as
+   a packaged build.
+6. Start the signed build and choose **Always Allow** once more. Later rebuilds
    signed with the same certificate and identifier will not ask again.
 
 A self-signed certificate is trusted only on the machine that made it.

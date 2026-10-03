@@ -35,7 +35,7 @@ Docs lifecycle: write a behavior change in `SPEC.md` first (or in the same commi
 
 ## Commands
 
-- `pnpm install` then `pnpm tauri dev` to run; `pnpm tauri build` for a packaged app. `pnpm tauri:dev` runs under a separate app identifier, so it uses its own data folder and never migrates the installed app's database.
+- `pnpm install` then `pnpm tauri dev` to run; `pnpm tauri build` for a packaged app. `pnpm tauri:dev` runs under a separate app identifier, so it uses its own data folder and never migrates the installed app's database. Set `BRAINIAC_CODESIGN_IDENTITY` to sign that dev binary with a local certificate so Keychain approval survives rebuilds (`docs/keychain-access.md`).
 - Run `pnpm check` from the repository root before finishing: version agreement, Rust formatting, Clippy (all targets, warnings as errors), Rust tests, Biome, TypeScript, and frontend tests.
 - Frontend: `pnpm check:web` for Biome lint, formatting, and import checks; `pnpm check:fix` for safe fixes; `pnpm format` to format. Generated DTOs in `src/lib/generated/` are excluded from Biome; regenerate them with Rust tests rather than editing them.
 - Rust: `pnpm format:rust` to format; `pnpm format:rust:check`, `pnpm lint:rust`, and `pnpm test:rust` for individual checks. Rust tests also regenerate TypeScript bindings; commit them with the corresponding Rust changes.
