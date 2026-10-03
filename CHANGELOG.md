@@ -11,6 +11,7 @@ into the release's section.
 
 ## [Unreleased]
 
+- New app icon: a white brain on Brainiac blue, with a transparent background.
 - The sidebar hides and shows with ⌘B, and the side panel on the right with ⌥⌘B. Brainiac remembers both.
 
 ## [0.3.0] - 2026-10-03
