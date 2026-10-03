@@ -281,3 +281,159 @@ async fn bitbucket_lists_reads_and_files_a_real_repository() {
     let err = bb.get(&session, &missing).await.unwrap_err();
     println!("  missing: {:?} {}", err.code, err.message);
 }
+
+// --- Writes against real repositories (SPEC.md, Reviewing) ------------------
+//
+// These post comments and a review on the first open pull request of each
+// repository, so they run only with `BRAINIAC_LIVE_WRITE=1` on top of the
+// variables above. Everything they post starts with "Brainiac live test".
+
+use brainiac_lib::forge::adapter::{find_posted, ReviewToSend, SentPart};
+use brainiac_lib::models::{DiffContent, DiffSide, ReviewDraft, ReviewVerdict, ThreadAnchor};
+
+fn live_write() -> bool {
+    std::env::var("BRAINIAC_LIVE_WRITE").is_ok_and(|v| v == "1")
+}
+
+/// The first changed line of the pull request's first file, from the
+/// provider's patch: a line a review comment can go on.
+fn first_changed_line(patch: &str) -> Option<(String, u32)> {
+    let files = brainiac_lib::forge::patch::split_patch(patch);
+    for f in &files {
+        let content = brainiac_lib::git::parse_unified_diff(
+            f.text.as_bytes(),
+            false,
+            &brainiac_lib::models::DiffLimits {
+                max_bytes: 5_000_000,
+                max_lines: 50_000,
+            },
+        );
+        if let DiffContent::Text { hunks, .. } = content {
+            for h in &hunks {
+                for l in &h.lines {
+                    if let Some(n) = l.new_no {
+                        return Some((f.path.clone(), n as u32));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+async fn live_writes<A: ForgeAdapter>(adapter: &A, session: &Session, repo: &ForgeRepository) {
+    let stamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S");
+    let open = adapter.list(session, repo, false, None).await.unwrap();
+    let pr = open.pull_requests.first().expect("an open pull request");
+    let reference: PullRequestRef = pr.reference.parse().unwrap();
+    println!("writing to {} (head {})", pr.reference, pr.head_sha);
+
+    let head = adapter.current_head(session, pr).await.unwrap();
+    println!("  branch tip: {head}");
+    assert!(head.starts_with(&pr.head_sha) || pr.head_sha.starts_with(&head));
+
+    let body = format!("Brainiac live test: comment at {stamp}");
+    let id = adapter.comment(session, &reference, &body).await.unwrap();
+    println!("  comment: {id}");
+
+    let patch = adapter.patch(session, &reference).await.unwrap();
+    let (path, line) = first_changed_line(&patch).expect("a changed line");
+    let draft_body = format!("Brainiac live test: line comment at {stamp}");
+    let draft = ReviewDraft {
+        id: "live".into(),
+        reference: pr.reference.clone(),
+        anchor: ThreadAnchor {
+            path: path.clone(),
+            side: DiffSide::New,
+            line: Some(line),
+            start_line: None,
+            commit: Some(head.clone()),
+        },
+        body: draft_body.clone(),
+        html: String::new(),
+        remote_id: None,
+        created_at: String::new(),
+        updated_at: String::new(),
+    };
+    let summary = format!("Brainiac live test: review at {stamp}");
+    let review = ReviewToSend {
+        drafts: std::slice::from_ref(&draft),
+        body: &summary,
+        summary_sent: false,
+        verdict: ReviewVerdict::Comment,
+        head_sha: &head,
+    };
+    let mut parts = Vec::new();
+    adapter
+        .submit_review(session, pr, &review, &mut |p: SentPart| parts.push(p))
+        .await
+        .unwrap();
+    println!(
+        "  review sent on {path}:{line}; parts reported: {}",
+        parts.len()
+    );
+
+    let threads = adapter.conversation(session, &reference).await.unwrap();
+    assert!(
+        find_posted(&threads, None, None, &body).is_some(),
+        "the comment"
+    );
+    let posted = find_posted(&threads, Some(&path), None, &draft_body).expect("the line comment");
+    let thread = threads
+        .iter()
+        .find(|t| t.comments.iter().any(|c| c.id == posted))
+        .unwrap();
+    println!("  thread {} on {:?}", thread.id, thread.anchor);
+    let reply = adapter
+        .reply(
+            session,
+            &reference,
+            thread,
+            &format!("Brainiac live test: reply at {stamp}"),
+        )
+        .await
+        .unwrap();
+    println!("  reply: {reply}");
+    adapter
+        .resolve(session, &reference, thread, true)
+        .await
+        .unwrap();
+    let threads = adapter.conversation(session, &reference).await.unwrap();
+    let again = threads.iter().find(|t| t.id == thread.id).unwrap();
+    assert!(again.resolved, "resolved");
+    assert_eq!(again.comments.len(), 2);
+    adapter
+        .resolve(session, &reference, thread, false)
+        .await
+        .unwrap();
+    let threads = adapter.conversation(session, &reference).await.unwrap();
+    assert!(!threads.iter().find(|t| t.id == thread.id).unwrap().resolved);
+    println!("  resolved and reopened");
+}
+
+#[tokio::test]
+#[ignore = "writes to a real repository: needs BRAINIAC_LIVE_WRITE=1 and the GitHub variables"]
+async fn github_takes_a_comment_a_review_a_reply_and_a_resolution() {
+    if !live_write() {
+        eprintln!("skipped: set BRAINIAC_LIVE_WRITE=1 to write to the repository");
+        return;
+    }
+    let repo = live_repo("BRAINIAC_LIVE_GITHUB_REPO", ForgeKind::Github).expect("repo env");
+    let (session, client) = live_session(ForgeKind::Github).await.expect("session");
+    live_writes(&github::Github::new(client), &session, &repo).await;
+}
+
+#[tokio::test]
+#[ignore = "writes to a real repository: needs BRAINIAC_LIVE_WRITE=1 and the Bitbucket variables"]
+async fn bitbucket_takes_a_comment_a_review_a_reply_and_a_resolution() {
+    if !live_write() {
+        eprintln!("skipped: set BRAINIAC_LIVE_WRITE=1 to write to the repository");
+        return;
+    }
+    let repo =
+        live_repo("BRAINIAC_LIVE_BITBUCKET_REPO", ForgeKind::BitbucketCloud).expect("repo env");
+    let (session, client) = live_session(ForgeKind::BitbucketCloud)
+        .await
+        .expect("session");
+    live_writes(&bitbucket::Bitbucket::new(client), &session, &repo).await;
+}

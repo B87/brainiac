@@ -34,6 +34,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../migrations/0003_forge_accounts.sql"),
     ),
     ("0004_forges", include_str!("../migrations/0004_forges.sql")),
+    (
+        "0005_review_drafts",
+        include_str!("../migrations/0005_review_drafts.sql"),
+    ),
 ];
 
 /// How many daily backups to keep.

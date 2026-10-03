@@ -1,14 +1,23 @@
 import { describe, expect, it } from "vitest";
-import type { PullRequest, RepositorySummary, Thread } from "./ipc";
+import type {
+  PullRequest,
+  RepositorySummary,
+  ReviewDraft,
+  Thread,
+} from "./ipc";
 import {
   anchorLabel,
   byLongestWait,
   checkedOutPullRequest,
   checksLabel,
+  draftsBehind,
   fileKey,
   isGenerated,
   isViewed,
+  lineNotes,
   matchesFilter,
+  reviewIncomplete,
+  reviewStartCommit,
   sinceReviewLabel,
   sizeLabel,
   threadCounts,
@@ -49,6 +58,7 @@ function pr(over: Partial<PullRequest>): PullRequest {
       review: { allowed: true, reason: null },
       approve: { allowed: true, reason: null },
       merge: { allowed: true, reason: null },
+      resolve: { allowed: true, reason: null },
     },
     mine: false,
     awaiting_my_review: false,
@@ -208,5 +218,83 @@ describe("pull request lists", () => {
         commit: null,
       }),
     ).toBe("a.rs");
+  });
+
+  it("knows which commit a review started on and what it still needs", () => {
+    const draft = (
+      path: string,
+      line: number,
+      commit: string,
+      remote: string | null = null,
+    ): ReviewDraft => ({
+      id: `${path}:${line}`,
+      reference: "github.com/acme/api#1",
+      anchor: { path, side: "new", line, start_line: null, commit },
+      body: "x",
+      html: "<p>x</p>",
+      remote_id: remote,
+      created_at: "",
+      updated_at: "",
+    });
+    const head = "a".repeat(40);
+    const drafts = [draft("a.rs", 3, head), draft("b.rs", 5, "0".repeat(40))];
+    expect(reviewStartCommit(drafts)).toBe(head);
+    expect(draftsBehind(drafts, head)).toBe(true);
+    expect(draftsBehind([drafts[0]], head)).toBe(false);
+    // Bitbucket's short commits count as the same.
+    expect(draftsBehind([draft("a.rs", 3, head.slice(0, 12))], head)).toBe(
+      false,
+    );
+    // A draft already sent no longer holds the review back.
+    expect(draftsBehind([draft("b.rs", 5, "0".repeat(40), "10")], head)).toBe(
+      false,
+    );
+    expect(reviewStartCommit([])).toBeNull();
+    expect(reviewIncomplete("", [], "comment")).toMatch(/Write a summary/);
+    expect(reviewIncomplete("", [], "request_changes")).toMatch(
+      /what to change/,
+    );
+    expect(reviewIncomplete("", [], "approve")).toBeNull();
+    expect(reviewIncomplete("", drafts, "comment")).toBeNull();
+    expect(reviewIncomplete("ok", [], "comment")).toBeNull();
+  });
+
+  it("places threads and drafts on their lines of one file", () => {
+    const thread = (path: string, line: number | null): Thread => ({
+      id: `${path}:${line}`,
+      anchor: { path, side: "new", line, start_line: null, commit: null },
+      resolved: false,
+      outdated: false,
+      comments: [],
+    });
+    const draft: ReviewDraft = {
+      id: "d1",
+      reference: "r",
+      anchor: {
+        path: "a.rs",
+        side: "old",
+        line: 7,
+        start_line: null,
+        commit: null,
+      },
+      body: "x",
+      html: "<p>x</p>",
+      remote_id: null,
+      created_at: "",
+      updated_at: "",
+    };
+    const notes = lineNotes(
+      "a.rs",
+      [
+        thread("a.rs", 3),
+        thread("a.rs", 3),
+        thread("b.rs", 3),
+        thread("a.rs", null),
+      ],
+      [draft],
+    );
+    expect(notes.get("new:3")?.threads).toHaveLength(2);
+    expect(notes.get("old:7")?.drafts).toEqual([draft]);
+    expect(notes.size).toBe(2);
   });
 });

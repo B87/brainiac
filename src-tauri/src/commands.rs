@@ -17,8 +17,9 @@ use crate::models::{
     WorkspacePreview, WorkspaceRescan,
 };
 use crate::models::{
-    Conversation, ListPullRequestsRequest, PullRequest, PullRequestChecks, PullRequestDiff,
-    PullRequestDiffRequest, PullRequestFiles, PullRequestList,
+    CommentRequest, Conversation, ListPullRequestsRequest, PullRequest, PullRequestChecks,
+    PullRequestDiff, PullRequestDiffRequest, PullRequestFiles, PullRequestList, ReplyRequest,
+    ResolveThreadRequest, ReviewDrafts, SaveReviewDraftRequest, SubmitReviewRequest, WriteOutcome,
 };
 use crate::models::{
     CreateNoteRequest, ExportResult, FolderListing, NoteContent, NoteContext, NoteLists,
@@ -739,13 +740,93 @@ pub async fn get_pull_request(
     pull_requests.get(&reference, max_age_seconds).await
 }
 
+/// The files a pull request changes; `since` a commit of it, only those changed after it.
 #[tauri::command]
 pub async fn list_pull_request_files(
     reference: String,
-    since_review: bool,
+    since: Option<String>,
     pull_requests: State<'_, PullRequests>,
 ) -> AppResult<PullRequestFiles> {
-    pull_requests.files(&reference, since_review).await
+    pull_requests.files(&reference, since.as_deref()).await
+}
+
+/// The local checkout of a pull request's repository, for the side panel.
+#[tauri::command]
+pub async fn get_pull_request_repository(
+    reference: String,
+    pull_requests: State<'_, PullRequests>,
+) -> AppResult<RepositorySummary> {
+    pull_requests.repository(&reference).await
+}
+
+// Reviewing (SPEC.md, Reviewing): drafts stay on the Mac; every other write
+// goes to the provider on this explicit action.
+
+#[tauri::command]
+pub async fn list_review_drafts(
+    reference: String,
+    pull_requests: State<'_, PullRequests>,
+) -> AppResult<ReviewDrafts> {
+    pull_requests.drafts(&reference).await
+}
+
+#[tauri::command]
+pub async fn save_review_draft(
+    request: SaveReviewDraftRequest,
+    pull_requests: State<'_, PullRequests>,
+) -> AppResult<ReviewDrafts> {
+    pull_requests.save_draft(request).await
+}
+
+#[tauri::command]
+pub async fn delete_review_draft(
+    reference: String,
+    id: String,
+    pull_requests: State<'_, PullRequests>,
+) -> AppResult<ReviewDrafts> {
+    pull_requests.delete_draft(&reference, &id).await
+}
+
+/// The drafts go on the head now: the user looked at the new commits.
+#[tauri::command]
+pub async fn move_review_drafts(
+    reference: String,
+    head_sha: String,
+    pull_requests: State<'_, PullRequests>,
+) -> AppResult<ReviewDrafts> {
+    pull_requests.move_drafts(&reference, &head_sha).await
+}
+
+#[tauri::command]
+pub async fn comment_on_pull_request(
+    request: CommentRequest,
+    pull_requests: State<'_, PullRequests>,
+) -> AppResult<WriteOutcome> {
+    pull_requests.comment(request).await
+}
+
+#[tauri::command]
+pub async fn reply_to_thread(
+    request: ReplyRequest,
+    pull_requests: State<'_, PullRequests>,
+) -> AppResult<WriteOutcome> {
+    pull_requests.reply(request).await
+}
+
+#[tauri::command]
+pub async fn resolve_thread(
+    request: ResolveThreadRequest,
+    pull_requests: State<'_, PullRequests>,
+) -> AppResult<WriteOutcome> {
+    pull_requests.resolve(request).await
+}
+
+#[tauri::command]
+pub async fn submit_review(
+    request: SubmitReviewRequest,
+    pull_requests: State<'_, PullRequests>,
+) -> AppResult<WriteOutcome> {
+    pull_requests.submit_review(request).await
 }
 
 #[tauri::command]

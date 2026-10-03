@@ -6,6 +6,8 @@
  */
 import type {
   AppSnapshot,
+  Comment,
+  CommentRequest,
   Conversation,
   FolderEntry,
   ForgeAccountSlot,
@@ -16,14 +18,21 @@ import type {
   PullRequestDiff,
   PullRequestDiffRequest,
   PullRequestList,
+  ReplyRequest,
   RepositorySummary,
+  ResolveThreadRequest,
+  ReviewDraft,
+  ReviewDrafts,
   SaveForgeAccountRequest,
+  SaveReviewDraftRequest,
   SearchHit,
   Settings,
+  SubmitReviewRequest,
   Task,
   TaskFields,
   VaultState,
   Workspace,
+  WriteOutcome,
 } from "../../src/lib/ipc";
 
 type FakeNote = {
@@ -173,6 +182,7 @@ export const pullRequests: PullRequest[] = [
       review: ALLOWED,
       approve: ALLOWED,
       merge: ALLOWED,
+      resolve: ALLOWED,
     },
     mine: false,
     awaiting_my_review: true,
@@ -217,6 +227,7 @@ export const pullRequests: PullRequest[] = [
         reason: "GitHub does not let you approve your own pull request.",
       },
       merge: { allowed: false, reason: "A draft cannot be merged." },
+      resolve: ALLOWED,
     },
     mine: true,
     awaiting_my_review: false,
@@ -344,7 +355,7 @@ function pullRequestDiff(req: PullRequestDiffRequest): PullRequestDiff {
   return {
     reference: req.reference,
     source: local ? "local" : "provider",
-    base_sha: req.since_review ? "c".repeat(40) : "b".repeat(40),
+    base_sha: req.since ?? "b".repeat(40),
     head_sha: "a".repeat(40),
     diff: {
       repository_id: "repo-1",
@@ -418,6 +429,53 @@ export class FakeBackend {
     },
   };
   notes = new Map<string, FakeNote>();
+  /** Review drafts, per pull request reference. */
+  reviewDraftRows: ReviewDraft[] = [];
+  /** Conversations as written to; starts from the fixture. */
+  conversations = new Map<string, Conversation>();
+
+  conversationOf(reference: string): Conversation {
+    let c = this.conversations.get(reference);
+    if (!c) {
+      c =
+        reference === conversation.reference
+          ? structuredClone(conversation)
+          : { reference, threads: [], fetched_at: NOW };
+      this.conversations.set(reference, c);
+    }
+    return c;
+  }
+
+  reviewDrafts(reference: string): ReviewDrafts {
+    return {
+      reference,
+      drafts: this.reviewDraftRows.filter((d) => d.reference === reference),
+      pending: null,
+    };
+  }
+
+  myComment(id: string, body: string): Comment {
+    return {
+      id,
+      author: octo,
+      body,
+      html: `<p>${body}</p>\n`,
+      review: null,
+      created_at: NOW,
+      updated_at: null,
+      mine: true,
+      web_url: null,
+    };
+  }
+
+  /** Fresh objects, as the real IPC deserializes them. */
+  outcome(reference: string): WriteOutcome {
+    return structuredClone({
+      pull_request:
+        pullRequests.find((p) => p.reference === reference) ?? pullRequests[0],
+      conversation: this.conversationOf(reference),
+    });
+  }
   tasks = new Map<string, Task>();
   links = new Map<string, Set<string>>();
   /** Unsaved edits per note, as history.db keeps them. */
@@ -867,15 +925,127 @@ export class FakeBackend {
         return {
           reference: args.reference,
           head_sha: "a".repeat(40),
-          base_sha: args.sinceReview ? "c".repeat(40) : "b".repeat(40),
-          since_review: !!args.sinceReview,
-          files: args.sinceReview ? changedFiles.slice(0, 1) : changedFiles,
+          base_sha: args.since ?? "b".repeat(40),
+          partial: !!args.since,
+          files: args.since ? changedFiles.slice(0, 1) : changedFiles,
           fetched_at: NOW,
         };
       case "get_pull_request_conversation":
-        return args.reference === conversation.reference
-          ? conversation
-          : { reference: args.reference, threads: [], fetched_at: NOW };
+        return structuredClone(this.conversationOf(String(args.reference)));
+      case "get_pull_request_repository":
+        return repository;
+      // Reviewing (SPEC.md, Reviewing): drafts stay here; the other writes
+      // land in the conversation at once.
+      case "list_review_drafts":
+        return this.reviewDrafts(String(args.reference));
+      case "save_review_draft": {
+        const req = args.request as SaveReviewDraftRequest;
+        const existing = req.id
+          ? this.reviewDraftRows.find((d) => d.id === req.id)
+          : undefined;
+        if (existing) {
+          existing.body = req.body;
+          existing.html = `<p>${req.body}</p>\n`;
+          existing.anchor = req.anchor;
+        } else
+          this.reviewDraftRows.push({
+            id: uid("draft"),
+            reference: req.reference,
+            anchor: req.anchor,
+            body: req.body,
+            html: `<p>${req.body}</p>\n`,
+            remote_id: null,
+            created_at: NOW,
+            updated_at: NOW,
+          });
+        return this.reviewDrafts(req.reference);
+      }
+      case "delete_review_draft":
+        this.reviewDraftRows = this.reviewDraftRows.filter(
+          (d) => d.id !== args.id,
+        );
+        return this.reviewDrafts(String(args.reference));
+      case "move_review_drafts":
+        for (const d of this.reviewDraftRows)
+          if (d.reference === args.reference)
+            d.anchor = { ...d.anchor, commit: String(args.headSha) };
+        return this.reviewDrafts(String(args.reference));
+      case "comment_on_pull_request": {
+        const req = args.request as CommentRequest;
+        const c = this.conversationOf(req.reference);
+        const id = uid("c");
+        c.threads.push({
+          id: `comment:${id}`,
+          anchor: null,
+          resolved: false,
+          outdated: false,
+          comments: [this.myComment(id, req.body)],
+        });
+        return this.outcome(req.reference);
+      }
+      case "reply_to_thread": {
+        const req = args.request as ReplyRequest;
+        const c = this.conversationOf(req.reference);
+        const t = c.threads.find((t) => t.id === req.thread_id);
+        if (!t) throw { code: "NOT_FOUND", message: "The thread is gone." };
+        t.comments.push(this.myComment(uid("c"), req.body));
+        return this.outcome(req.reference);
+      }
+      case "resolve_thread": {
+        const req = args.request as ResolveThreadRequest;
+        const c = this.conversationOf(req.reference);
+        const t = c.threads.find((t) => t.id === req.thread_id);
+        if (!t) throw { code: "NOT_FOUND", message: "The thread is gone." };
+        t.resolved = req.resolved;
+        return this.outcome(req.reference);
+      }
+      case "submit_review": {
+        const req = args.request as SubmitReviewRequest;
+        const pr = pullRequests.find((p) => p.reference === req.reference);
+        if (pr && pr.head_sha !== req.expected_head_sha)
+          throw {
+            code: "CONFLICT",
+            message:
+              "New commits arrived since you looked at this pull request.",
+          };
+        const c = this.conversationOf(req.reference);
+        for (const d of this.reviewDraftRows.filter(
+          (d) => d.reference === req.reference,
+        ))
+          c.threads.push({
+            id: uid("T"),
+            anchor: d.anchor,
+            resolved: false,
+            outdated: false,
+            comments: [this.myComment(uid("c"), d.body)],
+          });
+        const id = uid("r");
+        c.threads.push({
+          id: `review:${id}`,
+          anchor: null,
+          resolved: false,
+          outdated: false,
+          comments: [
+            {
+              ...this.myComment(id, req.body),
+              review:
+                req.verdict === "approve"
+                  ? "approved"
+                  : req.verdict === "request_changes"
+                    ? "changes_requested"
+                    : null,
+            },
+          ],
+        });
+        this.reviewDraftRows = this.reviewDraftRows.filter(
+          (d) => d.reference !== req.reference,
+        );
+        if (pr && req.verdict === "approve")
+          pr.reviewers = pr.reviewers.map((r) =>
+            r.is_me ? { ...r, state: "approved" } : r,
+          );
+        return this.outcome(req.reference);
+      }
       case "get_pull_request_diff":
         return pullRequestDiff(args.request as PullRequestDiffRequest);
       case "get_pull_request_checks":

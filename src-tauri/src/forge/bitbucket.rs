@@ -7,8 +7,8 @@ use std::collections::HashMap;
 
 use super::accounts::AccountCheck;
 use super::adapter::{
-    base_actions, edited, normalize_time, read_error, sort_threads, summarize_checks, Client,
-    ForgeAdapter, ListOutcome, Session,
+    base_actions, edited, normalize_time, read_error, sort_threads, summarize_checks, write_error,
+    Client, ForgeAdapter, ListOutcome, ReviewToSend, SentPart, Session, BITBUCKET_WRITE,
 };
 use super::github::split_list;
 use super::http::{unexpected, Auth, Http, Response};
@@ -18,7 +18,7 @@ use super::{ForgeRepository, PullRequestRef};
 use crate::models::{
     AppError, AppResult, ChangedFile, ChangedFileStatus, Check, CheckState, Comment, DiffSide,
     ErrorCode, ForgeKind, ForgeTokenKind, ForgeUser, Mergeability, PullRequest, PullRequestCounts,
-    PullRequestState, ReviewState, Reviewer, Thread, ThreadAnchor,
+    PullRequestState, ReviewState, ReviewVerdict, Reviewer, Thread, ThreadAnchor,
 };
 
 pub const API: &str = "https://api.bitbucket.org/2.0";
@@ -622,6 +622,72 @@ impl Bitbucket {
     }
 }
 
+// --- Writes (SPEC.md, Reviewing) ----------------------------------------------
+
+/// Where a new inline comment goes: `to` for a line of the new file, `from`
+/// for one of the old. Bitbucket has no ranges; a range's last line is used.
+fn inline_of(anchor: &ThreadAnchor) -> serde_json::Value {
+    let mut inline = serde_json::json!({ "path": anchor.path });
+    if let Some(line) = anchor.line {
+        let key = match anchor.side {
+            DiffSide::Old => "from",
+            DiffSide::New => "to",
+        };
+        inline[key] = serde_json::json!(line);
+    }
+    inline
+}
+
+impl Bitbucket {
+    fn pr_url(&self, pr: &PullRequestRef, tail: &str) -> String {
+        format!(
+            "{}/pullrequests/{}{tail}",
+            self.repo_url(&pr.repository),
+            pr.number
+        )
+    }
+
+    /// `POST` a comment and read its ID.
+    async fn post_comment(
+        &self,
+        session: &Session,
+        pr: &PullRequestRef,
+        body: serde_json::Value,
+        what: &str,
+    ) -> AppResult<String> {
+        let url = self.pr_url(pr, "/comments");
+        let response = self.client.post_json(session, &url, &[], &body).await?;
+        if !matches!(response.status, 200 | 201) {
+            return Err(write_error(
+                ForgeKind::BitbucketCloud,
+                what,
+                BITBUCKET_WRITE,
+                &response,
+            ));
+        }
+        let created: Id = response.json(PROVIDER)?;
+        Ok(created.id.to_string())
+    }
+
+    /// `POST` with an empty body: approve, request changes.
+    async fn post_empty(&self, session: &Session, url: &str, what: &str) -> AppResult<Response> {
+        let response = self
+            .client
+            .post_json(session, url, &[], &serde_json::json!({}))
+            .await?;
+        // 409: already approved, or changes already requested.
+        if !matches!(response.status, 200 | 201 | 204 | 409) {
+            return Err(write_error(
+                ForgeKind::BitbucketCloud,
+                what,
+                BITBUCKET_WRITE,
+                &response,
+            ));
+        }
+        Ok(response)
+    }
+}
+
 /// Inline threads still open.
 pub fn unresolved(threads: &[Thread]) -> u32 {
     threads
@@ -775,6 +841,142 @@ impl ForgeAdapter for Bitbucket {
             ));
         }
         Ok(String::from_utf8_lossy(&response.body).into_owned())
+    }
+
+    async fn comment(
+        &self,
+        session: &Session,
+        pr: &PullRequestRef,
+        body: &str,
+    ) -> AppResult<String> {
+        self.post_comment(
+            session,
+            pr,
+            serde_json::json!({ "content": { "raw": body } }),
+            "post the comment",
+        )
+        .await
+    }
+
+    async fn reply(
+        &self,
+        session: &Session,
+        pr: &PullRequestRef,
+        thread: &Thread,
+        body: &str,
+    ) -> AppResult<String> {
+        let root: u64 = thread
+            .id
+            .parse()
+            .map_err(|_| AppError::validation("The thread cannot be replied to."))?;
+        let mut value = serde_json::json!({
+            "content": { "raw": body }, "parent": { "id": root },
+        });
+        // A reply to a line comment stays on that line.
+        if let Some(anchor) = &thread.anchor {
+            value["inline"] = inline_of(anchor);
+        }
+        self.post_comment(session, pr, value, "post the reply")
+            .await
+    }
+
+    async fn resolve(
+        &self,
+        session: &Session,
+        pr: &PullRequestRef,
+        thread: &Thread,
+        resolved: bool,
+    ) -> AppResult<()> {
+        if thread.anchor.is_none() {
+            return Err(AppError::validation(
+                "Only a thread on a line can be resolved.",
+            ));
+        }
+        let url = self.pr_url(pr, &format!("/comments/{}/resolve", thread.id));
+        if resolved {
+            self.post_empty(session, &url, "resolve the thread").await?;
+        } else {
+            let response = self.client.delete(session, &url, &[]).await?;
+            if !matches!(response.status, 200 | 204 | 404) {
+                return Err(write_error(
+                    ForgeKind::BitbucketCloud,
+                    "reopen the thread",
+                    BITBUCKET_WRITE,
+                    &response,
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// The source branch's tip, which Bitbucket has at once while the pull
+    /// request's own commit lags a push by a second or two (spike S6).
+    async fn current_head(&self, session: &Session, pr: &PullRequest) -> AppResult<String> {
+        let url = format!(
+            "{}/repositories/{}/refs/branches/{}?fields=target.hash",
+            self.client.api, pr.source_repository, pr.source_branch
+        );
+        let response = self.client.get(session, &url, &[]).await?;
+        if response.status != 200 {
+            return Err(read_error(
+                ForgeKind::BitbucketCloud,
+                &format!("the branch {}", pr.source_branch),
+                &response,
+            ));
+        }
+        #[derive(Deserialize)]
+        struct Branch {
+            target: Hash,
+        }
+        let branch: Branch = response.json(PROVIDER)?;
+        Ok(branch.target.hash)
+    }
+
+    /// One request per draft, then the summary, then the verdict; each part
+    /// is reported as it lands, so a submission cut off midway resumes with
+    /// what is left and posts nothing twice.
+    async fn submit_review(
+        &self,
+        session: &Session,
+        pr: &PullRequest,
+        review: &ReviewToSend<'_>,
+        progress: &mut (dyn FnMut(SentPart) + Send),
+    ) -> AppResult<()> {
+        let reference: PullRequestRef = pr.reference.parse()?;
+        for draft in review.drafts.iter().filter(|d| d.remote_id.is_none()) {
+            let value = serde_json::json!({
+                "content": { "raw": draft.body }, "inline": inline_of(&draft.anchor),
+            });
+            let remote_id = self
+                .post_comment(
+                    session,
+                    &reference,
+                    value,
+                    &format!("post the comment on {}", draft.anchor.path),
+                )
+                .await?;
+            progress(SentPart::Draft {
+                id: draft.id.clone(),
+                remote_id,
+            });
+        }
+        if !review.summary_sent && !review.body.trim().is_empty() {
+            let remote_id = self.comment(session, &reference, review.body).await?;
+            progress(SentPart::Summary { remote_id });
+        }
+        match review.verdict {
+            ReviewVerdict::Comment => {}
+            ReviewVerdict::Approve => {
+                let url = self.pr_url(&reference, "/approve");
+                self.post_empty(session, &url, "approve the pull request")
+                    .await?;
+            }
+            ReviewVerdict::RequestChanges => {
+                let url = self.pr_url(&reference, "/request-changes");
+                self.post_empty(session, &url, "request changes").await?;
+            }
+        }
+        Ok(())
     }
 }
 

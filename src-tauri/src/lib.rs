@@ -143,6 +143,7 @@ pub fn run() {
             let pull_requests = Arc::new(forge::PullRequestService::new(
                 Arc::clone(&service),
                 accounts,
+                db.clone(),
                 forge_cache,
                 forge::http::Http::new()?,
                 forge::Endpoints::production(),
@@ -360,6 +361,15 @@ pub fn run() {
             commands::get_pull_request_checks,
             commands::get_pull_request_conversation,
             commands::get_pull_request_diff,
+            commands::get_pull_request_repository,
+            commands::list_review_drafts,
+            commands::save_review_draft,
+            commands::delete_review_draft,
+            commands::move_review_drafts,
+            commands::comment_on_pull_request,
+            commands::reply_to_thread,
+            commands::resolve_thread,
+            commands::submit_review,
         ])
         .build(context)
         .expect("error while running Brainiac")

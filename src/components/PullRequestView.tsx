@@ -5,15 +5,23 @@ import {
   type ChangedFile,
   type Comment,
   type Conversation,
+  type DiffLine,
   errorMessage,
   ipc,
+  isAppError,
   onPullRequestChanged,
   type PullRequest,
   type PullRequestChecks,
   type PullRequestDiff,
   type PullRequestFiles,
+  type RepositoryNotes,
+  type RepositorySummary,
+  type ReviewDraft,
+  type ReviewDrafts,
+  type ReviewVerdict,
   subscribe,
   type Thread,
+  type WriteOutcome,
 } from "../lib/ipc";
 import { useKeys } from "../lib/keys";
 import { usePref } from "../lib/prefs";
@@ -21,29 +29,39 @@ import {
   anchorLabel,
   CHECK_LABEL,
   checksLabel,
+  draftsBehind,
   fileKey,
   isGenerated,
   isViewed,
+  lineKey,
+  lineNotes,
   loadViewed,
   PROVIDER_LABEL,
   REVIEW_LABEL,
+  reviewIncomplete,
+  reviewStartCommit,
   STATE_LABEL,
+  sameCommit,
   saveViewed,
   sinceReviewLabel,
   sizeLabel,
   threadCounts,
   unresolvedThreads,
+  unsentDrafts,
+  VERDICT_LABEL,
   type ViewedMarks,
 } from "../lib/pullRequests";
 import { plural, splitPath } from "../lib/repo";
 import { createLatest } from "../lib/stale";
-import DiffView from "./DiffView";
+import Dialog from "./Dialog";
+import DiffView, { type LineTarget } from "./DiffView";
 import { Avatar } from "./HistoryTab";
 import {
   ChevronLeft,
   CommentIcon,
   ExternalIcon,
   FolderIcon,
+  NoteIcon,
   RefreshIcon,
   SidebarIcon,
 } from "./icons";
@@ -51,12 +69,13 @@ import { Markdown } from "./Markdown";
 import { StateIcon } from "./PullRequestsTab";
 
 type Tab = "overview" | "files" | "checks";
-/** All changes, or only those since the account's last review. */
-type Scope = "all" | "since";
+/** All changes, those since the account's last review, or since its drafts. */
+type Scope = "all" | "review" | "drafts";
 
 type Props = {
   reference: string;
   onBack: () => void;
+  onOpenNote: (noteId: string) => void;
   onError: (message: string | null) => void;
 };
 
@@ -64,19 +83,41 @@ type Props = {
 const DETAIL_MAX_AGE = 60;
 const REFRESH_MS = 60_000;
 
+const VERDICTS: ReviewVerdict[] = ["comment", "approve", "request_changes"];
+
+/** ⌘↩ in a comment box sends it. */
+function submitOnEnter(submit: () => void) {
+  return (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && e.metaKey) {
+      e.preventDefault();
+      submit();
+    }
+  };
+}
+
 /** One pull request: its overview, the files it changes, and its checks (SPEC.md, Pull request). */
-export default function PullRequestView({ reference, onBack, onError }: Props) {
+export default function PullRequestView({
+  reference,
+  onBack,
+  onOpenNote,
+  onError,
+}: Props) {
   const [tab, setTab] = useState<Tab>("overview");
   const [scope, setScope] = useState<Scope>("all");
   const [pr, setPr] = useState<PullRequest | null>(null);
   const [conversation, setConversation] = useState<Conversation | null>(null);
+  const [drafts, setDrafts] = useState<ReviewDrafts | null>(null);
   const [files, setFiles] = useState<PullRequestFiles | null>(null);
   const [sinceFiles, setSinceFiles] = useState<PullRequestFiles | null>(null);
   const [sinceError, setSinceError] = useState<string | null>(null);
   const [checks, setChecks] = useState<PullRequestChecks | null>(null);
+  const [repository, setRepository] = useState<RepositorySummary | null>(null);
+  const [notes, setNotes] = useState<RepositoryNotes | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
   const latest = useRef(createLatest()).current;
   const conversationLatest = useRef(createLatest()).current;
+  const draftsLatest = useRef(createLatest()).current;
   const filesLatest = useRef(createLatest()).current;
   const sinceLatest = useRef(createLatest()).current;
   const checksLatest = useRef(createLatest()).current;
@@ -103,12 +144,20 @@ export default function PullRequestView({ reference, onBack, onError }: Props) {
     },
     [reference, latest, conversationLatest, onError],
   );
+  const loadDrafts = useCallback(() => {
+    void draftsLatest.run(
+      () => ipc.listReviewDrafts(reference),
+      setDrafts,
+      (e) => onError(errorMessage(e)),
+    );
+  }, [reference, draftsLatest, onError]);
 
   useEffect(() => {
     load(DETAIL_MAX_AGE);
+    loadDrafts();
     const timer = setInterval(() => load(DETAIL_MAX_AGE), REFRESH_MS);
     return () => clearInterval(timer);
-  }, [load]);
+  }, [load, loadDrafts]);
 
   useEffect(
     () =>
@@ -120,22 +169,48 @@ export default function PullRequestView({ reference, onBack, onError }: Props) {
     [reference, load],
   );
 
+  // The local checkout and the notes linked to it, for the side panel; a
+  // Mac without a vault has no notes to show.
+  useEffect(() => {
+    let cancelled = false;
+    void ipc
+      .getPullRequestRepository(reference)
+      .then((repo) => {
+        if (cancelled) return;
+        setRepository(repo);
+        return ipc
+          .getRepositoryNotes(repo.id)
+          .then((n) => !cancelled && setNotes(n))
+          .catch(() => setNotes(null));
+      })
+      .catch(() => setRepository(null));
+    return () => {
+      cancelled = true;
+    };
+  }, [reference]);
+
   // Files and checks follow the head commit: read again when it moved.
   const head = pr?.head_sha ?? null;
   useEffect(() => {
     if (tab !== "files" || !head) return;
     void filesLatest.run(
-      () => ipc.listPullRequestFiles(reference, false),
+      () => ipc.listPullRequestFiles(reference, null),
       setFiles,
       (e) => onError(errorMessage(e)),
     );
   }, [tab, head, reference, filesLatest, onError]);
-  const reviewed = pr?.reviewed_sha ?? null;
+  const startCommit = drafts ? reviewStartCommit(drafts.drafts) : null;
+  const sinceBase =
+    scope === "review"
+      ? (pr?.reviewed_sha ?? null)
+      : scope === "drafts"
+        ? startCommit
+        : null;
   useEffect(() => {
-    if (tab !== "files" || scope !== "since" || !head || !reviewed) return;
+    if (tab !== "files" || !head || !sinceBase) return;
     setSinceError(null);
     void sinceLatest.run(
-      () => ipc.listPullRequestFiles(reference, true),
+      () => ipc.listPullRequestFiles(reference, sinceBase),
       (result) => {
         setSinceFiles(result);
         setSinceError(null);
@@ -145,7 +220,7 @@ export default function PullRequestView({ reference, onBack, onError }: Props) {
         setSinceError(errorMessage(e));
       },
     );
-  }, [tab, scope, head, reviewed, reference, sinceLatest]);
+  }, [tab, head, sinceBase, reference, sinceLatest]);
   useEffect(() => {
     if (tab !== "checks" || !head) return;
     void checksLatest.run(
@@ -154,6 +229,12 @@ export default function PullRequestView({ reference, onBack, onError }: Props) {
       (e) => onError(errorMessage(e)),
     );
   }, [tab, head, reference, checksLatest, onError]);
+
+  /** What a write to the provider leaves behind replaces what is on screen. */
+  const applyOutcome = useCallback((outcome: WriteOutcome) => {
+    setPr(outcome.pull_request);
+    setConversation(outcome.conversation);
+  }, []);
 
   useKeys({
     "mod+1": () => setTab("overview"),
@@ -166,9 +247,15 @@ export default function PullRequestView({ reference, onBack, onError }: Props) {
     null,
     reference,
   ];
+  const unsent = drafts ? unsentDrafts(drafts.drafts).length : 0;
+  const showNewSinceDrafts = () => {
+    setReviewOpen(false);
+    setScope("drafts");
+    setTab("files");
+  };
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="relative flex min-h-0 flex-1 flex-col">
       <header
         data-tauri-drag-region
         className="flex h-12 shrink-0 items-center gap-3 border-b bg-header pr-3 pl-3"
@@ -247,6 +334,25 @@ export default function PullRequestView({ reference, onBack, onError }: Props) {
             Open on {PROVIDER_LABEL[pr.kind]}
           </button>
         )}
+        {pr && (
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={!pr.actions.review.allowed || !drafts}
+            title={
+              pr.actions.review.reason ??
+              "Finish the review: a summary, a verdict, and your drafts"
+            }
+            onClick={() => setReviewOpen(true)}
+          >
+            Review Changes
+            {unsent > 0 && (
+              <span className="rounded-full bg-white/25 px-1.5 text-[11px] tabular">
+                {unsent}
+              </span>
+            )}
+          </button>
+        )}
       </header>
 
       {!pr ? (
@@ -259,8 +365,13 @@ export default function PullRequestView({ reference, onBack, onError }: Props) {
           sinceFiles={sinceFiles}
           sinceError={sinceError}
           scope={scope}
+          sinceBase={sinceBase}
+          startCommit={startCommit}
           onScope={setScope}
           conversation={conversation}
+          drafts={drafts}
+          onDrafts={setDrafts}
+          onOutcome={applyOutcome}
           onError={onError}
         />
       ) : tab === "checks" ? (
@@ -269,29 +380,73 @@ export default function PullRequestView({ reference, onBack, onError }: Props) {
         <Overview
           pr={pr}
           conversation={conversation}
+          drafts={drafts}
+          repository={repository}
+          notes={notes}
+          onOpenNote={onOpenNote}
+          onOutcome={applyOutcome}
+          onReview={() => setReviewOpen(true)}
+          onError={onError}
           onShowSinceReview={() => {
-            setScope("since");
+            setScope("review");
             setTab("files");
           }}
+        />
+      )}
+      {reviewOpen && pr && drafts && (
+        <ReviewDialog
+          pr={pr}
+          drafts={drafts}
+          onClose={() => setReviewOpen(false)}
+          onDrafts={setDrafts}
+          onSubmitted={(outcome) => {
+            applyOutcome(outcome);
+            loadDrafts();
+            setReviewOpen(false);
+          }}
+          onConflict={() => load(0)}
+          onShowNewChanges={showNewSinceDrafts}
         />
       )}
     </div>
   );
 }
 
+// --- Overview ----------------------------------------------------------------
+
 function Overview({
   pr,
   conversation,
+  drafts,
+  repository,
+  notes,
+  onOpenNote,
+  onOutcome,
+  onReview,
+  onError,
   onShowSinceReview,
 }: {
   pr: PullRequest;
   conversation: Conversation | null;
+  drafts: ReviewDrafts | null;
+  repository: RepositorySummary | null;
+  notes: RepositoryNotes | null;
+  onOpenNote: (noteId: string) => void;
+  onOutcome: (outcome: WriteOutcome) => void;
+  onReview: () => void;
+  onError: (message: string | null) => void;
   onShowSinceReview: () => void;
 }) {
   const since = sinceReviewLabel(pr);
   const unresolved = conversation
     ? unresolvedThreads(conversation.threads)
     : pr.counts.unresolved_threads;
+  const unsent = drafts ? unsentDrafts(drafts.drafts) : [];
+  const startCommit = drafts ? reviewStartCommit(drafts.drafts) : null;
+  const checkedOut =
+    !!repository?.head &&
+    repository.head.kind === "branch" &&
+    repository.head.branch === pr.source_branch;
   return (
     <div className="flex min-h-0 flex-1">
       <section
@@ -354,6 +509,20 @@ function Overview({
               </button>
             </div>
           )}
+          {unsent.length > 0 && (
+            <div className="flex items-center gap-2 text-[12.5px]">
+              <span className="text-fg-2">
+                {plural(unsent.length, "draft comment")} waiting
+                {startCommit && !sameCommit(startCommit, pr.head_sha)
+                  ? `, written on ${startCommit.slice(0, 10)}`
+                  : ""}
+                .
+              </span>
+              <button type="button" className="btn btn-sm" onClick={onReview}>
+                Finish Review
+              </button>
+            </div>
+          )}
         </div>
         {pr.description.trim() ? (
           <div className="rounded-lg border bg-panel px-4 py-3">
@@ -362,7 +531,12 @@ function Overview({
         ) : (
           <span className="text-[12.5px] text-muted">No description.</span>
         )}
-        <ConversationSection conversation={conversation} pr={pr} />
+        <ConversationSection
+          conversation={conversation}
+          pr={pr}
+          onOutcome={onOutcome}
+          onError={onError}
+        />
       </section>
       <aside
         aria-label="Merge readiness and reviewers"
@@ -473,13 +647,75 @@ function Overview({
             ))
           )}
         </div>
-        <div className="flex flex-col gap-1.5 px-[18px] py-3.5">
+        <div className="flex flex-col gap-1.5 border-b px-[18px] py-3.5">
           <span className="section-label text-fg-2">Size</span>
           <span className="text-[12.5px] text-fg-2">
             {sizeLabel(pr)}
             {pr.counts.commits !== null &&
               ` · ${plural(pr.counts.commits, "commit")}`}
           </span>
+        </div>
+        <div className="flex flex-col gap-1.5 border-b px-[18px] py-3.5">
+          <span className="section-label text-fg-2">Local checkout</span>
+          {repository ? (
+            <div className="flex flex-col gap-0.5 text-[12.5px]">
+              <span className="flex items-center gap-1.5">
+                <FolderIcon size={13} className="text-muted" />
+                <span className="font-medium">{repository.name}</span>
+                {checkedOut && (
+                  <span className="pr-state" data-state="open">
+                    Checked out
+                  </span>
+                )}
+              </span>
+              <span
+                className="mono truncate text-[11.5px] text-muted"
+                title={repository.display_path}
+              >
+                {repository.display_path}
+              </span>
+              {repository.head && (
+                <span className="text-fg-2">
+                  On{" "}
+                  <span className="mono">
+                    {repository.head.kind === "branch"
+                      ? repository.head.branch
+                      : (repository.head.commit_id?.slice(0, 10) ?? "detached")}
+                  </span>
+                  {!checkedOut && (
+                    <span className="text-muted">
+                      ; the pull request's branch is{" "}
+                      <span className="mono">{pr.source_branch}</span>
+                    </span>
+                  )}
+                </span>
+              )}
+            </div>
+          ) : (
+            <span className="text-[12.5px] text-muted">
+              No local checkout tracks this repository.
+            </span>
+          )}
+        </div>
+        <div className="flex flex-col gap-1.5 px-[18px] py-3.5">
+          <span className="section-label text-fg-2">Notes</span>
+          {!notes || notes.notes.length === 0 ? (
+            <span className="text-[12.5px] text-muted">
+              No notes linked to the repository.
+            </span>
+          ) : (
+            notes.notes.map((n) => (
+              <button
+                key={n.id}
+                type="button"
+                className="flex items-center gap-1.5 self-start text-[12.5px] text-fg hover:underline"
+                onClick={() => onOpenNote(n.id)}
+              >
+                <NoteIcon size={13} className="text-muted" />
+                {n.title}
+              </button>
+            ))
+          )}
         </div>
       </aside>
     </div>
@@ -488,13 +724,34 @@ function Overview({
 
 // --- The conversation -------------------------------------------------------
 
+/** The thread actions, shared by the Overview and the lines of a diff. */
+type ThreadActions = {
+  pr: PullRequest;
+  onOutcome: (outcome: WriteOutcome) => void;
+  onError: (message: string | null) => void;
+};
+
 function ConversationSection({
   conversation,
   pr,
-}: {
-  conversation: Conversation | null;
-  pr: PullRequest;
-}) {
+  onOutcome,
+  onError,
+}: { conversation: Conversation | null } & ThreadActions) {
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const comment = () => {
+    if (!text.trim() || busy) return;
+    setBusy(true);
+    void ipc
+      .commentOnPullRequest({ reference: pr.reference, body: text })
+      .then((outcome) => {
+        setText("");
+        onOutcome(outcome);
+      })
+      .catch((e) => onError(errorMessage(e)))
+      .finally(() => setBusy(false));
+  };
+  const can = pr.actions.comment;
   return (
     <section aria-label="Conversation" className="flex flex-col gap-2.5">
       <h3 className="section-label m-0 text-fg-2">
@@ -512,34 +769,192 @@ function ConversationSection({
       ) : conversation.threads.length === 0 ? (
         <span className="text-[12.5px] text-muted">No comments yet.</span>
       ) : (
-        conversation.threads.map((t) => <ThreadCard key={t.id} thread={t} />)
+        conversation.threads.map((t) => (
+          <ThreadCard
+            key={t.id}
+            thread={t}
+            pr={pr}
+            onOutcome={onOutcome}
+            onError={onError}
+          />
+        ))
       )}
-      <span className="text-[12px] text-muted">
-        Commenting, replying, and reviewing come in the next step; until then,
-        on {PROVIDER_LABEL[pr.kind]}.
-      </span>
+      <div className="flex flex-col gap-2 rounded-lg border bg-panel px-4 py-3">
+        <textarea
+          className="text-area"
+          aria-label="Comment on the pull request"
+          placeholder={
+            can.allowed
+              ? "Comment on the pull request… (Markdown; ⌘↩ to send)"
+              : (can.reason ?? "")
+          }
+          disabled={!can.allowed || busy}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={submitOnEnter(comment)}
+        />
+        <div className="flex items-center gap-2">
+          <span className="flex-1 text-[11.5px] text-muted">
+            {can.allowed
+              ? `Posted on ${PROVIDER_LABEL[pr.kind]} at once. Comments on lines wait for Finish Review.`
+              : can.reason}
+          </span>
+          <button
+            type="button"
+            className="btn btn-sm btn-primary"
+            disabled={!can.allowed || busy || !text.trim()}
+            onClick={comment}
+          >
+            {busy ? "Posting…" : "Comment"}
+          </button>
+        </div>
+      </div>
     </section>
   );
 }
 
-/** One thread; resolved ones are folded (SPEC.md, Pull request: Overview). */
-function ThreadCard({ thread }: { thread: Thread }) {
+/**
+ * One thread with Reply and, on a line, Resolve or Reopen; resolved ones are
+ * folded (SPEC.md, Pull request: Overview). `compact` is the form shown
+ * under a line of the diff, which already says where it is.
+ */
+function ThreadCard({
+  thread,
+  compact = false,
+  pr,
+  onOutcome,
+  onError,
+}: { thread: Thread; compact?: boolean } & ThreadActions) {
+  const [replying, setReplying] = useState(false);
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
   const where = thread.anchor ? anchorLabel(thread.anchor) : null;
+  const run = (p: Promise<WriteOutcome>, then?: () => void) => {
+    setBusy(true);
+    void p
+      .then((outcome) => {
+        then?.();
+        onOutcome(outcome);
+      })
+      .catch((e) => onError(errorMessage(e)))
+      .finally(() => setBusy(false));
+  };
+  const reply = () => {
+    if (!text.trim() || busy) return;
+    run(
+      ipc.replyToThread({
+        reference: pr.reference,
+        thread_id: thread.id,
+        body: text,
+      }),
+      () => {
+        setText("");
+        setReplying(false);
+      },
+    );
+  };
+  const resolve = (resolved: boolean) =>
+    run(
+      ipc.resolveThread({
+        reference: pr.reference,
+        thread_id: thread.id,
+        resolved,
+      }),
+    );
   const comments = thread.comments.map((c) => (
     <CommentView key={c.id} comment={c} />
   ));
+  const canComment = pr.actions.comment;
+  const canResolve = pr.actions.resolve;
+  const actions = (
+    <div className="flex items-center gap-2">
+      {!replying && (
+        <button
+          type="button"
+          className="btn btn-sm"
+          disabled={!canComment.allowed || busy}
+          title={canComment.reason ?? "Reply in this thread"}
+          onClick={() => setReplying(true)}
+        >
+          Reply
+        </button>
+      )}
+      {thread.anchor && (
+        <button
+          type="button"
+          className="btn btn-sm"
+          disabled={!canResolve.allowed || busy}
+          title={
+            canResolve.reason ??
+            (thread.resolved
+              ? "Reopen the thread"
+              : "Mark the thread as resolved")
+          }
+          onClick={() => resolve(!thread.resolved)}
+        >
+          {thread.resolved ? "Reopen" : "Resolve"}
+        </button>
+      )}
+      {busy && <span className="text-[11.5px] text-muted">Sending…</span>}
+    </div>
+  );
+  const replyBox = replying && (
+    <div className="flex flex-col gap-1.5">
+      <textarea
+        className="text-area"
+        aria-label="Reply"
+        placeholder="Reply… (Markdown; ⌘↩ to send)"
+        // biome-ignore lint/a11y/noAutofocus: the user just asked to reply.
+        autoFocus
+        disabled={busy}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={submitOnEnter(reply)}
+      />
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          className="btn btn-sm btn-primary"
+          disabled={busy || !text.trim()}
+          onClick={reply}
+        >
+          Reply
+        </button>
+        <button
+          type="button"
+          className="btn btn-sm"
+          disabled={busy}
+          onClick={() => setReplying(false)}
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+  const body = (
+    <>
+      {comments}
+      {replyBox}
+      {actions}
+    </>
+  );
   if (thread.resolved)
     return (
-      <details className="thread rounded-lg border bg-panel px-4 py-2">
+      <details
+        className={`thread rounded-lg border bg-panel px-4 py-2 ${compact ? "text-[12.5px]" : ""}`}
+        open={compact || undefined}
+      >
         <summary className="cursor-default select-none text-[12.5px] text-muted">
           <StateIcon state="success" label="Resolved" />
           <span className="ml-1.5">Resolved</span>
-          {where && <span className="mono ml-2 text-[11.5px]">{where}</span>}
+          {where && !compact && (
+            <span className="mono ml-2 text-[11.5px]">{where}</span>
+          )}
           <span className="ml-2">
             · {plural(thread.comments.length, "comment")}
           </span>
         </summary>
-        <div className="flex flex-col gap-3 pt-2 pb-1">{comments}</div>
+        <div className="flex flex-col gap-3 pt-2 pb-1">{body}</div>
       </details>
     );
   return (
@@ -547,7 +962,7 @@ function ThreadCard({ thread }: { thread: Thread }) {
       className="thread flex flex-col gap-3 rounded-lg border bg-panel px-4 py-3"
       data-outdated={thread.outdated || undefined}
     >
-      {where && (
+      {where && !compact && (
         <div className="flex items-center gap-2 text-[11.5px] text-fg-2">
           <CommentIcon size={12} className="text-muted" />
           <span className="mono">{where}</span>
@@ -561,7 +976,7 @@ function ThreadCard({ thread }: { thread: Thread }) {
           )}
         </div>
       )}
-      {comments}
+      {body}
     </div>
   );
 }
@@ -611,6 +1026,119 @@ function CommentView({ comment }: { comment: Comment }) {
   );
 }
 
+// --- Drafts on lines ----------------------------------------------------------
+
+/** A draft under its line: the text, Edit, and Remove. */
+function DraftCard({
+  draft,
+  onEdit,
+  onDelete,
+}: {
+  draft: ReviewDraft;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  const sent = draft.remote_id !== null;
+  return (
+    <div
+      className="draft flex flex-col gap-1.5 rounded-lg border border-accent/40 bg-panel px-4 py-2.5"
+      data-draft
+    >
+      <div className="flex items-center gap-2 text-[11.5px] text-fg-2">
+        <span className="pr-state" data-state="open">
+          {sent ? "Sent" : "Draft"}
+        </span>
+        <span className="text-muted">
+          {sent
+            ? "Posted; the rest of the review is still to send."
+            : "Sent with Finish Review."}
+        </span>
+        <span className="flex-1" />
+        {!sent && (
+          <>
+            <button type="button" className="btn btn-sm" onClick={onEdit}>
+              Edit
+            </button>
+            <button
+              type="button"
+              className="btn btn-sm"
+              aria-label={`Remove draft on ${anchorLabel(draft.anchor)}`}
+              onClick={onDelete}
+            >
+              Remove
+            </button>
+          </>
+        )}
+      </div>
+      <Markdown html={draft.html} />
+    </div>
+  );
+}
+
+/** The box a line comment is written in; saved as a draft on the Mac. */
+function Composer({
+  target,
+  initial,
+  busy,
+  onSave,
+  onCancel,
+}: {
+  target: LineTarget;
+  initial: string;
+  busy: boolean;
+  onSave: (text: string) => void;
+  onCancel: () => void;
+}) {
+  const [text, setText] = useState(initial);
+  const save = () => text.trim() && !busy && onSave(text);
+  const where =
+    target.start_line !== null && target.start_line < target.line
+      ? `lines ${target.start_line}–${target.line}`
+      : `line ${target.line}`;
+  return (
+    <div className="flex flex-col gap-1.5 rounded-lg border border-accent/40 bg-panel px-4 py-2.5">
+      <span className="text-[11.5px] text-fg-2">
+        Comment on {where} ({target.side === "old" ? "old" : "new"} side). Kept
+        on this Mac until Finish Review.
+      </span>
+      <textarea
+        className="text-area"
+        aria-label={`Comment on ${where}`}
+        placeholder="Markdown; ⌘↩ to save"
+        // biome-ignore lint/a11y/noAutofocus: the user just asked to comment here.
+        autoFocus
+        disabled={busy}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            e.stopPropagation();
+            onCancel();
+          } else submitOnEnter(save)(e);
+        }}
+      />
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          className="btn btn-sm btn-primary"
+          disabled={busy || !text.trim()}
+          onClick={save}
+        >
+          Save Draft
+        </button>
+        <button
+          type="button"
+          className="btn btn-sm"
+          disabled={busy}
+          onClick={onCancel}
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // --- Files changed ------------------------------------------------------------
 
 const LETTER: Record<ChangedFile["status"], string> = {
@@ -648,14 +1176,25 @@ function groupByDir(
     }));
 }
 
+type ComposerState = {
+  target: LineTarget;
+  draftId: string | null;
+  initial: string;
+};
+
 function FilesTab({
   pr,
   files,
   sinceFiles,
   sinceError,
   scope,
+  sinceBase,
+  startCommit,
   onScope,
   conversation,
+  drafts,
+  onDrafts,
+  onOutcome,
   onError,
 }: {
   pr: PullRequest;
@@ -663,8 +1202,15 @@ function FilesTab({
   sinceFiles: PullRequestFiles | null;
   sinceError: string | null;
   scope: Scope;
+  /** The commit a "since" scope compares from, or null for all changes. */
+  sinceBase: string | null;
+  /** The commit the drafts were written on, when there are drafts. */
+  startCommit: string | null;
   onScope: (scope: Scope) => void;
   conversation: Conversation | null;
+  drafts: ReviewDrafts | null;
+  onDrafts: (drafts: ReviewDrafts) => void;
+  onOutcome: (outcome: WriteOutcome) => void;
   onError: (message: string | null) => void;
 }) {
   const [showFiles, setShowFiles] = usePref("brainiac.pr.files", true);
@@ -679,10 +1225,15 @@ function FilesTab({
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [diff, setDiff] = useState<PullRequestDiff | null>(null);
   const [diffLoading, setDiffLoading] = useState(false);
+  const [composer, setComposer] = useState<ComposerState | null>(null);
+  const [draftBusy, setDraftBusy] = useState(false);
   const diffLatest = useRef(createLatest()).current;
 
-  const canSince = !!pr.reviewed_sha && pr.reviewed_sha !== pr.head_sha;
-  const list = scope === "since" ? sinceFiles : files;
+  const since = sinceBase !== null;
+  const canSinceReview = !!pr.reviewed_sha && pr.reviewed_sha !== pr.head_sha;
+  const canSinceDrafts =
+    startCommit !== null && !sameCommit(startCommit, pr.head_sha);
+  const list = since ? sinceFiles : files;
   const counts = useMemo(
     () => threadCounts(conversation?.threads ?? []),
     [conversation],
@@ -738,9 +1289,9 @@ function FilesTab({
   }, [list]);
 
   const selected = list?.files.find((f) => f.path === selectedPath) ?? null;
-  const since = scope === "since";
   // biome-ignore lint/correctness/useExhaustiveDependencies: `list` stands for the head and scope the patch belongs to.
   useEffect(() => {
+    setComposer(null);
     if (!selected) {
       diffLatest.cancel();
       setDiff(null);
@@ -754,7 +1305,7 @@ function FilesTab({
           reference: pr.reference,
           path: selected.path,
           old_path: selected.old_path,
-          since_review: since,
+          since: sinceBase,
           options: { ignore_whitespace: ignoreWhitespace },
         }),
       (result) => {
@@ -770,7 +1321,7 @@ function FilesTab({
     pr.reference,
     selected?.path,
     selected?.old_path,
-    since,
+    sinceBase,
     list,
     ignoreWhitespace,
     diffLatest,
@@ -800,13 +1351,142 @@ function FilesTab({
       .catch((e) => onError(errorMessage(e)));
   };
 
+  // Threads and drafts under the lines of the selected file, and the box a
+  // new comment is written in (SPEC.md, Reviewing).
+  const notes = useMemo(
+    () =>
+      selected
+        ? lineNotes(
+            selected.path,
+            conversation?.threads ?? [],
+            drafts?.drafts ?? [],
+          )
+        : new Map(),
+    [selected, conversation, drafts],
+  );
+  const runDrafts = (p: Promise<ReviewDrafts>, then?: () => void) => {
+    setDraftBusy(true);
+    void p
+      .then((result) => {
+        onDrafts(result);
+        then?.();
+      })
+      .catch((e) => onError(errorMessage(e)))
+      .finally(() => setDraftBusy(false));
+  };
+  const saveDraft = (text: string) => {
+    if (!composer || !selected || !diff) return;
+    runDrafts(
+      ipc.saveReviewDraft({
+        reference: pr.reference,
+        id: composer.draftId,
+        anchor: {
+          path: selected.path,
+          side: composer.target.side,
+          line: composer.target.line,
+          start_line: composer.target.start_line,
+          commit: diff.head_sha,
+        },
+        body: text,
+      }),
+      () => setComposer(null),
+    );
+  };
+  const canReview = pr.actions.review;
+  const startComment = (target: LineTarget) => {
+    if (since && target.side === "old") {
+      onError(
+        "In changes since a commit, the old side is that commit, not the target branch: comment on the new side.",
+      );
+      return;
+    }
+    setComposer({ target, draftId: null, initial: "" });
+  };
+  const annotate =
+    diff?.diff.content.kind === "text"
+      ? {
+          render: (line: DiffLine) => {
+            const keys: Array<[string, "old" | "new", number]> = [];
+            if (line.new_no !== null)
+              keys.push([lineKey("new", line.new_no), "new", line.new_no]);
+            if (line.old_no !== null)
+              keys.push([lineKey("old", line.old_no), "old", line.old_no]);
+            const threads: Thread[] = [];
+            const lineDrafts: ReviewDraft[] = [];
+            for (const [key] of keys) {
+              const n = notes.get(key);
+              if (n) {
+                threads.push(...n.threads);
+                lineDrafts.push(...n.drafts);
+              }
+            }
+            const here =
+              composer &&
+              keys.some(
+                ([, side, no]) =>
+                  side === composer.target.side && no === composer.target.line,
+              );
+            if (threads.length === 0 && lineDrafts.length === 0 && !here)
+              return null;
+            return (
+              <>
+                {threads.map((t) => (
+                  <ThreadCard
+                    key={t.id}
+                    thread={t}
+                    compact
+                    pr={pr}
+                    onOutcome={onOutcome}
+                    onError={onError}
+                  />
+                ))}
+                {lineDrafts
+                  .filter((d) => d.id !== composer?.draftId)
+                  .map((d) => (
+                    <DraftCard
+                      key={d.id}
+                      draft={d}
+                      onEdit={() =>
+                        setComposer({
+                          target: {
+                            side: d.anchor.side,
+                            line: d.anchor.line ?? 0,
+                            start_line: d.anchor.start_line,
+                          },
+                          draftId: d.id,
+                          initial: d.body,
+                        })
+                      }
+                      onDelete={() =>
+                        runDrafts(ipc.deleteReviewDraft(pr.reference, d.id))
+                      }
+                    />
+                  ))}
+                {here && composer && (
+                  <Composer
+                    key={composer.draftId ?? "new"}
+                    target={composer.target}
+                    initial={composer.initial}
+                    busy={draftBusy}
+                    onSave={saveDraft}
+                    onCancel={() => setComposer(null)}
+                  />
+                )}
+              </>
+            );
+          },
+          onComment: canReview.allowed ? startComment : undefined,
+          note: canReview.reason ?? undefined,
+        }
+      : undefined;
+
   const empty = !list
     ? since && sinceError
       ? sinceError
       : "Reading the files…"
     : list.files.length === 0
       ? since
-        ? "Nothing changed since your review."
+        ? "Nothing changed since then."
         : "This pull request changes no files."
       : "Select a file to see its diff.";
   const meta = diff
@@ -828,19 +1508,30 @@ function FilesTab({
       <button
         type="button"
         role="tab"
-        aria-selected={scope === "since"}
-        disabled={!canSince}
+        aria-selected={scope === "review"}
+        disabled={!canSinceReview}
         title={
-          canSince
+          canSinceReview
             ? "Only what changed since the commit you last reviewed, from local Git"
             : pr.reviewed_sha
               ? "Nothing new since your review"
               : "You have not reviewed this pull request yet"
         }
-        onClick={() => onScope("since")}
+        onClick={() => onScope("review")}
       >
         Since your review
       </button>
+      {canSinceDrafts && (
+        <button
+          type="button"
+          role="tab"
+          aria-selected={scope === "drafts"}
+          title="Only what changed since the commit your drafts were written on, from local Git"
+          onClick={() => onScope("drafts")}
+        >
+          Since your drafts
+        </button>
+      )}
     </div>
   );
 
@@ -952,6 +1643,7 @@ function FilesTab({
               ? `Whitespace can only be ignored in a diff from local Git; this one comes from ${PROVIDER_LABEL[pr.kind]}.`
               : undefined
           }
+          annotate={annotate}
           stepper={
             ordered.length > 0 && index >= 0
               ? {
@@ -1101,6 +1793,268 @@ function FileRow({
         onChange={(e) => onMark(e.target.checked)}
       />
     </div>
+  );
+}
+
+// --- Finish Review -------------------------------------------------------------
+
+/**
+ * **Finish Review** (SPEC.md, Reviewing): the summary, the verdict, the
+ * drafts to send, and the commit being reviewed. New commits since the
+ * review started turn approving off and offer the new changes; a
+ * submission cut off midway offers to send what is left.
+ */
+function ReviewDialog({
+  pr,
+  drafts,
+  onClose,
+  onDrafts,
+  onSubmitted,
+  onConflict,
+  onShowNewChanges,
+}: {
+  pr: PullRequest;
+  drafts: ReviewDrafts;
+  onClose: () => void;
+  onDrafts: (drafts: ReviewDrafts) => void;
+  onSubmitted: (outcome: WriteOutcome) => void;
+  /** The head moved while the dialog was open: read the pull request again. */
+  onConflict: () => void;
+  onShowNewChanges: () => void;
+}) {
+  const pending = drafts.pending;
+  const [body, setBody] = useState(pending?.body ?? "");
+  const [verdict, setVerdict] = useState<ReviewVerdict>(
+    pending?.verdict ?? "comment",
+  );
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const unsent = unsentDrafts(drafts.drafts);
+  const sent = drafts.drafts.length - unsent.length;
+  const behind = draftsBehind(drafts.drafts, pr.head_sha);
+  const start = reviewStartCommit(drafts.drafts);
+  const approve = pr.actions.approve;
+  const approveReason = behind
+    ? "New commits arrived since you started this review: look at them first."
+    : approve.reason;
+  const incomplete = reviewIncomplete(body, drafts.drafts, verdict);
+  const blocked = behind
+    ? "Look at the new commits, or continue on the current one, before sending."
+    : incomplete;
+
+  const submit = () => {
+    if (busy || blocked) return;
+    setBusy(true);
+    setError(null);
+    void ipc
+      .submitReview({
+        reference: pr.reference,
+        body,
+        verdict,
+        expected_head_sha: pr.head_sha,
+      })
+      .then(onSubmitted)
+      .catch((e) => {
+        setError(errorMessage(e));
+        if (isAppError(e) && e.code === "CONFLICT") onConflict();
+        // What was sent before a timeout is marked; show it.
+        void ipc
+          .listReviewDrafts(pr.reference)
+          .then(onDrafts)
+          .catch(() => {});
+      })
+      .finally(() => setBusy(false));
+  };
+  const moveOn = () => {
+    setBusy(true);
+    void ipc
+      .moveReviewDrafts(pr.reference, pr.head_sha)
+      .then(onDrafts)
+      .catch((e) => setError(errorMessage(e)))
+      .finally(() => setBusy(false));
+  };
+  const removeDraft = (id: string) => {
+    setBusy(true);
+    void ipc
+      .deleteReviewDraft(pr.reference, id)
+      .then(onDrafts)
+      .catch((e) => setError(errorMessage(e)))
+      .finally(() => setBusy(false));
+  };
+  const submitLabel =
+    pending && sent > 0
+      ? "Send the Rest"
+      : verdict === "approve"
+        ? "Approve"
+        : verdict === "request_changes"
+          ? "Request Changes"
+          : "Submit Review";
+
+  return (
+    <Dialog
+      title="Finish Review"
+      width={600}
+      onClose={onClose}
+      footer={
+        <>
+          {error && (
+            <span className="flex-1 text-[12px] text-del" role="alert">
+              {error}
+            </span>
+          )}
+          <button
+            type="button"
+            className="btn"
+            disabled={busy}
+            onClick={onClose}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={busy || !!blocked}
+            title={blocked ?? undefined}
+            onClick={submit}
+          >
+            {busy ? "Sending…" : submitLabel}
+          </button>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-3.5 text-[13px]">
+        <span className="text-[12.5px] text-fg-2">
+          Reviewing{" "}
+          <span className="mono" title={pr.head_sha}>
+            {pr.head_sha.slice(0, 10)}
+          </span>{" "}
+          of <span className="mono">{pr.source_branch}</span>, sent to{" "}
+          {PROVIDER_LABEL[pr.kind]}
+          {pr.kind === "bitbucket_cloud" && unsent.length > 0
+            ? " as one request per comment"
+            : ""}
+          .
+        </span>
+        {pending && sent > 0 && (
+          <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-100">
+            This review was cut off midway: {sent} of{" "}
+            {plural(drafts.drafts.length, "comment")} reached{" "}
+            {PROVIDER_LABEL[pr.kind]}
+            {pending.summary_sent ? ", and the summary" : ""}. Sending again
+            posts only what is left.
+          </div>
+        )}
+        {behind && (
+          <div className="flex flex-col gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-100">
+            <span>
+              New commits arrived since you started this review
+              {start ? ` on ${start.slice(0, 10)}` : ""}. Nothing is sent,
+              approving is off, and your drafts are kept until you have looked
+              at the new changes.
+            </span>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                className="btn btn-sm"
+                disabled={busy}
+                onClick={onShowNewChanges}
+              >
+                Show New Changes
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm"
+                disabled={busy}
+                title="Your drafts then go on the current commit; a draft on a line that changed may be refused."
+                onClick={moveOn}
+              >
+                Continue on {pr.head_sha.slice(0, 10)}
+              </button>
+            </div>
+          </div>
+        )}
+        <label className="flex flex-col gap-1">
+          <span className="text-[12px] text-fg-2">Summary</span>
+          <textarea
+            className="text-area min-h-[90px]"
+            placeholder="What you think of the change… (Markdown; ⌘↩ to send)"
+            value={body}
+            readOnly={pending?.summary_sent}
+            disabled={busy}
+            onChange={(e) => setBody(e.target.value)}
+            onKeyDown={submitOnEnter(submit)}
+          />
+          {pending?.summary_sent && (
+            <span className="text-[11.5px] text-muted">
+              Already posted; only the verdict is left.
+            </span>
+          )}
+        </label>
+        <fieldset className="m-0 flex flex-col gap-1.5 border-0 p-0">
+          <legend className="mb-1 p-0 text-[12px] text-fg-2">Verdict</legend>
+          {VERDICTS.map((v) => {
+            const off = v === "approve" && (behind || !approve.allowed);
+            return (
+              <label
+                key={v}
+                className={`flex items-center gap-2 ${off ? "text-muted" : ""}`}
+                title={
+                  v === "approve" ? (approveReason ?? undefined) : undefined
+                }
+              >
+                <input
+                  type="radio"
+                  name="verdict"
+                  value={v}
+                  checked={verdict === v}
+                  disabled={off || busy}
+                  onChange={() => setVerdict(v)}
+                />
+                {VERDICT_LABEL[v]}
+                {v === "approve" && off && approveReason && (
+                  <span className="text-[11.5px]">— {approveReason}</span>
+                )}
+              </label>
+            );
+          })}
+        </fieldset>
+        <div className="flex flex-col gap-1.5">
+          <span className="text-[12px] text-fg-2">
+            {drafts.drafts.length === 0
+              ? "No comments on lines. Add them from a line's + in Files Changed."
+              : `${plural(drafts.drafts.length, "comment on a line", "comments on lines")} to send`}
+          </span>
+          {drafts.drafts.map((d) => (
+            <div
+              key={d.id}
+              className="flex flex-col gap-1 rounded-md border bg-panel px-3 py-2"
+            >
+              <div className="flex items-center gap-2 text-[11.5px] text-fg-2">
+                <span className="mono">{anchorLabel(d.anchor)}</span>
+                {d.remote_id !== null && (
+                  <span className="pr-state" data-state="open">
+                    Sent
+                  </span>
+                )}
+                <span className="flex-1" />
+                {d.remote_id === null && (
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    disabled={busy}
+                    aria-label={`Remove draft on ${anchorLabel(d.anchor)}`}
+                    onClick={() => removeDraft(d.id)}
+                  >
+                    Remove
+                  </button>
+                )}
+              </div>
+              <Markdown html={d.html} className="text-[12.5px]" />
+            </div>
+          ))}
+        </div>
+      </div>
+    </Dialog>
   );
 }
 

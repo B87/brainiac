@@ -10,9 +10,16 @@ use super::keychain::Token;
 use super::{ForgeRepository, PullRequestRef};
 use crate::models::{
     ActionAvailability, AppError, AppResult, AvailableActions, ChangedFile, Check, CheckState,
-    ChecksSummary, ForgeAccount, ForgeKind, PullRequest, PullRequestState, ReviewState, Reviewer,
-    Thread,
+    ChecksSummary, ErrorCode, ForgeAccount, ForgeKind, PullRequest, PullRequestState, ReviewDraft,
+    ReviewState, ReviewVerdict, Reviewer, Thread,
 };
+
+/// GitHub's fine-grained permissions, as its settings page names them; a
+/// refusal names the one to add (SPEC.md, Accounts).
+pub const GITHUB_PULL_REQUESTS_WRITE: &str = "Pull requests: Read and write";
+pub const GITHUB_CONTENTS_WRITE: &str = "Contents: Read and write";
+/// Bitbucket's write scope.
+pub const BITBUCKET_WRITE: &str = "write:pullrequest:bitbucket";
 
 /// Who is asking, and with what.
 pub struct Session {
@@ -72,6 +79,81 @@ pub trait ForgeAdapter {
     /// The provider's unified diff of the whole pull request, for a head
     /// that is not on the Mac.
     async fn patch(&self, session: &Session, pr: &PullRequestRef) -> AppResult<String>;
+
+    // --- Writes (SPEC.md, Reviewing), each on an explicit user action ---
+
+    /// Comment on the whole pull request. Returns the provider's comment ID.
+    async fn comment(
+        &self,
+        session: &Session,
+        pr: &PullRequestRef,
+        body: &str,
+    ) -> AppResult<String>;
+    /// Reply to a thread. Returns the provider's comment ID.
+    async fn reply(
+        &self,
+        session: &Session,
+        pr: &PullRequestRef,
+        thread: &Thread,
+        body: &str,
+    ) -> AppResult<String>;
+    /// Resolve or reopen a thread on a line.
+    async fn resolve(
+        &self,
+        session: &Session,
+        pr: &PullRequestRef,
+        thread: &Thread,
+        resolved: bool,
+    ) -> AppResult<()>;
+    /// The source branch's tip right now, in full, for the head check before
+    /// a review or a merge.
+    async fn current_head(&self, session: &Session, pr: &PullRequest) -> AppResult<String>;
+    /// Send a review: GitHub takes it whole in one request; Bitbucket takes
+    /// one request per comment, so `progress` is told each comment's ID as
+    /// it is posted and a cut-off submission can resume with what is left.
+    async fn submit_review(
+        &self,
+        session: &Session,
+        pr: &PullRequest,
+        review: &ReviewToSend<'_>,
+        progress: &mut (dyn FnMut(SentPart) + Send),
+    ) -> AppResult<()>;
+}
+
+/// A review as the adapters send it: the drafts still to post, the summary
+/// unless it was posted already, and the verdict.
+pub struct ReviewToSend<'a> {
+    pub drafts: &'a [ReviewDraft],
+    pub body: &'a str,
+    pub summary_sent: bool,
+    pub verdict: ReviewVerdict,
+    pub head_sha: &'a str,
+}
+
+/// One part of a review posted (Bitbucket), with the provider's comment ID.
+pub enum SentPart {
+    Draft { id: String, remote_id: String },
+    Summary { remote_id: String },
+}
+
+/// A comment of the account's user in the conversation that matches what
+/// was being posted: the body, and the file for a line comment. Finds a
+/// write whose answer never came (`TIMEOUT`), so it is not posted twice.
+pub fn find_posted(
+    threads: &[Thread],
+    path: Option<&str>,
+    thread_id: Option<&str>,
+    body: &str,
+) -> Option<String> {
+    let wanted = body.trim();
+    threads
+        .iter()
+        .filter(|t| thread_id.is_none_or(|id| t.id == id))
+        .filter(|t| path.is_none_or(|p| t.anchor.as_ref().is_some_and(|a| a.path == p)))
+        .flat_map(|t| t.comments.iter())
+        .filter(|c| c.mine && c.body.trim() == wanted)
+        .map(|c| c.id.clone())
+        .next_back()
 }
 
 /// Whether `updated` is an edit: later than `created` by more than the
@@ -143,6 +225,104 @@ impl Client {
         self.budget.observe(self.kind, &result);
         result
     }
+
+    pub async fn put_json(
+        &self,
+        session: &Session,
+        url: &str,
+        headers: &[(&'static str, &str)],
+        body: &serde_json::Value,
+    ) -> AppResult<Response> {
+        self.budget.check(self.kind)?;
+        let result = self
+            .http
+            .put_json(self.kind.label(), url, session.auth(), headers, body)
+            .await;
+        self.budget.observe(self.kind, &result);
+        result
+    }
+
+    pub async fn delete(
+        &self,
+        session: &Session,
+        url: &str,
+        headers: &[(&'static str, &str)],
+    ) -> AppResult<Response> {
+        self.budget.check(self.kind)?;
+        let result = self
+            .http
+            .delete(self.kind.label(), url, session.auth(), headers)
+            .await;
+        self.budget.observe(self.kind, &result);
+        result
+    }
+}
+
+/// An answer to a write that is not what was asked for. A refusal names the
+/// permission the token needs; the service then turns that action off.
+pub fn write_error(kind: ForgeKind, what: &str, permission: &str, response: &Response) -> AppError {
+    let provider = kind.label();
+    let excerpt =
+        String::from_utf8_lossy(&response.body[..response.body.len().min(500)]).into_owned();
+    match response.status {
+        401 => AppError::new(
+            ErrorCode::PermissionDenied,
+            format!("{provider} no longer accepts the account's token. Replace it in Settings → Accounts."),
+        ),
+        403 => AppError::new(
+            ErrorCode::PermissionDenied,
+            format!("{provider} did not let this account {what}. The token needs {permission}; add it and replace the token in Settings → Accounts."),
+        )
+        .with_details(excerpt),
+        404 => AppError::new(
+            ErrorCode::NotFound,
+            format!("{provider} could not {what}: the pull request, or what it was on, is gone."),
+        )
+        .with_details(excerpt),
+        409 => AppError::new(
+            ErrorCode::Conflict,
+            format!("{provider} did not {what}: the pull request changed meanwhile."),
+        )
+        .with_details(excerpt),
+        422 | 400 => AppError::new(
+            ErrorCode::Validation,
+            format!("{provider} did not {what}: {}", provider_message(&response.body)),
+        )
+        .with_details(excerpt),
+        _ => super::http::unexpected(provider, response),
+    }
+}
+
+/// What the provider said about a refused write, from either provider's
+/// error JSON, or the start of the body.
+fn provider_message(body: &[u8]) -> String {
+    let json: Option<serde_json::Value> = serde_json::from_slice(body).ok();
+    let text = json.as_ref().and_then(|v| {
+        // GitHub: {"message": "...", "errors": [{"message": "..."}]};
+        // Bitbucket: {"error": {"message": "..."}}.
+        let top = v.get("message").and_then(|m| m.as_str());
+        let nested = v
+            .get("errors")
+            .and_then(|e| e.as_array())
+            .and_then(|e| e.first())
+            .and_then(|e| e.get("message").and_then(|m| m.as_str()));
+        let bitbucket = v
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str());
+        nested.or(top).or(bitbucket).map(str::to_string)
+    });
+    text.unwrap_or_else(|| {
+        String::from_utf8_lossy(&body[..body.len().min(200)])
+            .trim()
+            .to_string()
+    })
+}
+
+/// Whether a 403 is GitHub refusing a fine-grained token a permission (as
+/// opposed to a repository the account cannot write to).
+pub fn lacks_permission(response: &Response) -> bool {
+    response.status == 403 && String::from_utf8_lossy(&response.body).contains("not accessible by")
 }
 
 /// An answer to a read that is not what was asked for.
@@ -208,20 +388,33 @@ pub fn base_actions(
     reviewers: &[Reviewer],
 ) -> AvailableActions {
     let provider = session.account.kind.label();
+    let missing = &session.account.missing;
     if session.account.read_only {
-        let missing = if session.account.missing.is_empty() {
+        let add = if missing.is_empty() {
             String::new()
         } else {
-            format!(" Add {} to the token.", session.account.missing.join(", "))
+            format!(" Add {} to the token.", missing.join(", "))
         };
-        let not = ActionAvailability::not(format!("The {provider} account is read-only.{missing}"));
+        let not = ActionAvailability::not(format!("The {provider} account is read-only.{add}"));
         return AvailableActions {
             comment: not.clone(),
             review: not.clone(),
             approve: not.clone(),
-            merge: not,
+            merge: not.clone(),
+            resolve: not,
         };
     }
+    // A permission GitHub refused once turns its actions off (SPEC.md, Accounts).
+    let lacks = |permission: &str| {
+        missing.iter().any(|m| m == permission).then(|| {
+            ActionAvailability::not(format!(
+                "The token lacks {permission}. Add it and replace the token in Settings → Accounts."
+            ))
+        })
+    };
+    let no_pull_requests_write =
+        lacks(GITHUB_PULL_REQUESTS_WRITE).or_else(|| lacks(BITBUCKET_WRITE));
+    let no_contents_write = lacks(GITHUB_CONTENTS_WRITE).or_else(|| lacks(BITBUCKET_WRITE));
     let open = matches!(state, PullRequestState::Open | PullRequestState::Draft);
     let closed = || {
         ActionAvailability::not(match state {
@@ -248,15 +441,21 @@ pub fn base_actions(
     } else {
         ActionAvailability::allowed()
     };
+    let review = if open {
+        ActionAvailability::allowed()
+    } else {
+        closed()
+    };
     AvailableActions {
-        comment: ActionAvailability::allowed(),
-        review: if open {
-            ActionAvailability::allowed()
-        } else {
-            closed()
-        },
-        approve,
-        merge,
+        comment: no_pull_requests_write
+            .clone()
+            .unwrap_or_else(ActionAvailability::allowed),
+        review: no_pull_requests_write.clone().unwrap_or(review),
+        approve: no_pull_requests_write.clone().unwrap_or(approve),
+        merge: no_contents_write.clone().unwrap_or(merge),
+        resolve: no_pull_requests_write
+            .or(no_contents_write)
+            .unwrap_or_else(ActionAvailability::allowed),
     }
 }
 

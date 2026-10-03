@@ -218,6 +218,21 @@ impl AccountService {
         Ok(SaveForgeAccountOutcome::Saved { account })
     }
 
+    /// The provider refused an action for a permission the token lacks: keep
+    /// that with the account, so the action is off until the token is
+    /// replaced (SPEC.md, Accounts: GitHub shows no fine-grained permissions).
+    pub async fn mark_missing(&self, kind: ForgeKind, permission: &str) -> AppResult<()> {
+        let permission = permission.to_string();
+        tracing::info!(
+            provider = kind.label(),
+            permission,
+            "the token lacks a permission"
+        );
+        self.db
+            .call(move |conn| store::add_missing(conn, kind, &permission))
+            .await
+    }
+
     /// Remove the provider's account and delete its token from the Keychain.
     pub async fn remove(&self, kind: ForgeKind) -> AppResult<Vec<ForgeAccountSlot>> {
         self.keychain(move |k| k.delete(kind)).await?;

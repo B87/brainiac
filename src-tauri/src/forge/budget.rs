@@ -136,9 +136,10 @@ impl Budget {
                     w.retry_at = Some(now + wait);
                 }
             }
-            Err(e)
-                if e.code == ErrorCode::DependencyUnavailable || e.code == ErrorCode::Timeout =>
-            {
+            // No answer at all: leave the provider alone for a while. One
+            // request that got no answer in time is not that: a write that
+            // timed out is looked for right away (SPEC.md, Reviewing).
+            Err(e) if e.code == ErrorCode::DependencyUnavailable => {
                 w.retry_at = Some(now + UNREACHABLE_PAUSE);
             }
             Err(_) => {}

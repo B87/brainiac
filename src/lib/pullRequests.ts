@@ -7,13 +7,16 @@ import type {
   ChangedFile,
   CheckState,
   ChecksSummary,
+  DiffSide,
   ForgeKind,
   PullRequest,
   PullRequestGroup,
   PullRequestState,
   RepositorySummary,
   RequestBudget,
+  ReviewDraft,
   ReviewState,
+  ReviewVerdict,
   Thread,
   ThreadAnchor,
 } from "./ipc";
@@ -254,4 +257,87 @@ export function anchorLabel(a: ThreadAnchor): string {
   if (a.start_line !== null && a.start_line !== a.line)
     return `${a.path}:${a.start_line}–${a.line}`;
   return `${a.path}:${a.line}`;
+}
+
+// --- Reviewing (SPEC.md, Reviewing) ------------------------------------------
+
+export const VERDICT_LABEL: Record<ReviewVerdict, string> = {
+  comment: "Comment",
+  approve: "Approve",
+  request_changes: "Request changes",
+};
+
+/** Drafts not sent yet: the ones a review still has to post. */
+export function unsentDrafts(drafts: ReviewDraft[]): ReviewDraft[] {
+  return drafts.filter((d) => d.remote_id === null);
+}
+
+/**
+ * The commit the review started on: the earliest unsent draft's. Null
+ * without drafts, or when a draft carries no commit.
+ */
+export function reviewStartCommit(drafts: ReviewDraft[]): string | null {
+  const unsent = unsentDrafts(drafts);
+  if (unsent.length === 0) return null;
+  const commits = unsent.map((d) => d.anchor.commit);
+  return commits.every((c) => c !== null) ? (commits[0] ?? null) : null;
+}
+
+/** Whether any unsent draft was written on a commit other than `head`. */
+export function draftsBehind(drafts: ReviewDraft[], head: string): boolean {
+  return unsentDrafts(drafts).some(
+    (d) => d.anchor.commit !== null && !sameCommit(d.anchor.commit, head),
+  );
+}
+
+/** Bitbucket names commits by their first 12 characters until expanded. */
+export function sameCommit(a: string, b: string): boolean {
+  return a === b || a.startsWith(b) || b.startsWith(a);
+}
+
+/** What Finish Review needs before it can send: words, or a line comment, unless approving. */
+export function reviewIncomplete(
+  body: string,
+  drafts: ReviewDraft[],
+  verdict: ReviewVerdict,
+): string | null {
+  if (verdict === "approve") return null;
+  if (body.trim() || unsentDrafts(drafts).length > 0) return null;
+  return verdict === "comment"
+    ? "Write a summary or a comment on a line first."
+    : "Say what to change: a summary or a comment on a line.";
+}
+
+/** `new:12`: the key a diff line is annotated under. */
+export function lineKey(side: DiffSide, line: number): string {
+  return `${side}:${line}`;
+}
+
+export type LineNotes = { threads: Thread[]; drafts: ReviewDraft[] };
+
+/**
+ * The threads and drafts on each line of one file, keyed by `lineKey`.
+ * Threads without a line (the provider no longer places them) are left out.
+ */
+export function lineNotes(
+  path: string,
+  threads: Thread[],
+  drafts: ReviewDraft[],
+): Map<string, LineNotes> {
+  const out = new Map<string, LineNotes>();
+  const at = (a: ThreadAnchor) => {
+    if (a.path !== path || a.line === null) return null;
+    const key = lineKey(a.side, a.line);
+    let notes = out.get(key);
+    if (!notes) {
+      notes = { threads: [], drafts: [] };
+      out.set(key, notes);
+    }
+    return notes;
+  };
+  for (const t of threads) {
+    if (t.anchor) at(t.anchor)?.threads.push(t);
+  }
+  for (const d of drafts) at(d.anchor)?.drafts.push(d);
+  return out;
 }

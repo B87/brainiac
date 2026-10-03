@@ -6,8 +6,8 @@ use serde::Deserialize;
 
 use super::accounts::AccountCheck;
 use super::adapter::{
-    base_actions, edited, normalize_time, read_error, sort_threads, summarize_checks, Client,
-    ForgeAdapter, ListOutcome, Session,
+    base_actions, edited, normalize_time, read_error, sort_threads, summarize_checks, write_error,
+    Client, ForgeAdapter, ListOutcome, ReviewToSend, SentPart, Session, GITHUB_PULL_REQUESTS_WRITE,
 };
 use super::http::{unexpected, Auth, Http, Response};
 use super::keychain::Token;
@@ -16,7 +16,8 @@ use super::{ForgeRepository, PullRequestRef};
 use crate::models::{
     ActionAvailability, AppError, AppResult, ChangedFile, ChangedFileStatus, Check, CheckState,
     Comment, DiffSide, ErrorCode, ForgeKind, ForgeTokenKind, ForgeUser, Mergeability, PullRequest,
-    PullRequestCounts, PullRequestState, ReviewState, Reviewer, Thread, ThreadAnchor,
+    PullRequestCounts, PullRequestState, ReviewState, ReviewVerdict, Reviewer, Thread,
+    ThreadAnchor,
 };
 
 pub const API: &str = "https://api.github.com";
@@ -182,9 +183,10 @@ impl Github {
                     .as_ref()
                     .is_some_and(|p| p.last().and_then(|v| v.as_str()) == Some("pullRequest"))
             };
+            let forbidden = |e: &GraphqlError| e.kind.as_deref() == Some("FORBIDDEN");
             let code = if errors.iter().any(|e| not_found(e) && on_pull_request(e)) {
                 ErrorCode::NotFound
-            } else if errors.iter().any(not_found) {
+            } else if errors.iter().any(|e| not_found(e) || forbidden(e)) {
                 ErrorCode::PermissionDenied
             } else {
                 ErrorCode::DependencyUnavailable
@@ -867,6 +869,75 @@ struct RestFile {
     patch: Option<String>,
 }
 
+// --- Writes (SPEC.md, Reviewing) ----------------------------------------------
+
+/// What REST answers a created comment or review with.
+#[derive(Deserialize)]
+struct Created {
+    id: u64,
+}
+
+const RESOLVE_MUTATION: &str = r#"
+mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }
+"#;
+const UNRESOLVE_MUTATION: &str = r#"
+mutation($id: ID!) { unresolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }
+"#;
+
+impl Github {
+    fn rest(&self, pr: &PullRequestRef, tail: &str) -> String {
+        format!(
+            "{}/repos/{}/{}/{tail}",
+            self.client.api, pr.repository.owner, pr.repository.name
+        )
+    }
+
+    /// `POST` a JSON body and read the created object's ID.
+    async fn create(
+        &self,
+        session: &Session,
+        url: &str,
+        body: &serde_json::Value,
+        what: &str,
+    ) -> AppResult<String> {
+        let response = self
+            .client
+            .post_json(session, url, &[API_VERSION, ACCEPT], body)
+            .await?;
+        if !matches!(response.status, 200 | 201) {
+            return Err(write_error(
+                ForgeKind::Github,
+                what,
+                GITHUB_PULL_REQUESTS_WRITE,
+                &response,
+            ));
+        }
+        let created: Created = response.json(PROVIDER)?;
+        Ok(created.id.to_string())
+    }
+}
+
+/// A draft as GitHub's review API takes it: `line` and `side` on the head's
+/// diff, with `start_line` for a range.
+fn review_comment(draft: &crate::models::ReviewDraft) -> AppResult<serde_json::Value> {
+    let a = &draft.anchor;
+    let line = a
+        .line
+        .ok_or_else(|| AppError::validation(format!("The draft on {} names no line.", a.path)))?;
+    let side = match a.side {
+        DiffSide::Old => "LEFT",
+        DiffSide::New => "RIGHT",
+    };
+    let mut comment = serde_json::json!({
+        "path": a.path, "body": draft.body, "line": line, "side": side,
+    });
+    if let Some(start) = a.start_line.filter(|s| *s < line) {
+        comment["start_line"] = serde_json::json!(start);
+        comment["start_side"] = serde_json::json!(side);
+    }
+    Ok(comment)
+}
+
 impl ForgeAdapter for Github {
     async fn list(
         &self,
@@ -1101,6 +1172,118 @@ impl ForgeAdapter for Github {
                 &response,
             )),
         }
+    }
+
+    async fn comment(
+        &self,
+        session: &Session,
+        pr: &PullRequestRef,
+        body: &str,
+    ) -> AppResult<String> {
+        // A pull request is an issue to the comments API.
+        let url = self.rest(pr, &format!("issues/{}/comments", pr.number));
+        self.create(
+            session,
+            &url,
+            &serde_json::json!({ "body": body }),
+            "post the comment",
+        )
+        .await
+    }
+
+    async fn reply(
+        &self,
+        session: &Session,
+        pr: &PullRequestRef,
+        thread: &Thread,
+        body: &str,
+    ) -> AppResult<String> {
+        // Comments on the pull request and review summaries have no replies
+        // on GitHub: a reply to one is another comment on the pull request.
+        if thread.anchor.is_none() {
+            return self.comment(session, pr, body).await;
+        }
+        let first = thread
+            .comments
+            .first()
+            .map(|c| c.id.as_str())
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| AppError::validation("The thread has no comment to reply to."))?;
+        let url = self.rest(pr, &format!("pulls/{}/comments/{first}/replies", pr.number));
+        self.create(
+            session,
+            &url,
+            &serde_json::json!({ "body": body }),
+            "post the reply",
+        )
+        .await
+    }
+
+    async fn resolve(
+        &self,
+        session: &Session,
+        pr: &PullRequestRef,
+        thread: &Thread,
+        resolved: bool,
+    ) -> AppResult<()> {
+        if thread.anchor.is_none() {
+            return Err(AppError::validation(
+                "Only a thread on a line can be resolved.",
+            ));
+        }
+        let what = format!(
+            "{} the thread on {pr}",
+            if resolved { "resolve" } else { "reopen" }
+        );
+        let mutation = if resolved {
+            RESOLVE_MUTATION
+        } else {
+            UNRESOLVE_MUTATION
+        };
+        let _: serde_json::Value = self
+            .query(
+                session,
+                mutation,
+                serde_json::json!({ "id": thread.id }),
+                &what,
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn current_head(&self, session: &Session, pr: &PullRequest) -> AppResult<String> {
+        let reference: PullRequestRef = pr.reference.parse()?;
+        Ok(self.get(session, &reference).await?.head_sha)
+    }
+
+    /// One request with the summary, the verdict, and every draft, on the
+    /// head commit; GitHub accepts a review on an older commit, so the
+    /// service compared the head first.
+    async fn submit_review(
+        &self,
+        session: &Session,
+        pr: &PullRequest,
+        review: &ReviewToSend<'_>,
+        _progress: &mut (dyn FnMut(SentPart) + Send),
+    ) -> AppResult<()> {
+        let reference: PullRequestRef = pr.reference.parse()?;
+        let comments = review
+            .drafts
+            .iter()
+            .map(review_comment)
+            .collect::<AppResult<Vec<_>>>()?;
+        let event = match review.verdict {
+            ReviewVerdict::Comment => "COMMENT",
+            ReviewVerdict::Approve => "APPROVE",
+            ReviewVerdict::RequestChanges => "REQUEST_CHANGES",
+        };
+        let body = serde_json::json!({
+            "commit_id": review.head_sha, "body": review.body, "event": event, "comments": comments,
+        });
+        let url = self.rest(&reference, &format!("pulls/{}/reviews", reference.number));
+        self.create(session, &url, &body, "submit the review")
+            .await?;
+        Ok(())
     }
 }
 

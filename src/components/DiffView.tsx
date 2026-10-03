@@ -1,4 +1,5 @@
 import {
+  Fragment,
   type ReactNode,
   useCallback,
   useEffect,
@@ -17,7 +18,7 @@ import {
   unifiedRows,
   wordHighlighter,
 } from "../lib/diff";
-import type { DiffLine, DiffResult, Hunk } from "../lib/ipc";
+import type { DiffLine, DiffResult, DiffSide, Hunk } from "../lib/ipc";
 import { useKeys } from "../lib/keys";
 import { usePref } from "../lib/prefs";
 import { splitPath } from "../lib/repo";
@@ -30,6 +31,25 @@ export type Stepper = {
   total: number;
   onPrev: () => void;
   onNext: () => void;
+};
+
+/** A line, or a range ending at it, a comment goes on. */
+export type LineTarget = {
+  side: DiffSide;
+  line: number;
+  start_line: number | null;
+};
+
+/**
+ * Pull request review over a patch: what to show under lines (threads,
+ * drafts, the comment box), and the gutter button and `C` that start a
+ * comment on the selected line or range.
+ */
+export type Annotate = {
+  render: (line: DiffLine) => ReactNode | null;
+  /** Absent when commenting is off; `note` then says why. */
+  onComment?: (target: LineTarget) => void;
+  note?: string;
 };
 
 type Props = {
@@ -49,6 +69,7 @@ type Props = {
   onIgnoreWhitespace: (on: boolean) => void;
   /** Why whitespace cannot be ignored for this patch (a provider's diff); the button is then off. */
   ignoreWhitespaceNote?: string;
+  annotate?: Annotate;
 };
 
 /** Must match `.diff-row` in index.css. */
@@ -87,6 +108,7 @@ export default function DiffView({
   ignoreWhitespace,
   onIgnoreWhitespace,
   ignoreWhitespaceNote,
+  annotate,
 }: Props) {
   const [wrap, setWrap] = usePref("brainiac.diff.wrap", false);
   const [layout, setLayout] = usePref<Layout>(
@@ -307,6 +329,7 @@ export default function DiffView({
             wrap={wrapped}
             onHunk={setHunkIndex}
             jumpRef={jumpRef}
+            annotate={annotate}
             footer={
               truncated && (
                 <div className="m-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 font-sans text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-100">
@@ -369,10 +392,32 @@ export function DiffSkeleton() {
   );
 }
 
+/** Lines of one side selected in the gutter, for a comment on them. */
+type Selection = { side: DiffSide; from: number; to: number };
+
+function sideNo(l: DiffLine, side: DiffSide): number | null {
+  return side === "old" ? l.old_no : l.new_no;
+}
+
+function inSelection(l: DiffLine, sel: Selection | null): boolean {
+  if (!sel) return false;
+  const n = sideNo(l, sel.side);
+  return n !== null && n >= sel.from && n <= sel.to;
+}
+
+function targetOf(sel: Selection): LineTarget {
+  return {
+    side: sel.side,
+    line: sel.to,
+    start_line: sel.from < sel.to ? sel.from : null,
+  };
+}
+
 /**
  * Scrollable patch body. Only rows near the viewport are in the DOM for long
  * diffs. Tracks which hunk is at the top, pins its header, and exposes a
- * jump function for hunk navigation.
+ * jump function for hunk navigation. Annotated patches (threads under lines)
+ * have rows of varying height, so they render whole and are measured.
  */
 function PatchRows({
   hunks,
@@ -380,6 +425,7 @@ function PatchRows({
   wrap,
   onHunk,
   jumpRef,
+  annotate,
   footer,
 }: {
   hunks: Hunk[];
@@ -387,12 +433,14 @@ function PatchRows({
   wrap: boolean;
   onHunk: (index: number) => void;
   jumpRef: React.RefObject<((i: number) => void) | null>;
+  annotate?: Annotate;
   footer: ReactNode;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewport, setViewport] = useState(800);
   const [pinned, setPinned] = useState<number | null>(null);
+  const [sel, setSel] = useState<Selection | null>(null);
   const rows = useMemo<Array<UnifiedRow | SplitRow>>(
     () => (layout === "split" ? splitRows(hunks) : unifiedRows(hunks)),
     [hunks, layout],
@@ -402,6 +450,8 @@ function PatchRows({
   const rowsRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(800);
   const longest = useMemo(() => longestLines(hunks), [hunks]);
+  // Rows are measured, not counted, when their heights vary.
+  const measured = wrap || !!annotate;
 
   useEffect(() => {
     const el = scroller.current;
@@ -419,28 +469,28 @@ function PatchRows({
   /** Top offset of hunk `i`'s header row inside the scroller. */
   const hunkTop = useCallback(
     (i: number) => {
-      if (!wrap) return (hunkRows[i] ?? 0) * ROW_HEIGHT;
+      if (!measured) return (hunkRows[i] ?? 0) * ROW_HEIGHT;
       // Only the rows themselves, never the pinned copy above them.
       const el = rowsRef.current?.querySelector<HTMLElement>(
         `[data-hunk="${i}"]`,
       );
       return el ? el.offsetTop : 0;
     },
-    [wrap, hunkRows],
+    [measured, hunkRows],
   );
 
   const track = useCallback(
     (top: number) => {
       setScrollTop(top);
       let current = 0;
-      if (!wrap) current = hunkAtRow(rows, Math.floor(top / ROW_HEIGHT));
+      if (!measured) current = hunkAtRow(rows, Math.floor(top / ROW_HEIGHT));
       else
         for (let i = 0; i < hunkRows.length; i++)
           if (hunkTop(i) <= top + 1) current = i;
       onHunk(current);
       setPinned(top > hunkTop(current) + 1 ? current : null);
     },
-    [wrap, rows, hunkRows, hunkTop, onHunk],
+    [measured, rows, hunkRows, hunkTop, onHunk],
   );
 
   // A reloaded patch (same file, new content) keeps its scroll position;
@@ -462,13 +512,53 @@ function PatchRows({
     };
   }, [jumpRef, hunkTop, track]);
 
-  const { start, end } = visibleRange(
-    rows.length,
-    ROW_HEIGHT,
-    scrollTop,
-    viewport,
+  /** A click in the gutter selects the line; with Shift, the range up to it. */
+  const pick = useCallback((side: DiffSide, line: number, extend: boolean) => {
+    setSel((current) => {
+      if (extend && current && current.side === side)
+        return {
+          side,
+          from: Math.min(current.from, line),
+          to: Math.max(current.to, line),
+        };
+      if (current && current.from === line && current.to === line && !extend)
+        return null;
+      return { side, from: line, to: line };
+    });
+  }, []);
+  const onComment = annotate?.onComment;
+  /** The gutter button: on the selection when the line is in it, else that line. */
+  const comment = useCallback(
+    (l: DiffLine, side: DiffSide) => {
+      if (!onComment) return;
+      const n = sideNo(l, side);
+      if (n === null) return;
+      const target: Selection = inSelection(l, sel)
+        ? (sel as Selection)
+        : { side, from: n, to: n };
+      setSel(target);
+      onComment(targetOf(target));
+    },
+    [onComment, sel],
   );
+  useKeys({ c: () => sel && onComment?.(targetOf(sel)) }, !!onComment && !!sel);
+
+  const windowed = measured
+    ? { start: 0, end: rows.length }
+    : visibleRange(rows.length, ROW_HEIGHT, scrollTop, viewport);
+  const { start, end } = windowed;
   const pinnedHunk = pinned === null ? null : hunks[pinned];
+  const extra = (l: DiffLine | null) => {
+    if (!l || !annotate) return null;
+    const node = annotate.render(l);
+    return node ? <div className="diff-extra">{node}</div> : null;
+  };
+  const lineProps = {
+    sel,
+    onPick: pick,
+    onComment: onComment ? comment : null,
+    note: annotate?.note,
+  };
   return (
     <div
       ref={scroller}
@@ -485,11 +575,11 @@ function PatchRows({
       <div
         ref={rowsRef}
         className={wrap ? "" : "min-w-max"}
-        style={wrap ? undefined : { height: rows.length * ROW_HEIGHT }}
+        style={measured ? undefined : { height: rows.length * ROW_HEIGHT }}
       >
         <div
           style={
-            wrap
+            measured
               ? undefined
               : { transform: `translateY(${start * ROW_HEIGHT}px)` }
           }
@@ -503,28 +593,35 @@ function PatchRows({
                 index={row.index}
               />
             ) : row.kind === "line" ? (
-              <LineRow
-                // biome-ignore lint/suspicious/noArrayIndexKey: see above.
-                key={start + i}
-                line={row.line}
-                words={words(row.line)}
-              />
+              // biome-ignore lint/suspicious/noArrayIndexKey: see above.
+              <Fragment key={start + i}>
+                <LineRow
+                  line={row.line}
+                  words={words(row.line)}
+                  {...lineProps}
+                />
+                {extra(row.line)}
+              </Fragment>
             ) : (
-              <PairRow
-                // biome-ignore lint/suspicious/noArrayIndexKey: see above.
-                key={start + i}
-                left={row.left}
-                right={row.right}
-                words={words}
-                widths={
-                  wrap
-                    ? null
-                    : [
-                        halfWidth(width, longest.old),
-                        halfWidth(width, longest.new),
-                      ]
-                }
-              />
+              // biome-ignore lint/suspicious/noArrayIndexKey: see above.
+              <Fragment key={start + i}>
+                <PairRow
+                  left={row.left}
+                  right={row.right}
+                  words={words}
+                  widths={
+                    wrap
+                      ? null
+                      : [
+                          halfWidth(width, longest.old),
+                          halfWidth(width, longest.new),
+                        ]
+                  }
+                  {...lineProps}
+                />
+                {extra(row.left)}
+                {row.right !== row.left && extra(row.right)}
+              </Fragment>
             ),
           )}
         </div>
@@ -577,12 +674,97 @@ function Text({ line, words }: { line: DiffLine; words?: Segment[] }) {
   );
 }
 
-function LineRow({ line: l, words }: { line: DiffLine; words?: Segment[] }) {
+/** What a row needs to select lines and start comments; inert without a reviewer. */
+type LineProps = {
+  sel: Selection | null;
+  onPick: (side: DiffSide, line: number, extend: boolean) => void;
+  onComment: ((l: DiffLine, side: DiffSide) => void) | null;
+  note?: string;
+};
+
+/** A line number: a button that selects the line when selection is on. */
+function Gutter({
+  line: l,
+  side,
+  onPick,
+  onComment,
+}: {
+  line: DiffLine;
+  side: DiffSide;
+  onPick: LineProps["onPick"];
+  onComment: LineProps["onComment"];
+}) {
+  const n = sideNo(l, side);
+  if (n === null || !onComment)
+    return <span className="diff-gutter">{n ?? ""}</span>;
   return (
-    <div className={`diff-row ${lineClass(l)}`}>
-      <span className="diff-gutter">{l.old_no ?? ""}</span>
-      <span className="diff-gutter">{l.new_no ?? ""}</span>
+    <button
+      type="button"
+      className="diff-gutter diff-gutter-btn"
+      title="Select the line; Shift-click for a range"
+      onClick={(e) => onPick(side, n, e.shiftKey)}
+    >
+      {n}
+    </button>
+  );
+}
+
+/** The "+" that starts a comment on a line, shown on hover. */
+function CommentButton({
+  line: l,
+  side,
+  onComment,
+  note,
+}: {
+  line: DiffLine;
+  side: DiffSide;
+  onComment: LineProps["onComment"];
+  note?: string;
+}) {
+  const n = sideNo(l, side);
+  if (n === null) return null;
+  const where = side === "old" ? `old line ${n}` : `line ${n}`;
+  return (
+    <button
+      type="button"
+      className="diff-comment-btn"
+      aria-label={`Comment on ${where}`}
+      title={note ?? `Comment on ${where} (C on the selected line)`}
+      disabled={!onComment}
+      onClick={() => onComment?.(l, side)}
+    >
+      +
+    </button>
+  );
+}
+
+function LineRow({
+  line: l,
+  words,
+  sel,
+  onPick,
+  onComment,
+  note,
+}: { line: DiffLine; words?: Segment[] } & LineProps) {
+  // A context line is on both sides; the new side is where comments go.
+  const side: DiffSide = l.kind === "delete" ? "old" : "new";
+  const active = !!onComment || !!note;
+  return (
+    <div
+      className={`diff-row ${lineClass(l)}`}
+      data-selected={inSelection(l, sel) || undefined}
+    >
+      <Gutter line={l} side="old" onPick={onPick} onComment={onComment} />
+      <Gutter line={l} side="new" onPick={onPick} onComment={onComment} />
       <span className="diff-sign">
+        {active && (
+          <CommentButton
+            line={l}
+            side={side}
+            onComment={onComment}
+            note={note}
+          />
+        )}
         {l.kind === "add" ? "+" : l.kind === "delete" ? "−" : ""}
       </span>
       <Text line={l} words={words} />
@@ -595,14 +777,19 @@ function PairRow({
   right,
   words,
   widths,
+  sel,
+  onPick,
+  onComment,
+  note,
 }: {
   left: DiffLine | null;
   right: DiffLine | null;
   words: (line: DiffLine) => Segment[] | undefined;
   /** Fixed column widths without wrapping, so the columns line up across rows. */
   widths: [string, string] | null;
-}) {
-  const half = (l: DiffLine | null, side: "old" | "new") => {
+} & LineProps) {
+  const active = !!onComment || !!note;
+  const half = (l: DiffLine | null, side: DiffSide) => {
     const style = widths
       ? { flex: "none", width: widths[side === "old" ? 0 : 1] }
       : undefined;
@@ -610,11 +797,18 @@ function PairRow({
       <span
         className={`half ${l.kind === "context" ? "" : lineClass(l)}`}
         style={style}
+        data-selected={(inSelection(l, sel) && sel?.side === side) || undefined}
       >
-        <span className="diff-gutter">
-          {side === "old" ? (l.old_no ?? "") : (l.new_no ?? "")}
-        </span>
+        <Gutter line={l} side={side} onPick={onPick} onComment={onComment} />
         <span className="diff-sign">
+          {active && (
+            <CommentButton
+              line={l}
+              side={side}
+              onComment={onComment}
+              note={note}
+            />
+          )}
           {l.kind === "add" ? "+" : l.kind === "delete" ? "−" : ""}
         </span>
         <Text line={l} words={words(l)} />

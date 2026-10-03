@@ -11,6 +11,7 @@ pub mod adapter;
 pub mod bitbucket;
 pub mod budget;
 mod cache;
+mod drafts;
 pub mod github;
 pub mod http;
 pub mod keychain;

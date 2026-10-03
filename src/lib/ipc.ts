@@ -9,6 +9,7 @@ import type { AgentAccessStatus } from "./generated/AgentAccessStatus";
 import type { AppError } from "./generated/AppError";
 import type { AppSnapshot } from "./generated/AppSnapshot";
 import type { ChangesResult } from "./generated/ChangesResult";
+import type { CommentRequest } from "./generated/CommentRequest";
 import type { CommitDetail } from "./generated/CommitDetail";
 import type { CommitPage } from "./generated/CommitPage";
 import type { Conversation } from "./generated/Conversation";
@@ -47,22 +48,27 @@ import type { RelocationOutcome } from "./generated/RelocationOutcome";
 import type { RenameNoteRequest } from "./generated/RenameNoteRequest";
 import type { RenamePreview } from "./generated/RenamePreview";
 import type { RenameResult } from "./generated/RenameResult";
+import type { ReplyRequest } from "./generated/ReplyRequest";
 import type { RepositoryChangedEvent } from "./generated/RepositoryChangedEvent";
 import type { RepositoryNotes } from "./generated/RepositoryNotes";
 import type { RepositorySummary } from "./generated/RepositorySummary";
 import type { RepositoryTab } from "./generated/RepositoryTab";
 import type { ResolvedLink } from "./generated/ResolvedLink";
+import type { ResolveThreadRequest } from "./generated/ResolveThreadRequest";
 import type { RestorePreview } from "./generated/RestorePreview";
 import type { RestoreRequest } from "./generated/RestoreRequest";
 import type { RestoreResult } from "./generated/RestoreResult";
+import type { ReviewDrafts } from "./generated/ReviewDrafts";
 import type { SaveForgeAccountOutcome } from "./generated/SaveForgeAccountOutcome";
 import type { SaveForgeAccountRequest } from "./generated/SaveForgeAccountRequest";
 import type { SaveNoteRequest } from "./generated/SaveNoteRequest";
 import type { SaveNoteResult } from "./generated/SaveNoteResult";
+import type { SaveReviewDraftRequest } from "./generated/SaveReviewDraftRequest";
 import type { SearchRequest } from "./generated/SearchRequest";
 import type { SearchResults } from "./generated/SearchResults";
 import type { SetRepositoryForgeRequest } from "./generated/SetRepositoryForgeRequest";
 import type { Settings } from "./generated/Settings";
+import type { SubmitReviewRequest } from "./generated/SubmitReviewRequest";
 import type { Task } from "./generated/Task";
 import type { TaskChangedEvent } from "./generated/TaskChangedEvent";
 import type { TaskFields } from "./generated/TaskFields";
@@ -77,6 +83,7 @@ import type { Workspace } from "./generated/Workspace";
 import type { WorkspaceActivity } from "./generated/WorkspaceActivity";
 import type { WorkspacePreview } from "./generated/WorkspacePreview";
 import type { WorkspaceRescan } from "./generated/WorkspaceRescan";
+import type { WriteOutcome } from "./generated/WriteOutcome";
 
 export type { ActionAvailability } from "./generated/ActionAvailability";
 export type { ActivityCommit } from "./generated/ActivityCommit";
@@ -111,6 +118,7 @@ export type { MemberOrigin } from "./generated/MemberOrigin";
 export type { MemberStatus } from "./generated/MemberStatus";
 export type { NoteDraft } from "./generated/NoteDraft";
 export type { NoteTextState } from "./generated/NoteTextState";
+export type { PendingReview } from "./generated/PendingReview";
 export type { Pin } from "./generated/Pin";
 export type { PreviewStatus } from "./generated/PreviewStatus";
 export type { PullRequestGroup } from "./generated/PullRequestGroup";
@@ -121,8 +129,10 @@ export type { RepositoryForge } from "./generated/RepositoryForge";
 export type { RepositoryFreshness } from "./generated/RepositoryFreshness";
 export type { RepositorySuggestion } from "./generated/RepositorySuggestion";
 export type { RequestBudget } from "./generated/RequestBudget";
+export type { ReviewDraft } from "./generated/ReviewDraft";
 export type { Reviewer } from "./generated/Reviewer";
 export type { ReviewState } from "./generated/ReviewState";
+export type { ReviewVerdict } from "./generated/ReviewVerdict";
 export type { SearchGroup } from "./generated/SearchGroup";
 export type { SearchHit } from "./generated/SearchHit";
 export type { SearchKind } from "./generated/SearchKind";
@@ -142,6 +152,7 @@ export type {
   AppError,
   AppSnapshot,
   ChangesResult,
+  CommentRequest,
   CommitDetail,
   CommitPage,
   Conversation,
@@ -179,21 +190,26 @@ export type {
   RenameNoteRequest,
   RenamePreview,
   RenameResult,
+  ReplyRequest,
   RepositoryNotes,
   RepositorySummary,
   RepositoryTab,
   ResolvedLink,
+  ResolveThreadRequest,
   RestorePreview,
   RestoreRequest,
   RestoreResult,
+  ReviewDrafts,
   SaveForgeAccountOutcome,
   SaveForgeAccountRequest,
   SaveNoteRequest,
   SaveNoteResult,
+  SaveReviewDraftRequest,
   SearchRequest,
   SearchResults,
   SetRepositoryForgeRequest,
   Settings,
+  SubmitReviewRequest,
   Task,
   TaskChangedEvent,
   TaskFields,
@@ -208,6 +224,7 @@ export type {
   WorkspaceActivity,
   WorkspacePreview,
   WorkspaceRescan,
+  WriteOutcome,
 };
 
 export function isAppError(e: unknown): e is AppError {
@@ -334,11 +351,11 @@ export const ipc = {
   /** One pull request, cached when younger than `maxAgeSeconds`. */
   getPullRequest: (reference: string, maxAgeSeconds: number) =>
     invoke<PullRequest>("get_pull_request", { reference, maxAgeSeconds }),
-  /** The files changed, or only those since the account's last review (local Git only). */
-  listPullRequestFiles: (reference: string, sinceReview = false) =>
+  /** The files changed, or only those since a commit of the pull request (local Git only). */
+  listPullRequestFiles: (reference: string, since: string | null = null) =>
     invoke<PullRequestFiles>("list_pull_request_files", {
       reference,
-      sinceReview,
+      since,
     }),
   /** The threads and comments, cached when younger than `maxAgeSeconds`. */
   getPullRequestConversation: (reference: string, maxAgeSeconds: number) =>
@@ -354,6 +371,29 @@ export const ipc = {
       reference,
       maxAgeSeconds,
     }),
+  /** The local checkout of a pull request's repository. */
+  getPullRequestRepository: (reference: string) =>
+    invoke<RepositorySummary>("get_pull_request_repository", { reference }),
+  // Reviewing (SPEC.md, Reviewing): drafts stay on the Mac; the rest is
+  // written to the provider on this explicit action.
+  listReviewDrafts: (reference: string) =>
+    invoke<ReviewDrafts>("list_review_drafts", { reference }),
+  saveReviewDraft: (request: SaveReviewDraftRequest) =>
+    invoke<ReviewDrafts>("save_review_draft", { request }),
+  deleteReviewDraft: (reference: string, id: string) =>
+    invoke<ReviewDrafts>("delete_review_draft", { reference, id }),
+  /** The drafts go on the head now: the user looked at the new commits. */
+  moveReviewDrafts: (reference: string, headSha: string) =>
+    invoke<ReviewDrafts>("move_review_drafts", { reference, headSha }),
+  commentOnPullRequest: (request: CommentRequest) =>
+    invoke<WriteOutcome>("comment_on_pull_request", { request }),
+  replyToThread: (request: ReplyRequest) =>
+    invoke<WriteOutcome>("reply_to_thread", { request }),
+  resolveThread: (request: ResolveThreadRequest) =>
+    invoke<WriteOutcome>("resolve_thread", { request }),
+  /** Finish Review: the drafts, a summary, and a verdict, for the head the user looked at. */
+  submitReview: (request: SubmitReviewRequest) =>
+    invoke<WriteOutcome>("submit_review", { request }),
 
   // v0.2: vault and notes
   getVaultState: () => invoke<VaultState>("get_vault_state"),

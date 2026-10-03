@@ -1959,10 +1959,14 @@ impl ActionAvailability {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct AvailableActions {
+    /// Commenting on the pull request and replying to a thread.
     pub comment: ActionAvailability,
     pub review: ActionAvailability,
     pub approve: ActionAvailability,
     pub merge: ActionAvailability,
+    /// Resolving and reopening a thread on a line.
+    #[serde(default = "ActionAvailability::allowed")]
+    pub resolve: ActionAvailability,
 }
 
 /// One pull request as both providers describe it.
@@ -2040,19 +2044,21 @@ pub struct ChangedFile {
     pub binary: bool,
 }
 
-/// The files a pull request changes, for its head commit; or, since the
-/// account's last review, the files changed between that commit and the head.
+/// The files a pull request changes, for its head commit; or, since a commit
+/// of it (the one last reviewed, or the one drafts were written on), the
+/// files changed between that commit and the head.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct PullRequestFiles {
     pub reference: String,
     pub head_sha: String,
     /// The commit the files are compared from: the target branch's tip, or
-    /// the reviewed commit (`since_review`).
+    /// the `since` commit asked for.
     #[serde(default)]
     pub base_sha: String,
+    /// Set when the list is the changes since a commit, not the whole pull request.
     #[serde(default)]
-    pub since_review: bool,
+    pub partial: bool,
     pub files: Vec<ChangedFile>,
     pub fetched_at: String,
 }
@@ -2139,9 +2145,11 @@ pub struct PullRequestDiffRequest {
     pub reference: String,
     pub path: String,
     pub old_path: Option<String>,
-    /// Compare from the commit last reviewed instead of the target branch.
+    /// Compare from this commit of the pull request (the one last reviewed,
+    /// or the one drafts were written on) instead of the target branch;
+    /// local Git only.
     #[serde(default)]
-    pub since_review: bool,
+    pub since: Option<String>,
     #[serde(default)]
     pub options: DiffOptions,
 }
@@ -2156,6 +2164,117 @@ pub struct PullRequestDiff {
     pub head_sha: String,
     /// `repository_id` is the local checkout's; the selector is a `Range`.
     pub diff: DiffResult,
+}
+
+// --- Reviewing (SPEC.md, Reviewing) ------------------------------------------
+
+/// A line comment written in Brainiac and kept on the Mac until the review
+/// is finished (`review_drafts`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ReviewDraft {
+    pub id: String,
+    pub reference: String,
+    /// Where it goes; `commit` is the head it was written on.
+    pub anchor: ThreadAnchor,
+    /// Markdown as written.
+    pub body: String,
+    /// `body` rendered and sanitized, for showing it in the diff.
+    pub html: String,
+    /// The provider's comment ID once this draft was sent, when a review is
+    /// sent as several requests (Bitbucket) and was cut off midway.
+    pub remote_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// The verdict a review gives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ReviewVerdict {
+    Comment,
+    Approve,
+    RequestChanges,
+}
+
+/// A submission cut off midway (a lost connection, Brainiac quitting): its
+/// summary and verdict, kept so **Finish Review** can send what is left.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PendingReview {
+    pub body: String,
+    pub verdict: ReviewVerdict,
+    /// The commit the review was being sent for.
+    pub head_sha: String,
+    /// The summary was posted (Bitbucket); the verdict may still be due.
+    pub summary_sent: bool,
+}
+
+/// A pull request's drafts, oldest first, with any submission under way.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ReviewDrafts {
+    pub reference: String,
+    pub drafts: Vec<ReviewDraft>,
+    pub pending: Option<PendingReview>,
+}
+
+/// Write a draft, or change one (`id` set).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SaveReviewDraftRequest {
+    pub reference: String,
+    pub id: Option<String>,
+    pub anchor: ThreadAnchor,
+    pub body: String,
+}
+
+/// Comment on the whole pull request; posted at once.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CommentRequest {
+    pub reference: String,
+    pub body: String,
+}
+
+/// Reply to a thread; posted at once.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ReplyRequest {
+    pub reference: String,
+    pub thread_id: String,
+    pub body: String,
+}
+
+/// Resolve or reopen a thread on a line.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ResolveThreadRequest {
+    pub reference: String,
+    pub thread_id: String,
+    pub resolved: bool,
+}
+
+/// **Finish Review**: send the drafts with a summary and a verdict, for the
+/// head commit the user looked at. A head that moved is `CONFLICT` and
+/// nothing is sent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SubmitReviewRequest {
+    pub reference: String,
+    pub body: String,
+    pub verdict: ReviewVerdict,
+    pub expected_head_sha: String,
+}
+
+/// What a write to the provider leaves behind: the conversation read again,
+/// and the pull request, whose reviewers and counts may have changed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct WriteOutcome {
+    pub pull_request: PullRequest,
+    pub conversation: Conversation,
 }
 
 /// The checks of a pull request's head commit.

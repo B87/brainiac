@@ -13,6 +13,9 @@
   font-size: 13px;
   -webkit-font-smoothing: antialiased;
   --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --sans:
+    -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue",
+    sans-serif;
 
   --app: #ffffff;
   --sidebar: #f3f3f5;
@@ -398,6 +401,19 @@
     outline-offset: -2px;
   }
 
+  .text-area {
+    padding: 6px 8px;
+    background: var(--field);
+    border: 1px solid var(--control-line);
+    border-radius: 6px;
+    color: var(--fg);
+    font: inherit;
+    font-size: 13px;
+    line-height: 1.45;
+    resize: vertical;
+    user-select: text;
+    min-height: 64px;
+  }
   .text-input {
     height: 28px;
     padding: 0 8px;
@@ -749,6 +765,7 @@
     color: var(--gutter);
   }
   .diff-sign {
+    position: relative;
     flex-shrink: 0;
     width: 20px;
     text-align: center;
@@ -829,6 +846,77 @@
     overflow: hidden;
     white-space: pre;
     text-overflow: ellipsis;
+  }
+
+  /* Reviewing a pull request's patch (SPEC.md, Reviewing): line numbers
+     select lines, "+" starts a comment, and threads sit under their line. */
+  .diff-gutter-btn {
+    border: 0;
+    background: transparent;
+    font: inherit;
+    cursor: default;
+    height: 100%;
+  }
+  .diff-gutter-btn:hover {
+    color: var(--fg);
+    text-decoration: underline;
+  }
+  .diff-row[data-selected],
+  .half[data-selected] {
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+  }
+  .diff .diff-row[data-selected] .diff-gutter,
+  .diff .half[data-selected] .diff-gutter {
+    background: color-mix(in srgb, var(--accent) 22%, transparent);
+    color: var(--fg);
+  }
+  .diff-comment-btn {
+    position: absolute;
+    inset: 1px 1px;
+    display: flex;
+    opacity: 0;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    border-radius: 4px;
+    background: var(--accent);
+    color: white;
+    font: inherit;
+    font-size: 13px;
+    line-height: 1;
+    cursor: default;
+  }
+  .diff-row:hover .diff-comment-btn,
+  .half:hover .diff-comment-btn,
+  .diff-row[data-selected] .diff-comment-btn,
+  .half[data-selected] .diff-comment-btn,
+  .diff-comment-btn:focus-visible {
+    opacity: 1;
+  }
+  .diff-comment-btn:disabled {
+    background: var(--muted);
+    opacity: 0.6;
+  }
+  .diff-extra {
+    font-family: var(--sans);
+    font-size: 12.5px;
+    line-height: 1.45;
+    white-space: normal;
+    color: var(--fg);
+    padding: 6px 12px 6px 76px;
+    border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+    background: var(--panel);
+    max-width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .diff-split .diff-extra {
+    padding-left: 12px;
+  }
+  .diff-extra .md {
+    font-size: 12.5px;
   }
 
   kbd,

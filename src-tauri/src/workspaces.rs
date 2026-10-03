@@ -303,6 +303,19 @@ impl RepositoryService {
             .collect())
     }
 
+    /// One repository as the list shows it.
+    pub async fn summary(&self, id: &str) -> AppResult<RepositorySummary> {
+        let row = self.row(id).await?;
+        let settings = self.settings();
+        let refreshing = self
+            .slots
+            .lock()
+            .expect("slots")
+            .get(id)
+            .is_some_and(|s| s.running);
+        Ok(self.summarize(&row, &settings, refreshing))
+    }
+
     pub async fn snapshot(&self) -> AppResult<AppSnapshot> {
         let repositories = self.list().await?;
         let workspaces = self.workspaces().await?;

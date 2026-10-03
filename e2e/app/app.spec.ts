@@ -487,6 +487,33 @@ test("Pull requests: a workspace turns them on, lists them, and opens one", asyn
   await expect(conversation.getByText("typo")).toBeVisible();
   await expect(page.getByText("1 unresolved thread")).toBeVisible();
   await expect(page.getByRole("button", { name: "Merge" })).toBeDisabled();
+  // The side panel knows the local checkout.
+  await expect(page.getByText("/code/parser")).toBeVisible();
+
+  // Comment on the pull request, reply in a thread, resolve it: each is
+  // posted at once and the conversation comes back with it.
+  await conversation
+    .getByRole("textbox", { name: "Comment on the pull request" })
+    .fill("Nice work");
+  await conversation.getByRole("button", { name: "Comment" }).click();
+  expect((await calls(page, "comment_on_pull_request")).at(-1)).toMatchObject({
+    request: { reference: "github.com/team/parser#12", body: "Nice work" },
+  });
+  await expect(conversation.getByText("Nice work")).toBeVisible();
+  await expect(conversation.getByText("4 threads")).toBeVisible();
+  const open = conversation.locator(".thread", { hasText: "Why not recurse" });
+  await open.getByRole("button", { name: "Reply" }).click();
+  await open.getByRole("textbox", { name: "Reply" }).fill("Fair enough");
+  await open.getByRole("button", { name: "Reply" }).click();
+  expect((await calls(page, "reply_to_thread")).at(-1)).toMatchObject({
+    request: { thread_id: "T1", body: "Fair enough" },
+  });
+  await expect(open.getByText("Fair enough")).toBeVisible();
+  await open.getByRole("button", { name: "Resolve" }).click();
+  expect((await calls(page, "resolve_thread")).at(-1)).toMatchObject({
+    request: { thread_id: "T1", resolved: true },
+  });
+  await expect(page.getByText("No unresolved threads")).toBeVisible();
 
   // Files Changed: the first file (not the lock file, which is folded as
   // generated) with the provider's diff, then one from local Git; a click
@@ -513,11 +540,59 @@ test("Pull requests: a workspace turns them on, lists them, and opens one", asyn
   await expect(
     page.getByRole("button", { name: "Ignore whitespace" }),
   ).toBeEnabled();
+  // A comment on a line is a draft: written from the line's +, kept on the
+  // Mac, counted on Review Changes, and sent by Finish Review.
+  await page.getByRole("button", { name: "Comment on line 11" }).click();
+  await page
+    .getByRole("textbox", { name: "Comment on line 11" })
+    .fill("Recursion depth?");
+  await page.getByRole("button", { name: "Save Draft" }).click();
+  expect((await calls(page, "save_review_draft")).at(-1)).toMatchObject({
+    request: {
+      reference: "github.com/team/parser#12",
+      anchor: {
+        path: "src/parse.ts",
+        side: "new",
+        line: 11,
+        start_line: null,
+        commit: "a".repeat(40),
+      },
+      body: "Recursion depth?",
+    },
+  });
+  await expect(page.locator("[data-draft]")).toContainText("Recursion depth?");
+  await expect(
+    page.getByRole("button", { name: "Review Changes 1" }),
+  ).toBeVisible();
   await page.getByRole("tab", { name: "Since your review" }).click();
   expect((await calls(page, "list_pull_request_files")).at(-1)).toMatchObject({
-    sinceReview: true,
+    since: "c".repeat(40),
   });
   await expect(page.getByText("1 file", { exact: true })).toBeVisible();
+
+  // Finish Review: the draft, a summary, and the verdict, for the head on screen.
+  await page.getByRole("button", { name: "Review Changes 1" }).click();
+  const dialog = page.getByRole("dialog", { name: "Finish Review" });
+  await expect(dialog.getByText("1 comment on a line to send")).toBeVisible();
+  await expect(dialog.getByText("src/parse.ts:11")).toBeVisible();
+  await dialog.getByRole("radio", { name: "Approve" }).check();
+  await dialog.getByRole("textbox").fill("Ship it");
+  await dialog.getByRole("button", { name: "Approve" }).click();
+  expect((await calls(page, "submit_review")).at(-1)).toMatchObject({
+    request: {
+      reference: "github.com/team/parser#12",
+      body: "Ship it",
+      verdict: "approve",
+      expected_head_sha: "a".repeat(40),
+    },
+  });
+  await expect(dialog).toBeHidden();
+  await expect(
+    page.getByRole("button", { name: "Review Changes", exact: true }),
+  ).toBeVisible();
+  await page.getByRole("tab", { name: "Overview" }).click();
+  await expect(conversation.getByText("Ship it")).toBeVisible();
+  await expect(conversation.getByText("Recursion depth?")).toBeVisible();
   await page.getByRole("tab", { name: "Checks" }).click();
   await expect(page.getByRole("button", { name: "Log" })).toBeVisible();
   await page.getByRole("button", { name: "Back" }).click();

@@ -11,10 +11,14 @@ use std::sync::Arc;
 use tokio::task::JoinSet;
 
 use super::accounts::AccountService;
-use super::adapter::{Client, ForgeAdapter, Session};
+use super::adapter::{
+    find_posted, Client, ForgeAdapter, ReviewToSend, SentPart, Session, BITBUCKET_WRITE,
+    GITHUB_CONTENTS_WRITE, GITHUB_PULL_REQUESTS_WRITE,
+};
 use super::bitbucket::Bitbucket;
 use super::budget::Budget;
 use super::cache;
+use super::drafts;
 use super::github::Github;
 use super::http::Http;
 use super::patch::split_patch;
@@ -22,11 +26,13 @@ use super::{Endpoints, ForgeRepository, PullRequestRef};
 use crate::db::{Db, RepositoryRow};
 use crate::git::{parse_unified_diff, validate_repo_path, GitService};
 use crate::models::{
-    now_rfc3339, AppError, AppResult, ChangeKind, ChangedFile, ChangedFileStatus, CommitFile,
-    Conversation, DiffContent, DiffResult, DiffSelector, DiffSource, ErrorCode, ForgeKind,
-    ListPullRequestsRequest, PullRequest, PullRequestChangeOrigin, PullRequestChangedEvent,
-    PullRequestChecks, PullRequestDiff, PullRequestDiffRequest, PullRequestFiles, PullRequestGroup,
-    PullRequestList,
+    now_rfc3339, AppError, AppResult, ChangeKind, ChangedFile, ChangedFileStatus, CommentRequest,
+    CommitFile, Conversation, DiffContent, DiffResult, DiffSelector, DiffSource, ErrorCode,
+    ForgeKind, ListPullRequestsRequest, PullRequest, PullRequestChangeOrigin,
+    PullRequestChangedEvent, PullRequestChecks, PullRequestDiff, PullRequestDiffRequest,
+    PullRequestFiles, PullRequestGroup, PullRequestList, ReplyRequest, RepositorySummary,
+    ResolveThreadRequest, ReviewDrafts, ReviewVerdict, SaveReviewDraftRequest, SubmitReviewRequest,
+    Thread, WriteOutcome,
 };
 use crate::workspaces::RepositoryService;
 
@@ -40,6 +46,8 @@ pub type PullRequestEmitter = Arc<dyn Fn(PullRequestChangedEvent) + Send + Sync>
 pub struct PullRequestService {
     repositories: Arc<RepositoryService>,
     accounts: Arc<AccountService>,
+    /// `brainiac.db`, for the review drafts: the user's own text.
+    core: Db,
     cache: Db,
     budget: Arc<Budget>,
     github: Github,
@@ -96,9 +104,43 @@ fn not_local(what: &str) -> AppError {
     AppError::new(
         ErrorCode::NotFound,
         format!(
-            "{what} are not on this Mac yet. Fetch the repository to compare since your review."
+            "{what} are not on this Mac yet. Fetch the repository to compare from that commit."
         ),
     )
+}
+
+/// A commit named by a caller: hexadecimal, so it can go on a Git command
+/// line and in a URL as it is.
+fn validate_sha(sha: &str) -> AppResult<()> {
+    let ok = (7..=64).contains(&sha.len()) && sha.chars().all(|c| c.is_ascii_hexdigit());
+    if ok {
+        Ok(())
+    } else {
+        Err(AppError::validation(format!("{sha:?} is not a commit.")))
+    }
+}
+
+/// Whether `head` is the commit `expected`, which may be Bitbucket's short form.
+fn same_commit(head: &str, expected: &str) -> bool {
+    !expected.is_empty()
+        && (head == expected || head.starts_with(expected) || expected.starts_with(head))
+}
+
+/// The head moved since the user looked: nothing is sent (SPEC.md, Reviewing).
+fn head_moved(what: &str) -> AppError {
+    AppError::new(
+        ErrorCode::Conflict,
+        format!("New commits arrived since you {what}. Nothing was sent; look at the new changes first."),
+    )
+}
+
+/// The permission a provider's refusal of a write means the token lacks.
+fn permission_for(kind: ForgeKind, contents: bool) -> &'static str {
+    match (kind, contents) {
+        (ForgeKind::Github, false) => GITHUB_PULL_REQUESTS_WRITE,
+        (ForgeKind::Github, true) => GITHUB_CONTENTS_WRITE,
+        (ForgeKind::BitbucketCloud, _) => BITBUCKET_WRITE,
+    }
 }
 
 /// Whether `fetched_at` is younger than `max_age` seconds.
@@ -114,6 +156,7 @@ impl PullRequestService {
     pub fn new(
         repositories: Arc<RepositoryService>,
         accounts: Arc<AccountService>,
+        core: Db,
         cache: Db,
         http: Http,
         endpoints: Endpoints,
@@ -135,6 +178,7 @@ impl PullRequestService {
         PullRequestService {
             repositories,
             accounts,
+            core,
             cache,
             budget,
             github,
@@ -242,7 +286,7 @@ impl PullRequestService {
                         reference: pr.reference.clone(),
                         head_sha: pr.head_sha.clone(),
                         base_sha: pr.base_sha.clone(),
-                        since_review: false,
+                        partial: false,
                         files,
                         fetched_at: now.clone(),
                     };
@@ -583,32 +627,27 @@ impl PullRequestService {
             .ok_or_else(|| AppError::dependency("Git was not found on this Mac."))
     }
 
-    /// The files a pull request changes, for its current head; or, since
-    /// the account's last review, from local Git when the commits are here.
-    pub async fn files(&self, reference: &str, since_review: bool) -> AppResult<PullRequestFiles> {
+    /// The files a pull request changes, for its current head; or, since a
+    /// commit of it (the one last reviewed, or the one drafts were written
+    /// on), from local Git when both commits are here.
+    pub async fn files(&self, reference: &str, since: Option<&str>) -> AppResult<PullRequestFiles> {
         let pr = self.get(reference, LIST_MAX_AGE_SECONDS).await?;
-        if since_review {
+        if let Some(since) = since {
+            validate_sha(since)?;
             let parsed: PullRequestRef = reference.parse()?;
-            let reviewed = pr
-                .reviewed_sha
-                .clone()
-                .ok_or_else(|| AppError::validation("You have not reviewed this pull request."))?;
             let tracked = self.tracked_for(&parsed).await?;
-            if !self
-                .both_local(&tracked.root, &reviewed, &pr.head_sha)
-                .await
-            {
+            if !self.both_local(&tracked.root, since, &pr.head_sha).await {
                 return Err(not_local("The new commits"));
             }
             let files = self
                 .git()?
-                .range_files(&tracked.root, &reviewed, &pr.head_sha)
+                .range_files(&tracked.root, since, &pr.head_sha)
                 .await?;
             return Ok(PullRequestFiles {
                 reference: reference.to_string(),
                 head_sha: pr.head_sha,
-                base_sha: reviewed,
-                since_review: true,
+                base_sha: since.to_string(),
+                partial: true,
                 files: files.into_iter().map(changed_file).collect(),
                 fetched_at: now_rfc3339(),
             });
@@ -634,7 +673,7 @@ impl PullRequestService {
             reference: reference.to_string(),
             head_sha: pr.head_sha,
             base_sha: pr.base_sha,
-            since_review: false,
+            partial: false,
             files,
             fetched_at: now_rfc3339(),
         };
@@ -688,18 +727,18 @@ impl PullRequestService {
 
     /// One file's diff: from local Git when both commits are on the Mac
     /// (`base...head`, never downloading), otherwise the provider's patch.
-    /// Since the last review, only local Git can answer.
+    /// Since a commit of the pull request, only local Git can answer.
     pub async fn diff(&self, request: PullRequestDiffRequest) -> AppResult<PullRequestDiff> {
         validate_repo_path(&request.path)?;
         let pr = self.get(&request.reference, LIST_MAX_AGE_SECONDS).await?;
         let parsed: PullRequestRef = request.reference.parse()?;
         let tracked = self.tracked_for(&parsed).await?;
-        let base = if request.since_review {
-            pr.reviewed_sha
-                .clone()
-                .ok_or_else(|| AppError::validation("You have not reviewed this pull request."))?
-        } else {
-            pr.base_sha.clone()
+        let base = match &request.since {
+            Some(since) => {
+                validate_sha(since)?;
+                since.clone()
+            }
+            None => pr.base_sha.clone(),
         };
         let head = pr.head_sha.clone();
         let selector = DiffSelector::Range {
@@ -732,7 +771,7 @@ impl PullRequestService {
                 Err(e) => tracing::debug!(error = %e, "local diff failed; asking the provider"),
             }
         }
-        if request.since_review {
+        if request.since.is_some() {
             return Err(not_local("The new commits"));
         }
         let patch = self
@@ -851,6 +890,467 @@ impl PullRequestService {
                 ),
             )
         })
+    }
+
+    /// The local checkout a pull request's repository is, for the side panel.
+    pub async fn repository(&self, reference: &str) -> AppResult<RepositorySummary> {
+        let parsed: PullRequestRef = reference.parse()?;
+        let tracked = self.tracked_for(&parsed).await?;
+        self.repositories.summary(&tracked.repository_id).await
+    }
+
+    // --- Review drafts (SPEC.md, Reviewing) -----------------------------------
+
+    /// A pull request's drafts and any submission under way.
+    pub async fn drafts(&self, reference: &str) -> AppResult<ReviewDrafts> {
+        let reference = reference.to_string();
+        self.core
+            .call(move |conn| drafts::list(conn, &reference))
+            .await
+    }
+
+    /// Write a draft on a line, or change one. The anchor's commit is the
+    /// head the diff was shown for, so **Finish Review** can tell whether
+    /// new commits arrived since.
+    pub async fn save_draft(&self, request: SaveReviewDraftRequest) -> AppResult<ReviewDrafts> {
+        let parsed: PullRequestRef = request.reference.parse()?;
+        validate_repo_path(&request.anchor.path)?;
+        if request.body.trim().is_empty() {
+            return Err(AppError::validation("Write the comment first."));
+        }
+        if request.anchor.line.is_none() {
+            return Err(AppError::validation("A draft goes on a line."));
+        }
+        if let Some(commit) = &request.anchor.commit {
+            validate_sha(commit)?;
+        }
+        let pr = self.get(&request.reference, LIST_MAX_AGE_SECONDS).await?;
+        if !pr.actions.review.allowed {
+            return Err(AppError::new(
+                ErrorCode::PermissionDenied,
+                pr.actions.review.reason.unwrap_or_default(),
+            ));
+        }
+        let reference = parsed.to_string();
+        let now = now_rfc3339();
+        self.core
+            .call(move |conn| {
+                let id = match request.id {
+                    Some(id) if drafts::exists(conn, &reference, &id)? => id,
+                    Some(_) => return Err(AppError::not_found("The draft is gone.")),
+                    None => uuid::Uuid::new_v4().to_string(),
+                };
+                drafts::save(conn, &reference, &id, &request.anchor, &request.body, &now)?;
+                drafts::list(conn, &reference)
+            })
+            .await
+    }
+
+    pub async fn delete_draft(&self, reference: &str, id: &str) -> AppResult<ReviewDrafts> {
+        let reference = reference.to_string();
+        let id = id.to_string();
+        self.core
+            .call(move |conn| {
+                drafts::delete(conn, &reference, &id)?;
+                drafts::list(conn, &reference)
+            })
+            .await
+    }
+
+    /// The user looked at the new commits: the drafts go on the head now.
+    pub async fn move_drafts(&self, reference: &str, head_sha: &str) -> AppResult<ReviewDrafts> {
+        validate_sha(head_sha)?;
+        let reference = reference.to_string();
+        let head = head_sha.to_string();
+        let now = now_rfc3339();
+        self.core
+            .call(move |conn| {
+                drafts::move_to(conn, &reference, &head, &now)?;
+                drafts::list(conn, &reference)
+            })
+            .await
+    }
+
+    // --- Writes to the provider (SPEC.md, Reviewing) ----------------------------
+
+    /// What every write ends with: the conversation and the pull request
+    /// read again, stored, and announced as a change made from Brainiac.
+    async fn after_write(&self, reference: &str) -> AppResult<WriteOutcome> {
+        let conversation = self.conversation(reference, 0).await?;
+        let pull_request = self.get(reference, 0).await?;
+        (self.emitter)(PullRequestChangedEvent {
+            reference: reference.to_string(),
+            version: pull_request.version.clone(),
+            origin: PullRequestChangeOrigin::App,
+        });
+        Ok(WriteOutcome {
+            pull_request,
+            conversation,
+        })
+    }
+
+    /// A refusal for a permission the token lacks turns that action off
+    /// for the account until the token is replaced (SPEC.md, Accounts).
+    async fn note_refusal(&self, kind: ForgeKind, contents: bool, e: &AppError) {
+        if e.code == ErrorCode::PermissionDenied && e.message.contains("The token needs") {
+            let permission = permission_for(kind, contents);
+            if let Err(e) = self.accounts.mark_missing(kind, permission).await {
+                tracing::warn!(error = %e, "could not record the missing permission");
+            }
+        }
+    }
+
+    /// A write that got no answer in time may have been applied: read the
+    /// conversation again and look for it before saying so (no blind retries).
+    async fn posted_anyway(
+        &self,
+        reference: &str,
+        path: Option<&str>,
+        thread_id: Option<&str>,
+        body: &str,
+    ) -> bool {
+        match self.conversation(reference, 0).await {
+            Ok(c) => find_posted(&c.threads, path, thread_id, body).is_some(),
+            Err(_) => false,
+        }
+    }
+
+    fn timed_out(provider: &str, what: &str) -> AppError {
+        AppError::new(
+            ErrorCode::Timeout,
+            format!("{provider} did not answer in time, and the {what} is not on {provider}. Try again."),
+        )
+    }
+
+    /// Comment on the whole pull request; posted at once.
+    pub async fn comment(&self, request: CommentRequest) -> AppResult<WriteOutcome> {
+        let parsed: PullRequestRef = request.reference.parse()?;
+        let body = request.body.trim().to_string();
+        if body.is_empty() {
+            return Err(AppError::validation("Write the comment first."));
+        }
+        let pr = self.get(&request.reference, LIST_MAX_AGE_SECONDS).await?;
+        if !pr.actions.comment.allowed {
+            return Err(AppError::new(
+                ErrorCode::PermissionDenied,
+                pr.actions.comment.reason.unwrap_or_default(),
+            ));
+        }
+        let kind = parsed.repository.kind;
+        let session = self.session_for(kind).await?;
+        let result = match kind {
+            ForgeKind::Github => self.github.comment(&session, &parsed, &body).await,
+            ForgeKind::BitbucketCloud => self.bitbucket.comment(&session, &parsed, &body).await,
+        };
+        match result {
+            Ok(_) => {}
+            Err(e) if e.code == ErrorCode::Timeout => {
+                if !self
+                    .posted_anyway(&request.reference, None, None, &body)
+                    .await
+                {
+                    return Err(Self::timed_out(kind.label(), "comment"));
+                }
+            }
+            Err(e) => {
+                self.note_refusal(kind, false, &e).await;
+                return Err(e);
+            }
+        }
+        self.after_write(&request.reference).await
+    }
+
+    /// The thread, from the conversation as cached or read.
+    async fn thread(&self, reference: &str, thread_id: &str) -> AppResult<Thread> {
+        let conversation = self.conversation(reference, LIST_MAX_AGE_SECONDS).await?;
+        conversation
+            .threads
+            .into_iter()
+            .find(|t| t.id == thread_id)
+            .ok_or_else(|| AppError::not_found("The thread is gone. Read the pull request again."))
+    }
+
+    /// Reply to a thread; posted at once.
+    pub async fn reply(&self, request: ReplyRequest) -> AppResult<WriteOutcome> {
+        let parsed: PullRequestRef = request.reference.parse()?;
+        let body = request.body.trim().to_string();
+        if body.is_empty() {
+            return Err(AppError::validation("Write the reply first."));
+        }
+        let pr = self.get(&request.reference, LIST_MAX_AGE_SECONDS).await?;
+        if !pr.actions.comment.allowed {
+            return Err(AppError::new(
+                ErrorCode::PermissionDenied,
+                pr.actions.comment.reason.unwrap_or_default(),
+            ));
+        }
+        let thread = self.thread(&request.reference, &request.thread_id).await?;
+        let kind = parsed.repository.kind;
+        let session = self.session_for(kind).await?;
+        let result = match kind {
+            ForgeKind::Github => self.github.reply(&session, &parsed, &thread, &body).await,
+            ForgeKind::BitbucketCloud => {
+                self.bitbucket
+                    .reply(&session, &parsed, &thread, &body)
+                    .await
+            }
+        };
+        match result {
+            Ok(_) => {}
+            Err(e) if e.code == ErrorCode::Timeout => {
+                // A reply to a comment on the pull request is another such
+                // comment on GitHub, so it is looked for anywhere.
+                let in_thread = thread
+                    .anchor
+                    .is_some()
+                    .then_some(request.thread_id.as_str());
+                if !self
+                    .posted_anyway(&request.reference, None, in_thread, &body)
+                    .await
+                {
+                    return Err(Self::timed_out(kind.label(), "reply"));
+                }
+            }
+            Err(e) => {
+                self.note_refusal(kind, false, &e).await;
+                return Err(e);
+            }
+        }
+        self.after_write(&request.reference).await
+    }
+
+    /// Resolve or reopen a thread on a line.
+    pub async fn resolve(&self, request: ResolveThreadRequest) -> AppResult<WriteOutcome> {
+        let parsed: PullRequestRef = request.reference.parse()?;
+        let pr = self.get(&request.reference, LIST_MAX_AGE_SECONDS).await?;
+        if !pr.actions.resolve.allowed {
+            return Err(AppError::new(
+                ErrorCode::PermissionDenied,
+                pr.actions.resolve.reason.unwrap_or_default(),
+            ));
+        }
+        let thread = self.thread(&request.reference, &request.thread_id).await?;
+        if thread.resolved == request.resolved {
+            return self.after_write(&request.reference).await;
+        }
+        let kind = parsed.repository.kind;
+        let session = self.session_for(kind).await?;
+        let result = match kind {
+            ForgeKind::Github => {
+                self.github
+                    .resolve(&session, &parsed, &thread, request.resolved)
+                    .await
+            }
+            ForgeKind::BitbucketCloud => {
+                self.bitbucket
+                    .resolve(&session, &parsed, &thread, request.resolved)
+                    .await
+            }
+        };
+        match result {
+            Ok(()) => {}
+            Err(e) if e.code == ErrorCode::Timeout => {
+                let applied = self
+                    .conversation(&request.reference, 0)
+                    .await
+                    .ok()
+                    .and_then(|c| c.threads.into_iter().find(|t| t.id == request.thread_id))
+                    .is_some_and(|t| t.resolved == request.resolved);
+                if !applied {
+                    return Err(Self::timed_out(kind.label(), "change"));
+                }
+            }
+            Err(e) => {
+                self.note_refusal(kind, true, &e).await;
+                return Err(e);
+            }
+        }
+        self.after_write(&request.reference).await
+    }
+
+    /// **Finish Review**: the drafts, a summary, and a verdict, for the head
+    /// the user looked at. The head is read again first; one that moved, or
+    /// drafts written on an earlier commit, send nothing (`CONFLICT`). On
+    /// Bitbucket each part is recorded as it lands, so a submission cut off
+    /// midway resumes with what is left.
+    pub async fn submit_review(&self, request: SubmitReviewRequest) -> AppResult<WriteOutcome> {
+        let parsed: PullRequestRef = request.reference.parse()?;
+        let reference = parsed.to_string();
+        let kind = parsed.repository.kind;
+        let body = request.body.trim().to_string();
+        let current = self.drafts(&reference).await?;
+        let drafts = current.drafts;
+        let pending = current.pending;
+        // A summary already posted is not posted again, with its first words.
+        let (body, summary_sent) = match &pending {
+            Some(p) if p.summary_sent => (p.body.clone(), true),
+            _ => (body, false),
+        };
+        if body.is_empty() && drafts.is_empty() && request.verdict == ReviewVerdict::Comment {
+            return Err(AppError::validation(
+                "Write a summary or a comment on a line first.",
+            ));
+        }
+        let pr = self.get(&reference, 0).await?;
+        if !pr.actions.review.allowed {
+            return Err(AppError::new(
+                ErrorCode::PermissionDenied,
+                pr.actions.review.reason.unwrap_or_default(),
+            ));
+        }
+        if request.verdict == ReviewVerdict::Approve && !pr.actions.approve.allowed {
+            return Err(AppError::validation(
+                pr.actions.approve.reason.unwrap_or_default(),
+            ));
+        }
+        let session = self.session_for(kind).await?;
+        let head = match kind {
+            ForgeKind::Github => self.github.current_head(&session, &pr).await?,
+            ForgeKind::BitbucketCloud => self.bitbucket.current_head(&session, &pr).await?,
+        };
+        if !same_commit(&head, &request.expected_head_sha) {
+            // What the user sees is behind: read the pull request again.
+            if let Ok(fresh) = self.get(&reference, 0).await {
+                self.emit(&fresh);
+            }
+            return Err(head_moved("looked at this pull request"));
+        }
+        if drafts.iter().filter(|d| d.remote_id.is_none()).any(|d| {
+            !d.anchor
+                .commit
+                .as_deref()
+                .is_some_and(|c| same_commit(&head, c))
+        }) {
+            return Err(head_moved("started this review"));
+        }
+
+        let now = now_rfc3339();
+        {
+            let (reference, body, head) = (reference.clone(), body.clone(), head.clone());
+            let verdict = request.verdict;
+            self.core
+                .call(move |conn| {
+                    drafts::set_pending(conn, &reference, &body, verdict, &head, &now)
+                })
+                .await?;
+        }
+        let review = ReviewToSend {
+            drafts: &drafts,
+            body: &body,
+            summary_sent,
+            verdict: request.verdict,
+            head_sha: &head,
+        };
+        // Each part Bitbucket posts is recorded at once, in case the next
+        // one never answers. `Arc<Mutex<_>>`: the callback and this task
+        // both reach the list, so it is shared and locked for each push.
+        let sent: Arc<std::sync::Mutex<Vec<SentPart>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&sent);
+        let mut progress = move |part: SentPart| sink.lock().expect("sent parts").push(part);
+        let result = match kind {
+            ForgeKind::Github => {
+                self.github
+                    .submit_review(&session, &pr, &review, &mut progress)
+                    .await
+            }
+            ForgeKind::BitbucketCloud => {
+                self.bitbucket
+                    .submit_review(&session, &pr, &review, &mut progress)
+                    .await
+            }
+        };
+        let parts = std::mem::take(&mut *sent.lock().expect("sent parts"));
+        self.record_sent(&reference, parts).await?;
+
+        match result {
+            Ok(()) => {}
+            Err(e) if e.code == ErrorCode::Timeout => {
+                // What landed before the answer was lost, matched against the
+                // conversation read again; the rest is offered again.
+                let matched = self.match_sent(&reference, &drafts, &body).await;
+                let whole = kind == ForgeKind::Github && matched;
+                if !whole {
+                    return Err(AppError::new(
+                        ErrorCode::Timeout,
+                        format!(
+                            "{} did not answer in time. What it received is marked as sent; send the rest when you are ready.",
+                            kind.label()
+                        ),
+                    ));
+                }
+            }
+            Err(e) => {
+                self.note_refusal(kind, false, &e).await;
+                return Err(e);
+            }
+        }
+        {
+            let reference = reference.clone();
+            self.core
+                .call(move |conn| drafts::clear(conn, &reference))
+                .await?;
+        }
+        self.after_write(&reference).await
+    }
+
+    async fn record_sent(&self, reference: &str, parts: Vec<SentPart>) -> AppResult<()> {
+        if parts.is_empty() {
+            return Ok(());
+        }
+        let summary = drafts::summary_id(reference);
+        let now = now_rfc3339();
+        self.core
+            .call(move |conn| {
+                for part in parts {
+                    match part {
+                        SentPart::Draft { id, remote_id } => {
+                            drafts::mark_sent(conn, &id, &remote_id, &now)?
+                        }
+                        SentPart::Summary { remote_id } => {
+                            drafts::mark_sent(conn, &summary, &remote_id, &now)?
+                        }
+                    }
+                }
+                Ok(())
+            })
+            .await
+    }
+
+    /// After a timeout: which unsent drafts (and the summary) are in the
+    /// conversation after all. They are marked sent. Returns whether all of
+    /// them were.
+    async fn match_sent(
+        &self,
+        reference: &str,
+        drafts: &[crate::models::ReviewDraft],
+        body: &str,
+    ) -> bool {
+        let Ok(conversation) = self.conversation(reference, 0).await else {
+            return false;
+        };
+        let mut parts = Vec::new();
+        let mut all = true;
+        for d in drafts.iter().filter(|d| d.remote_id.is_none()) {
+            match find_posted(&conversation.threads, Some(&d.anchor.path), None, &d.body) {
+                Some(remote_id) => parts.push(SentPart::Draft {
+                    id: d.id.clone(),
+                    remote_id,
+                }),
+                None => all = false,
+            }
+        }
+        if !body.trim().is_empty() {
+            match find_posted(&conversation.threads, None, None, body) {
+                Some(remote_id) => parts.push(SentPart::Summary { remote_id }),
+                None => all = false,
+            }
+        }
+        if let Err(e) = self.record_sent(reference, parts).await {
+            tracing::warn!(error = %e, "could not record what was sent");
+            return false;
+        }
+        all
     }
 
     /// Read again the lists that are older than five minutes, for every

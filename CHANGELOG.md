@@ -20,6 +20,8 @@ into the release's section.
 - Opening a pull request shows its overview, what it needs before merging, its reviewers, the files it changes, and its checks with links to their logs. The pull request on screen is read again every minute; workspace lists every five minutes.
 - The pull request's conversation: comments, reviews with their verdict, and threads on lines with their file and line, resolved ones folded; descriptions and comments are rendered as Markdown without loading anything from them.
 - Files Changed shows each file's diff, from local Git when the commits are on the Mac and from GitHub or Bitbucket otherwise, with a file tree that counts threads per file, marks files viewed when opened, and folds viewed and generated files. "N new commits since your review" and "Since your review" show what arrived after the commit you last reviewed on GitHub.
+- Review from Brainiac: comment on the pull request, reply in a thread, resolve or reopen a thread, and comment on a line or a range from its + or with C. Line comments are drafts kept on the Mac and shown under their lines until Review Changes sends them with a summary and a verdict. New commits since the review started stop the submission, keep the drafts, and offer the new changes; a Bitbucket review cut off midway sends only what is left.
+- The pull request's side panel shows the local checkout, whether its branch is checked out, and the notes linked to the repository.
 
 ## [0.2.0] - 2026-10-02
 

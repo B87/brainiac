@@ -3,6 +3,8 @@ import type { DiffOptions } from "./DiffOptions";
 
 export type PullRequestDiffRequest = { reference: string, path: string, old_path: string | null, 
 /**
- * Compare from the commit last reviewed instead of the target branch.
+ * Compare from this commit of the pull request (the one last reviewed,
+ * or the one drafts were written on) instead of the target branch;
+ * local Git only.
  */
-since_review: boolean, options: DiffOptions, };
+since: string | null, options: DiffOptions, };

@@ -647,6 +647,7 @@ export default function App() {
               key={view.reference}
               reference={view.reference}
               onBack={() => setView(view.back)}
+              onOpenNote={openNote}
               onError={setBanner}
             />
           ) : selected ? (

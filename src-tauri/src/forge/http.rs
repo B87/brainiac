@@ -12,6 +12,9 @@ use crate::models::{AppError, AppResult, ErrorCode};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Tests against a local server wait less, so a route that never answers
+/// can stand in for a provider that times out.
+const TEST_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// How a request proves who it is from.
 pub enum Auth<'a> {
@@ -49,15 +52,15 @@ pub struct Http {
 impl Http {
     /// A client that refuses plain `http://`, the one Brainiac uses.
     pub fn new() -> AppResult<Self> {
-        Self::build(true)
+        Self::build(true, REQUEST_TIMEOUT)
     }
 
     /// A client that also speaks plain HTTP, for tests against a local server.
     pub fn insecure_for_tests() -> AppResult<Self> {
-        Self::build(false)
+        Self::build(false, TEST_REQUEST_TIMEOUT)
     }
 
-    fn build(https_only: bool) -> AppResult<Self> {
+    fn build(https_only: bool, timeout: Duration) -> AppResult<Self> {
         let mut headers = HeaderMap::new();
         headers.insert(
             USER_AGENT,
@@ -67,7 +70,7 @@ impl Http {
             .default_headers(headers)
             .https_only(https_only)
             .connect_timeout(CONNECT_TIMEOUT)
-            .timeout(REQUEST_TIMEOUT)
+            .timeout(timeout)
             .build()
             .map_err(|e| {
                 AppError::dependency("Brainiac cannot make network requests.")
@@ -89,7 +92,7 @@ impl Http {
             .await
     }
 
-    /// `POST url` with a JSON body (GraphQL queries, and later writes).
+    /// `POST url` with a JSON body: GraphQL queries, and the writes.
     pub async fn post_json(
         &self,
         provider: &str,
@@ -99,6 +102,31 @@ impl Http {
         body: &serde_json::Value,
     ) -> AppResult<Response> {
         self.send(provider, self.client.post(url).json(body), auth, headers)
+            .await
+    }
+
+    /// `PUT url` with a JSON body (GitHub's merge).
+    pub async fn put_json(
+        &self,
+        provider: &str,
+        url: &str,
+        auth: Auth<'_>,
+        headers: &[(&'static str, &str)],
+        body: &serde_json::Value,
+    ) -> AppResult<Response> {
+        self.send(provider, self.client.put(url).json(body), auth, headers)
+            .await
+    }
+
+    /// `DELETE url` (Bitbucket reopens a thread by deleting its resolution).
+    pub async fn delete(
+        &self,
+        provider: &str,
+        url: &str,
+        auth: Auth<'_>,
+        headers: &[(&'static str, &str)],
+    ) -> AppResult<Response> {
+        self.send(provider, self.client.delete(url), auth, headers)
             .await
     }
 

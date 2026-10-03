@@ -84,7 +84,7 @@ The Git viewer and workspace tracking proved the most useful part of the app, so
 - [x] Forge mapping: each repository's pull requests come from its `origin`, with an override for an upstream or a fork; a per-workspace switch, off by default, turns tracking on and picks the account.
 - [x] Provider-neutral `PullRequestService` over two adapters (GitHub REST plus GraphQL for review threads; Bitbucket Cloud REST 2.0), with a discardable cache, a per-account request budget, and `pr_changed` events. Reads (lists, one pull request, files, checks) are done; the conversation, diffs, and writes come with their views.
 - [x] Read: the workspace's Pull requests tab with filters, each repository's Pull requests tab with the checked-out branch's pull request first, the pull request overview (description, conversation, checks, what it needs to merge), files changed with viewed marks and "since your review", and diffs from local Git when both commits are on the Mac.
-- [ ] Review: comment, reply, resolve, local review drafts, and submitting a review or an approval tied to the commit that was reviewed; a head that moved stops the submission and keeps the drafts.
+- [x] Review: comment, reply, resolve, local review drafts, and submitting a review or an approval tied to the commit that was reviewed; a head that moved stops the submission and keeps the drafts.
 - [ ] Merge, confirmed, with only the methods the repository allows, refused when the head moved.
 - [ ] A count of reviews waiting on you on each workspace in the sidebar.
 

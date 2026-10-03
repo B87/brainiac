@@ -31,6 +31,9 @@ struct Route {
     status: u16,
     headers: Vec<(&'static str, &'static str)>,
     body: String,
+    /// Answer only after this long: past the client's timeout, a provider
+    /// that got the request but whose answer never came.
+    delay_ms: u64,
 }
 
 #[derive(Clone, Default)]
@@ -47,6 +50,16 @@ impl Requests {
     }
     fn total(&self) -> usize {
         self.0.lock().unwrap().len()
+    }
+    /// The bodies sent to paths containing `path_contains`.
+    fn bodies(&self, path_contains: &str) -> Vec<String> {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(p, _)| p.contains(path_contains))
+            .map(|(_, b)| b.clone())
+            .collect()
     }
 }
 
@@ -103,7 +116,7 @@ async fn serve_shared(routes: Arc<Mutex<Vec<Route>>>) -> (String, Requests) {
                 let path = first.next().unwrap_or("").to_string();
                 seen.0.lock().unwrap().push((path.clone(), body.clone()));
                 let lower = head.to_lowercase();
-                let (status, headers, body) = {
+                let (status, headers, body, delay) = {
                     let routes = routes.lock().unwrap();
                     let route = routes.iter().find(|r| {
                         r.method == method
@@ -112,10 +125,13 @@ async fn serve_shared(routes: Arc<Mutex<Vec<Route>>>) -> (String, Requests) {
                             && body.contains(r.body_contains)
                     });
                     match route {
-                        Some(r) => (r.status, r.headers.clone(), r.body.clone()),
-                        None => (599, Vec::new(), format!("no route for {method} {path}")),
+                        Some(r) => (r.status, r.headers.clone(), r.body.clone(), r.delay_ms),
+                        None => (599, Vec::new(), format!("no route for {method} {path}"), 0),
                     }
                 };
+                if delay > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                }
                 let mut response = format!(
                     "HTTP/1.1 {status} X\r\ncontent-length: {}\r\ncontent-type: application/json\r\nconnection: close\r\n",
                     body.len()
@@ -142,6 +158,7 @@ fn route(method: &'static str, path: &'static str, body: impl Into<String>) -> R
         status: 200,
         headers: Vec::new(),
         body: body.into(),
+        delay_ms: 0,
     }
 }
 
@@ -311,6 +328,7 @@ async fn harness(base: &str) -> Harness {
     let data = tmp.path().join("data");
     let db = Db::open(&data.join("brainiac.sqlite3")).unwrap();
     let emitter: brainiac_lib::workspaces::Emitter = Arc::new(|_| {});
+    let core = db.clone();
     let repositories = Arc::new(RepositoryService::new(
         db.clone(),
         GitService::detect().await,
@@ -333,6 +351,7 @@ async fn harness(base: &str) -> Harness {
     let pull_requests = Arc::new(PullRequestService::new(
         Arc::clone(&repositories),
         Arc::clone(&accounts),
+        core,
         PullRequestService::open_cache(&data).unwrap(),
         http,
         endpoints,
@@ -605,7 +624,7 @@ async fn a_workspace_lists_both_providers_and_caches_what_it_read() {
     // Files: Bitbucket's came with the diffstat; GitHub's are read from REST once.
     let files = h
         .pull_requests
-        .files("bitbucket.org/acme-team/web#5", false)
+        .files("bitbucket.org/acme-team/web#5", None)
         .await
         .unwrap();
     assert_eq!(files.files.len(), 2);
@@ -613,13 +632,13 @@ async fn a_workspace_lists_both_providers_and_caches_what_it_read() {
     assert_eq!(requests.count("/diffstat"), 1);
     let files = h
         .pull_requests
-        .files("github.com/acme/api#1", false)
+        .files("github.com/acme/api#1", None)
         .await
         .unwrap();
     assert_eq!(files.files[1].old_path.as_deref(), Some("docs/old.md"));
     assert_eq!(files.files[1].status, ChangedFileStatus::Renamed);
     h.pull_requests
-        .files("github.com/acme/api#1", false)
+        .files("github.com/acme/api#1", None)
         .await
         .unwrap();
     assert_eq!(requests.count("/pulls/1/files"), 1);
@@ -921,16 +940,16 @@ async fn conversations_and_diffs_come_from_the_providers_or_local_git() {
     );
 
     // GitHub's diff from local Git, since both commits are here.
-    let request = |path: &str, since_review: bool| PullRequestDiffRequest {
+    let request = |path: &str, since: Option<&str>| PullRequestDiffRequest {
         reference: "github.com/acme/api#1".into(),
         path: path.into(),
         old_path: None,
-        since_review,
+        since: since.map(str::to_string),
         options: DiffOptions::default(),
     };
     let diff = h
         .pull_requests
-        .diff(request("README.md", false))
+        .diff(request("README.md", None))
         .await
         .unwrap();
     assert_eq!(diff.source, DiffSource::Local);
@@ -950,16 +969,16 @@ async fn conversations_and_diffs_come_from_the_providers_or_local_git() {
     // Since the review: the same, from the reviewed commit.
     let diff = h
         .pull_requests
-        .diff(request("README.md", true))
+        .diff(request("README.md", Some(&main_sha)))
         .await
         .unwrap();
     assert_eq!(diff.base_sha, main_sha);
     let files = h
         .pull_requests
-        .files("github.com/acme/api#1", true)
+        .files("github.com/acme/api#1", Some(&main_sha))
         .await
         .unwrap();
-    assert!(files.since_review);
+    assert!(files.partial);
     assert_eq!(files.files.len(), 1);
     assert_eq!(files.files[0].path, "README.md");
     assert_eq!((files.files[0].additions, files.files[0].deletions), (1, 0));
@@ -974,7 +993,7 @@ async fn conversations_and_diffs_come_from_the_providers_or_local_git() {
         reference: "bitbucket.org/acme-team/web#5".into(),
         path: path.into(),
         old_path: None,
-        since_review: false,
+        since: None,
         options: DiffOptions::default(),
     };
     let diff = h.pull_requests.diff(request("login.js")).await.unwrap();
@@ -1000,14 +1019,457 @@ async fn conversations_and_diffs_come_from_the_providers_or_local_git() {
         requests.count("/pullrequests/5/diff") - requests.count("/pullrequests/5/diffstat"),
         1
     );
-    // Since the review is not possible without a reviewed commit.
+    // Since a commit that is not on the Mac: nothing but local Git can answer.
     let err = h
         .pull_requests
         .diff(PullRequestDiffRequest {
-            since_review: true,
+            since: Some("0123456789ab".into()),
+            ..request("login.js")
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::NotFound);
+    let err = h
+        .pull_requests
+        .diff(PullRequestDiffRequest {
+            since: Some("main; rm".into()),
             ..request("login.js")
         })
         .await
         .unwrap_err();
     assert_eq!(err.code, ErrorCode::Validation);
+}
+
+// --- Reviewing (SPEC.md, Reviewing) --------------------------------------------
+
+const BITBUCKET_BRANCH: &str =
+    r#"{"target": {"hash": "0123456789ab0123456789ab0123456789ab0123"}}"#;
+
+/// The writes both providers take, in front of the reads.
+fn write_routes(second_comment_status: u16) -> Vec<Route> {
+    vec![
+        Route {
+            body_contains: "resolveReviewThread",
+            ..route(
+                "POST",
+                "/graphql",
+                r#"{"data": {"resolveReviewThread": {"thread": {"isResolved": true}}}}"#,
+            )
+        },
+        Route {
+            body_contains: "unresolveReviewThread",
+            ..route(
+                "POST",
+                "/graphql",
+                r#"{"data": {"unresolveReviewThread": {"thread": {"isResolved": false}}}}"#,
+            )
+        },
+        Route {
+            status: 201,
+            ..route(
+                "POST",
+                "/repos/acme/api/issues/1/comments",
+                r#"{"id": 900}"#,
+            )
+        },
+        Route {
+            status: 201,
+            ..route(
+                "POST",
+                "/repos/acme/api/pulls/1/comments/300/replies",
+                r#"{"id": 901}"#,
+            )
+        },
+        route("POST", "/repos/acme/api/pulls/1/reviews", r#"{"id": 950}"#),
+        Route {
+            status: 201,
+            body_contains: "\"parent\"",
+            ..route(
+                "POST",
+                "/repositories/acme-team/web/pullrequests/5/comments",
+                r#"{"id": 11}"#,
+            )
+        },
+        Route {
+            status: second_comment_status,
+            body_contains: "second",
+            ..route(
+                "POST",
+                "/repositories/acme-team/web/pullrequests/5/comments",
+                r#"{"id": 12}"#,
+            )
+        },
+        Route {
+            status: 201,
+            body_contains: "slow",
+            delay_ms: 4_000,
+            ..route(
+                "POST",
+                "/repositories/acme-team/web/pullrequests/5/comments",
+                r#"{"id": 13}"#,
+            )
+        },
+        Route {
+            status: 201,
+            ..route(
+                "POST",
+                "/repositories/acme-team/web/pullrequests/5/comments",
+                r#"{"id": 10}"#,
+            )
+        },
+        route(
+            "POST",
+            "/repositories/acme-team/web/pullrequests/5/comments/1/resolve",
+            "",
+        ),
+        Route {
+            status: 204,
+            ..route(
+                "DELETE",
+                "/repositories/acme-team/web/pullrequests/5/comments/1/resolve",
+                "",
+            )
+        },
+        route(
+            "POST",
+            "/repositories/acme-team/web/pullrequests/5/approve",
+            r#"{"approved": true}"#,
+        ),
+        route(
+            "GET",
+            "/repositories/acme-team/web/refs/branches/fix-login",
+            BITBUCKET_BRANCH,
+        ),
+    ]
+}
+
+fn anchor(path: &str, line: u32, start: Option<u32>, commit: &str) -> ThreadAnchor {
+    ThreadAnchor {
+        path: path.into(),
+        side: DiffSide::New,
+        line: Some(line),
+        start_line: start,
+        commit: Some(commit.into()),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reviews_are_drafted_locally_and_sent_as_each_provider_takes_them() {
+    let head = "a".repeat(40);
+    let gh = github_pr(1, "2026-10-03T10:00:00Z", &head);
+    let bb = bitbucket_pr(5, "2026-10-03T09:00:00.000000+00:00", "0123456789ab");
+    let mut all = write_routes(500);
+    all.extend(routes(vec![gh.clone()], vec![bb.clone()]));
+    let shared = Arc::new(Mutex::new(all));
+    let (base, requests) = serve_shared(Arc::clone(&shared)).await;
+    let h = harness(&base).await;
+    h.add_accounts().await;
+    let (ws, _, _) = h.workspace(h._tmp.path()).await;
+    h.list(&ws.id, 0).await;
+    let gh_ref = "github.com/acme/api#1";
+    let bb_ref = "bitbucket.org/acme-team/web#5";
+
+    // Drafts stay on the Mac: written, changed, listed, deleted.
+    let save = |path: &str, line: u32, start: Option<u32>, commit: &str, body: &str| {
+        SaveReviewDraftRequest {
+            reference: gh_ref.into(),
+            id: None,
+            anchor: anchor(path, line, start, commit),
+            body: body.into(),
+        }
+    };
+    let drafts = h
+        .pull_requests
+        .save_draft(save("src/parse.rs", 12, None, &head, "Why **this**?"))
+        .await
+        .unwrap();
+    assert_eq!(drafts.drafts.len(), 1);
+    assert!(drafts.drafts[0].html.contains("<strong>this</strong>"));
+    let first_id = drafts.drafts[0].id.clone();
+    let drafts = h
+        .pull_requests
+        .save_draft(SaveReviewDraftRequest {
+            id: Some(first_id.clone()),
+            ..save("src/parse.rs", 12, None, &head, "Why this?")
+        })
+        .await
+        .unwrap();
+    assert_eq!(drafts.drafts.len(), 1);
+    assert_eq!(drafts.drafts[0].body, "Why this?");
+    h.pull_requests
+        .save_draft(save("docs/new.md", 3, Some(1), &head, "Range"))
+        .await
+        .unwrap();
+    let gone = h
+        .pull_requests
+        .save_draft(save("docs/new.md", 3, None, &head, ""))
+        .await
+        .unwrap_err();
+    assert_eq!(gone.code, ErrorCode::Validation);
+    let extra = h
+        .pull_requests
+        .save_draft(save("docs/new.md", 4, None, &head, "Gone soon"))
+        .await
+        .unwrap();
+    let drafts = h
+        .pull_requests
+        .delete_draft(gh_ref, &extra.drafts[2].id)
+        .await
+        .unwrap();
+    assert_eq!(drafts.drafts.len(), 2);
+    assert!(drafts.pending.is_none());
+
+    // The head the user looked at is behind: nothing is sent.
+    let submit = |verdict: ReviewVerdict, expected: &str| SubmitReviewRequest {
+        reference: gh_ref.into(),
+        body: "Looks fine".into(),
+        verdict,
+        expected_head_sha: expected.into(),
+    };
+    let err = h
+        .pull_requests
+        .submit_review(submit(ReviewVerdict::Approve, &"b".repeat(40)))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::Conflict);
+    assert_eq!(requests.count("/pulls/1/reviews"), 0);
+    // A draft written on an earlier commit: the same, until the drafts are
+    // moved to the head after looking at the new commits.
+    h.pull_requests
+        .save_draft(save("src/parse.rs", 20, None, &"0".repeat(40), "Old"))
+        .await
+        .unwrap();
+    let err = h
+        .pull_requests
+        .submit_review(submit(ReviewVerdict::Approve, &head))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::Conflict);
+    assert!(
+        err.message.contains("started this review"),
+        "{}",
+        err.message
+    );
+    assert_eq!(requests.count("/pulls/1/reviews"), 0);
+    h.pull_requests.move_drafts(gh_ref, &head).await.unwrap();
+    let outcome = h
+        .pull_requests
+        .submit_review(submit(ReviewVerdict::Approve, &head))
+        .await
+        .unwrap();
+    // GitHub takes the review whole, in one request on the head commit.
+    let bodies = requests.bodies("/pulls/1/reviews");
+    assert_eq!(bodies.len(), 1);
+    let sent: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
+    assert_eq!(sent["commit_id"], head);
+    assert_eq!(sent["event"], "APPROVE");
+    assert_eq!(sent["body"], "Looks fine");
+    let comments = sent["comments"].as_array().unwrap();
+    assert_eq!(comments.len(), 3);
+    assert_eq!(comments[0]["path"], "src/parse.rs");
+    assert_eq!(comments[0]["line"], 12);
+    assert_eq!(comments[0]["side"], "RIGHT");
+    assert_eq!(comments[1]["start_line"], 1);
+    assert_eq!(comments[1]["line"], 3);
+    assert!(comments[0].get("start_line").is_none());
+    assert!(h
+        .pull_requests
+        .drafts(gh_ref)
+        .await
+        .unwrap()
+        .drafts
+        .is_empty());
+    assert_eq!(outcome.pull_request.reference, gh_ref);
+    assert!(h
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|e| e.reference == gh_ref && e.origin == PullRequestChangeOrigin::App));
+
+    // Comment, reply, resolve, reopen on GitHub.
+    h.pull_requests
+        .comment(CommentRequest {
+            reference: gh_ref.into(),
+            body: "Hello".into(),
+        })
+        .await
+        .unwrap();
+    assert!(requests.bodies("/issues/1/comments")[0].contains("Hello"));
+    h.pull_requests
+        .reply(ReplyRequest {
+            reference: gh_ref.into(),
+            thread_id: "T1".into(),
+            body: "A reply".into(),
+        })
+        .await
+        .unwrap();
+    assert!(requests.bodies("/comments/300/replies")[0].contains("A reply"));
+    // A reply to a comment on the pull request is another such comment.
+    h.pull_requests
+        .reply(ReplyRequest {
+            reference: gh_ref.into(),
+            thread_id: "comment:100".into(),
+            body: "Me too".into(),
+        })
+        .await
+        .unwrap();
+    assert!(requests.bodies("/issues/1/comments")[1].contains("Me too"));
+    h.pull_requests
+        .resolve(ResolveThreadRequest {
+            reference: gh_ref.into(),
+            thread_id: "T1".into(),
+            resolved: true,
+        })
+        .await
+        .unwrap();
+    assert!(requests
+        .bodies("/graphql")
+        .iter()
+        .any(|b| b.contains("resolveReviewThread") && b.contains("\"T1\"")));
+    // T2 is resolved already: nothing to send.
+    let before = requests.total();
+    let err = h
+        .pull_requests
+        .resolve(ResolveThreadRequest {
+            reference: gh_ref.into(),
+            thread_id: "comment:100".into(),
+            resolved: true,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::Validation);
+    let _ = before;
+
+    // Bitbucket: one request per comment. The second one fails, so the
+    // first is recorded as sent and the summary and verdict wait.
+    let bb_head = "0123456789ab";
+    for body in ["first", "second"] {
+        h.pull_requests
+            .save_draft(SaveReviewDraftRequest {
+                reference: bb_ref.into(),
+                id: None,
+                anchor: anchor("login.js", 2, None, bb_head),
+                body: body.into(),
+            })
+            .await
+            .unwrap();
+    }
+    let bb_submit = SubmitReviewRequest {
+        reference: bb_ref.into(),
+        body: "Summary".into(),
+        verdict: ReviewVerdict::Approve,
+        expected_head_sha: bb_head.into(),
+    };
+    let err = h
+        .pull_requests
+        .submit_review(bb_submit.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::DependencyUnavailable);
+    let drafts = h.pull_requests.drafts(bb_ref).await.unwrap();
+    assert_eq!(drafts.drafts[0].remote_id.as_deref(), Some("10"));
+    assert_eq!(drafts.drafts[1].remote_id, None);
+    let pending = drafts.pending.as_ref().unwrap();
+    assert_eq!(pending.body, "Summary");
+    assert_eq!(pending.verdict, ReviewVerdict::Approve);
+    assert!(!pending.summary_sent);
+    assert_eq!(requests.count("/pullrequests/5/approve"), 0);
+    // Sent again once Bitbucket answers: only what was left, then the
+    // summary, then the approval.
+    let mut all = write_routes(201);
+    all.extend(routes(vec![gh], vec![bb]));
+    *shared.lock().unwrap() = all;
+    h.pull_requests.submit_review(bb_submit).await.unwrap();
+    // Only what was posted: the path is also read after each write.
+    let posted: Vec<String> = requests
+        .bodies("/pullrequests/5/comments")
+        .into_iter()
+        .filter(|b| !b.is_empty())
+        .collect();
+    assert_eq!(
+        posted.iter().filter(|b| b.contains("first")).count(),
+        1,
+        "nothing is posted twice"
+    );
+    assert_eq!(posted.iter().filter(|b| b.contains("second")).count(), 2);
+    assert_eq!(posted.iter().filter(|b| b.contains("Summary")).count(), 1);
+    assert!(posted.last().unwrap().contains("Summary"));
+    assert!(posted[0].contains("\"to\":2") && posted[0].contains("login.js"));
+    assert_eq!(requests.count("/pullrequests/5/approve"), 1);
+    assert_eq!(requests.count("/refs/branches/fix-login"), 2);
+    let drafts = h.pull_requests.drafts(bb_ref).await.unwrap();
+    assert!(drafts.drafts.is_empty() && drafts.pending.is_none());
+
+    // Reply, resolve, reopen on Bitbucket.
+    h.pull_requests
+        .reply(ReplyRequest {
+            reference: bb_ref.into(),
+            thread_id: "1".into(),
+            body: "Agreed".into(),
+        })
+        .await
+        .unwrap();
+    let reply = requests
+        .bodies("/pullrequests/5/comments")
+        .into_iter()
+        .rfind(|b| !b.is_empty())
+        .unwrap();
+    assert!(reply.contains("\"parent\":{\"id\":1}") && reply.contains("login.js"));
+    h.pull_requests
+        .resolve(ResolveThreadRequest {
+            reference: bb_ref.into(),
+            thread_id: "1".into(),
+            resolved: true,
+        })
+        .await
+        .unwrap();
+    assert_eq!(requests.count("/comments/1/resolve"), 1);
+    h.pull_requests
+        .resolve(ResolveThreadRequest {
+            reference: bb_ref.into(),
+            thread_id: "3".into(),
+            resolved: false,
+        })
+        .await
+        .unwrap_err();
+
+    // A comment whose answer never came: the conversation is read again,
+    // and the comment is found there, so it is not posted twice.
+    let with_slow = BITBUCKET_COMMENTS.replacen(
+        r#"{"id": 4, "parent": null, "content": {"raw": "General remark"}"#,
+        r#"{"id": 13, "parent": null, "content": {"raw": "slow"}, "inline": null, "resolution": null, "pending": false, "deleted": false, "user": {"uuid": "{jo}", "nickname": "jo"}, "created_on": "2026-10-03T12:00:00.000000+00:00"},
+    {"id": 4, "parent": null, "content": {"raw": "General remark"}"#,
+        1,
+    );
+    shared
+        .lock()
+        .unwrap()
+        .iter_mut()
+        .find(|r| {
+            r.path == "/repositories/acme-team/web/pullrequests/5/comments" && r.method == "GET"
+        })
+        .unwrap()
+        .body = with_slow;
+    let outcome = h
+        .pull_requests
+        .comment(CommentRequest {
+            reference: bb_ref.into(),
+            body: "slow".into(),
+        })
+        .await
+        .unwrap();
+    assert!(outcome
+        .conversation
+        .threads
+        .iter()
+        .any(|t| t.id == "13" && t.comments[0].mine));
+    assert_eq!(
+        requests
+            .bodies("/pullrequests/5/comments")
+            .iter()
+            .filter(|b| b.contains("slow"))
+            .count(),
+        1
+    );
 }

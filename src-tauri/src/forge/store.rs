@@ -89,6 +89,24 @@ pub fn save(
     Ok(())
 }
 
+/// Record a permission the provider refused an action for, so that action
+/// is off until the token is replaced (SPEC.md, Accounts).
+pub fn add_missing(conn: &Connection, kind: ForgeKind, permission: &str) -> AppResult<()> {
+    let Some(account) = get(conn, kind)? else {
+        return Ok(());
+    };
+    if account.missing.iter().any(|m| m == permission) {
+        return Ok(());
+    }
+    let mut missing = account.missing;
+    missing.push(permission.to_string());
+    conn.execute(
+        "UPDATE forge_accounts SET missing_json = ?2 WHERE kind = ?1",
+        params![enum_name(kind)?, serde_json::to_string(&missing)?],
+    )?;
+    Ok(())
+}
+
 pub fn delete(conn: &Connection, kind: ForgeKind) -> AppResult<()> {
     conn.execute(
         "DELETE FROM forge_accounts WHERE kind = ?1",
