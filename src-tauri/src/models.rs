@@ -152,6 +152,33 @@ pub struct Settings {
     /// Write `brainiac_id` into a note the first time it gets a task or a
     /// repository link (SPEC.md, Note identity).
     pub write_note_ids: bool,
+    /// What agents connected through `brainiac mcp` may do (SPEC.md, Agent access).
+    pub agent_access: AgentAccess,
+}
+
+/// Settings → Agent access (SPEC.md, section 9). Off by default.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum AgentAccess {
+    #[default]
+    Off,
+    ReadOnly,
+    ReadWrite,
+}
+
+/// Settings → Agent access: what the app shows about agents (SPEC.md, section 9).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AgentAccessStatus {
+    pub access: AgentAccess,
+    /// Agents connected now, whatever they may do.
+    pub connections: u32,
+    /// The program an agent runs with the argument `mcp`, such as
+    /// `/Applications/Brainiac.app/Contents/MacOS/brainiac`.
+    pub executable: String,
+    /// Why agents cannot connect, such as a socket that could not be created.
+    pub problem: Option<String>,
 }
 
 impl Default for Settings {
@@ -171,6 +198,7 @@ impl Default for Settings {
             auto_fetch_interval_minutes: 15,
             fetch_timeout_seconds: 60,
             write_note_ids: true,
+            agent_access: AgentAccess::Off,
         }
     }
 }
@@ -1268,6 +1296,8 @@ pub enum RevisionReason {
     AppSave,
     ExternalChange,
     Restore,
+    /// Saved by an agent through agent access (SPEC.md, section 9).
+    Agent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -1601,6 +1631,8 @@ pub enum NoteChangeOrigin {
     External,
     /// Trashed or restored.
     Trash,
+    /// Saved or created by an agent through agent access (SPEC.md, section 9).
+    Agent,
 }
 
 /// Emitted as `note_changed`; carries no note text.

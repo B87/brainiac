@@ -51,6 +51,7 @@ const settings: Settings = {
   auto_fetch_interval_minutes: 15,
   fetch_timeout_seconds: 60,
   write_note_ids: true,
+  agent_access: "off",
 };
 
 export const repository: RepositorySummary = {
@@ -469,6 +470,13 @@ export class FakeBackend {
         return settings;
       case "rebuild_search":
         return null;
+      case "get_agent_access_status":
+        return {
+          access: settings.agent_access,
+          connections: settings.agent_access === "off" ? 0 : 1,
+          executable: "/Applications/Brainiac.app/Contents/MacOS/brainiac",
+          problem: null,
+        };
       case "save_draft":
         this.drafts.set(String(args.noteId), {
           text: String(args.text),

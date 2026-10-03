@@ -5,7 +5,7 @@ description = "Second brain and Git workspace tracker for programmers"
 authors = ["Brainiac contributors"]
 license = "MIT OR Apache-2.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.88"
 
 [lib]
 name = "brainiac_lib"
@@ -27,7 +27,7 @@ serde_json = "1"
 thiserror = "2"
 ts-rs = { version = "11", features = ["serde-compat"] }
 rusqlite = { version = "0.40", features = ["bundled", "backup"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time", "sync", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time", "sync", "io-util", "io-std", "net"] }
 notify = "8"
 uuid = { version = "1", features = ["v4"] }
 chrono = "0.4"
@@ -36,9 +36,15 @@ pulldown-cmark = { version = "0.13", default-features = false }
 sha2 = "0.10"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Agent access (v0.2.x): the MCP server, its tool schemas, and the socket's peer user ID.
+rmcp = { version = "3.5", default-features = false, features = ["server", "macros"] }
+schemars = "1"
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+# Tests drive the MCP server as an agent would.
+rmcp = { version = "3.5", default-features = false, features = ["server", "macros", "client"] }
 
 [profile.release]
 codegen-units = 1

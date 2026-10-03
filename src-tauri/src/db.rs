@@ -95,10 +95,16 @@ pub const INDEX: Store = Store {
 pub const HISTORY: Store = Store {
     backup_prefix: "history-",
     application_id: 0x4252_4E48,
-    migrations: &[(
-        "0001_history",
-        include_str!("../migrations/history/0001_history.sql"),
-    )],
+    migrations: &[
+        (
+            "0001_history",
+            include_str!("../migrations/history/0001_history.sql"),
+        ),
+        (
+            "0002_agent",
+            include_str!("../migrations/history/0002_agent.sql"),
+        ),
+    ],
     backups: Backups::Every { days: 7, keep: 2 },
     adopt_unmarked: false,
     incremental_vacuum: false,

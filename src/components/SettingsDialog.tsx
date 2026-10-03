@@ -1,6 +1,15 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import {
+  ACCESS_CHOICES,
+  accessSummary,
+  claudeCommand,
+  connectedText,
+  pluginFits,
+} from "../lib/agent";
 import { shortPath } from "../lib/format";
 import {
+  type AgentAccess,
+  type AgentAccessStatus,
   type AppSnapshot,
   errorMessage,
   ipc,
@@ -9,7 +18,10 @@ import {
 import Dialog from "./Dialog";
 import VaultSetup from "./VaultSetup";
 
-/** Settings: the vault, note identity, search, and backups. */
+/** How often the connected agents are counted while Settings is open. */
+const AGENT_POLL_MS = 2000;
+
+/** Settings: the vault, note identity, search, agent access, and backups. */
 export default function SettingsDialog({
   snapshot,
   vault,
@@ -30,6 +42,41 @@ export default function SettingsDialog({
   const [error, setError] = useState<string | null>(null);
   const [rebuilding, setRebuilding] = useState(false);
   const settings = snapshot.settings;
+  const [agent, setAgent] = useState<AgentAccessStatus | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    const load = () =>
+      ipc
+        .getAgentAccessStatus()
+        .then((s) => alive && setAgent(s))
+        .catch(() => {});
+    void load();
+    const timer = setInterval(load, AGENT_POLL_MS);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, []);
+
+  const setAccess = async (access: AgentAccess) => {
+    try {
+      await ipc.updateSettings({ ...settings, agent_access: access });
+      onChanged();
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  };
+  const command = agent ? claudeCommand(agent.executable) : null;
+  const plugin = agent ? pluginFits(agent.executable) : false;
+  const copyCommand = () => {
+    if (!command) return;
+    void navigator.clipboard
+      ?.writeText(command)
+      .then(() => setCopied(true))
+      .catch(() => {});
+  };
 
   const setWriteIds = async (on: boolean) => {
     try {
@@ -111,6 +158,66 @@ export default function SettingsDialog({
               </span>
             </span>
           </label>
+        </section>
+        <section className="flex flex-col gap-2">
+          <h3 className="section-label m-0">Agent access</h3>
+          <fieldset aria-label="Agent access" className="seg self-start">
+            {ACCESS_CHOICES.map((choice) => (
+              <button
+                key={choice.value}
+                type="button"
+                aria-pressed={settings.agent_access === choice.value}
+                onClick={() => void setAccess(choice.value)}
+              >
+                {choice.label}
+              </button>
+            ))}
+          </fieldset>
+          <p className="m-0 text-[12.5px] text-fg-2">
+            {accessSummary(settings.agent_access)}
+          </p>
+          {agent && (
+            <span className="text-[12px] text-muted" aria-live="polite">
+              {connectedText(agent.connections, settings.agent_access)}
+            </span>
+          )}
+          {agent?.problem && (
+            <div role="alert" className="text-[12.5px] text-conflict">
+              Agents cannot connect: {agent.problem}
+            </div>
+          )}
+          {command && (
+            <>
+              <span className="text-[12px] text-muted">
+                Add Brainiac to Claude Code from a terminal:
+              </span>
+              <div className="flex items-center gap-2 rounded-md border bg-panel px-2.5 py-2">
+                <code className="mono min-w-0 flex-1 select-all break-all text-[12px]">
+                  {command}
+                </code>
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={copyCommand}
+                >
+                  {copied ? "Copied" : "Copy"}
+                </button>
+              </div>
+              {plugin && (
+                <span className="text-[12px] text-muted">
+                  Or, instead, install Brainiac's Claude Code plugin, which also
+                  teaches Claude Code how to use it:{" "}
+                  <span className="mono select-all">
+                    /plugin marketplace add B87/brainiac
+                  </span>
+                  , then{" "}
+                  <span className="mono select-all">
+                    /plugin install brainiac@brainiac
+                  </span>
+                </span>
+              )}
+            </>
+          )}
         </section>
         <section className="flex flex-col gap-2">
           <h3 className="section-label m-0">Search</h3>

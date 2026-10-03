@@ -1,0 +1,17 @@
+{
+  "name": "brainiac",
+  "owner": {
+    "name": "B87"
+  },
+  "metadata": {
+    "description": "Claude Code plugins for Brainiac, the macOS second brain for notes, tasks, and Git repositories."
+  },
+  "plugins": [
+    {
+      "name": "brainiac",
+      "source": "./plugins/brainiac",
+      "description": "Connects Claude Code to the Brainiac app and teaches it to plan the day, track work as tasks, and write decisions up as notes.",
+      "category": "productivity"
+    }
+  ]
+}

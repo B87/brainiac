@@ -1,6 +1,6 @@
 # Brainiac — Specification
 
-**Updated:** 2 October 2026  
+**Updated:** 3 October 2026  
 **Target:** macOS desktop application, Rust backend, Tauri v2 shell
 
 This document says what Brainiac does: the product, its release plan, and the behavior of the current release. How it is built is in [`docs/architecture.md`](docs/architecture.md); milestones and the designs of later releases are in [`docs/roadmap.md`](docs/roadmap.md).
@@ -38,7 +38,7 @@ The product can eventually include PR and CI status, calendar context, recurring
 
 ## 2. Release boundaries
 
-**v0.1 — Git viewer and single/multi-repository tracker** shipped as 0.1.3. **v0.2 — knowledge, tasks, and code context** is the current release: one Markdown vault, tasks, Today, keyword search, and links between notes, tasks, and the repositories v0.1 tracks (sections 5–8). Content imports, global capture, and AI remain later releases.
+**v0.1 — Git viewer and single/multi-repository tracker** shipped as 0.1.3. **v0.2 — knowledge, tasks, and code context** shipped as 0.2.0: one Markdown vault, tasks, Today, keyword search, and links between notes, tasks, and the repositories v0.1 tracks (sections 5–8). **v0.2.x — agent access** is the current release: agents such as Claude Code work with Brainiac's notes, tasks, and repository links through a local MCP server (section 9). **v0.3 — pull requests** comes next, because the Git features proved the most useful: reviewing and merging the pull requests of a workspace's repositories on GitHub and Bitbucket Cloud. Content imports, global capture, and AI follow it.
 
 | Capability | Release | Scope |
 | --- | --- | --- |
@@ -55,12 +55,15 @@ The product can eventually include PR and CI status, calendar context, recurring
 | Notes, task hub, Today | v0.2 | One Markdown vault, safe editing, dates, context associations |
 | Keyword knowledge search | v0.2 | FTS5 across saved notes and tasks |
 | Backlinks and note/repository associations | v0.2 | Connect knowledge to the existing Git workspace |
-| External content imports | v0.3 | Paste, bookmarks, Markdown copies, articles, `.eml`, provenance and duplicate handling |
-| Global capture window and Inbox | v0.3 | System shortcut, floating capture, Inbox triage of captured and imported items, shared backend state |
-| Authenticated import adapters | v0.3.x | Selected Jira issues/mail messages; provider choice and video transcript acquisition validated separately |
-| Semantic search | v0.4 | Optional local embeddings and hybrid retrieval |
-| Grounded AI answers | v0.5 | Citation-backed local RAG |
-| Remote PR/CI tracking, other Git mutations, sync, plugins | Later | Separate features after local viewing is useful |
+| Agent access | v0.2.x | Local MCP server for agents such as Claude Code: search, notes, tasks, repository links; off by default |
+| Pull requests | v0.3 | GitHub and Bitbucket Cloud, per workspace and off by default: the workspace's and each repository's pull requests, overview, files changed, review, and merge |
+| Pull request follow-ups | v0.3.x | A daily view of what waits on you, a task's pull request, creating a pull request, agent tools; chosen by use |
+| External content imports | v0.4 | Paste, bookmarks, Markdown copies, articles, `.eml`, provenance and duplicate handling |
+| Global capture window and Inbox | v0.4 | System shortcut, floating capture, Inbox triage of captured and imported items, shared backend state |
+| Authenticated import adapters | v0.4.x | Selected Jira issues/mail messages; provider choice and video transcript acquisition validated separately |
+| Semantic search | v0.5 | Optional local embeddings and hybrid retrieval |
+| Grounded AI answers | v0.6 | Citation-backed local RAG |
+| Other pull request providers, CI beyond pull request checks, other Git mutations, sync, plugins | Later | Separate features after the v0.3 providers are useful |
 
 v0.1 requires a usable local Git binary. Detect it on startup and provide a clear setup message when absent; do not silently install developer tools. Core Git viewing works offline and requires no Markdown vault, Ollama instance, remote-service account, or elevated macOS permissions. Ahead/behind information reflects existing local refs and may be stale relative to the remote server until someone fetches: the user, their editor, or Brainiac's Fetch now and opt-in auto-fetch (section 4, Fetching). Fetching is the only operation that writes to a repository, and it touches remote-tracking refs and objects only.
 
@@ -94,11 +97,11 @@ The sidebar switches scope and shares the window's title bar area with the traff
 
 ### Main window — v0.2
 
-The sidebar gains a section level above the repository tree: **Today**, **Tasks**, and **Notes**, then All repositories, Workspaces, and Pinned as in v0.1. The section that holds the notes is called Notes; "brain" names the whole app. There is no Inbox section before v0.3 (section 6).
+The sidebar gains a section level above the repository tree: **Today**, **Tasks**, and **Notes**, then All repositories, Workspaces, and Pinned as in v0.1. The section that holds the notes is called Notes; "brain" names the whole app. There is no Inbox section before v0.4 (section 6).
 
 - Brainiac reopens the section that was open when it quit. The first launch after upgrading to v0.2 opens Workspaces as before, and the sidebar shows one **Set up your vault** row until a vault is chosen.
 - Today, Tasks, and Notes are never shown empty: before a vault is chosen they offer the vault setup, and Today and Tasks work without a vault.
-- Settings (`Cmd+,`) chooses the vault, holds the note-ID setting and **Rebuild Index**, and offers **Export…** and **Restore from Export…**, which the File menu also has.
+- Settings (`Cmd+,`) chooses the vault, holds the note-ID setting and **Rebuild Index**, and offers **Export…** and **Restore from Export…**, which the File menu also has. From v0.2.x it also holds **Agent access** (section 9).
 - Repositories, notes, and tasks each have one icon, used in the sidebar, ⌘K, chips, and side panels. A repository is always shown the same way wherever it appears: name, branch, a status dot with its words (clean, *N* changed, conflicted, missing), ahead and behind when not zero, and how fresh the data is ("checked 1 min ago", or "fetched 2 h ago" in amber when stale).
 - Edit times read as relative for the last seven days ("edited 2 hours ago") and as dates after that ("edited 14 Sep"). Due and planned dates are always dates ("Due Fri 3 Oct"); an overdue task says "Overdue" in words and with an icon, not by color alone.
 
@@ -399,7 +402,7 @@ A note is edited as its Markdown text, so a save contains exactly what the user 
 - A task has a title, a short plain-text description, a status (to do, in progress, done, cancelled), an optional planned date, an optional deadline, and links to at most one note and one repository. Work spanning several repositories links a note that covers them. Longer material belongs in the linked note.
 - Planning a task and giving it a deadline are separate actions. Dates are calendar days in the Mac's time zone, so a task due today stays due today when travelling or when the clocks change.
 - Completing a task records when; reopening it clears that. A task is drawn with a round check, never a square checkbox.
-- **To sort:** a new task without a planned date or deadline is *to sort* until it gets one or is marked **Sorted**. v0.2 has no Inbox: everything is created inside the app, and an inbox earns its place only when items arrive faster than they are sorted, which starts with v0.3's capture and imports. Quick notes go to an ordinary `Inbox/` folder in the vault.
+- **To sort:** a new task without a planned date or deadline is *to sort* until it gets one or is marked **Sorted**. v0.2 has no Inbox: everything is created inside the app, and an inbox earns its place only when items arrive faster than they are sorted, which starts with v0.4's capture and imports. Quick notes go to an ordinary `Inbox/` folder in the vault.
 - **Today** lists open tasks that are overdue, due today, or planned for today or an earlier day (unfinished work carries over), then those completed today. Tasks to sort appear as one folded **To sort · N** line above them; expanding it lists them. Each task shows its linked note and repository, the repository with its live state. A side panel lists the repositories in today's work with their state and **Fetch** and **Open**. "Today" follows the Mac's date, including across midnight and after waking.
 - **Tasks** lists all tasks, filtered by status and by **To sort**.
 - Two edits of the same task, from two places, never overwrite each other silently: the later one is refused with a conflict and shows the current task.
@@ -422,3 +425,18 @@ A note is edited as its Markdown text, so a save contains exactly what the user 
 - **Export** writes the vault's notes, a consistent copy of Brainiac's data, a manifest, and tasks as JSON with their dates, statuses, and links. It goes into a new folder outside the vault, where it would otherwise be read as a second copy of every note. A note changed during the export is retried or reported; the export never claims to be complete when it is not.
 - **Restore** checks that the files are Brainiac's and from a version it can read before replacing anything. The export's notes are copied into an empty folder, or an existing vault folder is used as it is. Brainiac then restarts into the restored data, snapshotting the data it replaces first. It matches notes by `brainiac_id`, then by path and content; matches repositories by their remote URL (stored and exported without a password or token in it), offering **Locate…** for the rest, and keeps the repositories already registered on this Mac; and rebuilds search.
 - Snapshots are recovery aids on the same Mac. A complete backup is an export, or the vault plus Brainiac's data folder, kept on another device or backup system.
+
+## 9. Agent access — v0.2.x
+
+Agents such as Claude Code can already read and edit the vault's Markdown files, and Brainiac treats them like any other editor (section 5, Saving and changes from outside). Agent access lets them work with what lives only in Brainiac: tasks, Today, search, and links between notes and repositories. It is a local [MCP](https://modelcontextprotocol.io) server inside the running app.
+
+- **Settings → Agent access** is **Off** (the default), **Read only**, or **Read and write**. Changing it applies at once to agents already connected: their tools appear, change, or disappear without reconnecting. While it is off, a connected agent sees no tools and is told where to turn it on. Settings shows how many agents are connected.
+- Settings shows the command that adds Brainiac to Claude Code for every project, `claude mcp add --scope user brainiac -- <the app>/Contents/MacOS/brainiac mcp`, with the app's real location, and copies it; other MCP clients run the same program with the argument `mcp`. If agents cannot connect, Settings says why. Brainiac's Claude Code plugin adds the server and a skill in one step (below).
+- An agent that starts while Brainiac is closed opens it in the background and waits a few seconds for it. Nothing listens on the network: only programs running under the same macOS account can connect.
+- **Read only** lets an agent search notes and tasks; read a note with its version, tasks, and linked repositories; list a folder's notes, the recent notes, the tasks (filtered as in the Tasks view), and Today; list the registered repositories with their live state; find the registered repository that contains a folder, such as the one the agent is working in; and list a repository's notes and tasks.
+- **Read and write** adds: create a note with its text; edit a note; create a task, change it, or complete it; and link a note to a repository or unlink it.
+- An agent never deletes or trashes a note, deletes a task, renames or moves a note, exports or restores, changes settings, fetches, or does anything else in a repository, and it cannot open files or run commands through Brainiac.
+- Agents follow the same rules as the app. An edit based on a version of a note or task that has changed since the agent read it is refused with a conflict and never overwrites; the agent reads it again. The app updates live, and a note open with unsaved edits gets the conflict handling of section 5.
+- Every note an agent saves keeps its previous text in revision history, marked **Changed by an agent**, as its own version even when saves follow each other, so any agent edit can be undone like the app's own. A note an agent creates gets a `brainiac_id` like any new note.
+- Notes may hold text from elsewhere, and later imported articles and emails. Brainiac tells agents to treat note and task text as the user's data, never as instructions.
+- **Claude Code plugin:** `/plugin marketplace add B87/brainiac`, then `/plugin install brainiac@brainiac`, adds the server and a skill that teaches Claude Code how to use Brainiac: planning the day from Today, turning work in a repository into tasks linked to it, and writing up decisions as notes linked to the repositories they concern. The plugin expects the app in Applications; for an app elsewhere, use the command from Settings instead. Use one or the other, not both, or Claude Code connects twice.

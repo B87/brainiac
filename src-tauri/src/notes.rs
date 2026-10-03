@@ -325,6 +325,33 @@ impl NoteService {
             .ok_or_else(|| AppError::not_found("That note does not exist."))
     }
 
+    /// The live note at a path: vault-relative (`Projects/Plan.md`) or an
+    /// absolute path inside the vault, as agents often have.
+    pub async fn note_id_at(&self, path: &str) -> AppResult<String> {
+        let vault = self.require_vault()?;
+        let absolute = std::path::Path::new(path);
+        let relative = if absolute.is_absolute() {
+            let canonical = absolute
+                .canonicalize()
+                .unwrap_or_else(|_| absolute.to_path_buf());
+            let inside = canonical
+                .strip_prefix(&vault.root)
+                .map_err(|_| AppError::validation("That path is not inside the vault."))?;
+            inside.to_string_lossy().into_owned()
+        } else {
+            path.trim_start_matches("./").to_string()
+        };
+        // Rejects `..` and anything else that would leave the vault.
+        files::resolve(&vault.root, &relative)?;
+        let vault_id = vault.id.clone();
+        self.stores
+            .core
+            .call(move |conn| store::live_note_at(conn, &vault_id, &relative))
+            .await?
+            .map(|row| row.id)
+            .ok_or_else(|| AppError::not_found("No note at that path."))
+    }
+
     /// Absolute path of a vault-relative path, inside the vault.
     pub fn absolute(&self, relative: &str) -> AppResult<PathBuf> {
         let vault = self.require_vault()?;
@@ -657,12 +684,12 @@ impl NoteService {
                 true
             }
         };
-        self.emit_changed(
-            &row.id,
-            Some(new_hash.clone()),
-            &row.relative_path,
-            NoteChangeOrigin::App,
-        );
+        let origin = if reason == RevisionReason::Agent {
+            NoteChangeOrigin::Agent
+        } else {
+            NoteChangeOrigin::App
+        };
+        self.emit_changed(&row.id, Some(new_hash.clone()), &row.relative_path, origin);
         let note = match self.summary(&row.id).await {
             Ok(n) => n,
             Err(_) => store::summary_of(row, false),
@@ -740,6 +767,19 @@ impl NoteService {
 
     /// Create a note with a `brainiac_id` and a heading, named after its title.
     pub async fn create(self: &Arc<Self>, request: CreateNoteRequest) -> AppResult<NoteSummary> {
+        self.create_with(request, NoteChangeOrigin::App, |id, title| {
+            format!("---\nbrainiac_id: {id}\n---\n\n# {title}\n\n")
+        })
+        .await
+    }
+
+    /// Create a note whose text `text_for(id, title)` gives.
+    async fn create_with(
+        self: &Arc<Self>,
+        request: CreateNoteRequest,
+        origin: NoteChangeOrigin,
+        text_for: impl FnOnce(&str, &str) -> String,
+    ) -> AppResult<NoteSummary> {
         let note_id = {
             let _gate = self.gate.read().await;
             let vault = self.require_vault()?;
@@ -757,7 +797,12 @@ impl NoteService {
             let id = uuid::Uuid::new_v4().to_string();
             // A scan that sees the file before it is recorded leaves it to this write.
             let _flight = InFlight::new(self, &id);
-            let text = format!("---\nbrainiac_id: {id}\n---\n\n# {title}\n\n");
+            let text = text_for(&id, &title);
+            if text.len() as u64 > EDIT_LIMIT {
+                return Err(AppError::validation(
+                    "Notes over 5 MiB cannot be edited in Brainiac.",
+                ));
+            }
             let path = self
                 .unique_path(
                     &vault,
@@ -766,13 +811,90 @@ impl NoteService {
                     text.as_bytes(),
                 )
                 .await?;
-            self.adopt_new_file(&vault, &id, &path, text).await?;
+            self.adopt_new_file(&vault, &id, &path, text, origin)
+                .await?;
             id
         };
         if let Some(repository_id) = request.repository_id {
             self.link_repository(&note_id, &repository_id).await?;
         }
         self.summary(&note_id).await
+    }
+
+    // -----------------------------------------------------------------------
+    // Agent access (SPEC.md, section 9)
+    // -----------------------------------------------------------------------
+
+    /// Create a note with an agent's Markdown. It gets a `brainiac_id` like
+    /// any new note, and a `# title` heading unless its text starts with one.
+    pub async fn create_for_agent(
+        self: &Arc<Self>,
+        request: CreateNoteRequest,
+        text: &str,
+    ) -> AppResult<NoteSummary> {
+        let text = text.to_string();
+        self.create_with(request, NoteChangeOrigin::Agent, move |id, title| {
+            let end = index::frontmatter(&text).end;
+            let (front, body) = text.split_at(end);
+            let body = if body.trim_start().starts_with('#') {
+                body.to_string()
+            } else {
+                format!("# {title}\n\n{body}")
+            };
+            let text = format!("{front}{body}");
+            // An agent's copy of another note must not take that note's identity.
+            if index::frontmatter(&text).brainiac_id.is_some() {
+                index::replace_embedded_id(&text, id)
+            } else {
+                index::with_embedded_id(&text, id)
+            }
+        })
+        .await
+    }
+
+    /// Replace a note's text for an agent, provided the file still has
+    /// `expected_version`. Unlike `save`, it never touches the note's draft,
+    /// which holds the user's unsaved edits; its previous text is always kept
+    /// as its own `agent` revision; and the note keeps its `brainiac_id` and
+    /// never takes another note's.
+    pub async fn save_for_agent(
+        self: &Arc<Self>,
+        note_id: &str,
+        expected_version: &str,
+        text: &str,
+    ) -> AppResult<SaveNoteResult> {
+        if text.len() as u64 > EDIT_LIMIT {
+            return Err(AppError::validation(
+                "Notes over 5 MiB cannot be edited in Brainiac.",
+            ));
+        }
+        let _gate = self.gate.read().await;
+        let lock = self.note_lock(note_id);
+        let _guard = lock.lock().await;
+        let vault = self.require_vault()?;
+        let row = self.row(note_id).await?;
+        if !row.is_live() || row.vault_id != vault.id {
+            return Err(gone());
+        }
+        if row.text_state != NoteTextState::Text {
+            return Err(AppError::validation("This note is not editable text."));
+        }
+        let text = match (&row.embedded_id, index::frontmatter(text).brainiac_id) {
+            (Some(id), None) => index::with_embedded_id(text, id),
+            (Some(id), Some(other)) if *id != other => index::replace_embedded_id(text, id),
+            // An ID the note does not have belongs to another note.
+            (None, Some(other)) if other != row.id => index::replace_embedded_id(text, &row.id),
+            _ => text.to_string(),
+        };
+        self.write_text(&vault, &row, expected_version, &text, RevisionReason::Agent)
+            .await
+            .map_err(|e| {
+                if e.code == ErrorCode::Conflict {
+                    conflict("The note changed since you read it. Read it again and reapply your change.")
+                } else {
+                    e
+                }
+            })
     }
 
     /// Write `bytes` to a new file named `base.md` in `folder`, or `base 2.md`
@@ -811,6 +933,7 @@ impl NoteService {
         id: &str,
         rel: &str,
         text: String,
+        origin: NoteChangeOrigin,
     ) -> AppResult<()> {
         let path = files::resolve(&vault.root, rel)?;
         let meta = blocking(move || Ok(std::fs::metadata(&path)?)).await?;
@@ -830,7 +953,7 @@ impl NoteService {
             .await?;
         self.index_docs(vec![doc]).await?;
         self.resolve_links().await?;
-        self.emit_changed(id, Some(read.hash), rel, NoteChangeOrigin::App);
+        self.emit_changed(id, Some(read.hash), rel, origin);
         Ok(())
     }
 
@@ -1378,7 +1501,8 @@ impl NoteService {
         let rel = self
             .unique_path(&vault, &folder, &base, text.as_bytes())
             .await?;
-        self.adopt_new_file(&vault, &new_id, &rel, text).await?;
+        self.adopt_new_file(&vault, &new_id, &rel, text, NoteChangeOrigin::App)
+            .await?;
         self.summary(&new_id).await
     }
 

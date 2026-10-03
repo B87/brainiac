@@ -269,28 +269,59 @@ function previewPlugin(resolveImage: (src: string) => string | null) {
 const caretFollow = ViewPlugin.fromClass(
   class {
     visible = true;
+    /** The caret's place at the last measurement, to tell a scroll from
+     * content changing height. */
+    last: CaretPlace | null = null;
 
     constructor(readonly view: EditorView) {}
 
     update(u: ViewUpdate) {
-      if (u.transactions.some((tr) => tr.scrollIntoView)) this.visible = true;
-      else if (u.selectionSet || u.docChanged) this.check();
+      if (u.transactions.some((tr) => tr.scrollIntoView)) {
+        this.visible = true;
+        this.view.requestMeasure({ read: () => this.measure() });
+      } else if (u.selectionSet || u.docChanged) this.check();
       else if (u.heightChanged) this.follow();
     }
 
-    overflow() {
-      const caret = this.view.coordsAtPos(this.view.state.selection.main.head);
-      const box = this.view.scrollDOM.getBoundingClientRect();
-      if (!caret) return null;
-      if (caret.top < box.top) return caret.top - box.top;
-      return Math.max(0, caret.bottom - box.bottom);
+    measure() {
+      this.last = caretPlace(this.view);
+      return this.last;
     }
 
     check() {
       this.view.requestMeasure({
-        read: () => this.overflow(),
-        write: (over) => {
-          this.visible = over === 0;
+        read: () => this.measure(),
+        write: (place) => {
+          this.visible = place !== null && overflow(place) === 0;
+        },
+      });
+    }
+
+    /** A caret off screen after a scroll was scrolled away from only if it
+     * was on screen before and the scroll alone would have taken it off.
+     * Otherwise content above it changed height meanwhile, and `follow`
+     * brings it back. */
+    scrolled() {
+      this.view.requestMeasure({
+        read: () => {
+          const before = this.last;
+          const now = this.measure();
+          if (!now) return false;
+          if (overflow(now) === 0) return true;
+          if (!before) return false;
+          // Already off screen: a move not yet scrolled into view, or
+          // content still settling.
+          if (overflow(before) !== 0) return null;
+          const moved = now.scrollTop - before.scrollTop;
+          const scrolledOnly = {
+            ...now,
+            top: before.top - moved,
+            bottom: before.bottom - moved,
+          };
+          return overflow(scrolledOnly) === 0 ? null : false;
+        },
+        write: (visible) => {
+          if (visible !== null) this.visible = visible;
         },
       });
     }
@@ -302,8 +333,9 @@ const caretFollow = ViewPlugin.fromClass(
       )
         return;
       this.view.requestMeasure({
-        read: () => this.overflow(),
-        write: (over) => {
+        read: () => this.measure(),
+        write: (place) => {
+          const over = place ? overflow(place) : 0;
           if (over) this.view.scrollDOM.scrollTop += over + Math.sign(over) * 4;
         },
       });
@@ -312,11 +344,37 @@ const caretFollow = ViewPlugin.fromClass(
   {
     eventHandlers: {
       scroll() {
-        this.check();
+        this.scrolled();
       },
     },
   },
 );
+
+/** The caret's top and bottom relative to the scroller's top edge. */
+type CaretPlace = {
+  top: number;
+  bottom: number;
+  height: number;
+  scrollTop: number;
+};
+
+function caretPlace(view: EditorView): CaretPlace | null {
+  const caret = view.coordsAtPos(view.state.selection.main.head);
+  if (!caret) return null;
+  const box = view.scrollDOM.getBoundingClientRect();
+  return {
+    top: caret.top - box.top,
+    bottom: caret.bottom - box.top,
+    height: box.height,
+    scrollTop: view.scrollDOM.scrollTop,
+  };
+}
+
+/** How far the caret is above (negative) or below (positive) the screen. */
+function overflow(p: CaretPlace): number {
+  if (p.top < 0) return p.top;
+  return Math.max(0, p.bottom - p.height);
+}
 
 /**
  * Up and Down move one line at a time. CodeMirror moves by pixels, so it can

@@ -123,13 +123,14 @@ const harness = {
     return v.state.doc.lineAt(block.from).number;
   },
 
-  /** Scroll by `px`; true when the view could not move any further. */
+  /** Scroll by `px`; true once the view is at the end it moved toward. */
   async scrollBy(px: number) {
     const scroller = current().scrollDOM;
-    const before = scroller.scrollTop;
     scroller.scrollTop += px;
     await frame();
-    return scroller.scrollTop === before;
+    return px > 0
+      ? scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 1
+      : scroller.scrollTop <= 0;
   },
 
   /** Median milliseconds per typed character: the editor's own work, and
