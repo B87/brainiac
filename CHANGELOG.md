@@ -11,6 +11,10 @@ into the release's section.
 
 ## [Unreleased]
 
+- New app icon: a white brain on Brainiac blue, with a transparent background.
+- The sidebar hides and shows with ⌘B, and the side panel on the right with ⌥⌘B. Brainiac remembers both.
+- Settings → General: pick VS Code, Cursor, Warp, or ChatGPT for Open in Editor, or set up any other program under Custom.
+
 ## [0.3.0] - 2026-10-03
 
 - Agent access: Claude Code and other MCP agents can search your notes, read Today and your tasks, and, if you allow it in Settings, create notes and tasks and link notes to repositories. Off by default.

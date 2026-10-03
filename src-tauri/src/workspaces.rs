@@ -781,10 +781,15 @@ impl RepositoryService {
             None => (settings.editor.repo_args.clone(), root.clone()),
         };
         let target = target.display().to_string();
+        let target_url = encode_path_for_url(&target);
         let line = line.unwrap_or(1).to_string();
         let args: Vec<String> = template
             .iter()
-            .map(|a| a.replace("{path}", &target).replace("{line}", &line))
+            .map(|a| {
+                a.replace("{path_url}", &target_url)
+                    .replace("{path}", &target)
+                    .replace("{line}", &line)
+            })
             .collect();
         tokio::process::Command::new(&settings.editor.executable)
             .args(&args)
@@ -857,9 +862,28 @@ fn decode_cursor(cursor: &str) -> AppResult<(String, u32)> {
     Ok((anchor.to_string(), offset))
 }
 
+/// A path as it goes inside a link such as `warp://action/new_tab?path=…`
+/// (`{path_url}`): every byte but letters, digits, `-._~`, and `/` becomes
+/// `%XX`, so spaces, `&`, `#`, and accented letters cannot break the link.
+fn encode_path_for_url(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for byte in path.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
+                out.push(byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
 /// The limits Settings shows next to each field (SPEC.md, Main window — v0.2).
 fn validate_settings(settings: &Settings) -> AppResult<()> {
-    let has_path = |args: &[String]| args.iter().any(|a| a.contains("{path}"));
+    let has_path = |args: &[String]| {
+        args.iter()
+            .any(|a| a.contains("{path}") || a.contains("{path_url}"))
+    };
     const MIB: u64 = 1024 * 1024;
     let problem = if !(10..=86_400).contains(&settings.refresh_interval_seconds) {
         Some("Refresh status every 10 seconds to once a day.")
@@ -874,7 +898,7 @@ fn validate_settings(settings: &Settings) -> AppResult<()> {
     } else if settings.editor.executable.trim().is_empty() {
         Some("Name the editor's program.")
     } else if !has_path(&settings.editor.repo_args) || !has_path(&settings.editor.file_args) {
-        Some("The editor's arguments need {path}, where the folder or file goes.")
+        Some("The editor's arguments need {path} or {path_url}, where the folder or file goes.")
     } else {
         None
     };
@@ -902,6 +926,19 @@ mod tests {
         assert!(is_stale(None, 10));
         assert!(!is_stale(Some(&now_rfc3339()), 10));
         assert!(is_stale(Some("2000-01-01T00:00:00Z"), 10));
+    }
+
+    #[test]
+    fn paths_encoded_for_links() {
+        assert_eq!(
+            encode_path_for_url("/Users/jo/repo/a.rs"),
+            "/Users/jo/repo/a.rs"
+        );
+        assert_eq!(
+            encode_path_for_url("/tmp/Q&A notes/#1?.md"),
+            "/tmp/Q%26A%20notes/%231%3F.md"
+        );
+        assert_eq!(encode_path_for_url("/tmp/café"), "/tmp/caf%C3%A9");
     }
 
     #[test]
@@ -938,5 +975,14 @@ mod tests {
             },
             ..base.clone()
         }));
+        assert!(validate_settings(&Settings {
+            editor: EditorSettings {
+                executable: "/usr/bin/open".into(),
+                repo_args: vec!["warp://action/new_tab?path={path_url}".into()],
+                file_args: vec!["warp://action/new_tab?path={path_url}".into()],
+            },
+            ..base.clone()
+        })
+        .is_ok());
     }
 }

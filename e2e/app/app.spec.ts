@@ -46,6 +46,34 @@ async function setUpVault(page: Page) {
   await expect(page.getByRole("navigation", { name: "Notes" })).toBeVisible();
 }
 
+test("⌘B hides the sidebar and ⌥⌘B hides the side panel", async ({ page }) => {
+  const sidebar = page.getByRole("navigation", {
+    name: "Repositories and workspaces",
+  });
+  await expect(sidebar.getByRole("button", { name: "Today" })).toBeVisible();
+  await page.keyboard.press("Meta+b");
+  await expect(sidebar).toHaveCount(0);
+  // Two presses inside 80 ms count as one (a menu accelerator and the key listener).
+  await page.waitForTimeout(100);
+  await page.keyboard.press("Meta+b");
+  await expect(sidebar.getByRole("button", { name: "Today" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Today" }).click();
+  const todayPanel = page.getByRole("complementary", {
+    name: "Repositories in today's work",
+  });
+  await expect(todayPanel).toBeVisible();
+  await page.keyboard.press("Alt+Meta+b");
+  await expect(todayPanel).toBeHidden();
+  await page.getByRole("button", { name: "Show side panel" }).click();
+  await expect(todayPanel).toBeVisible();
+
+  await page.getByRole("button", { name: "Hide sidebar" }).click();
+  await expect(sidebar).toHaveCount(0);
+  await page.keyboard.press("Meta+b");
+  await expect(sidebar.getByRole("button", { name: "Notes" })).toBeVisible();
+});
+
 test("Today and Tasks work without a vault, and Notes offers the setup", async ({
   page,
 }) => {
@@ -283,6 +311,27 @@ test("Settings checks a value before saving it, and saves it when the field is l
     .getByRole("navigation", { name: "Settings" })
     .getByRole("button", { name: "General" })
     .click();
+  // Brainiac's default is VS Code; a preset sets all three fields at once.
+  const editors = page.getByRole("group", { name: "Editor" });
+  await expect(
+    editors.getByRole("button", { name: "VS Code" }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await editors.getByRole("button", { name: "Warp" }).click();
+  expect((await calls(page, "update_settings")).at(-1)).toMatchObject({
+    settings: {
+      editor: {
+        executable: "/usr/bin/open",
+        repo_args: ["warp://action/new_tab?path={path_url}"],
+      },
+    },
+  });
+  await expect(page.getByText(/new tab of Warp/)).toBeVisible();
+  await editors.getByRole("button", { name: "Cursor" }).click();
+  await editors.getByRole("button", { name: "Custom" }).click();
+  await expect(page.getByLabel("Program")).toHaveValue(
+    "/Applications/Cursor.app/Contents/Resources/app/bin/cursor",
+  );
+
   const fileArgs = page.getByLabel("Arguments for a file at a line");
   await expect(fileArgs).toHaveValue("-g {path}:{line}");
   await fileArgs.fill("--wait");

@@ -125,7 +125,7 @@ export default function TasksView({
     <div className="flex min-h-0 flex-1 flex-col">
       <header
         data-tauri-drag-region
-        className="flex h-12 shrink-0 items-center gap-3 border-b bg-header pr-3 pl-4"
+        className="flex h-12 shrink-0 items-center gap-3 border-b bg-header pr-3 pl-4 pl-lead"
       >
         <TaskIcon className="text-muted" />
         <h1 className="m-0 text-[14px] font-semibold">Tasks</h1>

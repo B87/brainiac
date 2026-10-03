@@ -250,7 +250,7 @@ export default function NoteTree({
       aria-label="Notes"
       className="flex w-[250px] shrink-0 flex-col border-r bg-sidebar"
     >
-      <div className="flex items-center gap-2 px-3 pt-3 pb-2">
+      <div className="flex items-center gap-2 px-3 pt-3 pb-2 pl-lead">
         <span className="flex-1 truncate font-semibold" title={vault.root_path}>
           {vault.name}
         </span>

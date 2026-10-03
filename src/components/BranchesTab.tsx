@@ -15,6 +15,7 @@ import {
   olderThan,
   plural,
 } from "../lib/repo";
+import { useSidePanel } from "../lib/sidePanel";
 import { createLatest } from "../lib/stale";
 import {
   BranchIcon,
@@ -127,6 +128,7 @@ export default function BranchesTab({
   onShowHistory,
   onError,
 }: Props) {
+  const { open: panelOpen } = useSidePanel();
   const [filter, setFilter] = useState("");
   const [sort, setSort] = usePref<Sort>("brainiac.refs.sort", "recent");
   const [folded, setFolded] = usePref<string[]>("brainiac.refs.folded", [
@@ -286,7 +288,7 @@ export default function BranchesTab({
           })}
         </div>
       </section>
-      {selected && (
+      {selected && panelOpen && (
         <RefPreview
           key={selected.full_name}
           repositoryId={repositoryId}

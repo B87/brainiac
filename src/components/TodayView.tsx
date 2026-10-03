@@ -8,6 +8,7 @@ import {
   type TodayView as Today,
 } from "../lib/ipc";
 import { step, useKeys } from "../lib/keys";
+import { useSidePanel } from "../lib/sidePanel";
 import { createLatest } from "../lib/stale";
 import { formatDay, localDate } from "../lib/tasks";
 import {
@@ -19,6 +20,7 @@ import {
   TodayIcon,
 } from "./icons";
 import { RepoLine } from "./RepoChip";
+import SidePanelButton from "./SidePanelButton";
 import TaskRow from "./TaskRow";
 import { toggleTask, useTaskEvents } from "./TasksView";
 
@@ -47,6 +49,7 @@ export default function TodayView({
   onFetch: (ids: string[]) => void;
   onError: (message: string | null) => void;
 }) {
+  const { open: panelOpen, toggle: togglePanel } = useSidePanel();
   const [today, setToday] = useState<Today | null>(null);
   const [date, setDate] = useState(localDate);
   const [sortOpen, setSortOpen] = useState(false);
@@ -131,7 +134,7 @@ export default function TodayView({
       <div className="flex min-w-0 flex-1 flex-col">
         <header
           data-tauri-drag-region
-          className="flex h-12 shrink-0 items-center gap-3 border-b bg-header pr-3 pl-4"
+          className="flex h-12 shrink-0 items-center gap-3 border-b bg-header pr-3 pl-4 pl-lead"
         >
           <TodayIcon className="text-muted" />
           <h1 className="m-0 text-[14px] font-semibold">Today</h1>
@@ -139,6 +142,7 @@ export default function TodayView({
             {formatDay(today?.date ?? date, date)}
           </span>
           <div data-tauri-drag-region className="h-full flex-1" />
+          <SidePanelButton open={panelOpen} onToggle={togglePanel} />
           <button type="button" className="btn btn-primary" onClick={onNew}>
             <PlusIcon size={12} />
             New Task
@@ -190,62 +194,66 @@ export default function TodayView({
           )}
         </div>
       </div>
-      <aside
-        aria-label="Repositories in today's work"
-        className="flex w-[300px] shrink-0 flex-col border-l bg-panel"
-      >
-        <div className="panel-title">
-          <span className="section-label">Repositories in today's work</span>
-          {todays.length > 1 && (
-            <button
-              type="button"
-              className="btn btn-sm"
-              onClick={() =>
-                onFetch(
-                  todays.filter((r) => r.state !== "missing").map((r) => r.id),
-                )
-              }
-            >
-              Fetch all
-            </button>
-          )}
-        </div>
-        <div className="flex flex-col gap-1 overflow-y-auto px-2 pb-3">
-          {todays.length === 0 && (
-            <p className="m-0 px-2 py-1 text-[12px] text-muted">
-              Link today's tasks, or their notes, to repositories to see them
-              here.
-            </p>
-          )}
-          {todays.map((r) => (
-            <div
-              key={r.id}
-              className="flex flex-col gap-1.5 rounded-md border bg-app px-2.5 py-2"
-            >
-              <RepoLine repo={r} />
-              <div className="flex gap-1.5">
-                <button
-                  type="button"
-                  className="btn btn-sm"
-                  disabled={fetching.has(r.id) || r.state === "missing"}
-                  onClick={() => onFetch([r.id])}
-                >
-                  <FetchIcon size={12} />
-                  {fetching.has(r.id) ? "Fetching…" : "Fetch"}
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-sm"
-                  onClick={() => onOpenRepo(r.id)}
-                >
-                  <ExternalIcon size={12} />
-                  Open
-                </button>
+      {panelOpen && (
+        <aside
+          aria-label="Repositories in today's work"
+          className="flex w-[300px] shrink-0 flex-col border-l bg-panel"
+        >
+          <div className="panel-title">
+            <span className="section-label">Repositories in today's work</span>
+            {todays.length > 1 && (
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={() =>
+                  onFetch(
+                    todays
+                      .filter((r) => r.state !== "missing")
+                      .map((r) => r.id),
+                  )
+                }
+              >
+                Fetch all
+              </button>
+            )}
+          </div>
+          <div className="flex flex-col gap-1 overflow-y-auto px-2 pb-3">
+            {todays.length === 0 && (
+              <p className="m-0 px-2 py-1 text-[12px] text-muted">
+                Link today's tasks, or their notes, to repositories to see them
+                here.
+              </p>
+            )}
+            {todays.map((r) => (
+              <div
+                key={r.id}
+                className="flex flex-col gap-1.5 rounded-md border bg-app px-2.5 py-2"
+              >
+                <RepoLine repo={r} />
+                <div className="flex gap-1.5">
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    disabled={fetching.has(r.id) || r.state === "missing"}
+                    onClick={() => onFetch([r.id])}
+                  >
+                    <FetchIcon size={12} />
+                    {fetching.has(r.id) ? "Fetching…" : "Fetch"}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    onClick={() => onOpenRepo(r.id)}
+                  >
+                    <ExternalIcon size={12} />
+                    Open
+                  </button>
+                </div>
               </div>
-            </div>
-          ))}
-        </div>
-      </aside>
+            ))}
+          </div>
+        </aside>
+      )}
     </div>
   );
 }

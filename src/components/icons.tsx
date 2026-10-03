@@ -227,6 +227,14 @@ export const AlertIcon = (p: IconProps) => (
   </Svg>
 );
 
+/** A sidebar on the left. */
+export const PanelLeftIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="2" y="3" width="12" height="10" rx="1.5" />
+    <path d="M6 3v10" />
+  </Svg>
+);
+
 /** A sidebar on the right: the context panel. */
 export const PanelRightIcon = (p: IconProps) => (
   <Svg {...p}>

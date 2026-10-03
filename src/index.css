@@ -208,6 +208,16 @@
   --color-info-fg: var(--info-fg);
 }
 
+/* With the sidebar hidden, the window's traffic lights (placed at x 18 by
+   `trafficLightPosition`, about 54px wide) sit over the main view's top-left
+   corner. Whatever is drawn there adds `pl-lead`, which keeps its own left
+   padding until then and starts its content at one common edge clear of them. */
+@layer utilities {
+  main[data-sidebar="hidden"] .pl-lead {
+    padding-left: 88px;
+  }
+}
+
 /* Element defaults and component classes live in Tailwind's layers so that
    utility classes on an element can still override them. */
 @layer base {

@@ -14,7 +14,15 @@ import {
   type Settings,
   type VaultState,
 } from "../lib/ipc";
-import { argsText, MIB, parseArgs, parseInRange } from "../lib/settings";
+import {
+  argsText,
+  EDITOR_PRESETS,
+  editorPreset,
+  hasPathArgument,
+  MIB,
+  parseArgs,
+  parseInRange,
+} from "../lib/settings";
 import AccountsSection from "./AccountsSection";
 import type { SaveSettings } from "./SettingsPage";
 import VaultSetup from "./VaultSetup";
@@ -158,11 +166,18 @@ export function GeneralPane({
   save: SaveSettings;
 }) {
   const editor = settings.editor;
+  const matched = editorPreset(editor);
+  // Choosing Custom keeps the preset's values to edit from.
+  const [customChosen, setCustomChosen] = useState(false);
+  const current = customChosen || !matched ? "custom" : matched;
+  const preset = EDITOR_PRESETS.find((p) => p.id === current);
   const needsPath = (text: string) => {
     const args = parseArgs(text);
-    return args.some((a) => a.includes("{path}"))
+    return hasPathArgument(args)
       ? { value: args }
-      : { error: "Include {path}, where the folder or file goes." };
+      : {
+          error: "Include {path} or {path_url}, where the folder or file goes.",
+        };
   };
   return (
     <>
@@ -172,42 +187,85 @@ export function GeneralPane({
       </Lede>
       <Group label="Open in editor">
         <div className="settings-group">
-          <CommitField
-            label="Program"
-            hint="On your PATH, or a full path. VS Code's is code."
-            value={editor.executable}
-            format={(v) => v}
-            parse={(t) =>
-              t.trim() ? { value: t.trim() } : { error: "Name a program." }
-            }
-            onCommit={(executable) =>
-              save({ editor: { ...editor, executable } })
-            }
-            mono
-          />
-          <CommitField
-            label="Arguments for a repository"
-            value={editor.repo_args}
-            format={argsText}
-            parse={needsPath}
-            onCommit={(repo_args) => save({ editor: { ...editor, repo_args } })}
-            mono
-          />
-          <CommitField
-            label="Arguments for a file at a line"
-            value={editor.file_args}
-            format={argsText}
-            parse={needsPath}
-            onCommit={(file_args) => save({ editor: { ...editor, file_args } })}
-            mono
-          />
+          <div className="settings-row flex-col items-stretch gap-2.5">
+            <fieldset
+              aria-label="Editor"
+              className="seg m-0 self-start border-0"
+            >
+              {EDITOR_PRESETS.map((p) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  aria-pressed={current === p.id}
+                  onClick={() => {
+                    setCustomChosen(false);
+                    void save({ editor: p.editor });
+                  }}
+                >
+                  {p.label}
+                </button>
+              ))}
+              <button
+                type="button"
+                aria-pressed={current === "custom"}
+                onClick={() => setCustomChosen(true)}
+              >
+                Custom
+              </button>
+            </fieldset>
+            <Hint>
+              {preset
+                ? preset.note
+                : "Any program, with its arguments for a repository and for a file at a line."}
+            </Hint>
+          </div>
+          {current === "custom" && (
+            <>
+              <CommitField
+                label="Program"
+                hint="A full path, or a name on the PATH macOS gives apps opened from the Dock."
+                value={editor.executable}
+                format={(v) => v}
+                parse={(t) =>
+                  t.trim() ? { value: t.trim() } : { error: "Name a program." }
+                }
+                onCommit={(executable) =>
+                  save({ editor: { ...editor, executable } })
+                }
+                mono
+              />
+              <CommitField
+                label="Arguments for a repository"
+                value={editor.repo_args}
+                format={argsText}
+                parse={needsPath}
+                onCommit={(repo_args) =>
+                  save({ editor: { ...editor, repo_args } })
+                }
+                mono
+              />
+              <CommitField
+                label="Arguments for a file at a line"
+                value={editor.file_args}
+                format={argsText}
+                parse={needsPath}
+                onCommit={(file_args) =>
+                  save({ editor: { ...editor, file_args } })
+                }
+                mono
+              />
+            </>
+          )}
         </div>
-        <Hint>
-          Arguments are separated by spaces;{" "}
-          <span className="mono">{"{path}"}</span> and{" "}
-          <span className="mono">{"{line}"}</span> are filled in. Brainiac runs
-          the program directly, never through a shell.
-        </Hint>
+        {current === "custom" && (
+          <Hint>
+            Arguments are separated by spaces;{" "}
+            <span className="mono">{"{path}"}</span>,{" "}
+            <span className="mono">{"{path_url}"}</span> (the path encoded for a
+            link), and <span className="mono">{"{line}"}</span> are filled in.
+            Brainiac runs the program directly, never through a shell.
+          </Hint>
+        )}
       </Group>
     </>
   );

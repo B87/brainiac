@@ -59,6 +59,7 @@ import {
   type ViewedMarks,
 } from "../lib/pullRequests";
 import { plural, splitPath } from "../lib/repo";
+import { useSidePanel } from "../lib/sidePanel";
 import { createLatest } from "../lib/stale";
 import Dialog from "./Dialog";
 import DiffView, { type LineTarget } from "./DiffView";
@@ -74,6 +75,7 @@ import {
 } from "./icons";
 import { Markdown } from "./Markdown";
 import { StateIcon } from "./PullRequestsTab";
+import SidePanelButton from "./SidePanelButton";
 
 type Tab = "overview" | "files" | "checks";
 /** All changes, those since the account's last review, or since its drafts. */
@@ -110,6 +112,7 @@ export default function PullRequestView({
   onError,
 }: Props) {
   const [tab, setTab] = useState<Tab>("overview");
+  const { open: panelOpen, toggle: togglePanel } = useSidePanel();
   const [scope, setScope] = useState<Scope>("all");
   const [pr, setPr] = useState<PullRequest | null>(null);
   const [conversation, setConversation] = useState<Conversation | null>(null);
@@ -266,7 +269,7 @@ export default function PullRequestView({
     <div className="relative flex min-h-0 flex-1 flex-col">
       <header
         data-tauri-drag-region
-        className="flex h-12 shrink-0 items-center gap-3 border-b bg-header pr-3 pl-3"
+        className="flex h-12 shrink-0 items-center gap-3 border-b bg-header px-3 pl-lead"
       >
         <button
           type="button"
@@ -360,6 +363,9 @@ export default function PullRequestView({
               </span>
             )}
           </button>
+        )}
+        {tab === "overview" && (
+          <SidePanelButton open={panelOpen} onToggle={togglePanel} />
         )}
       </header>
 
@@ -480,6 +486,7 @@ function Overview({
     !!repository?.head &&
     repository.head.kind === "branch" &&
     repository.head.branch === pr.source_branch;
+  const { open: panelOpen } = useSidePanel();
   // Merge waits for the checklist and for the provider (SPEC.md, Merging).
   const checklist = mergeChecklist(pr, unresolved);
   const canMerge = pr.actions.merge.allowed && checklist.complete;
@@ -579,121 +586,124 @@ function Overview({
           onError={onError}
         />
       </section>
-      <aside
-        aria-label="Merge readiness and reviewers"
-        className="flex w-[300px] shrink-0 flex-col overflow-y-auto border-l bg-panel"
-      >
-        <div className="flex flex-col gap-2 border-b px-[18px] py-3.5">
-          <span className="section-label text-fg-2">Before merging</span>
-          <Checklist items={checklist.items} />
-          <button
-            type="button"
-            className="btn btn-primary self-start"
-            disabled={!canMerge}
-            title={
-              mergeReason ??
-              `Merge ${pr.source_branch} into ${pr.target_branch}`
-            }
-            onClick={onMerge}
-          >
-            Merge
-          </button>
-          {mergeReason && (
-            <span className="text-[11.5px] text-muted">{mergeReason}</span>
-          )}
-        </div>
-        <div className="flex flex-col gap-1.5 border-b px-[18px] py-3.5">
-          <span className="section-label text-fg-2">Reviewers</span>
-          {pr.reviewers.length === 0 ? (
-            <span className="text-[12.5px] text-muted">No reviewers.</span>
-          ) : (
-            pr.reviewers.map((r) => (
-              <span
-                key={r.user.id}
-                className="flex items-center gap-2 text-[12.5px]"
-              >
-                <StateIcon state={r.state} label={REVIEW_LABEL[r.state]} />
-                <span className={r.is_me ? "font-medium" : ""}>
-                  {r.user.display_name ?? r.user.login}
-                </span>
-                <span className="text-[11.5px] text-muted">
-                  {REVIEW_LABEL[r.state]}
-                </span>
-              </span>
-            ))
-          )}
-        </div>
-        <div className="flex flex-col gap-1.5 border-b px-[18px] py-3.5">
-          <span className="section-label text-fg-2">Size</span>
-          <span className="text-[12.5px] text-fg-2">
-            {sizeLabel(pr)}
-            {pr.counts.commits !== null &&
-              ` · ${plural(pr.counts.commits, "commit")}`}
-          </span>
-        </div>
-        <div className="flex flex-col gap-1.5 border-b px-[18px] py-3.5">
-          <span className="section-label text-fg-2">Local checkout</span>
-          {repository ? (
-            <div className="flex flex-col gap-0.5 text-[12.5px]">
-              <span className="flex items-center gap-1.5">
-                <FolderIcon size={13} className="text-muted" />
-                <span className="font-medium">{repository.name}</span>
-                {checkedOut && (
-                  <span className="pr-state" data-state="open">
-                    Checked out
+      {panelOpen && (
+        <aside
+          aria-label="Merge readiness and reviewers"
+          className="flex w-[300px] shrink-0 flex-col overflow-y-auto border-l bg-panel"
+        >
+          <div className="flex flex-col gap-2 border-b px-[18px] py-3.5">
+            <span className="section-label text-fg-2">Before merging</span>
+            <Checklist items={checklist.items} />
+            <button
+              type="button"
+              className="btn btn-primary self-start"
+              disabled={!canMerge}
+              title={
+                mergeReason ??
+                `Merge ${pr.source_branch} into ${pr.target_branch}`
+              }
+              onClick={onMerge}
+            >
+              Merge
+            </button>
+            {mergeReason && (
+              <span className="text-[11.5px] text-muted">{mergeReason}</span>
+            )}
+          </div>
+          <div className="flex flex-col gap-1.5 border-b px-[18px] py-3.5">
+            <span className="section-label text-fg-2">Reviewers</span>
+            {pr.reviewers.length === 0 ? (
+              <span className="text-[12.5px] text-muted">No reviewers.</span>
+            ) : (
+              pr.reviewers.map((r) => (
+                <span
+                  key={r.user.id}
+                  className="flex items-center gap-2 text-[12.5px]"
+                >
+                  <StateIcon state={r.state} label={REVIEW_LABEL[r.state]} />
+                  <span className={r.is_me ? "font-medium" : ""}>
+                    {r.user.display_name ?? r.user.login}
                   </span>
-                )}
-              </span>
-              <span
-                className="mono truncate text-[11.5px] text-muted"
-                title={repository.display_path}
-              >
-                {repository.display_path}
-              </span>
-              {repository.head && (
-                <span className="text-fg-2">
-                  On{" "}
-                  <span className="mono">
-                    {repository.head.kind === "branch"
-                      ? repository.head.branch
-                      : (repository.head.commit_id?.slice(0, 10) ?? "detached")}
+                  <span className="text-[11.5px] text-muted">
+                    {REVIEW_LABEL[r.state]}
                   </span>
-                  {!checkedOut && (
-                    <span className="text-muted">
-                      ; the pull request's branch is{" "}
-                      <span className="mono">{pr.source_branch}</span>
+                </span>
+              ))
+            )}
+          </div>
+          <div className="flex flex-col gap-1.5 border-b px-[18px] py-3.5">
+            <span className="section-label text-fg-2">Size</span>
+            <span className="text-[12.5px] text-fg-2">
+              {sizeLabel(pr)}
+              {pr.counts.commits !== null &&
+                ` · ${plural(pr.counts.commits, "commit")}`}
+            </span>
+          </div>
+          <div className="flex flex-col gap-1.5 border-b px-[18px] py-3.5">
+            <span className="section-label text-fg-2">Local checkout</span>
+            {repository ? (
+              <div className="flex flex-col gap-0.5 text-[12.5px]">
+                <span className="flex items-center gap-1.5">
+                  <FolderIcon size={13} className="text-muted" />
+                  <span className="font-medium">{repository.name}</span>
+                  {checkedOut && (
+                    <span className="pr-state" data-state="open">
+                      Checked out
                     </span>
                   )}
                 </span>
-              )}
-            </div>
-          ) : (
-            <span className="text-[12.5px] text-muted">
-              No local checkout tracks this repository.
-            </span>
-          )}
-        </div>
-        <div className="flex flex-col gap-1.5 px-[18px] py-3.5">
-          <span className="section-label text-fg-2">Notes</span>
-          {!notes || notes.notes.length === 0 ? (
-            <span className="text-[12.5px] text-muted">
-              No notes linked to the repository.
-            </span>
-          ) : (
-            notes.notes.map((n) => (
-              <button
-                key={n.id}
-                type="button"
-                className="flex items-center gap-1.5 self-start text-[12.5px] text-fg hover:underline"
-                onClick={() => onOpenNote(n.id)}
-              >
-                <NoteIcon size={13} className="text-muted" />
-                {n.title}
-              </button>
-            ))
-          )}
-        </div>
-      </aside>
+                <span
+                  className="mono truncate text-[11.5px] text-muted"
+                  title={repository.display_path}
+                >
+                  {repository.display_path}
+                </span>
+                {repository.head && (
+                  <span className="text-fg-2">
+                    On{" "}
+                    <span className="mono">
+                      {repository.head.kind === "branch"
+                        ? repository.head.branch
+                        : (repository.head.commit_id?.slice(0, 10) ??
+                          "detached")}
+                    </span>
+                    {!checkedOut && (
+                      <span className="text-muted">
+                        ; the pull request's branch is{" "}
+                        <span className="mono">{pr.source_branch}</span>
+                      </span>
+                    )}
+                  </span>
+                )}
+              </div>
+            ) : (
+              <span className="text-[12.5px] text-muted">
+                No local checkout tracks this repository.
+              </span>
+            )}
+          </div>
+          <div className="flex flex-col gap-1.5 px-[18px] py-3.5">
+            <span className="section-label text-fg-2">Notes</span>
+            {!notes || notes.notes.length === 0 ? (
+              <span className="text-[12.5px] text-muted">
+                No notes linked to the repository.
+              </span>
+            ) : (
+              notes.notes.map((n) => (
+                <button
+                  key={n.id}
+                  type="button"
+                  className="flex items-center gap-1.5 self-start text-[12.5px] text-fg hover:underline"
+                  onClick={() => onOpenNote(n.id)}
+                >
+                  <NoteIcon size={13} className="text-muted" />
+                  {n.title}
+                </button>
+              ))
+            )}
+          </div>
+        </aside>
+      )}
     </div>
   );
 }

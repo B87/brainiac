@@ -51,8 +51,8 @@ export default function NotesView({
   onLivePreview: (on: boolean) => void;
   contextOpen: boolean;
   onToggleContext: () => void;
-  /** Filled with this view's toggle, which the menu's ⌥⌘0 calls. */
-  toggleContextRef: React.MutableRefObject<(() => void) | null>;
+  /** Filled with this view's toggle, which ⌥⌘B and ⌥⌘0 call. */
+  toggleContextRef: React.RefObject<(() => void) | null>;
   saveTick: number;
   onOpenNote: (noteId: string) => void;
   onOpenRepo: (repositoryId: string) => void;
@@ -187,7 +187,7 @@ export default function NotesView({
   return (
     <div ref={host} className="flex min-h-0 min-w-0 flex-1 flex-col">
       {!vault.vault.available && (
-        <div className="banner" data-tone="warn" role="alert">
+        <div className="banner pl-lead" data-tone="warn" role="alert">
           <span className="flex-1">
             The vault folder {vault.vault.root_path} can't be read. Connect its
             disk, or choose the vault again. Your notes are not treated as
@@ -196,7 +196,7 @@ export default function NotesView({
         </div>
       )}
       {vault.index.state === "unavailable" && vault.index.message && (
-        <div className="banner" data-tone="warn" role="alert">
+        <div className="banner pl-lead" data-tone="warn" role="alert">
           <span className="flex-1">{vault.index.message}</span>
           <button
             type="button"

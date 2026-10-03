@@ -83,7 +83,7 @@ export default function UpdateBanner({ manualTick }: Props) {
   );
 
   return (
-    <div className="flex items-center gap-3 border-b border-sky-300 bg-sky-50 px-3 py-2 text-sky-900 dark:border-sky-800 dark:bg-sky-950 dark:text-sky-100">
+    <div className="flex items-center gap-3 border-b border-sky-300 bg-sky-50 py-2 px-3 pl-lead text-sky-900 dark:border-sky-800 dark:bg-sky-950 dark:text-sky-100">
       {phase.kind === "checking" && (
         <span className="flex-1">Checking for updates…</span>
       )}

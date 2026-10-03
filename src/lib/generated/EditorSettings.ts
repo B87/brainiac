@@ -2,10 +2,12 @@
 
 export type EditorSettings = { executable: string, 
 /**
- * Argument template for opening a repository root; `{path}` is substituted.
+ * Argument template for opening a repository root; `{path}` and
+ * `{path_url}` (the path encoded for a link) are substituted.
  */
 repo_args: Array<string>, 
 /**
- * Argument template for opening a file; `{path}` and `{line}` are substituted.
+ * Argument template for opening a file; `{path}`, `{path_url}`, and
+ * `{line}` are substituted.
  */
 file_args: Array<string>, };

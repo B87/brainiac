@@ -21,6 +21,7 @@ import {
   TONE_LABEL,
   upstreamLabel,
 } from "../lib/repo";
+import { useSidePanel } from "../lib/sidePanel";
 import { createLatest } from "../lib/stale";
 import { totals, workspaceLayout } from "../lib/workspace";
 import ActivityView from "./ActivityView";
@@ -39,6 +40,7 @@ import Popover from "./Popover";
 import PullRequestsTab from "./PullRequestsTab";
 import { MenuButton, type RepoFocus } from "./RepositoryView";
 import type { WorkspaceTab } from "./Sidebar";
+import SidePanelButton from "./SidePanelButton";
 
 type Filter = "all" | "dirty" | "conflicted" | "problems";
 type Sort = "name" | "commit";
@@ -105,6 +107,7 @@ export default function Dashboard(props: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const queryRef = useRef<HTMLInputElement>(null);
   const tab: WorkspaceTab = workspace ? props.tab : "overview";
+  const { open: panelOpen, toggle: togglePanel } = useSidePanel();
 
   const byId = useMemo(
     () => new Map(snapshot.repositories.map((r) => [r.id, r])),
@@ -235,7 +238,7 @@ export default function Dashboard(props: Props) {
     <div className="flex min-h-0 flex-1 flex-col">
       <header
         data-tauri-drag-region
-        className="flex h-12 shrink-0 items-center gap-3 border-b bg-header pr-3 pl-4"
+        className="flex h-12 shrink-0 items-center gap-3 border-b bg-header pr-3 pl-4 pl-lead"
       >
         <button
           type="button"
@@ -391,6 +394,7 @@ export default function Dashboard(props: Props) {
             )}
           </div>
         )}
+        <SidePanelButton open={panelOpen} onToggle={togglePanel} />
       </header>
 
       {workspace && tab === "pull_requests" ? (
@@ -604,7 +608,7 @@ export default function Dashboard(props: Props) {
             </div>
           </section>
 
-          {selected && (
+          {selected && panelOpen && (
             <Peek
               key={selected.id}
               repo={selected}

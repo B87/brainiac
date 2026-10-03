@@ -22,16 +22,11 @@ import {
   vaultImageUrl,
 } from "../lib/notes";
 import { plural } from "../lib/repo";
-import {
-  AlertIcon,
-  ExternalIcon,
-  MoreIcon,
-  NoteIcon,
-  PanelRightIcon,
-} from "./icons";
+import { AlertIcon, ExternalIcon, MoreIcon, NoteIcon } from "./icons";
 import { CompareDialog, HistoryDialog, RenameDialog } from "./NoteDialogs";
 import { NoteEditor } from "./NoteEditor";
 import Popover from "./Popover";
+import SidePanelButton from "./SidePanelButton";
 
 /** Notes save by themselves after this long without typing (SPEC.md, Editing). */
 const AUTOSAVE_MS = 750;
@@ -56,7 +51,7 @@ type Props = {
   onNotice: (message: string) => void;
   onError: (message: string | null) => void;
   /** Receives the function that saves unsaved edits now. */
-  flushRef?: React.MutableRefObject<(() => Promise<void>) | null>;
+  flushRef?: React.RefObject<(() => Promise<void>) | null>;
 };
 
 /**
@@ -656,18 +651,11 @@ export default function NotePane(props: Props) {
             · {plural(props.contextCounts.tasks, "task")}
           </span>
         )}
-        <button
-          type="button"
-          className="btn btn-ghost icon-btn"
-          aria-label={
-            props.contextOpen ? "Hide context panel" : "Show context panel"
-          }
-          aria-pressed={props.contextOpen}
-          title="Context panel (⌥⌘0)"
-          onClick={props.onToggleContext}
-        >
-          <PanelRightIcon />
-        </button>
+        <SidePanelButton
+          open={props.contextOpen}
+          onToggle={props.onToggleContext}
+          name="context panel"
+        />
         <div className="relative">
           <button
             type="button"

@@ -13,6 +13,7 @@ import {
 } from "../lib/ipc";
 import { olderThan, plural } from "../lib/repo";
 import { createSaveQueue } from "../lib/saveQueue";
+import { useSidePanel } from "../lib/sidePanel";
 import { createLatest } from "../lib/stale";
 import { Avatar } from "./HistoryTab";
 import {
@@ -52,6 +53,7 @@ export default function ActivityView({
   onChanged,
   onError,
 }: Props) {
+  const { open: panelOpen } = useSidePanel();
   const [activity, setActivity] = useState<WorkspaceActivity | null>(null);
   const [loading, setLoading] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -264,50 +266,52 @@ export default function ActivityView({
         </div>
       </section>
 
-      <aside
-        aria-label="Team pulse and settings"
-        className="flex w-[320px] shrink-0 flex-col overflow-y-auto border-l bg-panel"
-      >
-        <Pulse pulse={pulse} name={workspace.name} />
-        <div className="flex flex-col gap-2.5 border-b px-[18px] py-3.5">
-          <span className="section-label text-fg-2">Keep up to date</span>
-          <Toggle
-            checked={settings.auto_fetch}
-            label={`Auto-fetch watched branches every ${snapshot.settings.auto_fetch_interval_minutes} min`}
-            hint="Updates remote-tracking branches only, never your files or branches. Off by default. SSH keys that ask for approval will ask on each fetch."
-            onChange={(v) => update({ auto_fetch: v })}
+      {panelOpen && (
+        <aside
+          aria-label="Team pulse and settings"
+          className="flex w-[320px] shrink-0 flex-col overflow-y-auto border-l bg-panel"
+        >
+          <Pulse pulse={pulse} name={workspace.name} />
+          <div className="flex flex-col gap-2.5 border-b px-[18px] py-3.5">
+            <span className="section-label text-fg-2">Keep up to date</span>
+            <Toggle
+              checked={settings.auto_fetch}
+              label={`Auto-fetch watched branches every ${snapshot.settings.auto_fetch_interval_minutes} min`}
+              hint="Updates remote-tracking branches only, never your files or branches. Off by default. SSH keys that ask for approval will ask on each fetch."
+              onChange={(v) => update({ auto_fetch: v })}
+            />
+          </div>
+          <div className="flex flex-col gap-2.5 border-b px-[18px] py-3.5">
+            <span className="flex items-center gap-1.5">
+              <BellIcon size={12} className="text-muted" />
+              <span className="section-label text-fg-2">Let me know</span>
+            </span>
+            <Toggle
+              checked={settings.notify_moves}
+              label="Notify when a watched branch moves"
+              hint="A macOS notification, at most one per repository per hour"
+              onChange={(v) => update({ notify_moves: v })}
+            />
+            <Toggle
+              checked={settings.morning_digest}
+              label="Morning digest at 9:00"
+              hint="What landed since you last looked, while Brainiac is running"
+              onChange={(v) => update({ morning_digest: v })}
+            />
+            <Toggle
+              checked={settings.warn_conflicts}
+              label="Warn when news touches files I'm changing"
+              hint="Compares incoming paths with your working tree"
+              onChange={(v) => update({ warn_conflicts: v })}
+            />
+          </div>
+          <LastFetched
+            freshness={activity?.freshness ?? []}
+            fetching={fetching}
+            onFetch={(id) => onFetch([id])}
           />
-        </div>
-        <div className="flex flex-col gap-2.5 border-b px-[18px] py-3.5">
-          <span className="flex items-center gap-1.5">
-            <BellIcon size={12} className="text-muted" />
-            <span className="section-label text-fg-2">Let me know</span>
-          </span>
-          <Toggle
-            checked={settings.notify_moves}
-            label="Notify when a watched branch moves"
-            hint="A macOS notification, at most one per repository per hour"
-            onChange={(v) => update({ notify_moves: v })}
-          />
-          <Toggle
-            checked={settings.morning_digest}
-            label="Morning digest at 9:00"
-            hint="What landed since you last looked, while Brainiac is running"
-            onChange={(v) => update({ morning_digest: v })}
-          />
-          <Toggle
-            checked={settings.warn_conflicts}
-            label="Warn when news touches files I'm changing"
-            hint="Compares incoming paths with your working tree"
-            onChange={(v) => update({ warn_conflicts: v })}
-          />
-        </div>
-        <LastFetched
-          freshness={activity?.freshness ?? []}
-          fetching={fetching}
-          onFetch={(id) => onFetch([id])}
-        />
-      </aside>
+        </aside>
+      )}
     </div>
   );
 }
