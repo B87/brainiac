@@ -268,13 +268,14 @@ Edit, close, reopen, and create are in the protocol but not in v0.3's interface 
 
 #### Interface
 
-- **Workspace → Pull requests** (`Cmd+3`, beside Overview and Activity): every open pull request of the workspace grouped by repository, filters (all open, needs your review, yours, others, drafts), reviewers with their state, checks, unresolved threads, size, and age; counts at the top (open, waiting on your review, typical wait for a first review, no activity for a week).
-- **Pull request overview:** title, state, source and target, head commit; "N new commits since your review"; description; conversation with resolved threads folded and threads on changed code marked; what it needs to merge as a checklist; reviewers; the local checkout, linked tasks, and linked notes.
-- **Files changed:** a file tree with viewed marks (cleared when a file changes again), comment markers, and a filter; all changes or only those since your review; unified or split; drafts with suggested changes; the diff's source shown (local Git or provider).
+- **Workspace → Pull requests** (`Cmd+3`, beside Overview and Activity): every open pull request of the workspace grouped by repository, as a table with column headings; filters (all open, needs your review, yours, others, drafts) and a sort (waiting longest first); reviewers with their state shown by an icon as well as color, checks, unresolved threads, size, and age; rows waiting on your review marked. A side panel like Activity's holds the workspace's switch, its accounts, and the hour's request use. The tab has a loading state, an off state that offers to turn tracking on, a no-account state, a stale state when a provider is unreachable or out of requests (showing what Brainiac had and when it retries), and a per-repository error that leaves the other repositories working.
+- **Pull request overview:** the header of the repository view (back, `web #482`, the provider, tabs for Overview, Files changed, and Checks, one primary action: Review Changes); title, state, source and target, head commit; "N new commits since your review"; description; conversation with resolved threads folded and threads on changed code marked; a comment box. A side panel: what it needs to merge as a checklist with the Merge button, disabled until it is complete; reviewers; the local checkout and the notes linked to its repository.
+- **Files changed:** a file tree whose whole rows mark files viewed (cleared when a file changes again), with change kinds, comment counts, and a filter; all changes or only those since your review, a commit picker, unified or split, ignore whitespace; a line's comment button in its gutter, also reached with `C`; drafts with suggested changes; generated files and files viewed and unchanged since are folded; the diff's source shown (local Git or provider).
 - **Finish review:** summary, verdict, and the drafts to send; it names the commit being reviewed. A head that moved turns Approve off and offers the new commits; a cut-off Bitbucket submission shows what was sent and sends the rest.
 - **Merge:** the checklist, the methods the repository allows, the commit message, closing the source branch on the provider, and the commit being merged.
-- **Settings → Accounts** and the workspace's switch; the sidebar shows each workspace's count of reviews waiting on you.
-- Pull request Markdown is sanitized like notes; remote images are not loaded.
+- **Settings → Accounts:** a section of the Settings dialog; each account with its token's kind, expiry, and scopes; adding one checks the token with one request and says which scope is missing, offering to save it read-only.
+- The sidebar shows each workspace's count of reviews waiting on you.
+- Every screen uses the app's tokens and component classes, in light and dark; dialogs use the app's dialog. Pull request Markdown is sanitized like notes; remote images are not loaded.
 
 #### Deferred
 
