@@ -6,7 +6,12 @@ import type { ForgeTokenKind } from "./ForgeTokenKind";
  * An account on GitHub or Bitbucket Cloud, as checked when it was added or
  * its token replaced. The token itself is only in the Keychain.
  */
-export type ForgeAccount = { kind: ForgeKind, login: string, display_name: string | null, 
+export type ForgeAccount = { kind: ForgeKind, login: string, 
+/**
+ * The provider's stable ID for the user (GitHub's number, Bitbucket's
+ * UUID), which pull requests name authors and reviewers by.
+ */
+user_id: string, display_name: string | null, 
 /**
  * Bitbucket Cloud: the Atlassian account email sent with the token.
  */

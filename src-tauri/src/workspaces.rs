@@ -163,6 +163,12 @@ impl RepositoryService {
         self.version.fetch_add(1, Ordering::SeqCst) + 1
     }
 
+    /// Git, when it was found; the pull request service expands commits and
+    /// reads diffs with it.
+    pub fn git_service(&self) -> Option<&GitService> {
+        self.git.as_ref()
+    }
+
     fn git(&self) -> AppResult<&GitService> {
         self.git.as_ref().ok_or_else(|| {
             AppError::dependency(

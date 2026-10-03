@@ -8,7 +8,7 @@ use crate::db::{enum_name, parse_enum};
 use crate::models::{AppResult, ForgeAccount, ForgeKind};
 
 const COLUMNS: &str = "kind, login, display_name, email, token_kind, expires_at, scopes_json,
-    missing_json, read_only, checked_at";
+    missing_json, read_only, checked_at, user_id";
 
 fn row_to_account(r: &rusqlite::Row<'_>) -> rusqlite::Result<ForgeAccount> {
     let scopes: Option<String> = r.get(6)?;
@@ -24,6 +24,7 @@ fn row_to_account(r: &rusqlite::Row<'_>) -> rusqlite::Result<ForgeAccount> {
         missing: serde_json::from_str(&missing).unwrap_or_default(),
         read_only: r.get(8)?,
         checked_at: r.get(9)?,
+        user_id: r.get(10)?,
     })
 }
 

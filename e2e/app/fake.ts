@@ -497,6 +497,7 @@ export class FakeBackend {
         const account = {
           kind: req.kind,
           login: bitbucket ? "jo" : "octo",
+          user_id: bitbucket ? "{0a1b}" : "42",
           display_name: null,
           email: req.email,
           token_kind: bitbucket ? "api_token" : "fine_grained",

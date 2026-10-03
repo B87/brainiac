@@ -3,7 +3,8 @@
 //! replaced. The token goes to the Keychain only after the check passes, and
 //! nothing about it but what the check found is stored.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use super::http::Http;
 use super::keychain::{Keychain, Token};
@@ -55,6 +56,8 @@ pub struct AccountService {
     keychain: Arc<dyn Keychain>,
     http: Http,
     endpoints: Endpoints,
+    /// Tokens read once per run: the Keychain may ask the user to allow each read.
+    tokens: Mutex<HashMap<ForgeKind, Token>>,
 }
 
 impl AccountService {
@@ -64,7 +67,29 @@ impl AccountService {
             keychain,
             http,
             endpoints,
+            tokens: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// The provider's token, for the adapters only.
+    pub async fn token(&self, kind: ForgeKind) -> AppResult<Token> {
+        if let Some(token) = self.tokens.lock().expect("tokens lock").get(&kind) {
+            return Ok(token.clone());
+        }
+        let token = self.keychain(move |k| k.get(kind)).await?.ok_or_else(|| {
+            AppError::new(
+                crate::models::ErrorCode::PermissionDenied,
+                format!(
+                    "The {} account's token is no longer in the Keychain. Replace it in Settings → Accounts.",
+                    kind.label()
+                ),
+            )
+        })?;
+        self.tokens
+            .lock()
+            .expect("tokens lock")
+            .insert(kind, token.clone());
+        Ok(token)
     }
 
     /// Run a Keychain call on a blocking thread: it may wait for the user to
@@ -175,6 +200,10 @@ impl AccountService {
         if let Some(token) = pasted {
             self.keychain(move |k| k.set(kind, &token)).await?;
         }
+        self.tokens
+            .lock()
+            .expect("tokens lock")
+            .insert(kind, token.clone());
         let read_only = !check.missing.is_empty();
         let now = now_rfc3339();
         let account = self
@@ -192,6 +221,7 @@ impl AccountService {
     /// Remove the provider's account and delete its token from the Keychain.
     pub async fn remove(&self, kind: ForgeKind) -> AppResult<Vec<ForgeAccountSlot>> {
         self.keychain(move |k| k.delete(kind)).await?;
+        self.tokens.lock().expect("tokens lock").remove(&kind);
         self.db.call(move |conn| store::delete(conn, kind)).await?;
         tracing::info!(provider = kind.label(), "account removed");
         self.list().await

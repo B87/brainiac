@@ -23,6 +23,7 @@ import type { ForgeAccountSlot } from "./generated/ForgeAccountSlot";
 import type { ForgeKind } from "./generated/ForgeKind";
 import type { IndexStatus } from "./generated/IndexStatus";
 import type { ListCommitsRequest } from "./generated/ListCommitsRequest";
+import type { ListPullRequestsRequest } from "./generated/ListPullRequestsRequest";
 import type { MenuEvent } from "./generated/MenuEvent";
 import type { NoteChangedEvent } from "./generated/NoteChangedEvent";
 import type { NoteContent } from "./generated/NoteContent";
@@ -32,6 +33,11 @@ import type { NoteMissingEvent } from "./generated/NoteMissingEvent";
 import type { NoteRevision } from "./generated/NoteRevision";
 import type { NoteSummary } from "./generated/NoteSummary";
 import type { PinEntityType } from "./generated/PinEntityType";
+import type { PullRequest } from "./generated/PullRequest";
+import type { PullRequestChangedEvent } from "./generated/PullRequestChangedEvent";
+import type { PullRequestChecks } from "./generated/PullRequestChecks";
+import type { PullRequestFiles } from "./generated/PullRequestFiles";
+import type { PullRequestList } from "./generated/PullRequestList";
 import type { RefsResult } from "./generated/RefsResult";
 import type { RelocateRepositoryRequest } from "./generated/RelocateRepositoryRequest";
 import type { RelocationOutcome } from "./generated/RelocationOutcome";
@@ -69,12 +75,18 @@ import type { WorkspaceActivity } from "./generated/WorkspaceActivity";
 import type { WorkspacePreview } from "./generated/WorkspacePreview";
 import type { WorkspaceRescan } from "./generated/WorkspaceRescan";
 
+export type { ActionAvailability } from "./generated/ActionAvailability";
 export type { ActivityCommit } from "./generated/ActivityCommit";
 export type { ActivityItem } from "./generated/ActivityItem";
 export type { ActivityKind } from "./generated/ActivityKind";
 export type { AgentAccess } from "./generated/AgentAccess";
 export type { Backlink } from "./generated/Backlink";
+export type { ChangedFile } from "./generated/ChangedFile";
+export type { ChangedFileStatus } from "./generated/ChangedFileStatus";
 export type { ChangeEntry } from "./generated/ChangeEntry";
+export type { Check } from "./generated/Check";
+export type { CheckState } from "./generated/CheckState";
+export type { ChecksSummary } from "./generated/ChecksSummary";
 export type { CommitFile } from "./generated/CommitFile";
 export type { CommitSummary } from "./generated/CommitSummary";
 export type { DiffContent } from "./generated/DiffContent";
@@ -85,6 +97,7 @@ export type { ForgeAccount } from "./generated/ForgeAccount";
 export type { ForgeSource } from "./generated/ForgeSource";
 export type { ForgeTarget } from "./generated/ForgeTarget";
 export type { ForgeTokenKind } from "./generated/ForgeTokenKind";
+export type { ForgeUser } from "./generated/ForgeUser";
 export type { Hunk } from "./generated/Hunk";
 export type { IndexState } from "./generated/IndexState";
 export type { LinkedRepository } from "./generated/LinkedRepository";
@@ -94,11 +107,16 @@ export type { NoteDraft } from "./generated/NoteDraft";
 export type { NoteTextState } from "./generated/NoteTextState";
 export type { Pin } from "./generated/Pin";
 export type { PreviewStatus } from "./generated/PreviewStatus";
+export type { PullRequestGroup } from "./generated/PullRequestGroup";
+export type { PullRequestState } from "./generated/PullRequestState";
 export type { RefEntry } from "./generated/RefEntry";
 export type { RelocationConcern } from "./generated/RelocationConcern";
 export type { RepositoryForge } from "./generated/RepositoryForge";
 export type { RepositoryFreshness } from "./generated/RepositoryFreshness";
 export type { RepositorySuggestion } from "./generated/RepositorySuggestion";
+export type { RequestBudget } from "./generated/RequestBudget";
+export type { Reviewer } from "./generated/Reviewer";
+export type { ReviewState } from "./generated/ReviewState";
 export type { SearchGroup } from "./generated/SearchGroup";
 export type { SearchHit } from "./generated/SearchHit";
 export type { SearchKind } from "./generated/SearchKind";
@@ -130,6 +148,7 @@ export type {
   ForgeKind,
   IndexStatus,
   ListCommitsRequest,
+  ListPullRequestsRequest,
   NoteChangedEvent,
   NoteContent,
   NoteContext,
@@ -138,6 +157,11 @@ export type {
   NoteRevision,
   NoteSummary,
   PinEntityType,
+  PullRequest,
+  PullRequestChangedEvent,
+  PullRequestChecks,
+  PullRequestFiles,
+  PullRequestList,
   RefsResult,
   RelocateRepositoryRequest,
   RelocationOutcome,
@@ -293,6 +317,19 @@ export const ipc = {
       workspaceId,
       enabled,
     }),
+  /** The workspace's or a repository's Pull requests tab. */
+  listPullRequests: (request: ListPullRequestsRequest) =>
+    invoke<PullRequestList>("list_pull_requests", { request }),
+  /** One pull request, cached when younger than `maxAgeSeconds`. */
+  getPullRequest: (reference: string, maxAgeSeconds: number) =>
+    invoke<PullRequest>("get_pull_request", { reference, maxAgeSeconds }),
+  listPullRequestFiles: (reference: string) =>
+    invoke<PullRequestFiles>("list_pull_request_files", { reference }),
+  getPullRequestChecks: (reference: string, maxAgeSeconds: number) =>
+    invoke<PullRequestChecks>("get_pull_request_checks", {
+      reference,
+      maxAgeSeconds,
+    }),
 
   // v0.2: vault and notes
   getVaultState: () => invoke<VaultState>("get_vault_state"),
@@ -423,6 +460,14 @@ export function onTaskChanged(
   handler: (e: TaskChangedEvent) => void,
 ): Promise<UnlistenFn> {
   return listen<TaskChangedEvent>("task_changed", (ev) => handler(ev.payload));
+}
+
+export function onPullRequestChanged(
+  handler: (e: PullRequestChangedEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<PullRequestChangedEvent>("pr_changed", (ev) =>
+    handler(ev.payload),
+  );
 }
 
 export function onIndexStatusChanged(

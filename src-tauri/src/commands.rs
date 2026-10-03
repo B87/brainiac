@@ -8,7 +8,7 @@ use std::sync::Arc;
 use tauri::State;
 
 use crate::db::RepositoryRow;
-use crate::forge::AccountService;
+use crate::forge::{AccountService, PullRequestService};
 use crate::models::{
     ActivitySettings, AppResult, AppSnapshot, ChangesResult, CommitDetail, CommitPage,
     CreateWorkspaceRequest, DiffOptions, DiffResult, DiffSelector, FetchResult, ListCommitsRequest,
@@ -26,6 +26,9 @@ use crate::models::{
 use crate::models::{
     ForgeAccountSlot, ForgeKind, SaveForgeAccountOutcome, SaveForgeAccountRequest,
     SetRepositoryForgeRequest,
+};
+use crate::models::{
+    ListPullRequestsRequest, PullRequest, PullRequestChecks, PullRequestFiles, PullRequestList,
 };
 use crate::notes::NoteService;
 use crate::tasks::TaskService;
@@ -712,4 +715,42 @@ pub async fn update_workspace_pull_requests(
     service: State<'_, Service>,
 ) -> AppResult<Workspace> {
     service.set_pull_requests(&workspace_id, enabled).await
+}
+
+pub type PullRequests = Arc<PullRequestService>;
+
+/// The workspace's or a repository's Pull requests tab.
+#[tauri::command]
+pub async fn list_pull_requests(
+    request: ListPullRequestsRequest,
+    pull_requests: State<'_, PullRequests>,
+) -> AppResult<PullRequestList> {
+    pull_requests.list(request).await
+}
+
+/// One pull request, cached when younger than `max_age_seconds`.
+#[tauri::command]
+pub async fn get_pull_request(
+    reference: String,
+    max_age_seconds: u64,
+    pull_requests: State<'_, PullRequests>,
+) -> AppResult<PullRequest> {
+    pull_requests.get(&reference, max_age_seconds).await
+}
+
+#[tauri::command]
+pub async fn list_pull_request_files(
+    reference: String,
+    pull_requests: State<'_, PullRequests>,
+) -> AppResult<PullRequestFiles> {
+    pull_requests.files(&reference).await
+}
+
+#[tauri::command]
+pub async fn get_pull_request_checks(
+    reference: String,
+    max_age_seconds: u64,
+    pull_requests: State<'_, PullRequests>,
+) -> AppResult<PullRequestChecks> {
+    pull_requests.checks(&reference, max_age_seconds).await
 }

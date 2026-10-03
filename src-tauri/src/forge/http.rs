@@ -85,7 +85,31 @@ impl Http {
         auth: Auth<'_>,
         headers: &[(&'static str, &str)],
     ) -> AppResult<Response> {
-        let mut request = self.client.get(url).header(ACCEPT, "application/json");
+        self.send(provider, self.client.get(url), auth, headers)
+            .await
+    }
+
+    /// `POST url` with a JSON body (GraphQL queries, and later writes).
+    pub async fn post_json(
+        &self,
+        provider: &str,
+        url: &str,
+        auth: Auth<'_>,
+        headers: &[(&'static str, &str)],
+        body: &serde_json::Value,
+    ) -> AppResult<Response> {
+        self.send(provider, self.client.post(url).json(body), auth, headers)
+            .await
+    }
+
+    async fn send(
+        &self,
+        provider: &str,
+        request: reqwest::RequestBuilder,
+        auth: Auth<'_>,
+        headers: &[(&'static str, &str)],
+    ) -> AppResult<Response> {
+        let mut request = request.header(ACCEPT, "application/json");
         request = match auth {
             Auth::Bearer(token) => request.header(AUTHORIZATION, bearer(token)?),
             Auth::Basic { user, token } => request.basic_auth(user, Some(token.expose())),

@@ -98,8 +98,8 @@ brainiac/
       backup.rs                Export, restore, and applying a restore at launch
       mcp.rs                   Agent access, v0.2.x: the socket, connections, and access mode
       mcp/                     The tools and their shapes, server instructions, the stdio helper
-      forge.rs                 Pull requests, v0.3: forge identity, PullRequestService
-      forge/                   Accounts and the Keychain, the HTTP client, one adapter per provider, the cache (forge.db), the request budget
+      forge.rs                 Pull requests, v0.3: forge identity (repositories and references)
+      forge/                   accounts.rs and keychain.rs; http.rs; adapter.rs (the ForgeAdapter trait, sessions, shared mapping); github.rs and bitbucket.rs; budget.rs; cache.rs (forge.db); service.rs (PullRequestService)
     tests/                     Integration tests; unit tests can live in modules
 ```
 
@@ -210,7 +210,7 @@ v0.3 adds:
 | `repository_forges` | core | `repository_id`, kind, owner, name: only the repositories pointed elsewhere with **Change…** (an upstream, a fork); every other repository's forge repository is derived from `remote_url` when read, so nothing needs refreshing, and the override outlives changes to `origin` |
 | `workspaces.pull_requests` | core | The workspace's switch, off by default. With one account per provider there is nothing to pick: a tracked repository uses the account of the provider it is on |
 | `review_drafts` | core | `id`, pull request reference, anchor (path, side, line, optional start line, commit), body, origin (`user`; `agent` later), the remote comment ID once sent; the user's unsent text, so it is kept and backed up |
-| pull request cache | `forge.db` | Pull requests, files, threads, checks, and each request's ETag, keyed by pull request reference; pruned 14 days after a pull request closes |
+| `pull_requests`, `list_reads`, `pull_request_files`, `pull_request_checks` | `forge.db` | A pull request as the neutral model in JSON with its state, update time, close time, and version; when each repository's open or closed list was last read, with the provider's ETag; a head commit's files and checks, replaced when the head moves. A closed pull request is dropped 14 days after it closed, with its files and checks |
 
 `planned_date` and `due_date` are local calendar dates (`YYYY-MM-DD`), not UTC instants, so Today does not shift with time zones or daylight saving. Completing a task sets `completed_at`; reopening clears it; a task is to sort while `triaged_at` is empty. Every task write carries the expected `version` and fails with `CONFLICT` when it changed.
 
@@ -375,7 +375,7 @@ Main WebView ── Tauri commands ──▶ PullRequestService   (neutral model
                                      └─ GitService: diffs and commits when both SHAs exist locally
 ```
 
-`ForgeAdapter` is a trait with `list`, `get`, `files`, `patch`, `conversation`, `checks`, and `write`; each adapter maps the provider's shapes onto the neutral model and declares what it cannot do. HTTP runs in Rust only (`reqwest` with rustls); the WebView gets no HTTP access, as for every other service. The code lives in `forge.rs` and `forge/`, one file per adapter.
+`ForgeAdapter` is a trait with `list`, `get`, `files`, `patch`, `conversation`, `checks`, and `write`; each adapter maps the provider's shapes onto the neutral model and declares what it cannot do. HTTP runs in Rust only (`reqwest` with rustls); the WebView gets no HTTP access, as for every other service. The code lives in `forge.rs` and `forge/`, one file per adapter. The GitHub adapter reads pull requests over GraphQL, which answers in one request per repository what REST spreads over five per pull request (the pull request, its latest reviews, its review threads, its head's checks, its counts), and uses REST for files, patches, and writes. Bitbucket's list says nothing about a pull request's checks, size, or unresolved threads, so the adapter reads those per pull request (`detail`: the head's statuses, the diffstat, and the comments) only when its version changed since the cache; the diffstat doubles as the files list. Every request goes through one `Client` per provider, which checks the account's budget before sending and learns from each answer.
 
 **Identity.**
 
@@ -428,7 +428,8 @@ Provider details from spike S6 (Decisions, 3 Oct 2026):
 
 - Bitbucket Cloud allows about 1,000 repository-data requests per hour per user; GitHub allows 5,000, and a conditional request answered `304` does not count. [Bitbucket API request limits](https://support.atlassian.com/bitbucket-cloud/docs/api-request-limits/) Each account has a request budget spent in order: the pull request on screen (on open and every 60 seconds while visible), workspace lists (every 5 minutes while Brainiac is open), everything else. Requests are conditional (`If-None-Match`; both providers answer `304`), filtered by update time, and trimmed with `fields=`; `Retry-After` and reset headers become `DEPENDENCY_UNAVAILABLE` with a retry time. Bitbucket sends no rate-limit headers, so its budget is counted by Brainiac and assumes a `304` counts. A workspace of 30 repositories costs Bitbucket about 360 list requests an hour (one per repository every 5 minutes), plus 60 for the pull request on screen and a status request per pull request whose head moved: about 450, under half the allowance.
 - A fetch that moves `refs/remotes/<remote>/<branch>` marks the pull requests whose source is that branch stale and refreshes them, at no request cost.
-- The cache is `forge.db` (`forge.sqlite3`, application ID "BRNF") in the data folder: rebuildable from the providers, so outside `brainiac.db`, and not derived from the vault, so outside `index.db`. It is deleted and created again when it comes from a newer version or cannot be opened, never snapshotted or exported, and prunes a pull request 14 days after it closes.
+- The cache is `forge.db` (`forge.sqlite3`, application ID "BRNF") in the data folder: rebuildable from the providers, so outside `brainiac.db`, and not derived from the vault, so outside `index.db`. It is deleted and created again when it comes from a newer version or cannot be opened (`Db::open_rebuildable`, shared with `index.db`), never snapshotted or exported, and prunes a pull request 14 days after it closes. Reads take a maximum age: a list or pull request younger than it answers from the cache, otherwise the provider is asked and the cache updated; the workspace tab asks with five minutes, the pull request on screen with one, and a background tick reads every tracked repository's list again once it is five minutes old. A repository that fails to read keeps its cached list and carries its error in its group; a pull request whose provider is unreachable is shown as cached. `pr_changed` fires for each pull request whose version changed on a read.
+- The budget (`forge/budget.rs`) is per provider: GitHub's `x-ratelimit-*` headers, Bitbucket's requests of the last hour counted locally against 1,000. The last 50 requests of an allowance are kept for what the user does by hand, a `429` or an exhausted allowance pauses requests until the reset or `Retry-After`, and an unreachable provider is left alone for a minute. Bitbucket's short head commits are expanded with local Git (`rev-parse`) when the commit is on the Mac and stay short otherwise until a precondition needs them.
 
 **Errors and events.**
 

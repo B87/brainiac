@@ -116,10 +116,24 @@ pub const HISTORY: Store = Store {
     incremental_vacuum: false,
 };
 
+/// `forge.db`: pull requests as last read from the providers, rebuilt from them ("BRNF").
+pub const FORGE: Store = Store {
+    backup_prefix: "forge-",
+    application_id: 0x4252_4E46,
+    migrations: &[(
+        "0001_forge",
+        include_str!("../migrations/forge/0001_forge.sql"),
+    )],
+    backups: Backups::Never,
+    adopt_unmarked: false,
+    incremental_vacuum: true,
+};
+
 /// File names in the data folder. The core keeps its v0.1 name.
 pub const CORE_FILE: &str = "brainiac.sqlite3";
 pub const INDEX_FILE: &str = "index.sqlite3";
 pub const HISTORY_FILE: &str = "history.sqlite3";
+pub const FORGE_FILE: &str = "forge.sqlite3";
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
 
@@ -160,13 +174,21 @@ impl Db {
     /// Brainiac, or one that cannot be read, is deleted and created again. A
     /// file another program owns is refused like any other store.
     pub fn open_index(path: &Path) -> AppResult<Self> {
-        match Self::open_store(path, &INDEX) {
+        Self::open_rebuildable(path, &INDEX)
+    }
+
+    /// Open a store that can be rebuilt (`index.db`, `forge.db`): a file
+    /// written by a newer Brainiac, or one that cannot be read, is deleted
+    /// and created again. A file another program owns is refused like any
+    /// other store.
+    pub fn open_rebuildable(path: &Path, store: &Store) -> AppResult<Self> {
+        match Self::open_store(path, store) {
             Ok(db) => Ok(db),
-            Err(e) if is_foreign(path) => Err(e),
+            Err(e) if is_foreign(path, store) => Err(e),
             Err(e) => {
-                tracing::warn!(error = %e, details = ?e.details, "recreating the search index");
+                tracing::warn!(path = %path.display(), error = %e, details = ?e.details, "recreating a rebuildable database");
                 remove_database(path)?;
-                Self::open_store(path, &INDEX)
+                Self::open_store(path, store)
             }
         }
     }
@@ -252,10 +274,10 @@ impl Db {
 }
 
 /// Whether `path` holds a database another program marked as its own.
-fn is_foreign(path: &Path) -> bool {
+fn is_foreign(path: &Path, store: &Store) -> bool {
     Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .and_then(|c| c.query_row("PRAGMA application_id", [], |r| r.get::<_, i32>(0)))
-        .is_ok_and(|id| id != 0 && id != INDEX.application_id)
+        .is_ok_and(|id| id != 0 && id != store.application_id)
 }
 
 /// Delete a database file and its WAL and shared-memory files.

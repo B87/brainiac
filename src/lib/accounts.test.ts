@@ -5,6 +5,7 @@ import type { ForgeAccount } from "./ipc";
 const account: ForgeAccount = {
   kind: "bitbucket_cloud",
   login: "jo",
+  user_id: "{0a1b}",
   display_name: null,
   email: "jo@example.com",
   token_kind: "api_token",

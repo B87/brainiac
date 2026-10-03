@@ -7,10 +7,14 @@
 //! the cache follow (docs/architecture.md, Pull requests — v0.3).
 
 mod accounts;
+pub mod adapter;
 pub mod bitbucket;
+pub mod budget;
+mod cache;
 pub mod github;
 pub mod http;
 pub mod keychain;
+mod service;
 mod store;
 
 use std::fmt;
@@ -20,6 +24,9 @@ use crate::models::{AppError, AppResult, ForgeSource, ForgeTarget, RepositoryFor
 
 pub use crate::models::ForgeKind;
 pub use accounts::{AccountService, Endpoints};
+pub use service::{
+    PullRequestEmitter, PullRequestService, DETAIL_MAX_AGE_SECONDS, LIST_MAX_AGE_SECONDS,
+};
 
 impl ForgeKind {
     /// The host its repositories live on, as written in a forge repository.

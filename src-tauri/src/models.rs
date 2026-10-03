@@ -1706,6 +1706,9 @@ pub enum ForgeTokenKind {
 pub struct ForgeAccount {
     pub kind: ForgeKind,
     pub login: String,
+    /// The provider's stable ID for the user (GitHub's number, Bitbucket's
+    /// UUID), which pull requests name authors and reviewers by.
+    pub user_id: String,
     pub display_name: Option<String>,
     /// Bitbucket Cloud: the Atlassian account email sent with the token.
     pub email: Option<String>,
@@ -1814,4 +1817,294 @@ pub struct RepositoryForge {
 pub struct SetRepositoryForgeRequest {
     pub repository_id: String,
     pub forge: Option<ForgeTarget>,
+}
+
+// --- The neutral pull request model (docs/architecture.md, Pull requests — v0.3) ---
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum PullRequestState {
+    Open,
+    Draft,
+    Merged,
+    /// Closed without merging; Bitbucket's declined.
+    Closed,
+}
+
+/// Someone on a provider. The ID is the provider's stable one (GitHub's
+/// numeric ID, Bitbucket's UUID), which accounts are matched by.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ForgeUser {
+    pub id: String,
+    pub login: String,
+    pub display_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ReviewState {
+    Requested,
+    Approved,
+    ChangesRequested,
+    Commented,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Reviewer {
+    pub user: ForgeUser,
+    pub state: ReviewState,
+    /// The account's own user.
+    pub is_me: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum CheckState {
+    Pending,
+    Success,
+    Failure,
+    /// Skipped, cancelled, or neutral: neither passed nor failed.
+    Neutral,
+}
+
+/// One check run or commit status on the head commit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Check {
+    pub name: String,
+    pub state: CheckState,
+    pub description: Option<String>,
+    /// Its log or page on the provider.
+    pub url: Option<String>,
+}
+
+/// The checks on the head commit, in one line. `state` is `None` when there
+/// are no checks at all (GitHub reports "pending" for that, which this is not).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ChecksSummary {
+    pub state: Option<CheckState>,
+    pub total: u32,
+    pub passed: u32,
+    pub failed: u32,
+    pub pending: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum Mergeability {
+    Mergeable,
+    Conflicting,
+    /// The provider is still working it out (GitHub's `mergeable: null`).
+    Computing,
+    /// The provider does not say (Bitbucket).
+    Unknown,
+}
+
+/// Sizes and counts. `None` when the provider's list does not say and the
+/// detail has not been read yet.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PullRequestCounts {
+    pub comments: u32,
+    pub unresolved_threads: Option<u32>,
+    pub additions: Option<u32>,
+    pub deletions: Option<u32>,
+    pub changed_files: Option<u32>,
+    pub commits: Option<u32>,
+}
+
+/// Whether an action is offered, and why not when it is not, so provider
+/// differences and token limits reach the UI as data.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ActionAvailability {
+    pub allowed: bool,
+    pub reason: Option<String>,
+}
+
+impl ActionAvailability {
+    pub fn allowed() -> Self {
+        ActionAvailability {
+            allowed: true,
+            reason: None,
+        }
+    }
+
+    pub fn not(reason: impl Into<String>) -> Self {
+        ActionAvailability {
+            allowed: false,
+            reason: Some(reason.into()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AvailableActions {
+    pub comment: ActionAvailability,
+    pub review: ActionAvailability,
+    pub approve: ActionAvailability,
+    pub merge: ActionAvailability,
+}
+
+/// One pull request as both providers describe it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PullRequest {
+    /// `github.com/acme/api#42`.
+    pub reference: String,
+    #[ts(type = "number")]
+    pub number: u64,
+    pub kind: ForgeKind,
+    pub title: String,
+    /// Markdown written by other people; sanitized when shown.
+    pub description: String,
+    pub author: ForgeUser,
+    pub state: PullRequestState,
+    /// `owner/name` of the repository the source branch is in.
+    pub source_repository: String,
+    pub source_branch: String,
+    /// The full head commit, or Bitbucket's short one until it is expanded.
+    pub head_sha: String,
+    pub target_branch: String,
+    pub reviewers: Vec<Reviewer>,
+    pub checks: ChecksSummary,
+    pub mergeability: Mergeability,
+    pub counts: PullRequestCounts,
+    pub web_url: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub closed_at: Option<String>,
+    /// The provider's update time plus the head commit; opaque to callers.
+    pub version: String,
+    pub actions: AvailableActions,
+    /// Written by the account's user.
+    pub mine: bool,
+    /// Its review was asked of the account's user and not given yet.
+    pub awaiting_my_review: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ChangedFileStatus {
+    Added,
+    Modified,
+    Removed,
+    Renamed,
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ChangedFile {
+    pub path: String,
+    pub old_path: Option<String>,
+    pub status: ChangedFileStatus,
+    pub additions: u32,
+    pub deletions: u32,
+    pub binary: bool,
+}
+
+/// The files a pull request changes, for its head commit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PullRequestFiles {
+    pub reference: String,
+    pub head_sha: String,
+    pub files: Vec<ChangedFile>,
+    pub fetched_at: String,
+}
+
+/// The checks of a pull request's head commit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PullRequestChecks {
+    pub reference: String,
+    pub head_sha: String,
+    pub checks: Vec<Check>,
+    pub fetched_at: String,
+}
+
+/// How much of the hour's request allowance an account has used.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RequestBudget {
+    pub kind: ForgeKind,
+    pub used: u32,
+    pub limit: u32,
+    /// When the allowance is whole again.
+    pub resets_at: Option<String>,
+    /// Set while the provider refused requests or is unreachable; nothing is
+    /// sent until then.
+    pub retry_at: Option<String>,
+}
+
+/// What to list: a workspace's open pull requests, or one repository's.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ListPullRequestsRequest {
+    pub workspace_id: Option<String>,
+    pub repository_id: Option<String>,
+    /// One repository only: merged and closed in the last 30 days instead of
+    /// open ones. Read when asked for, not kept up to date.
+    pub closed: bool,
+    /// Use what is cached when it is younger than this; read again otherwise.
+    #[ts(type = "number")]
+    pub max_age_seconds: u64,
+}
+
+/// One repository's pull requests in a list, with how that repository fared.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PullRequestGroup {
+    pub repository_id: String,
+    pub repository_name: String,
+    /// `github.com/acme/api`.
+    pub forge: String,
+    pub kind: ForgeKind,
+    pub pull_requests: Vec<PullRequest>,
+    /// When this repository's list was last read from the provider; `None` never.
+    pub fetched_at: Option<String>,
+    /// Why the last read failed, with the cached list kept.
+    pub error: Option<AppError>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PullRequestList {
+    /// Whether the workspace (or, for a repository, any of its workspaces) tracks pull requests.
+    pub enabled: bool,
+    /// Workspaces that track the repository, by name; one repository only.
+    pub tracked_by: Vec<String>,
+    /// Providers in the list that have no account yet.
+    pub missing_accounts: Vec<ForgeKind>,
+    pub groups: Vec<PullRequestGroup>,
+    pub budgets: Vec<RequestBudget>,
+}
+
+/// Emitted as `pr_changed` when a pull request was read anew or written.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PullRequestChangedEvent {
+    pub reference: String,
+    pub version: String,
+    pub origin: PullRequestChangeOrigin,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum PullRequestChangeOrigin {
+    /// Written from Brainiac.
+    App,
+    /// Read from the provider.
+    Remote,
 }

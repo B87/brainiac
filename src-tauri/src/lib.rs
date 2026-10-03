@@ -34,6 +34,7 @@ pub const EVENT_NOTE_CHANGED: &str = "note_changed";
 pub const EVENT_NOTE_MISSING: &str = "note_missing";
 pub const EVENT_TASK_CHANGED: &str = "task_changed";
 pub const EVENT_INDEX_STATUS_CHANGED: &str = "index_status_changed";
+pub const EVENT_PR_CHANGED: &str = "pr_changed";
 
 /// Minimum age of a vault scan before focus or wake triggers another.
 const VAULT_ACTIVATION_MIN_AGE: Duration = Duration::from_secs(30);
@@ -123,7 +124,39 @@ pub fn run() {
                 forge::http::Http::new()?,
                 forge::Endpoints::production(),
             );
-            app.manage(Arc::new(accounts));
+            let accounts = Arc::new(accounts);
+            app.manage(Arc::clone(&accounts));
+            let forge_cache = match forge::PullRequestService::open_cache(&data_dir) {
+                Ok(db) => db,
+                Err(e) => {
+                    tracing::error!(error = %e, details = ?e.details, "cannot open the pull request cache");
+                    show_startup_error(app, &e);
+                    return Ok(());
+                }
+            };
+            let pr_handle = handle.clone();
+            let pr_emitter: forge::PullRequestEmitter = Arc::new(move |event| {
+                if let Err(e) = pr_handle.emit(EVENT_PR_CHANGED, &event) {
+                    tracing::warn!(error = %e, "failed to emit pr_changed");
+                }
+            });
+            let pull_requests = Arc::new(forge::PullRequestService::new(
+                Arc::clone(&service),
+                accounts,
+                forge_cache,
+                forge::http::Http::new()?,
+                forge::Endpoints::production(),
+                pr_emitter,
+            ));
+            app.manage(Arc::clone(&pull_requests));
+            // Workspace lists every five minutes while Brainiac is open (SPEC.md, Staying up to date).
+            tauri::async_runtime::spawn(async move {
+                let mut ticker = tokio::time::interval(SCHEDULE_TICK);
+                loop {
+                    ticker.tick().await;
+                    pull_requests.sync_tick().await;
+                }
+            });
 
             // --- Notes, tasks, and search (v0.2) ----------------------------
             let stores = match notes::Stores::open(&data_dir, db) {
@@ -321,6 +354,10 @@ pub fn run() {
             commands::remove_forge_account,
             commands::set_repository_forge,
             commands::update_workspace_pull_requests,
+            commands::list_pull_requests,
+            commands::get_pull_request,
+            commands::list_pull_request_files,
+            commands::get_pull_request_checks,
         ])
         .build(context)
         .expect("error while running Brainiac")
