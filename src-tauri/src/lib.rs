@@ -240,12 +240,12 @@ pub fn run() {
             });
 
             let timer_service = Arc::clone(&service);
-            let interval = Duration::from_secs(settings.refresh_interval_seconds.max(10));
             tauri::async_runtime::spawn(async move {
-                let mut ticker = tokio::time::interval(interval);
-                ticker.tick().await; // first tick fires immediately; skip it
                 loop {
-                    ticker.tick().await;
+                    // Read each time, so a change in Settings applies from the next wait.
+                    let interval =
+                        Duration::from_secs(timer_service.settings().refresh_interval_seconds.max(10));
+                    tokio::time::sleep(interval).await;
                     let _ = timer_service.request_refresh_all(ChangeOrigin::Timer, interval / 2).await;
                 }
             });

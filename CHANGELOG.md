@@ -24,6 +24,7 @@ into the release's section.
 - The pull request's side panel shows the local checkout, whether its branch is checked out, and the notes linked to the repository.
 - Merge a pull request from its Overview once its checklist is complete: the confirmation shows the merge methods the repository allows, the commit message, and whether to delete the branch, and names the commit it merges. Nothing is merged when new commits arrived meanwhile.
 - The sidebar shows how many pull requests wait on your review in each workspace, and opening the workspace from there goes to them. A fetch that brings new commits to a pull request's branch refreshes that pull request at once.
+- Settings (⌘,) is now a full page with a sidebar of six sections, and Back returns to where you were. It also sets the editor Open in Editor uses, how often repositories refresh and auto-fetch, how long a fetch may take, and how large a diff is shown.
 
 ## [0.2.0] - 2026-10-02
 

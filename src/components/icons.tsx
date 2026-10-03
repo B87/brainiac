@@ -274,3 +274,40 @@ export const ChevronLeft = (p: IconProps) => (
     <path d="M10 3.5 5.5 8 10 12.5" />
   </Svg>
 );
+
+/** Settings sections. */
+export const SlidersIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M2.5 5h11M2.5 11h11" strokeLinecap="round" />
+    <circle cx="6" cy="5" r="1.7" fill="var(--sidebar)" />
+    <circle cx="10" cy="11" r="1.7" fill="var(--sidebar)" />
+  </Svg>
+);
+
+export const PersonIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="8" cy="5.5" r="2.5" />
+    <path
+      d="M3 13.5c.8-2.4 2.7-3.5 5-3.5s4.2 1.1 5 3.5"
+      strokeLinecap="round"
+    />
+  </Svg>
+);
+
+export const TerminalIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="2" y="3" width="12" height="10" rx="2" />
+    <path
+      d="M5 6.8l2 1.6-2 1.6M8.6 10.4H11"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </Svg>
+);
+
+export const ArchiveIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="2.5" y="3" width="11" height="3" rx="1" />
+    <path d="M3.5 6v6.5h9V6M6.5 8.5h3" strokeLinejoin="round" />
+  </Svg>
+);

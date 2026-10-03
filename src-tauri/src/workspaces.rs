@@ -167,11 +167,7 @@ impl RepositoryService {
 
     /// Replace the settings, keeping them in the database.
     pub async fn update_settings(&self, settings: Settings) -> AppResult<Settings> {
-        if settings.refresh_interval_seconds < 10 || settings.auto_fetch_interval_minutes < 5 {
-            return Err(AppError::validation(
-                "Refresh at most every 10 seconds and auto-fetch at most every 5 minutes.",
-            ));
-        }
+        validate_settings(&settings)?;
         let stored = settings.clone();
         self.db
             .call(move |conn| db::save_settings(conn, &stored))
@@ -375,7 +371,9 @@ impl RepositoryService {
             RepositoryState::Error
         } else if is_stale(
             row.last_checked_at.as_deref(),
-            settings.refresh_interval_seconds * STALE_MULTIPLIER,
+            settings
+                .refresh_interval_seconds
+                .saturating_mul(STALE_MULTIPLIER),
         ) {
             RepositoryState::Stale
         } else {
@@ -859,9 +857,37 @@ fn decode_cursor(cursor: &str) -> AppResult<(String, u32)> {
     Ok((anchor.to_string(), offset))
 }
 
+/// The limits Settings shows next to each field (SPEC.md, Main window — v0.2).
+fn validate_settings(settings: &Settings) -> AppResult<()> {
+    let has_path = |args: &[String]| args.iter().any(|a| a.contains("{path}"));
+    const MIB: u64 = 1024 * 1024;
+    let problem = if !(10..=86_400).contains(&settings.refresh_interval_seconds) {
+        Some("Refresh status every 10 seconds to once a day.")
+    } else if !(5..=10_080).contains(&settings.auto_fetch_interval_minutes) {
+        Some("Auto-fetch every 5 minutes to once a week.")
+    } else if !(10..=3_600).contains(&settings.fetch_timeout_seconds) {
+        Some("Give a fetch 10 seconds to an hour.")
+    } else if !(MIB..=1024 * MIB).contains(&settings.diff_limits.max_bytes) {
+        Some("Show diffs of 1 to 1,024 MiB.")
+    } else if !(1_000..=10_000_000).contains(&settings.diff_limits.max_lines) {
+        Some("Show diffs of 1,000 to 10,000,000 lines.")
+    } else if settings.editor.executable.trim().is_empty() {
+        Some("Name the editor's program.")
+    } else if !has_path(&settings.editor.repo_args) || !has_path(&settings.editor.file_args) {
+        Some("The editor's arguments need {path}, where the folder or file goes.")
+    } else {
+        None
+    };
+    match problem {
+        Some(message) => Err(AppError::validation(message)),
+        None => Ok(()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::{DiffLimits, EditorSettings};
 
     #[test]
     fn cursor_round_trip() {
@@ -876,5 +902,41 @@ mod tests {
         assert!(is_stale(None, 10));
         assert!(!is_stale(Some(&now_rfc3339()), 10));
         assert!(is_stale(Some("2000-01-01T00:00:00Z"), 10));
+    }
+
+    #[test]
+    fn settings_limits() {
+        let base = Settings::default();
+        assert!(validate_settings(&base).is_ok());
+        let refused = |s: Settings| validate_settings(&s).is_err();
+        assert!(refused(Settings {
+            fetch_timeout_seconds: 9,
+            ..base.clone()
+        }));
+        assert!(refused(Settings {
+            refresh_interval_seconds: 86_401,
+            ..base.clone()
+        }));
+        assert!(refused(Settings {
+            diff_limits: DiffLimits {
+                max_lines: 999,
+                ..base.diff_limits.clone()
+            },
+            ..base.clone()
+        }));
+        assert!(refused(Settings {
+            editor: EditorSettings {
+                executable: "  ".into(),
+                ..base.editor.clone()
+            },
+            ..base.clone()
+        }));
+        assert!(refused(Settings {
+            editor: EditorSettings {
+                file_args: vec!["-g".into()],
+                ..base.editor.clone()
+            },
+            ..base.clone()
+        }));
     }
 }

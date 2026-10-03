@@ -11,7 +11,7 @@ import Dashboard, { type Discovered } from "./components/Dashboard";
 import NotesView from "./components/NotesView";
 import PullRequestView from "./components/PullRequestView";
 import RepositoryView from "./components/RepositoryView";
-import SettingsDialog from "./components/SettingsDialog";
+import SettingsPage from "./components/SettingsPage";
 import Sidebar, { type View } from "./components/Sidebar";
 import StatusBar from "./components/StatusBar";
 import TaskEditor from "./components/TaskEditor";
@@ -44,6 +44,7 @@ import {
   relocatedNotice,
   relocationQuestion,
 } from "./lib/repo";
+import type { SettingsSection } from "./lib/settings";
 import { workspaceRepositories } from "./lib/workspace";
 
 /** The section open when Brainiac quit, reopened at launch (SPEC.md, Main window v0.2). */
@@ -80,7 +81,7 @@ export default function App() {
   /** Bumped by ⌘S; the open note saves at once. */
   const [saveTick, setSaveTick] = useState(0);
   const [editingTask, setEditingTask] = useState<EditingTask | null>(null);
-  const [dialog, setDialog] = useState<"settings" | "restore" | null>(null);
+  const [dialog, setDialog] = useState<"restore" | null>(null);
   const [exportProblems, setExportProblems] = useState<ExportResult | null>(
     null,
   );
@@ -153,10 +154,12 @@ export default function App() {
   // Remember the section, so Brainiac reopens it.
   useEffect(() => {
     try {
+      // Settings is not a section to reopen: the view under it is.
+      const shown = view.kind === "settings" ? view.back : view;
       const kept =
-        view.kind === "repository"
-          ? { kind: "repository", id: view.id, workspaceId: view.workspaceId }
-          : view;
+        shown.kind === "repository"
+          ? { kind: "repository", id: shown.id, workspaceId: shown.workspaceId }
+          : shown;
       localStorage.setItem(VIEW_KEY, JSON.stringify(kept));
     } catch {
       // Preference only.
@@ -249,6 +252,20 @@ export default function App() {
     const result = await runExport(setNotice, setBanner);
     if (result && !result.complete) setExportProblems(result);
   }, []);
+
+  /** Settings in place of the sidebar and the view; Back returns to the view. */
+  const openSettings = useCallback((section: SettingsSection = "general") => {
+    setPaletteOpen(false);
+    setView((v) => ({
+      kind: "settings",
+      section,
+      back: v.kind === "settings" ? v.back : v,
+    }));
+  }, []);
+  const openAccounts = useCallback(
+    () => openSettings("accounts"),
+    [openSettings],
+  );
 
   const openRepositoryPicker = useCallback(async () => {
     try {
@@ -519,6 +536,7 @@ export default function App() {
     newNote,
     newTask,
     exportNow,
+    openSettings,
     showView,
   });
   actions.current = {
@@ -527,6 +545,7 @@ export default function App() {
     newNote,
     newTask,
     exportNow,
+    openSettings,
     showView,
   };
 
@@ -578,7 +597,7 @@ export default function App() {
       }
       if (e.id === "export") void actions.current.exportNow();
       if (e.id === "restore") setDialog("restore");
-      if (e.id === "settings") setDialog("settings");
+      if (e.id === "settings") actions.current.openSettings();
       if (e.id === "show_today") actions.current.showView({ kind: "today" });
       if (e.id === "show_tasks") actions.current.showView({ kind: "tasks" });
       if (e.id === "show_notes") actions.current.showView({ kind: "notes" });
@@ -592,209 +611,234 @@ export default function App() {
   const isPinned = (type: PinEntityType, id: string) =>
     !!snapshot?.pins.some((p) => p.entity_type === type && p.entity_id === id);
 
+  /** The update, Git, and error banners at the top of the view. */
+  const banners = (
+    <>
+      <UpdateBanner manualTick={updateTick} />
+      {snapshot && !snapshot.git.available && (
+        <div className="border-b border-amber-300 bg-amber-50 px-3 py-2 text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-100">
+          {snapshot.git.message ?? "Git is not available."}
+        </div>
+      )}
+      {banner && (
+        <div className="flex items-center gap-3 border-b border-red-300 bg-red-50 px-3 py-2 text-red-900 dark:border-red-800 dark:bg-red-950 dark:text-red-100">
+          <span className="selectable flex-1">{banner}</span>
+          <button
+            type="button"
+            className="rounded border px-2 py-0.5"
+            onClick={() => setBanner(null)}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+    </>
+  );
+
   return (
     <div className="flex h-full flex-col">
-      <div className="flex min-h-0 flex-1">
-        <Sidebar
-          snapshot={snapshot}
-          reviewCounts={reviewCounts}
+      {view.kind === "settings" && snapshot ? (
+        <SettingsPage
+          settings={snapshot.settings}
+          section={view.section}
           vault={vault}
-          view={view}
-          onView={showView}
-          onAdd={() => setAddMode({ kind: "choose" })}
+          top={banners}
+          onSection={(section) => setView({ ...view, section })}
+          onBack={() => setView(view.back)}
+          onVault={(state) => {
+            setVault(state);
+            setBanner(null);
+          }}
+          onChanged={() => void reloadSnapshot()}
+          onExport={() => void exportNow()}
+          onRestore={() => setDialog("restore")}
         />
-        <main className="flex min-w-0 flex-1 flex-col bg-app">
-          <UpdateBanner manualTick={updateTick} />
-          {snapshot && !snapshot.git.available && (
-            <div className="border-b border-amber-300 bg-amber-50 px-3 py-2 text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-100">
-              {snapshot.git.message ?? "Git is not available."}
-            </div>
-          )}
-          {banner && (
-            <div className="flex items-center gap-3 border-b border-red-300 bg-red-50 px-3 py-2 text-red-900 dark:border-red-800 dark:bg-red-950 dark:text-red-100">
-              <span className="selectable flex-1">{banner}</span>
-              <button
-                type="button"
-                className="rounded border px-2 py-0.5"
-                onClick={() => setBanner(null)}
-              >
-                Dismiss
-              </button>
-            </div>
-          )}
-          {!snapshot ? (
-            <div className="p-6 text-muted">Loading…</div>
-          ) : view.kind === "today" ? (
-            <TodayView
-              snapshot={snapshot}
-              fetching={fetching}
-              onEdit={editTask}
-              onNew={() => void newTask()}
-              onOpenNote={openNote}
-              onOpenRepo={openRepo}
-              onFetch={(ids) => void fetchRepositories(ids)}
-              onError={setBanner}
-            />
-          ) : view.kind === "tasks" ? (
-            <TasksView
-              snapshot={snapshot}
-              scope={view.scope ?? "open"}
-              onScope={(scope) => setView({ kind: "tasks", scope })}
-              onEdit={editTask}
-              onNew={() => void newTask()}
-              onOpenNote={openNote}
-              onOpenRepo={openRepo}
-              onError={setBanner}
-            />
-          ) : view.kind === "notes" ? (
-            <NotesView
-              snapshot={snapshot}
-              vault={vault}
-              noteId={view.noteId ?? null}
-              livePreview={livePreview}
-              onLivePreview={setLivePreview}
-              contextOpen={contextOpen}
-              onToggleContext={() => setContextOpen(!contextOpen)}
-              toggleContextRef={toggleContextRef}
-              saveTick={saveTick}
-              onOpenNote={openNote}
-              onOpenRepo={openRepo}
-              onNewNote={(folder) => void newNote(folder)}
-              onEditTask={editTask}
-              onNewTask={(note) => setEditingTask({ initialNote: note })}
-              onVault={(state) => {
-                setVault(state);
-                setBanner(null);
-              }}
-              onNotice={setNotice}
-              onError={setBanner}
-              onPinsChanged={() => void reloadSnapshot()}
-              onAddRepository={() => void openRepositoryPicker()}
-              onLocate={(id) => void locate(id)}
-            />
-          ) : view.kind === "pullRequest" ? (
-            <PullRequestView
-              key={view.reference}
-              reference={view.reference}
-              onBack={() => setView(view.back)}
-              onOpenNote={openNote}
-              onError={setBanner}
-            />
-          ) : selected ? (
-            <RepositoryView
-              key={`${selected.id}:${JSON.stringify(view.kind === "repository" ? (view.focus ?? null) : null)}`}
-              repository={selected}
-              changeTick={changeTick}
-              pinned={isPinned("repository", selected.id)}
-              focus={view.kind === "repository" ? view.focus : undefined}
-              fetching={fetching.has(selected.id)}
-              onFetch={() => void fetchRepositories([selected.id])}
-              onTogglePin={() => togglePin("repository", selected.id)}
-              onPalette={() => setPaletteOpen(true)}
-              onRefresh={() => void refresh()}
-              onRemove={() => void removeRepository(selected.id)}
-              onLocate={() => void locate(selected.id)}
-              onError={setBanner}
-              snapshot={snapshot}
-              hasVault={!!vault?.vault}
-              onOpenNote={openNote}
-              onNewNote={() => void newNote()}
-              onEditTask={editTask}
-              onOpenPullRequest={(reference) =>
-                setView({ kind: "pullRequest", reference, back: view })
-              }
-              onOpenSettings={() => setDialog("settings")}
-              onChanged={() => void reloadSnapshot()}
-            />
-          ) : (
-            <Dashboard
-              key={workspace?.id ?? "all"}
-              snapshot={snapshot}
-              workspace={workspace}
-              pinned={!!workspace && isPinned("workspace", workspace.id)}
-              discovered={discovered}
-              onOpen={(id) =>
-                showView({
-                  kind: "repository",
-                  id,
-                  workspaceId: workspace?.id,
-                })
-              }
-              onPalette={() => setPaletteOpen(true)}
-              onRefreshAll={() => void refresh()}
-              onAdd={() => setAddMode({ kind: "choose" })}
-              onAddToWorkspace={() =>
-                workspace && setAddMode({ kind: "members", workspace })
-              }
-              onRescan={() => workspace && void rescan(workspace, true)}
-              onTrack={(paths) => {
-                if (!workspace) return;
-                setDiscovered(null);
-                void guard(() =>
-                  ipc.updateWorkspaceMembership({
-                    workspace_id: workspace.id,
-                    add: paths,
-                    remove: [],
-                  }),
-                );
-              }}
-              onDismissDiscovered={() => setDiscovered(null)}
-              onDismissMoves={() =>
-                setDiscovered((d) => (d ? { ...d, moves: [] } : d))
-              }
-              onApplyMoves={(moves) =>
-                workspace && void applyMoves(workspace, moves)
-              }
-              onLocate={(id) => void locate(id)}
-              onRemoveMember={(path) =>
-                workspace &&
-                void guard(() =>
-                  ipc.updateWorkspaceMembership({
-                    workspace_id: workspace.id,
-                    add: [],
-                    remove: [path],
-                  }),
-                )
-              }
-              onRename={(name) =>
-                workspace &&
-                void guard(() => ipc.renameWorkspace(workspace.id, name))
-              }
-              onDeleteWorkspace={() =>
-                workspace && void deleteWorkspace(workspace)
-              }
-              onTogglePin={() =>
-                workspace && togglePin("workspace", workspace.id)
-              }
-              tab={
-                view.kind === "workspace"
-                  ? (view.tab ?? "overview")
-                  : "overview"
-              }
-              onTab={(tab) =>
-                workspace &&
-                setView({ kind: "workspace", id: workspace.id, tab })
-              }
-              fetching={fetching}
-              onFetch={(ids) => void fetchRepositories(ids)}
-              onOpenFocused={(id, focus) =>
-                showView({
-                  kind: "repository",
-                  id,
-                  workspaceId: workspace?.id,
-                  focus,
-                })
-              }
-              onChanged={() => void reloadSnapshot()}
-              onError={setBanner}
-              onOpenPullRequest={(reference) =>
-                setView({ kind: "pullRequest", reference, back: view })
-              }
-              onOpenSettings={() => setDialog("settings")}
-            />
-          )}
-        </main>
-      </div>
+      ) : (
+        <div className="flex min-h-0 flex-1">
+          <Sidebar
+            snapshot={snapshot}
+            reviewCounts={reviewCounts}
+            vault={vault}
+            view={view}
+            onView={showView}
+            onAdd={() => setAddMode({ kind: "choose" })}
+          />
+          <main className="flex min-w-0 flex-1 flex-col bg-app">
+            {banners}
+            {!snapshot ? (
+              <div className="p-6 text-muted">Loading…</div>
+            ) : view.kind === "today" ? (
+              <TodayView
+                snapshot={snapshot}
+                fetching={fetching}
+                onEdit={editTask}
+                onNew={() => void newTask()}
+                onOpenNote={openNote}
+                onOpenRepo={openRepo}
+                onFetch={(ids) => void fetchRepositories(ids)}
+                onError={setBanner}
+              />
+            ) : view.kind === "tasks" ? (
+              <TasksView
+                snapshot={snapshot}
+                scope={view.scope ?? "open"}
+                onScope={(scope) => setView({ kind: "tasks", scope })}
+                onEdit={editTask}
+                onNew={() => void newTask()}
+                onOpenNote={openNote}
+                onOpenRepo={openRepo}
+                onError={setBanner}
+              />
+            ) : view.kind === "notes" ? (
+              <NotesView
+                snapshot={snapshot}
+                vault={vault}
+                noteId={view.noteId ?? null}
+                livePreview={livePreview}
+                onLivePreview={setLivePreview}
+                contextOpen={contextOpen}
+                onToggleContext={() => setContextOpen(!contextOpen)}
+                toggleContextRef={toggleContextRef}
+                saveTick={saveTick}
+                onOpenNote={openNote}
+                onOpenRepo={openRepo}
+                onNewNote={(folder) => void newNote(folder)}
+                onEditTask={editTask}
+                onNewTask={(note) => setEditingTask({ initialNote: note })}
+                onVault={(state) => {
+                  setVault(state);
+                  setBanner(null);
+                }}
+                onNotice={setNotice}
+                onError={setBanner}
+                onPinsChanged={() => void reloadSnapshot()}
+                onAddRepository={() => void openRepositoryPicker()}
+                onLocate={(id) => void locate(id)}
+              />
+            ) : view.kind === "pullRequest" ? (
+              <PullRequestView
+                key={view.reference}
+                reference={view.reference}
+                onBack={() => setView(view.back)}
+                onOpenNote={openNote}
+                onError={setBanner}
+              />
+            ) : selected ? (
+              <RepositoryView
+                key={`${selected.id}:${JSON.stringify(view.kind === "repository" ? (view.focus ?? null) : null)}`}
+                repository={selected}
+                changeTick={changeTick}
+                pinned={isPinned("repository", selected.id)}
+                focus={view.kind === "repository" ? view.focus : undefined}
+                fetching={fetching.has(selected.id)}
+                onFetch={() => void fetchRepositories([selected.id])}
+                onTogglePin={() => togglePin("repository", selected.id)}
+                onPalette={() => setPaletteOpen(true)}
+                onRefresh={() => void refresh()}
+                onRemove={() => void removeRepository(selected.id)}
+                onLocate={() => void locate(selected.id)}
+                onError={setBanner}
+                snapshot={snapshot}
+                hasVault={!!vault?.vault}
+                onOpenNote={openNote}
+                onNewNote={() => void newNote()}
+                onEditTask={editTask}
+                onOpenPullRequest={(reference) =>
+                  setView({ kind: "pullRequest", reference, back: view })
+                }
+                onOpenSettings={openAccounts}
+                onChanged={() => void reloadSnapshot()}
+              />
+            ) : (
+              <Dashboard
+                key={workspace?.id ?? "all"}
+                snapshot={snapshot}
+                workspace={workspace}
+                pinned={!!workspace && isPinned("workspace", workspace.id)}
+                discovered={discovered}
+                onOpen={(id) =>
+                  showView({
+                    kind: "repository",
+                    id,
+                    workspaceId: workspace?.id,
+                  })
+                }
+                onPalette={() => setPaletteOpen(true)}
+                onRefreshAll={() => void refresh()}
+                onAdd={() => setAddMode({ kind: "choose" })}
+                onAddToWorkspace={() =>
+                  workspace && setAddMode({ kind: "members", workspace })
+                }
+                onRescan={() => workspace && void rescan(workspace, true)}
+                onTrack={(paths) => {
+                  if (!workspace) return;
+                  setDiscovered(null);
+                  void guard(() =>
+                    ipc.updateWorkspaceMembership({
+                      workspace_id: workspace.id,
+                      add: paths,
+                      remove: [],
+                    }),
+                  );
+                }}
+                onDismissDiscovered={() => setDiscovered(null)}
+                onDismissMoves={() =>
+                  setDiscovered((d) => (d ? { ...d, moves: [] } : d))
+                }
+                onApplyMoves={(moves) =>
+                  workspace && void applyMoves(workspace, moves)
+                }
+                onLocate={(id) => void locate(id)}
+                onRemoveMember={(path) =>
+                  workspace &&
+                  void guard(() =>
+                    ipc.updateWorkspaceMembership({
+                      workspace_id: workspace.id,
+                      add: [],
+                      remove: [path],
+                    }),
+                  )
+                }
+                onRename={(name) =>
+                  workspace &&
+                  void guard(() => ipc.renameWorkspace(workspace.id, name))
+                }
+                onDeleteWorkspace={() =>
+                  workspace && void deleteWorkspace(workspace)
+                }
+                onTogglePin={() =>
+                  workspace && togglePin("workspace", workspace.id)
+                }
+                tab={
+                  view.kind === "workspace"
+                    ? (view.tab ?? "overview")
+                    : "overview"
+                }
+                onTab={(tab) =>
+                  workspace &&
+                  setView({ kind: "workspace", id: workspace.id, tab })
+                }
+                fetching={fetching}
+                onFetch={(ids) => void fetchRepositories(ids)}
+                onOpenFocused={(id, focus) =>
+                  showView({
+                    kind: "repository",
+                    id,
+                    workspaceId: workspace?.id,
+                    focus,
+                  })
+                }
+                onChanged={() => void reloadSnapshot()}
+                onError={setBanner}
+                onOpenPullRequest={(reference) =>
+                  setView({ kind: "pullRequest", reference, back: view })
+                }
+                onOpenSettings={openAccounts}
+              />
+            )}
+          </main>
+        </div>
+      )}
       <StatusBar
         snapshot={snapshot}
         scope={scope}
@@ -851,17 +895,6 @@ export default function App() {
           initialNote={editingTask.initialNote}
           onClose={() => setEditingTask(null)}
           onSaved={() => setEditingTask(null)}
-        />
-      )}
-      {dialog === "settings" && snapshot && (
-        <SettingsDialog
-          snapshot={snapshot}
-          vault={vault}
-          onVault={(state) => setVault(state)}
-          onClose={() => setDialog(null)}
-          onExport={() => void exportNow()}
-          onRestore={() => setDialog("restore")}
-          onChanged={() => void reloadSnapshot()}
         />
       )}
       {dialog === "restore" && (

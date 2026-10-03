@@ -220,38 +220,107 @@ test("a note is renamed, pinned, and shown as missing when deleted outside", asy
   ).toBeVisible();
 });
 
-test("Settings shows the vault and turns note IDs off", async ({ page }) => {
-  await setUpVault(page);
+/** Settings replaces the sidebar and the view; its sidebar lists the sections. */
+async function openSettings(page: Page, section: string) {
   await page.evaluate(() => window.emitEvent("menu", { id: "settings" }));
-  const settings = page.getByRole("dialog", { name: "Settings" });
-  await expect(settings.getByText("/tmp/Notes")).toBeVisible();
-  await settings.getByRole("checkbox").uncheck();
+  await page
+    .getByRole("navigation", { name: "Settings" })
+    .getByRole("button", { name: section })
+    .click();
+  await expect(page.getByRole("heading", { name: section })).toBeVisible();
+}
+
+test("Settings shows the vault and turns note IDs off", async ({ page }) => {
+  await openSettings(page, "Notes and Search");
+  await page.getByRole("button", { name: "Choose Folder…" }).click();
+  await expect(page.getByText("/tmp/Notes")).toBeVisible();
+  await page.getByRole("switch").uncheck();
   const updates = await calls(page, "update_settings");
   expect(updates.at(-1)).toMatchObject({ settings: { write_note_ids: false } });
-  await settings.getByRole("button", { name: "Rebuild Index" }).click();
-  await settings.getByRole("button", { name: "Done" }).click();
-  await expect(settings).toBeHidden();
+  await page.getByRole("button", { name: "Rebuild Index" }).click();
+
+  const sections = page.getByRole("navigation", { name: "Settings" });
+  await sections.getByRole("button", { name: "Backup" }).click();
+  await expect(
+    sections.getByRole("button", { name: "Backup" }),
+  ).toHaveAttribute("aria-current", "true");
+  await expect(page.getByRole("heading", { name: "Backup" })).toBeVisible();
+
+  // Back returns to the view Settings was opened from.
+  await sections.getByRole("button", { name: "Back", exact: true }).click();
+  await expect(
+    page.getByRole("navigation", { name: "Repositories and workspaces" }),
+  ).toBeVisible();
+  await expect(sections).toBeHidden();
+});
+
+test("Settings checks a value before saving it, and saves it when the field is left", async ({
+  page,
+}) => {
+  await openSettings(page, "Repositories");
+  const refresh = page.getByLabel("Refresh status every");
+  await expect(refresh).toHaveValue("60");
+  await refresh.fill("5");
+  await refresh.press("Enter");
+  await expect(page.getByText("At least 10.")).toBeVisible();
+  expect(await calls(page, "update_settings")).toEqual([]);
+
+  await refresh.fill("30");
+  await refresh.blur();
+  await expect(page.getByText("At least 10.")).toBeHidden();
+  expect((await calls(page, "update_settings")).at(-1)).toMatchObject({
+    settings: { refresh_interval_seconds: 30 },
+  });
+
+  const lines = page.getByLabel("and up to");
+  await lines.fill("20,000");
+  await lines.press("Enter");
+  expect((await calls(page, "update_settings")).at(-1)).toMatchObject({
+    settings: { diff_limits: { max_lines: 20000 } },
+  });
+
+  await page
+    .getByRole("navigation", { name: "Settings" })
+    .getByRole("button", { name: "General" })
+    .click();
+  const fileArgs = page.getByLabel("Arguments for a file at a line");
+  await expect(fileArgs).toHaveValue("-g {path}:{line}");
+  await fileArgs.fill("--wait");
+  await fileArgs.press("Enter");
+  await expect(page.getByText(/Include \{path\}/)).toBeVisible();
+  await fileArgs.press("Escape");
+  await expect(fileArgs).toHaveValue("-g {path}:{line}");
+
+  // Leaving Settings from the menu, with no blur, still saves what was typed.
+  await page
+    .getByRole("navigation", { name: "Settings" })
+    .getByRole("button", { name: "Repositories" })
+    .click();
+  await page.getByLabel("Stop a fetch after").fill("120");
+  await page.evaluate(() => window.emitEvent("menu", { id: "show_today" }));
+  await expect(page.getByRole("navigation", { name: "Settings" })).toBeHidden();
+  await expect
+    .poll(async () => (await calls(page, "update_settings")).at(-1))
+    .toMatchObject({ settings: { fetch_timeout_seconds: 120 } });
 });
 
 test("Settings turns agent access on and shows how to add Brainiac to Claude Code", async ({
   page,
 }) => {
-  await setUpVault(page);
-  await page.evaluate(() => window.emitEvent("menu", { id: "settings" }));
-  const settings = page.getByRole("dialog", { name: "Settings" });
-  const access = settings.getByRole("group", { name: "Agent access" });
+  await openSettings(page, "Agent Access");
+  const access = page.getByRole("group", { name: "Agent access" });
   await expect(access.getByRole("button", { name: "Off" })).toHaveAttribute(
     "aria-pressed",
     "true",
   );
-  await expect(settings.getByText("No agents connected")).toBeVisible();
+  await expect(page.getByText("No agents connected")).toBeVisible();
   await expect(
-    settings.getByText(
+    page.getByText(
       "claude mcp add --scope user brainiac -- /Applications/Brainiac.app/Contents/MacOS/brainiac mcp",
     ),
   ).toBeVisible();
   await expect(
-    settings.getByText("/plugin install brainiac@brainiac"),
+    page.getByText("/plugin install brainiac@brainiac"),
   ).toBeVisible();
 
   await access.getByRole("button", { name: "Read and write" }).click();
@@ -262,16 +331,15 @@ test("Settings turns agent access on and shows how to add Brainiac to Claude Cod
   await expect(
     access.getByRole("button", { name: "Read and write" }),
   ).toHaveAttribute("aria-pressed", "true");
-  await expect(settings.getByText(/never delete anything/)).toBeVisible();
-  await expect(settings.getByText("1 agent connected")).toBeVisible();
+  await expect(page.getByText(/never delete anything/)).toBeVisible();
+  await expect(page.getByText("1 agent connected")).toBeVisible();
 });
 
 test("Settings adds a GitHub account and saves a Bitbucket token as read-only", async ({
   page,
 }) => {
-  await setUpVault(page);
-  await page.evaluate(() => window.emitEvent("menu", { id: "settings" }));
-  const settings = page.getByRole("dialog", { name: "Settings" });
+  await openSettings(page, "Accounts");
+  const settings = page.getByRole("main");
 
   await settings.getByRole("button", { name: "Add Account…" }).click();
   const token = settings.getByLabel("Fine-grained personal access token");

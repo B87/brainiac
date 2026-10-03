@@ -101,7 +101,14 @@ The sidebar gains a section level above the repository tree: **Today**, **Tasks*
 
 - Brainiac reopens the section that was open when it quit. The first launch after upgrading to v0.2 opens Workspaces as before, and the sidebar shows one **Set up your vault** row until a vault is chosen.
 - Today, Tasks, and Notes are never shown empty: before a vault is chosen they offer the vault setup, and Today and Tasks work without a vault.
-- Settings (`Cmd+,`) chooses the vault, holds the note-ID setting and **Rebuild Index**, and offers **Export…** and **Restore from Export…**, which the File menu also has. From v0.2.x it also holds **Agent access** (section 9), and from v0.3 **Accounts** (section 10).
+- Settings (`Cmd+,`) is a page of the main window, not a dialog: its own sidebar lists the sections in place of the app's sidebar, and **Back** returns to the view it was opened from. Brainiac never reopens Settings at launch; it reopens that view. The sections are:
+  - **General**: the editor Open in Editor runs, as a program and its arguments for a repository and for a file at a line, separated by spaces, with `{path}` and `{line}` filled in. The program is run directly, never through a shell.
+  - **Notes and Search**: the vault (**Reveal in Finder**, **Choose Folder…**, **Create a New Vault…**), the note-ID setting, and **Rebuild Index**.
+  - **Repositories**: how often status is refreshed (every 10 seconds to once a day), how often auto-fetch runs for the workspaces that turned it on (every 5 minutes to once a week), how long a fetch may take (10 seconds to an hour), and the largest diff shown (1 to 1,024 MiB and 1,000 to 10,000,000 lines). A value is checked and saved when its field is left, or when Settings is left.
+  - **Accounts** (from v0.3, section 10) and **Agent Access** (from v0.2.x, section 9).
+  - **Backup**: **Export…** and **Restore from Export…**, which the File menu also has.
+
+  Changes apply as they are made; there is no Done button. A link elsewhere, such as a Pull requests tab's **Add Account…**, opens Settings on its section.
 - Repositories, notes, and tasks each have one icon, used in the sidebar, ⌘K, chips, and side panels. A repository is always shown the same way wherever it appears: name, branch, a status dot with its words (clean, *N* changed, conflicted, missing), ahead and behind when not zero, and how fresh the data is ("checked 1 min ago", or "fetched 2 h ago" in amber when stale).
 - Edit times read as relative for the last seven days ("edited 2 hours ago") and as dates after that ("edited 14 Sep"). Due and planned dates are always dates ("Due Fri 3 Oct"); an overdue task says "Overdue" in words and with an icon, not by color alone.
 
@@ -250,7 +257,7 @@ A registered repository opens directly; workspace membership is optional. Keep t
 - Every patch view offers Unified/Split layouts, changed-word highlights inside a modified line pair (computed in the frontend), **Ignore whitespace** (`git diff -w`), hunk position with previous/next hunk jumps, and a hunk header that stays pinned while scrolling.
 - Untracked files use a bounded, read-only text preview labeled untracked. Conflicted files show conflict status and current contents; conflict resolution is later scope.
 - Binary files, submodule changes, Git LFS pointers, symlinks, and oversized patches receive explicit summaries rather than misleading text diffs. Do not download LFS objects or traverse submodules automatically.
-- Initial display limits: 1 MiB or 10,000 patch lines per file, whichever comes first. Mark truncation and offer Open in editor; never silently omit remaining content.
+- Display limits: 1 MiB or 10,000 patch lines per file by default, whichever comes first, changed in Settings → Repositories. Mark truncation and offer Open in editor; never silently omit remaining content.
 - Load only the selected patch. Revalidate/invalidate displayed working-tree diffs when repository state changes and discard obsolete requests after selection switches.
 - Keep patch rendering read-only, virtualize long output, and escape source text.
 

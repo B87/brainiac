@@ -62,7 +62,12 @@ impl RepositoryService {
     }
 
     fn auto_fetch_interval(&self) -> Duration {
-        Duration::from_secs(self.settings().auto_fetch_interval_minutes * 60).max(MIN_INTERVAL)
+        Duration::from_secs(
+            self.settings()
+                .auto_fetch_interval_minutes
+                .saturating_mul(60),
+        )
+        .max(MIN_INTERVAL)
     }
 
     async fn refresh_store(self: &Arc<Self>, store: &str) {

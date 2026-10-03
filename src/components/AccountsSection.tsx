@@ -9,7 +9,12 @@ import {
 import { errorMessage, type ForgeAccountSlot, ipc } from "../lib/ipc";
 
 /** Settings → Accounts: one GitHub and one Bitbucket Cloud account (SPEC.md, Accounts). */
-export default function AccountsSection() {
+export default function AccountsSection({
+  onChanged,
+}: {
+  /** An account was added, replaced, or removed. */
+  onChanged: () => void;
+}) {
   const [slots, setSlots] = useState<ForgeAccountSlot[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -24,18 +29,19 @@ export default function AccountsSection() {
     };
   }, []);
 
-  const replace = (slot: ForgeAccountSlot) =>
+  const replace = (slot: ForgeAccountSlot) => {
     setSlots(
       (all) => all?.map((s) => (s.kind === slot.kind ? slot : s)) ?? null,
     );
+    onChanged();
+  };
+  const replaceAll = (all: ForgeAccountSlot[]) => {
+    setSlots(all);
+    onChanged();
+  };
 
   return (
-    <section className="flex flex-col gap-2">
-      <h3 className="section-label m-0">Accounts</h3>
-      <p className="m-0 text-[12.5px] text-fg-2">
-        For pull requests. Tokens are kept in the macOS Keychain and sent only
-        to the service they belong to.
-      </p>
+    <div className="flex flex-col gap-2">
       {error && (
         <div role="alert" className="text-[12.5px] text-conflict">
           {error}
@@ -50,11 +56,11 @@ export default function AccountsSection() {
             slot={slot ?? null}
             loading={slots === null && !error}
             onSlot={replace}
-            onSlots={setSlots}
+            onSlots={replaceAll}
           />
         );
       })}
-    </section>
+    </div>
   );
 }
 
@@ -148,7 +154,7 @@ function AccountRow({
     (!p.needsEmail || email.trim() !== "");
 
   return (
-    <div className="flex flex-col gap-2 rounded-md border bg-panel px-3 py-2.5">
+    <div className="flex flex-col gap-2 rounded-[10px] border bg-app px-3.5 py-3">
       <div className="flex items-center gap-2">
         <div className="min-w-0 flex-1">
           <div className="font-medium">{p.name}</div>

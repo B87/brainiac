@@ -351,6 +351,59 @@
     box-shadow: 0 1px 2px rgb(0 0 0 / 0.12);
   }
 
+  /* Settings window: grouped rows, label on the left and control on the right. */
+  .settings-group {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--app);
+  }
+  .settings-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 16px;
+    min-height: 44px;
+    padding: 10px 14px;
+  }
+  .settings-row + .settings-row {
+    border-top: 1px solid var(--line-soft);
+  }
+
+  /* A checkbox drawn as an on/off switch. */
+  .switch {
+    appearance: none;
+    position: relative;
+    flex-shrink: 0;
+    width: 32px;
+    height: 18px;
+    margin: 0;
+    border: 1px solid var(--control-line);
+    border-radius: 9px;
+    background: var(--seg-track);
+    transition: background 0.15s;
+  }
+  .switch::after {
+    content: "";
+    position: absolute;
+    top: 1px;
+    left: 1px;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: #ffffff;
+    box-shadow: 0 1px 2px rgb(0 0 0 / 0.3);
+    transition: transform 0.15s;
+  }
+  .switch:checked {
+    border-color: var(--accent);
+    background: var(--accent);
+  }
+  .switch:checked::after {
+    transform: translateX(14px);
+  }
+
   /* Pill-shaped filter toggle. */
   .chip {
     height: 28px;

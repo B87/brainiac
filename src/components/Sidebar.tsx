@@ -8,6 +8,7 @@ import type {
   WorkspaceMember,
 } from "../lib/ipc";
 import { plural, repoTone, TONE_LABEL } from "../lib/repo";
+import type { SettingsSection } from "../lib/settings";
 import {
   totals,
   workspaceLayout,
@@ -37,7 +38,9 @@ export type View =
   | { kind: "tasks"; scope?: TaskScope }
   | { kind: "notes"; noteId?: string }
   /** One pull request (v0.3), and the view to go back to. */
-  | { kind: "pullRequest"; reference: string; back: View };
+  | { kind: "pullRequest"; reference: string; back: View }
+  /** Settings, in place of the sidebar and the view, and the view to go back to. */
+  | { kind: "settings"; section: SettingsSection; back: View };
 
 type Props = {
   snapshot: AppSnapshot | null;
