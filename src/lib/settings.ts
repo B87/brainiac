@@ -96,6 +96,8 @@ export const EDITOR_PRESETS: {
     editor: {
       executable: "/usr/bin/open",
       repo_args: ["warp://action/new_tab?path={path_url}"],
+      // Warp documents `path` as a folder, but given a file it opens the file
+      // in its editor in a new tab (checked with Warp 0.2026.09.23).
       file_args: ["warp://action/new_tab?path={path_url}"],
     },
   },

@@ -120,9 +120,11 @@ pub type AppResult<T> = Result<T, AppError>;
 #[ts(export)]
 pub struct EditorSettings {
     pub executable: String,
-    /// Argument template for opening a repository root; `{path}` is substituted.
+    /// Argument template for opening a repository root; `{path}` and
+    /// `{path_url}` (the path encoded for a link) are substituted.
     pub repo_args: Vec<String>,
-    /// Argument template for opening a file; `{path}` and `{line}` are substituted.
+    /// Argument template for opening a file; `{path}`, `{path_url}`, and
+    /// `{line}` are substituted.
     pub file_args: Vec<String>,
 }
 
