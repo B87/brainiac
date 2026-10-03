@@ -397,6 +397,7 @@ impl RepositoryService {
             discovery_root: root_path.as_ref().map(|p| p.display().to_string()),
             discovery_path,
             created_at: now_rfc3339(),
+            pull_requests: false,
         };
         let workspace_id = workspace.id.clone();
         // `move` hands ownership of `workspace` and `planned` to the closure,
@@ -626,6 +627,7 @@ fn insert_members(
                     last_fetch_at: None,
                     last_fetch_error: None,
                     remote_url: None,
+                    forge_override: None,
                 };
                 let (id, created) = db::ensure_repository(conn, &row)?;
                 if created {
@@ -716,6 +718,7 @@ fn to_workspace(
         members,
         activity,
         unseen_activity,
+        pull_requests: row.pull_requests,
     }
 }
 

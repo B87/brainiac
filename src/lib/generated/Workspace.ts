@@ -19,4 +19,8 @@ discovery_path: string | null, members: Array<WorkspaceMember>, activity: Activi
 /**
  * Unread activity events across the members.
  */
-unseen_activity: number, };
+unseen_activity: number, 
+/**
+ * Whether the workspace tracks its repositories' pull requests (v0.3). Off by default.
+ */
+pull_requests: boolean, };

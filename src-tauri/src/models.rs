@@ -340,6 +340,9 @@ pub struct RepositorySummary {
     pub fetch_error: Option<AppError>,
     /// The `origin` fetch URL, refreshed on registration, manual refresh, and wake.
     pub remote_url: Option<String>,
+    /// Where its pull requests come from; `None` when `origin` is on neither
+    /// provider and nothing was chosen (SPEC.md, Which pull requests a repository has).
+    pub forge: Option<RepositoryForge>,
 }
 
 /// The cached result of one `git status` observation (stored as JSON in SQLite).
@@ -729,6 +732,8 @@ pub struct Workspace {
     pub activity: ActivitySettings,
     /// Unread activity events across the members.
     pub unseen_activity: u32,
+    /// Whether the workspace tracks its repositories' pull requests (v0.3). Off by default.
+    pub pull_requests: bool,
 }
 
 /// How a folder looked when a discovery preview was taken.
@@ -1768,4 +1773,45 @@ pub enum SaveForgeAccountOutcome {
         login: String,
         missing: Vec<String>,
     },
+}
+
+/// A repository on GitHub or Bitbucket Cloud, named by its parts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ForgeTarget {
+    pub kind: ForgeKind,
+    /// A GitHub user or organization, or a Bitbucket workspace.
+    pub owner: String,
+    pub name: String,
+}
+
+/// How a repository's forge repository was chosen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ForgeSource {
+    /// Derived from where `origin` points.
+    Origin,
+    /// Chosen with **Change…**; kept when `origin` changes.
+    Override,
+}
+
+/// Where a repository's pull requests come from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RepositoryForge {
+    pub kind: ForgeKind,
+    pub owner: String,
+    pub name: String,
+    /// `github.com/acme/api`, as pull request references start.
+    pub reference: String,
+    pub source: ForgeSource,
+}
+
+/// Point a repository's pull requests at `forge`, or back at `origin` with `None`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SetRepositoryForgeRequest {
+    pub repository_id: String,
+    pub forge: Option<ForgeTarget>,
 }

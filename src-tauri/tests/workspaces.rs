@@ -449,3 +449,104 @@ async fn snapshot_lists_workspaces_by_name_with_the_root_first() {
         .collect();
     assert_eq!(alpha_members, vec!["billing", "search"]);
 }
+
+/// Pull requests come from where `origin` points unless the repository is
+/// pointed elsewhere, and are tracked only through a workspace with pull
+/// requests on (SPEC.md, Which pull requests a repository has).
+#[tokio::test(flavor = "multi_thread")]
+async fn pull_requests_come_from_origin_unless_overridden_and_only_when_tracked() {
+    let tmp = tempfile::tempdir().unwrap();
+    let api = tmp.path().join("api");
+    repo(&api);
+    git(
+        &api,
+        &["remote", "add", "origin", "git@github.com:acme/api.git"],
+    );
+    let tools = tmp.path().join("tools");
+    repo(&tools);
+    git(
+        &tools,
+        &["remote", "add", "origin", "git@gitlab.com:acme/tools.git"],
+    );
+    let svc = service(tmp.path()).await;
+
+    let api_repo = svc.register(&api).await.unwrap();
+    let forge = api_repo.forge.clone().expect("origin on GitHub");
+    assert_eq!(forge.reference, "github.com/acme/api");
+    assert_eq!(forge.source, ForgeSource::Origin);
+    let tools_repo = svc.register(&tools).await.unwrap();
+    assert!(tools_repo.forge.is_none());
+
+    // Pointed at the upstream of a fork; a bad name is refused.
+    let err = svc
+        .set_forge(SetRepositoryForgeRequest {
+            repository_id: api_repo.id.clone(),
+            forge: Some(ForgeTarget {
+                kind: ForgeKind::Github,
+                owner: "../acme".into(),
+                name: "api".into(),
+            }),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::Validation);
+    let changed = svc
+        .set_forge(SetRepositoryForgeRequest {
+            repository_id: api_repo.id.clone(),
+            forge: Some(ForgeTarget {
+                kind: ForgeKind::BitbucketCloud,
+                owner: " acme-team ".into(),
+                name: "api".into(),
+            }),
+        })
+        .await
+        .unwrap();
+    let forge = changed.forge.unwrap();
+    assert_eq!(forge.reference, "bitbucket.org/acme-team/api");
+    assert_eq!(forge.source, ForgeSource::Override);
+    let err = svc
+        .set_forge(SetRepositoryForgeRequest {
+            repository_id: "no-such-id".into(),
+            forge: None,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::NotFound);
+
+    // Nothing is tracked until a workspace turns pull requests on.
+    assert!(svc.tracked_forges().await.unwrap().is_empty());
+    let ws = svc
+        .create_workspace(CreateWorkspaceRequest {
+            name: "Acme".into(),
+            discovery_mode: DiscoveryMode::Manual,
+            discovery_root: None,
+            discovery_path: None,
+            paths: vec![s(&api), s(&tools)],
+        })
+        .await
+        .unwrap()
+        .workspace;
+    assert!(!ws.pull_requests);
+    assert!(svc.tracked_forges().await.unwrap().is_empty());
+    let ws = svc.set_pull_requests(&ws.id, true).await.unwrap();
+    assert!(ws.pull_requests);
+    let tracked = svc.tracked_forges().await.unwrap();
+    // `tools` is a member too, but its origin is on neither provider.
+    assert_eq!(tracked.len(), 1);
+    assert_eq!(tracked[0].0.id, api_repo.id);
+    assert_eq!(tracked[0].1.to_string(), "bitbucket.org/acme-team/api");
+
+    // Back to origin; the switch off again.
+    let back = svc
+        .set_forge(SetRepositoryForgeRequest {
+            repository_id: api_repo.id.clone(),
+            forge: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(back.forge.unwrap().source, ForgeSource::Origin);
+    svc.set_pull_requests(&ws.id, false).await.unwrap();
+    assert!(svc.tracked_forges().await.unwrap().is_empty());
+    let err = svc.set_pull_requests("no-such-id", true).await.unwrap_err();
+    assert_eq!(err.code, ErrorCode::NotFound);
+}

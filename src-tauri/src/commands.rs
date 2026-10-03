@@ -25,6 +25,7 @@ use crate::models::{
 };
 use crate::models::{
     ForgeAccountSlot, ForgeKind, SaveForgeAccountOutcome, SaveForgeAccountRequest,
+    SetRepositoryForgeRequest,
 };
 use crate::notes::NoteService;
 use crate::tasks::TaskService;
@@ -692,4 +693,23 @@ pub async fn remove_forge_account(
     accounts: State<'_, Accounts>,
 ) -> AppResult<Vec<ForgeAccountSlot>> {
     accounts.remove(kind).await
+}
+
+/// Repository → Pull requests, **Change…**: where a repository's pull requests come from.
+#[tauri::command]
+pub async fn set_repository_forge(
+    request: SetRepositoryForgeRequest,
+    service: State<'_, Service>,
+) -> AppResult<RepositorySummary> {
+    service.set_forge(request).await
+}
+
+/// A workspace's pull request switch, off by default.
+#[tauri::command]
+pub async fn update_workspace_pull_requests(
+    workspace_id: String,
+    enabled: bool,
+    service: State<'_, Service>,
+) -> AppResult<Workspace> {
+    service.set_pull_requests(&workspace_id, enabled).await
 }

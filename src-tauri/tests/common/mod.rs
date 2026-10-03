@@ -152,6 +152,7 @@ impl Harness {
             last_fetch_at: None,
             last_fetch_error: None,
             remote_url: Some(format!("git@example.com:team/{name}.git")),
+            forge_override: None,
         };
         self.core
             .call(move |conn| {

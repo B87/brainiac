@@ -466,7 +466,7 @@ Review and merge the pull requests of a workspace's repositories, on GitHub and 
 ### Which pull requests a repository has
 
 - A repository's pull requests come from the hosting service its `origin` points to: `git@github.com:acme/api.git` and `https://bitbucket.org/acme-team/api` both name a repository there. A repository whose pull requests live elsewhere, such as the upstream of a fork, can be pointed at it with **Change…**; Brainiac keeps that choice when `origin` changes.
-- A workspace turns pull requests on in its side panel and picks the account to use for each provider. A repository belongs to the workspaces it is in; its pull requests are tracked when any of them has pull requests on.
+- A workspace turns pull requests on in its side panel; a repository on GitHub uses the GitHub account and one on Bitbucket the Bitbucket account. A repository belongs to the workspaces it is in; its pull requests are tracked when any of them has pull requests on.
 
 ### Workspace → Pull requests
 

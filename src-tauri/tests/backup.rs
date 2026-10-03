@@ -76,6 +76,7 @@ async fn an_export_restores_on_another_mac_with_tasks_and_links() {
             last_fetch_at: None,
             last_fetch_error: None,
             remote_url: None,
+            forge_override: None,
         };
         core.call(move |conn| {
             db::insert_repository(conn, &row)?;

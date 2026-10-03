@@ -168,7 +168,7 @@ Only two things cannot be rebuilt: the vault's Markdown files and a small core d
 
 ### Data model
 
-Tables of v0.4 onward are in `docs/roadmap.md` and are not created before their release; v0.3's are created by the code that first uses them. IDs are UUID strings and timestamps are UTC instants. The v0.1 schema is `src-tauri/migrations/0001_init.sql`; v0.2's core tables arrive in `0002`, v0.3's accounts in `0003`, and `index.db` and `history.db` get their own migration lists.
+Tables of v0.4 onward are in `docs/roadmap.md` and are not created before their release; v0.3's are created by the code that first uses them. IDs are UUID strings and timestamps are UTC instants. The v0.1 schema is `src-tauri/migrations/0001_init.sql`; v0.2's core tables arrive in `0002`, v0.3's accounts in `0003` and its forge mapping in `0004`, and `index.db` and `history.db` get their own migration lists.
 
 | Entity | Essential fields and constraints | Release |
 | --- | --- | --- |
@@ -207,8 +207,8 @@ v0.3 adds:
 | Entity | File | Essential fields and constraints |
 | --- | --- | --- |
 | `forge_accounts` | core | `id`, kind (`github`, `bitbucket_cloud`, unique: one account per provider), host, login, the provider's user ID (to recognize the user as author or reviewer), email (Bitbucket), token kind and expiry, scopes seen at the last check (none for a GitHub fine-grained token), what it is missing, read-only; the token itself only in the Keychain (Identity, under Pull requests — v0.3) |
-| `repository_forges` | core | `repository_id`, kind, host, owner, name, `derived` or `override`; refreshed from `remote_url` unless overridden |
-| `workspace_pull_requests` | core | `workspace_id`, enabled (default off), account per provider |
+| `repository_forges` | core | `repository_id`, kind, owner, name: only the repositories pointed elsewhere with **Change…** (an upstream, a fork); every other repository's forge repository is derived from `remote_url` when read, so nothing needs refreshing, and the override outlives changes to `origin` |
+| `workspaces.pull_requests` | core | The workspace's switch, off by default. With one account per provider there is nothing to pick: a tracked repository uses the account of the provider it is on |
 | `review_drafts` | core | `id`, pull request reference, anchor (path, side, line, optional start line, commit), body, origin (`user`; `agent` later), the remote comment ID once sent; the user's unsent text, so it is kept and backed up |
 | pull request cache | `forge.db` | Pull requests, files, threads, checks, and each request's ETag, keyed by pull request reference; pruned 14 days after a pull request closes |
 

@@ -2,6 +2,7 @@
 import type { AppError } from "./AppError";
 import type { ChangeCounts } from "./ChangeCounts";
 import type { HeadState } from "./HeadState";
+import type { RepositoryForge } from "./RepositoryForge";
 import type { RepositoryState } from "./RepositoryState";
 import type { RepositoryTab } from "./RepositoryTab";
 import type { UpstreamState } from "./UpstreamState";
@@ -26,4 +27,9 @@ fetch_error: AppError | null,
 /**
  * The `origin` fetch URL, refreshed on registration, manual refresh, and wake.
  */
-remote_url: string | null, };
+remote_url: string | null, 
+/**
+ * Where its pull requests come from; `None` when `origin` is on neither
+ * provider and nothing was chosen (SPEC.md, Which pull requests a repository has).
+ */
+forge: RepositoryForge | null, };

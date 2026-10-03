@@ -16,6 +16,7 @@ use std::thread;
 
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 
+use crate::forge::ForgeRepository;
 use crate::models::{
     ActivitySettings, AppError, AppResult, DiscoveryMode, MemberOrigin, Pin, PinEntityType,
     RepositoryTab, Settings, StatusSnapshot,
@@ -32,6 +33,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0003_forge_accounts",
         include_str!("../migrations/0003_forge_accounts.sql"),
     ),
+    ("0004_forges", include_str!("../migrations/0004_forges.sql")),
 ];
 
 /// How many daily backups to keep.
@@ -498,6 +500,8 @@ pub struct RepositoryRow {
     pub last_fetch_error: Option<AppError>,
     /// The `origin` fetch URL as last observed.
     pub remote_url: Option<String>,
+    /// Where its pull requests live when not where `origin` points (v0.3).
+    pub forge_override: Option<ForgeRepository>,
 }
 
 impl From<&RepositoryRow> for crate::git::Checkout {
@@ -516,7 +520,10 @@ impl From<&RepositoryRow> for crate::git::Checkout {
     }
 }
 
-const REPO_COLUMNS: &str = "id, canonical_root, display_path, git_dir, common_git_dir, created_at, last_opened_at, last_checked_at, last_tab, status_json, error_json, last_fetch_at, last_fetch_error_json, remote_url";
+const REPO_COLUMNS: &str = "id, canonical_root, display_path, git_dir, common_git_dir, created_at, last_opened_at, last_checked_at, last_tab, status_json, error_json, last_fetch_at, last_fetch_error_json, remote_url,
+    (SELECT f.kind FROM repository_forges f WHERE f.repository_id = repositories.id),
+    (SELECT f.owner FROM repository_forges f WHERE f.repository_id = repositories.id),
+    (SELECT f.name FROM repository_forges f WHERE f.repository_id = repositories.id)";
 
 fn row_to_repository(r: &rusqlite::Row<'_>) -> rusqlite::Result<RepositoryRow> {
     let last_tab: Option<String> = r.get(8)?;
@@ -539,6 +546,16 @@ fn row_to_repository(r: &rusqlite::Row<'_>) -> rusqlite::Result<RepositoryRow> {
             .get::<_, Option<String>>(12)?
             .and_then(|s| serde_json::from_str(&s).ok()),
         remote_url: r.get(13)?,
+        forge_override: match (
+            r.get::<_, Option<String>>(14)?,
+            r.get::<_, Option<String>>(15)?,
+            r.get::<_, Option<String>>(16)?,
+        ) {
+            (Some(kind), Some(owner), Some(name)) => {
+                ForgeRepository::new(parse_enum(kind)?, &owner, &name)
+            }
+            _ => None,
+        },
     })
 }
 
@@ -589,6 +606,29 @@ pub fn set_remote_url(conn: &Connection, id: &str, url: Option<&str>) -> AppResu
         "UPDATE repositories SET remote_url = ?2 WHERE id = ?1 AND remote_url IS NOT ?2",
         params![id, url],
     )?;
+    Ok(())
+}
+
+/// Point a repository's pull requests at `forge`, or back at its `origin` with `None`.
+pub fn set_repository_forge(
+    conn: &Connection,
+    id: &str,
+    forge: Option<&ForgeRepository>,
+    now: &str,
+) -> AppResult<()> {
+    match forge {
+        Some(f) => conn.execute(
+            "INSERT INTO repository_forges (repository_id, kind, owner, name, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT (repository_id) DO UPDATE SET
+                 kind = excluded.kind, owner = excluded.owner, name = excluded.name",
+            params![id, enum_name(f.kind)?, f.owner, f.name, now],
+        )?,
+        None => conn.execute(
+            "DELETE FROM repository_forges WHERE repository_id = ?1",
+            params![id],
+        )?,
+    };
     Ok(())
 }
 
@@ -755,6 +795,8 @@ pub struct WorkspaceRow {
     pub discovery_root: Option<String>,
     pub discovery_path: Option<String>,
     pub created_at: String,
+    /// Whether the workspace tracks its repositories' pull requests (v0.3).
+    pub pull_requests: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -785,7 +827,7 @@ pub(crate) fn parse_enum<T: serde::de::DeserializeOwned>(name: String) -> rusqli
 }
 
 const WORKSPACE_COLUMNS: &str =
-    "id, name, discovery_mode, root_repository_id, discovery_root, discovery_path, created_at";
+    "id, name, discovery_mode, root_repository_id, discovery_root, discovery_path, created_at, pull_requests";
 
 fn row_to_workspace(r: &rusqlite::Row<'_>) -> rusqlite::Result<WorkspaceRow> {
     Ok(WorkspaceRow {
@@ -796,6 +838,7 @@ fn row_to_workspace(r: &rusqlite::Row<'_>) -> rusqlite::Result<WorkspaceRow> {
         discovery_root: r.get(4)?,
         discovery_path: r.get(5)?,
         created_at: r.get(6)?,
+        pull_requests: bool_col(r, 7)?,
     })
 }
 
@@ -935,6 +978,30 @@ pub fn set_workspace_root(
         params![workspace_id, root_repository_id],
     )?;
     Ok(())
+}
+
+/// Turn a workspace's pull request tracking on or off; `false` when it does not exist.
+pub fn set_workspace_pull_requests(conn: &Connection, id: &str, enabled: bool) -> AppResult<bool> {
+    let n = conn.execute(
+        "UPDATE workspaces SET pull_requests = ?2 WHERE id = ?1",
+        params![id, enabled],
+    )?;
+    Ok(n > 0)
+}
+
+/// Every repository whose pull requests are tracked: a member of a workspace
+/// with pull requests on, with its `origin` URL and its override, if any.
+pub fn tracked_repositories(conn: &Connection) -> AppResult<Vec<RepositoryRow>> {
+    let sql = format!(
+        "SELECT {REPO_COLUMNS} FROM repositories WHERE id IN (
+             SELECT m.repository_id FROM workspace_members m
+             JOIN workspaces w ON w.id = m.workspace_id
+             WHERE w.pull_requests = 1 AND m.repository_id IS NOT NULL)
+         ORDER BY display_path"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], row_to_repository)?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
 pub fn rename_workspace(conn: &Connection, id: &str, name: &str) -> AppResult<bool> {

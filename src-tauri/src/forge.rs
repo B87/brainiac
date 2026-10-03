@@ -16,7 +16,7 @@ mod store;
 use std::fmt;
 use std::str::FromStr;
 
-use crate::models::{AppError, AppResult};
+use crate::models::{AppError, AppResult, ForgeSource, ForgeTarget, RepositoryForge};
 
 pub use crate::models::ForgeKind;
 pub use accounts::{AccountService, Endpoints};
@@ -123,6 +123,36 @@ impl ForgeRepository {
             kind,
             owner: owner.to_string(),
             name: name.to_string(),
+        })
+    }
+}
+
+impl ForgeRepository {
+    /// The forge repository a stored repository's pull requests come from:
+    /// its override, else what its `origin` names.
+    pub fn of(
+        remote_url: Option<&str>,
+        override_: Option<&ForgeRepository>,
+    ) -> Option<RepositoryForge> {
+        let (repo, source) = match override_ {
+            Some(o) => (o.clone(), ForgeSource::Override),
+            None => (Self::from_remote_url(remote_url?)?, ForgeSource::Origin),
+        };
+        Some(RepositoryForge {
+            reference: repo.to_string(),
+            kind: repo.kind,
+            owner: repo.owner,
+            name: repo.name,
+            source,
+        })
+    }
+
+    /// A target the user typed, checked like any other name.
+    pub fn from_target(target: &ForgeTarget) -> AppResult<Self> {
+        Self::new(target.kind, target.owner.trim(), target.name.trim()).ok_or_else(|| {
+            AppError::validation(
+                "Name the repository as owner and name, with letters, digits, dots, dashes, and underscores.",
+            )
         })
     }
 }

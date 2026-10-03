@@ -19,6 +19,7 @@ use crate::db::{self, Db, RepositoryRow};
 
 mod feed;
 mod fetching;
+mod forges;
 mod membership;
 mod relocation;
 use crate::activity::ActivityTracker;
@@ -217,6 +218,7 @@ impl RepositoryService {
                     last_fetch_at: None,
                     last_fetch_error: None,
                     remote_url: None,
+                    forge_override: None,
                 };
                 let id = row.id.clone();
                 self.db
@@ -357,6 +359,10 @@ impl RepositoryService {
             ),
             fetch_error: row.last_fetch_error.clone(),
             remote_url: row.remote_url.clone(),
+            forge: crate::forge::ForgeRepository::of(
+                row.remote_url.as_deref(),
+                row.forge_override.as_ref(),
+            ),
         }
     }
 

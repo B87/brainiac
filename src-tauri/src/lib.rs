@@ -319,6 +319,8 @@ pub fn run() {
             commands::list_forge_accounts,
             commands::save_forge_account,
             commands::remove_forge_account,
+            commands::set_repository_forge,
+            commands::update_workspace_pull_requests,
         ])
         .build(context)
         .expect("error while running Brainiac")

@@ -78,6 +78,7 @@ export const repository: RepositorySummary = {
   last_fetch_at: NOW,
   fetch_error: null,
   remote_url: "git@example.com:team/parser.git",
+  forge: null,
 };
 
 let counter = 0;

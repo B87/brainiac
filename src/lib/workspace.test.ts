@@ -34,6 +34,7 @@ function workspace(over: Partial<Workspace>): Workspace {
       warn_conflicts: true,
     },
     unseen_activity: 0,
+    pull_requests: false,
     ...over,
   };
 }

@@ -52,6 +52,7 @@ import type { SaveNoteRequest } from "./generated/SaveNoteRequest";
 import type { SaveNoteResult } from "./generated/SaveNoteResult";
 import type { SearchRequest } from "./generated/SearchRequest";
 import type { SearchResults } from "./generated/SearchResults";
+import type { SetRepositoryForgeRequest } from "./generated/SetRepositoryForgeRequest";
 import type { Settings } from "./generated/Settings";
 import type { Task } from "./generated/Task";
 import type { TaskChangedEvent } from "./generated/TaskChangedEvent";
@@ -81,6 +82,8 @@ export type { DiffLine } from "./generated/DiffLine";
 export type { DiscoveryMode } from "./generated/DiscoveryMode";
 export type { FolderEntry } from "./generated/FolderEntry";
 export type { ForgeAccount } from "./generated/ForgeAccount";
+export type { ForgeSource } from "./generated/ForgeSource";
+export type { ForgeTarget } from "./generated/ForgeTarget";
 export type { ForgeTokenKind } from "./generated/ForgeTokenKind";
 export type { Hunk } from "./generated/Hunk";
 export type { IndexState } from "./generated/IndexState";
@@ -93,6 +96,7 @@ export type { Pin } from "./generated/Pin";
 export type { PreviewStatus } from "./generated/PreviewStatus";
 export type { RefEntry } from "./generated/RefEntry";
 export type { RelocationConcern } from "./generated/RelocationConcern";
+export type { RepositoryForge } from "./generated/RepositoryForge";
 export type { RepositoryFreshness } from "./generated/RepositoryFreshness";
 export type { RepositorySuggestion } from "./generated/RepositorySuggestion";
 export type { SearchGroup } from "./generated/SearchGroup";
@@ -153,6 +157,7 @@ export type {
   SaveNoteResult,
   SearchRequest,
   SearchResults,
+  SetRepositoryForgeRequest,
   Settings,
   Task,
   TaskChangedEvent,
@@ -279,6 +284,15 @@ export const ipc = {
   /** Also deletes the token from the Keychain. */
   removeForgeAccount: (kind: ForgeKind) =>
     invoke<ForgeAccountSlot[]>("remove_forge_account", { kind }),
+  /** Where a repository's pull requests come from; `forge: null` goes back to `origin`. */
+  setRepositoryForge: (request: SetRepositoryForgeRequest) =>
+    invoke<RepositorySummary>("set_repository_forge", { request }),
+  /** A workspace's pull request switch. */
+  updateWorkspacePullRequests: (workspaceId: string, enabled: boolean) =>
+    invoke<Workspace>("update_workspace_pull_requests", {
+      workspaceId,
+      enabled,
+    }),
 
   // v0.2: vault and notes
   getVaultState: () => invoke<VaultState>("get_vault_state"),
