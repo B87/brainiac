@@ -250,6 +250,9 @@ test("Settings turns agent access on and shows how to add Brainiac to Claude Cod
       "claude mcp add --scope user brainiac -- /Applications/Brainiac.app/Contents/MacOS/brainiac mcp",
     ),
   ).toBeVisible();
+  await expect(
+    settings.getByText("/plugin install brainiac@brainiac"),
+  ).toBeVisible();
 
   await access.getByRole("button", { name: "Read and write" }).click();
   const updates = await calls(page, "update_settings");

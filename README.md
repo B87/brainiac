@@ -37,6 +37,17 @@ xattr -d com.apple.quarantine /Applications/Brainiac.app
 
 After that, Brainiac updates itself: it checks the latest GitHub release shortly after launch and shows a banner when a newer build exists. **Brainiac > Check for Updates…** runs the check on demand. Updates are verified against a signing key embedded in the app before they are installed.
 
+## Use with Claude Code
+
+Turn on **Settings → Agent access** (off by default), then, in Claude Code:
+
+```text
+/plugin marketplace add B87/brainiac
+/plugin install brainiac@brainiac
+```
+
+The plugin connects Claude Code to Brainiac and adds a skill for planning your day, tracking work as tasks, and writing up decisions as notes. It expects Brainiac in `/Applications`; for an app elsewhere, use the `claude mcp add` command that Settings shows instead. Other MCP clients run `<the app>/Contents/MacOS/brainiac mcp`.
+
 ## Requirements
 
 - macOS 13 or newer.

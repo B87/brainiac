@@ -13,6 +13,15 @@ export function claudeCommand(executable: string): string {
   return `claude mcp add --scope user brainiac -- ${shellQuote(executable)} mcp`;
 }
 
+/** Where the Claude Code plugin (`plugins/brainiac/.mcp.json`) runs Brainiac from. */
+export const PLUGIN_EXECUTABLE =
+  "/Applications/Brainiac.app/Contents/MacOS/brainiac";
+
+/** The plugin reaches this app only when it is installed where the plugin looks. */
+export function pluginFits(executable: string): boolean {
+  return executable === PLUGIN_EXECUTABLE;
+}
+
 export const ACCESS_CHOICES: { value: AgentAccess; label: string }[] = [
   { value: "off", label: "Off" },
   { value: "read_only", label: "Read only" },

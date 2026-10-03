@@ -4,6 +4,7 @@ import {
   accessSummary,
   claudeCommand,
   connectedText,
+  pluginFits,
 } from "../lib/agent";
 import { shortPath } from "../lib/format";
 import {
@@ -68,6 +69,7 @@ export default function SettingsDialog({
     }
   };
   const command = agent ? claudeCommand(agent.executable) : null;
+  const plugin = agent ? pluginFits(agent.executable) : false;
   const copyCommand = () => {
     if (!command) return;
     void navigator.clipboard
@@ -201,13 +203,19 @@ export default function SettingsDialog({
                   {copied ? "Copied" : "Copy"}
                 </button>
               </div>
-              <span className="text-[12px] text-muted">
-                Or install the Brainiac plugin, which also teaches Claude Code
-                how to use it:{" "}
-                <span className="mono select-all">
-                  /plugin marketplace add B87/brainiac
+              {plugin && (
+                <span className="text-[12px] text-muted">
+                  Or, instead, install Brainiac's Claude Code plugin, which also
+                  teaches Claude Code how to use it:{" "}
+                  <span className="mono select-all">
+                    /plugin marketplace add B87/brainiac
+                  </span>
+                  , then{" "}
+                  <span className="mono select-all">
+                    /plugin install brainiac@brainiac
+                  </span>
                 </span>
-              </span>
+              )}
             </>
           )}
         </section>

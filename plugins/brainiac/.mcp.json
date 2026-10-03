@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "brainiac": {
+      "command": "/Applications/Brainiac.app/Contents/MacOS/brainiac",
+      "args": ["mcp"]
+    }
+  }
+}

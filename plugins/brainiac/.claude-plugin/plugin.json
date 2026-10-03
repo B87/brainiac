@@ -1,0 +1,10 @@
+{
+  "name": "brainiac",
+  "description": "Connects Claude Code to the Brainiac app and teaches it to plan the day, track work as tasks, and write decisions up as notes.",
+  "author": {
+    "name": "B87"
+  },
+  "homepage": "https://github.com/B87/brainiac",
+  "repository": "https://github.com/B87/brainiac",
+  "keywords": ["notes", "tasks", "second-brain", "mcp"]
+}

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { claudeCommand, connectedText, shellQuote } from "./agent";
+import {
+  claudeCommand,
+  connectedText,
+  PLUGIN_EXECUTABLE,
+  pluginFits,
+  shellQuote,
+} from "./agent";
 
 describe("agent access", () => {
   it("builds the Claude Code command, quoting paths that need it", () => {
@@ -12,6 +18,13 @@ describe("agent access", () => {
       shellQuote("/Users/a/My Apps/Brainiac.app/Contents/MacOS/brainiac"),
     ).toBe("'/Users/a/My Apps/Brainiac.app/Contents/MacOS/brainiac'");
     expect(shellQuote("/tmp/it's")).toBe(`'/tmp/it'\\''s'`);
+  });
+
+  it("offers the plugin only to an app in Applications", () => {
+    expect(pluginFits(PLUGIN_EXECUTABLE)).toBe(true);
+    expect(
+      pluginFits("/Users/a/Applications/Brainiac.app/Contents/MacOS/brainiac"),
+    ).toBe(false);
   });
 
   it("counts connected agents", () => {

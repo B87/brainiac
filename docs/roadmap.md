@@ -68,10 +68,10 @@ M0 landed on 1 October 2026 with 58 Rust tests and 3 frontend tests. Known M0 si
 - [x] Local MCP server inside the running app, reached through `brainiac mcp`, the app's own executable as a stdio helper that opens the app when it is closed; off by default, read only or read and write.
 - [x] Tools for search, notes, tasks, and repository links that call the same domain services as the UI; agent saves kept as `agent` revisions.
 - [x] Settings → Agent access, with the connected agents and the command to add Brainiac to Claude Code.
-- [ ] Claude Code plugin in this repository: the server and a skill for using Brainiac.
+- [x] Claude Code plugin in this repository: the server and a skill for using Brainiac.
 - [ ] Exit gate checked by hand with Claude Code against a packaged build.
 
-**Status, 3 October 2026:** the server, the helper, nine read and seven write tools, and Settings → Agent access are on the `v0.2.x-agent-access` branch, not yet merged; 12 Rust tests drive the server as an agent would, two of them through the real `brainiac mcp` executable and socket, and a WebKit test covers the Settings section. Left: the plugin and its skill; then the exit gate by hand, which also checks what the tests cannot: the helper opening a packaged app that is closed, and Claude Code picking up a change of access mode without reconnecting.
+**Status, 3 October 2026:** the server, the helper, nine read and seven write tools, Settings → Agent access, and the Claude Code plugin with its skill are on the `v0.2.x-agent-access` branch, not yet merged; 12 Rust tests drive the server as an agent would, two of them through the real `brainiac mcp` executable and socket, and a WebKit test covers the Settings section. Left: the exit gate by hand, which also checks what the tests cannot: the helper opening a packaged app that is closed, Claude Code picking up a change of access mode without reconnecting, and the plugin installed from the marketplace.
 
 **Exit gate:** an agent such as Claude Code finds notes, creates and completes a task, and links a note to a repository while the app is open; the UI updates live, a concurrent UI edit produces a conflict rather than an overwrite, and the agent's note edits can be undone from revision history.
 
