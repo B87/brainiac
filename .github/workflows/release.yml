@@ -15,7 +15,9 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-14
+    # The app still runs on macOS 13: tauri.conf.json sets the minimum
+    # version, whatever macOS builds it.
+    runs-on: macos-26
     env:
       # `secrets` cannot be used in `if:`; mirror presence into env first.
       HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE != '' }}
