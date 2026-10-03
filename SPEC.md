@@ -56,8 +56,8 @@ The product can eventually include PR and CI status, calendar context, recurring
 | Keyword knowledge search | v0.2 | FTS5 across saved notes and tasks |
 | Backlinks and note/repository associations | v0.2 | Connect knowledge to the existing Git workspace |
 | Agent access | v0.2.x | Local MCP server for agents such as Claude Code: search, notes, tasks, repository links; off by default |
-| Pull requests | v0.3 | GitHub and Bitbucket Cloud, per workspace and off by default: the workspace's pull requests, overview, files changed, review, and merge |
-| Pull request follow-ups | v0.3.x | A daily view of what waits on you, the repository's pull requests, a task's pull request, creating a pull request, agent tools; chosen by use |
+| Pull requests | v0.3 | GitHub and Bitbucket Cloud, per workspace and off by default: the workspace's and each repository's pull requests, overview, files changed, review, and merge |
+| Pull request follow-ups | v0.3.x | A daily view of what waits on you, a task's pull request, creating a pull request, agent tools; chosen by use |
 | External content imports | v0.4 | Paste, bookmarks, Markdown copies, articles, `.eml`, provenance and duplicate handling |
 | Global capture window and Inbox | v0.4 | System shortcut, floating capture, Inbox triage of captured and imported items, shared backend state |
 | Authenticated import adapters | v0.4.x | Selected Jira issues/mail messages; provider choice and video transcript acquisition validated separately |
