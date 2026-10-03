@@ -11,20 +11,18 @@ into the release's section.
 
 ## [Unreleased]
 
-- Agent access: Claude Code and other MCP agents can search your notes, read Today and your tasks, and, if you allow it in Settings, create notes and tasks and link notes to repositories. Off by default; an agent's note edits can be undone from the note's history.
+- Agent access: Claude Code and other MCP agents can search your notes, read Today and your tasks, and, if you allow it in Settings, create notes and tasks and link notes to repositories. Off by default.
 - A Claude Code plugin adds Brainiac to Claude Code in one step, with a skill for planning your day, tracking work as tasks, and writing up decisions as notes.
-- The cursor no longer slips out of view when images above it finish loading as you move through a note.
-- Settings → Accounts: add a GitHub or Bitbucket Cloud token for pull requests. It is checked once, kept in the macOS Keychain, and a token that cannot write can be saved as read-only.
-- Pull requests: a workspace's Pull requests tab (⌘3) lists the open pull requests of its repositories on GitHub and Bitbucket Cloud, grouped by repository, with reviewers, checks, unresolved threads, size, and age, and filters for what needs your review, yours, others, and drafts. Off per workspace until turned on there.
-- Each repository's Pull requests tab (⌘5) shows its own, the checked-out branch's first, plus merged and closed ones of the last 30 days, and lets you point a fork at its upstream with Change…
-- Opening a pull request shows its overview, what it needs before merging, its reviewers, the files it changes, and its checks with links to their logs. The pull request on screen is read again every minute; workspace lists every five minutes.
-- The pull request's conversation: comments, reviews with their verdict, and threads on lines with their file and line, resolved ones folded; descriptions and comments are rendered as Markdown without loading anything from them.
-- Files Changed shows each file's diff, from local Git when the commits are on the Mac and from GitHub or Bitbucket otherwise, with a file tree that counts threads per file, marks files viewed when opened, and folds viewed and generated files. "N new commits since your review" and "Since your review" show what arrived after the commit you last reviewed on GitHub.
-- Review from Brainiac: comment on the pull request, reply in a thread, resolve or reopen a thread, and comment on a line or a range from its + or with C. Line comments are drafts kept on the Mac and shown under their lines until Review Changes sends them with a summary and a verdict. New commits since the review started stop the submission, keep the drafts, and offer the new changes; a Bitbucket review cut off midway sends only what is left.
-- The pull request's side panel shows the local checkout, whether its branch is checked out, and the notes linked to the repository.
-- Merge a pull request from its Overview once its checklist is complete: the confirmation shows the merge methods the repository allows, the commit message, and whether to delete the branch, and names the commit it merges. Nothing is merged when new commits arrived meanwhile.
-- The sidebar shows how many pull requests wait on your review in each workspace, and opening the workspace from there goes to them. A fetch that brings new commits to a pull request's branch refreshes that pull request at once.
-- Settings (⌘,) is now a full page with a sidebar of six sections, and Back returns to where you were. It also sets the editor Open in Editor uses, how often repositories refresh and auto-fetch, how long a fetch may take, and how large a diff is shown.
+- The cursor stays in view when images above it finish loading as you move through a note.
+- Settings → Accounts: add a GitHub or Bitbucket Cloud token for pull requests. It is kept in the macOS Keychain, and a token that cannot write can be saved as read-only.
+- Pull requests: a workspace's Pull requests tab (⌘3) lists the open pull requests of its repositories on GitHub and Bitbucket Cloud, grouped by repository, with filters for what needs your review, yours, others, and drafts. Off per workspace until turned on there.
+- Each repository's Pull requests tab (⌘5) shows its own, the checked-out branch's first, plus merged and closed ones of the last 30 days, and can point a fork at its upstream.
+- Opening a pull request shows its overview and merge checklist, its conversation, the files it changes, its checks, and a side panel with the local checkout and the repository's notes.
+- Files Changed shows each file's diff and marks it viewed; "Since your review" shows what arrived after the commit you last reviewed.
+- Review from Brainiac: comment, reply in a thread, resolve or reopen it, and comment on a line. Line comments stay as drafts until Review Changes sends them with a summary and a verdict.
+- Merge a pull request from its Overview once its checklist is complete. The confirmation names the commit it merges, and nothing is merged if new commits arrived.
+- The sidebar shows how many pull requests wait on your review in each workspace, and opening the workspace from there goes to them.
+- Settings (⌘,) is now a full page, and Back returns to where you were. It also sets the editor, how often repositories refresh and auto-fetch, and how large a diff is shown.
 
 ## [0.2.0] - 2026-10-02
 
