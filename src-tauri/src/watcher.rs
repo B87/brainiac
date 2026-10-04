@@ -17,7 +17,7 @@ use tokio::time::Instant;
 use crate::models::{AppError, AppResult, ChangeOrigin};
 use crate::workspaces::RepositoryService;
 
-/// Debounce window for repository invalidation (SPEC.md, Refresh strategy: ~500 ms).
+/// Debounce window for repository invalidation (docs/architecture.md, Refresh: ~500 ms).
 pub const DEBOUNCE: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Clone)]

@@ -11,6 +11,17 @@ into the release's section.
 
 ## [Unreleased]
 
+- Databases: save connections to SQLite files and PostgreSQL servers, with passwords in the Keychain, and query them in tabs with completion, a fast result grid, an inspector, Explain, Copy, and Export.
+- Connections are read only unless you allow writes; on Production, writes are turned on per tab and run in a transaction you commit or roll back.
+- Saved queries with `:name` parameters, found in ⌘K and run in one step, and a searchable history of what ran on each connection.
+- Health for a PostgreSQL server: connections, sessions, locks, the slowest queries, the largest tables, and memory and CPU from Docker or Google Cloud SQL.
+- Changes lists each untracked file inside a new folder, instead of only the folder.
+- Databases go easier on the server: a schema change in a writable tab gives up after 5 seconds waiting for a lock, Production ends an idle transaction after 5 minutes, and Health pauses while the window is hidden.
+- An account's token or a connection's password can come from a command, such as `gh auth token` or `op read`, or an environment variable, instead of the Keychain.
+- Settings → Secrets shows where each token and password comes from, and lets you allow a restored source, refresh a secret, or retry a Keychain cleanup that failed.
+- Accounts has a Test button that checks a token before you save it.
+- A restored backup no longer reads any token or password until you allow its source.
+
 ## [0.3.1] - 2026-10-03
 
 - New app icon: a white brain on Brainiac blue, with a transparent background.

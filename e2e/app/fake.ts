@@ -6,11 +6,15 @@
  */
 import type {
   AppSnapshot,
+  Cell,
   Comment,
   CommentRequest,
   Conversation,
+  CredentialOwner,
+  DbConnection,
   FolderEntry,
   ForgeAccountSlot,
+  HealthSample,
   ListPullRequestsRequest,
   MergeRequest,
   NoteContent,
@@ -19,15 +23,22 @@ import type {
   PullRequestDiff,
   PullRequestDiffRequest,
   PullRequestList,
+  QueryTab,
   ReplyRequest,
   RepositorySummary,
   ResolveThreadRequest,
   ReviewDraft,
   ReviewDrafts,
+  RunStatementRequest,
+  SaveDbConnectionRequest,
+  SavedQuery,
   SaveForgeAccountRequest,
+  SaveQueryRequest,
   SaveReviewDraftRequest,
   SearchHit,
+  SecretsOverview,
   Settings,
+  StatementRun,
   SubmitReviewRequest,
   Task,
   TaskFields,
@@ -71,6 +82,7 @@ const settings: Settings = {
   fetch_timeout_seconds: 60,
   write_note_ids: true,
   agent_access: "off",
+  query_history: true,
 };
 
 export const repository: RepositorySummary = {
@@ -419,6 +431,47 @@ export class FakeBackend {
     { kind: "github", account: null, keychain_token: false },
     { kind: "bitbucket_cloud", account: null, keychain_token: true },
   ];
+  /** Settings → Secrets, from the accounts and connections. */
+  secrets(): SecretsOverview {
+    const accounts = this.accounts.flatMap((s) =>
+      s.account
+        ? [
+            {
+              owner: { kind: "forge_account", provider: s.kind } as const,
+              label: s.kind === "github" ? "GitHub" : "Bitbucket",
+              destination: `${s.kind === "github" ? "api.github.com" : "api.bitbucket.org"} as ${s.account.login}`,
+              source: s.account.token_source,
+              state: s.account.credential,
+              input_required: false,
+              last_test: null,
+            },
+          ]
+        : [],
+    );
+    const connections = this.dbConnections
+      .filter((c) => c.password.kind !== "none")
+      .map((c) => ({
+        owner: { kind: "db_connection", id: c.id } as const,
+        label: c.name,
+        destination: `${c.host}:${c.port}/${c.database} as ${c.user}`,
+        source: c.password,
+        state: c.credential,
+        input_required: c.password.kind === "ask" && !c.password_ready,
+        last_test: null,
+      }));
+    return {
+      store: "macOS login keychain",
+      entries: [...accounts, ...connections],
+    };
+  }
+
+  credentialOf(owner: CredentialOwner) {
+    if (owner.kind === "forge_account")
+      return this.accounts.find((s) => s.kind === owner.provider)?.account
+        ?.credential;
+    return this.dbConnections.find((c) => c.id === owner.id)?.credential;
+  }
+
   vault: VaultState = {
     vault: null,
     index: {
@@ -603,6 +656,257 @@ export class FakeBackend {
       title: [{ text: title, highlight: false }],
       detail,
       snippet: [],
+    };
+  }
+
+  // --- Databases (v0.4) ---------------------------------------------------
+  dbConnections: DbConnection[] = [];
+  savedQueries: SavedQuery[] = [];
+  queryTabs: QueryTab[] = [];
+  /** Tabs with a transaction open, and how many statements ran in each. */
+  openTransactions = new Map<string, number>();
+
+  private dbConnection(req: SaveDbConnectionRequest): DbConnection {
+    const base = this.dbConnections.find((c) => c.id === req.id);
+    if (
+      base &&
+      req.expected_version !== null &&
+      base.version !== req.expected_version
+    )
+      throw {
+        code: "CONFLICT",
+        message: "This connection was changed since the form opened.",
+        retryable: false,
+        details: null,
+      };
+    if (!req.name.trim())
+      throw {
+        code: "VALIDATION",
+        message: "Name the connection.",
+        retryable: false,
+        details: null,
+      };
+    return {
+      id: base?.id ?? uid("conn"),
+      name: req.name.trim(),
+      kind: req.kind,
+      environment: req.environment,
+      access: req.access,
+      file_path: req.kind === "sqlite" ? req.file_path : null,
+      host: req.kind === "postgres" ? req.host : null,
+      port: req.kind === "postgres" ? (req.port ?? 5432) : null,
+      database: req.kind === "postgres" ? req.database : null,
+      user: req.kind === "postgres" ? req.user : null,
+      tls: req.kind === "postgres" ? req.tls : null,
+      ca_file: req.ca_file,
+      password:
+        req.kind === "postgres" ? req.password_source : { kind: "none" },
+      password_ready: req.password_source.kind !== "ask",
+      credential: {
+        needs_approval: false,
+        pending: null,
+        revision: (base?.credential.revision ?? 0) + 1,
+      },
+      statement_timeout_seconds: req.statement_timeout_seconds,
+      file_size: req.kind === "sqlite" ? 24576 : null,
+      repository_ids: base?.repository_ids ?? [],
+      runs_on: req.runs_on,
+      version: (base?.version ?? 0) + 1,
+    };
+  }
+
+  /** What the fake database answers: rows of invoices, a failure for
+   * `nowhere`, a command for writes, and 5,000 rows for `generate_series`. */
+  private dbRun(req: RunStatementRequest): StatementRun[] {
+    const text = req.text;
+    const statements: { from: number; to: number }[] = [];
+    let start = 0;
+    for (let i = 0; i <= text.length; i += 1) {
+      if (i === text.length || text[i] === ";") {
+        const raw = text.slice(start, i + (i < text.length ? 1 : 0));
+        const lead = raw.length - raw.trimStart().length;
+        if (raw.trim() && raw.trim() !== ";")
+          statements.push({
+            from: start + lead,
+            to: start + raw.trimEnd().length,
+          });
+        start = i + 1;
+      }
+    }
+    const chosen = req.all
+      ? statements
+      : req.from !== req.to
+        ? statements.filter((s) => s.to > req.from && s.from < req.to)
+        : [
+            [...statements].reverse().find((s) => s.from <= req.from) ??
+              statements[0],
+          ].filter(Boolean);
+    const runs: StatementRun[] = [];
+    for (const s of chosen) {
+      const sql = text.slice(s.from, s.to).replace(/;$/, "").trim();
+      const lower = sql.toLowerCase();
+      const tx = this.openTransactions.get(req.tab_id);
+      let result: StatementRun["result"];
+      let ranReadOnly = true;
+      const at = lower.indexOf("nowhere");
+      if (at >= 0) {
+        result = {
+          kind: "failed",
+          failure: {
+            reason: "sql",
+            message: 'relation "nowhere" does not exist',
+            code: "42P01",
+            detail: null,
+            hint: null,
+            position: s.from + at,
+          },
+        };
+      } else if (/^(insert|update|delete)/.test(lower)) {
+        if (req.mode === "read_only") {
+          result = {
+            kind: "failed",
+            failure: {
+              reason: "read_only",
+              message:
+                "This connection is read only: cannot execute INSERT in a read-only transaction.",
+              code: "25006",
+              detail: null,
+              hint: null,
+              position: null,
+            },
+          };
+        } else {
+          ranReadOnly = false;
+          result = {
+            kind: "command",
+            tag: lower.startsWith("insert") ? "INSERT 0 1" : "UPDATE 3",
+          };
+          if (req.mode === "manual")
+            this.openTransactions.set(req.tab_id, (tx ?? 0) + 1);
+        }
+      } else if (req.explain) {
+        result = {
+          kind: "plan",
+          plan: {
+            label: "Seq Scan on invoices",
+            startup_cost: 0,
+            total_cost: 12.5,
+            rows: 3,
+            actual_rows: req.explain === "analyze" ? 3 : null,
+            actual_ms: req.explain === "analyze" ? 0.02 : null,
+            loops: req.explain === "analyze" ? 1 : null,
+            details: ["Filter: (paid_at IS NULL)"],
+            children: [],
+          },
+          planning_ms: 0.1,
+          execution_ms: req.explain === "analyze" ? 0.05 : null,
+        };
+      } else if (lower.includes("generate_series")) {
+        const cap = req.fetch_all ? 5000 : 1000;
+        const rows: Cell[][] = Array.from(
+          { length: Math.min(cap, 5000) },
+          (_, i) => [i + 1],
+        );
+        result = {
+          kind: "rows",
+          columns: [{ name: "n", type_name: "int4", kind: "number" }],
+          rows,
+          more: !req.fetch_all,
+        };
+      } else {
+        const days = req.parameters.find((p) => p.name === "days")?.value;
+        result = {
+          kind: "rows",
+          columns: [
+            { name: "id", type_name: "int4", kind: "number" },
+            { name: "email", type_name: "text", kind: "text" },
+            { name: "amount", type_name: "numeric", kind: "numeric" },
+            { name: "metadata", type_name: "jsonb", kind: "json" },
+          ],
+          rows: [
+            [917, "a@example.com", "120.00", '{"tier": "gold"}'],
+            [921, "b@example.com", "80.50", null],
+            [930, days ? `overdue ${days} days` : "NULL", "5.00", "{}"],
+          ],
+          more: false,
+        };
+      }
+      const open = this.openTransactions.get(req.tab_id);
+      runs.push({
+        from: s.from,
+        to: s.to,
+        sql,
+        result,
+        elapsed_ms: 18,
+        reconnected: false,
+        ran_read_only: ranReadOnly,
+        transaction:
+          open !== undefined
+            ? { statements: open, since: NOW, failed: false }
+            : null,
+      });
+      if (result.kind === "failed") break;
+    }
+    return runs;
+  }
+
+  healthSample(connectionId: string): HealthSample {
+    return {
+      connection_id: connectionId,
+      at: NOW,
+      max_connections: 100,
+      active: 3,
+      idle: 30,
+      idle_in_transaction: 1,
+      total_connections: 34,
+      cache_hit_ratio: 0.993,
+      transactions_per_second: 41.2,
+      rollbacks_per_second: 0.1,
+      deadlocks: 0,
+      temp_files_hour: 2,
+      longest_transaction_seconds: 125,
+      sessions: [
+        {
+          pid: 4242,
+          user: "app",
+          application: "billing-worker",
+          client: "10.0.0.5",
+          state: "idle in transaction",
+          state_seconds: 125,
+          transaction_seconds: 130,
+          wait: null,
+          blocked_by: [],
+          query: "update invoices set paid_at = now() where id = $1",
+          own: false,
+        },
+        {
+          pid: 4300,
+          user: "report",
+          application: "metabase",
+          client: "10.0.0.9",
+          state: "active",
+          state_seconds: 12,
+          transaction_seconds: 12,
+          wait: "Lock: transactionid",
+          blocked_by: [4242],
+          query: "select count(*) from invoices",
+          own: false,
+        },
+      ],
+      statements: null,
+      tables: [
+        {
+          schema: "public",
+          name: "invoices",
+          total_bytes: 52428800,
+          live_rows: 48000,
+          dead_ratio: 0.04,
+          last_autovacuum: NOW,
+        },
+      ],
+      sees_all: true,
+      machine: null,
+      problem: null,
     };
   }
 
@@ -1131,12 +1435,41 @@ export class FakeBackend {
           read_only: missing.length > 0,
           missing,
           checked_at: NOW,
+          token_source: req.source,
+          credential: { needs_approval: false, pending: null, revision: 1 },
         } as const;
         this.accounts = this.accounts.map((s) =>
           s.kind === req.kind ? { ...s, account, keychain_token: false } : s,
         );
-        return { outcome: "saved", account };
+        return { outcome: "saved", account, warning: null };
       }
+      case "test_forge_account": {
+        const req = args.request as SaveForgeAccountRequest;
+        const bitbucket = req.kind === "bitbucket_cloud";
+        return {
+          login: bitbucket ? "jo" : "octo",
+          missing: bitbucket ? ["write:pullrequest:bitbucket"] : [],
+        };
+      }
+      case "list_secrets":
+        return this.secrets();
+      case "approve_secret_source": {
+        const owner = args.owner as CredentialOwner;
+        const credential = this.credentialOf(owner);
+        if (credential) credential.needs_approval = false;
+        return this.secrets();
+      }
+      case "refresh_credential":
+        return null;
+      case "retry_credential_cleanup": {
+        const credential = this.credentialOf(args.owner as CredentialOwner);
+        if (credential) credential.pending = null;
+        return this.secrets();
+      }
+      case "find_secret_program":
+        return String(args.name).startsWith("/")
+          ? args.name
+          : `/opt/homebrew/bin/${args.name}`;
       case "remove_forge_account":
         this.accounts = this.accounts.map((s) =>
           s.kind === args.kind
@@ -1267,12 +1600,166 @@ export class FakeBackend {
       case "open_repository":
       case "set_repository_tab":
         return null;
+      case "list_db_connections":
+        return this.dbConnections;
+      case "save_db_connection": {
+        const c = this.dbConnection(args.request as SaveDbConnectionRequest);
+        this.dbConnections = [
+          ...this.dbConnections.filter((x) => x.id !== c.id),
+          c,
+        ].sort((a, b) => a.name.localeCompare(b.name));
+        return c;
+      }
+      case "delete_db_connection":
+        this.dbConnections = this.dbConnections.filter((c) => c.id !== args.id);
+        return null;
+      case "test_db_connection":
+        return { server_version: "PostgreSQL 16.4" };
+      case "parse_db_url": {
+        const m =
+          /^postgres(?:ql)?:\/\/(?:([^:@]+)(?::([^@]*))?@)?([^:/]+)(?::(\d+))?\/?([^?]*)/.exec(
+            String(args.url),
+          );
+        return {
+          host: m?.[3] ?? null,
+          port: m?.[4] ? Number(m[4]) : null,
+          database: m?.[5] || null,
+          user: m?.[1] ?? null,
+          password: m?.[2] ?? null,
+          tls: null,
+        };
+      }
+      case "unlock_db_connection": {
+        const c = this.dbConnections.find((x) => x.id === args.id);
+        if (c) c.password_ready = true;
+        return c;
+      }
+      case "get_db_schema":
+        return {
+          connection_id: args.connectionId,
+          default_schema: "public",
+          read_at: NOW,
+          schemas: [
+            {
+              name: "public",
+              relations: ["customers", "invoices"].map((name) => ({
+                name,
+                kind: "table",
+                estimated_rows: name === "invoices" ? 48000 : 12000,
+                columns: [
+                  {
+                    name: "id",
+                    type_name: "integer",
+                    nullable: false,
+                    default: null,
+                    primary_key: true,
+                  },
+                  {
+                    name: "email",
+                    type_name: "text",
+                    nullable: true,
+                    default: null,
+                    primary_key: false,
+                  },
+                ],
+                indexes: [
+                  {
+                    name: `${name}_pkey`,
+                    definition: "",
+                    unique: true,
+                    primary: true,
+                  },
+                ],
+                foreign_keys: [],
+              })),
+            },
+          ],
+        };
+      case "statement_parameters": {
+        const req = args.request as RunStatementRequest;
+        return [
+          ...new Set(
+            [...req.text.matchAll(/(?<!:):([a-z_]\w*)/g)].map((m) => m[1]),
+          ),
+        ];
+      }
+      case "run_statement":
+        return this.dbRun(args.request as RunStatementRequest);
+      case "end_transaction":
+        this.openTransactions.delete(String(args.tabId));
+        return null;
+      case "open_db_transactions":
+        return [...this.openTransactions.keys()];
+      case "cancel_statement":
+      case "close_db_session":
+      case "stop_db_health":
+      case "clear_query_history":
+        return null;
+      case "export_result":
+        return { rows: 3, path: (args.request as { path: string }).path };
+      case "list_saved_queries":
+        return this.savedQueries;
+      case "save_query": {
+        const req = args.request as SaveQueryRequest;
+        const base = this.savedQueries.find((q) => q.id === req.id);
+        const q: SavedQuery = {
+          id: base?.id ?? uid("query"),
+          name: req.name.trim(),
+          folder: req.folder.trim(),
+          description: req.description,
+          connection_id: req.connection_id,
+          sql: req.sql,
+          parameters: base?.parameters ?? [],
+          version: (base?.version ?? 0) + 1,
+          updated_at: NOW,
+        };
+        this.savedQueries = [
+          ...this.savedQueries.filter((x) => x.id !== q.id),
+          q,
+        ];
+        return q;
+      }
+      case "delete_query":
+        this.savedQueries = this.savedQueries.filter((q) => q.id !== args.id);
+        return null;
+      case "remember_query_parameters": {
+        const q = this.savedQueries.find((x) => x.id === args.id);
+        if (q) q.parameters = args.values as SavedQuery["parameters"];
+        return q;
+      }
+      case "query_history":
+        return [];
+      case "list_query_tabs":
+        return this.queryTabs;
+      case "save_query_tabs":
+        this.queryTabs = args.tabs as QueryTab[];
+        return null;
+      case "start_db_health":
+        return {
+          points: [],
+          latest: this.healthSample(String(args.connectionId)),
+        };
+      case "signal_db_backend":
+        return true;
+      case "list_docker_containers":
+        return { socket: "/var/run/docker.sock", containers: [] };
       case "plugin:dialog|open":
       case "plugin:dialog|save":
         return this.nextPick;
       case "plugin:dialog|ask":
       case "plugin:dialog|confirm":
         return this.nextAsk;
+      case "plugin:dialog|message": {
+        // `ask` with its own labels answers with the label of the button pressed.
+        const buttons = args.buttons as
+          | { OkCancelCustom?: [string, string] }
+          | string
+          | undefined;
+        const custom =
+          typeof buttons === "object" ? buttons.OkCancelCustom : undefined;
+        if (custom) return this.nextAsk ? custom[0] : custom[1];
+        return this.nextAsk ? "Yes" : "No";
+      }
       case "plugin:updater|check":
         return null;
       default:

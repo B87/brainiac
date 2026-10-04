@@ -3,6 +3,8 @@
 pub mod activity;
 pub mod backup;
 pub mod commands;
+pub mod credentials;
+pub mod databases;
 pub mod db;
 pub mod fetcher;
 pub mod forge;
@@ -11,6 +13,7 @@ pub mod index;
 pub mod mcp;
 pub mod models;
 pub mod notes;
+pub mod secrets;
 pub mod tasks;
 pub mod vault;
 pub mod watcher;
@@ -35,6 +38,7 @@ pub const EVENT_NOTE_MISSING: &str = "note_missing";
 pub const EVENT_TASK_CHANGED: &str = "task_changed";
 pub const EVENT_INDEX_STATUS_CHANGED: &str = "index_status_changed";
 pub const EVENT_PR_CHANGED: &str = "pr_changed";
+pub const EVENT_DB_HEALTH_SAMPLE: &str = "db_health_sample";
 
 /// Minimum age of a vault scan before focus or wake triggers another.
 const VAULT_ACTIVATION_MIN_AGE: Duration = Duration::from_secs(30);
@@ -117,10 +121,18 @@ pub fn run() {
             }));
             app.manage(Arc::clone(&service));
 
+            // --- Secrets (v0.4.x) -------------------------------------------
+            // One credentials layer for account tokens and database
+            // passwords; the store is chosen here, by target.
+            let credentials = Arc::new(credentials::CredentialService::new(
+                Arc::new(credentials::MacStore),
+                credentials::CommandRunner::new(data_dir.join("secret-commands")),
+            ));
+
             // --- Pull request accounts (v0.3) -------------------------------
             let accounts = forge::AccountService::new(
                 db.clone(),
-                Arc::new(forge::keychain::MacKeychain),
+                Arc::clone(&credentials),
                 forge::http::Http::new()?,
                 forge::Endpoints::production(),
             );
@@ -142,7 +154,7 @@ pub fn run() {
             });
             let pull_requests = Arc::new(forge::PullRequestService::new(
                 Arc::clone(&service),
-                accounts,
+                Arc::clone(&accounts),
                 db.clone(),
                 forge_cache,
                 forge::http::Http::new()?,
@@ -177,6 +189,42 @@ pub fn run() {
                     return Ok(());
                 }
             };
+            // --- Databases (v0.4) --------------------------------------------
+            let connections = Arc::new(databases::ConnectionService::new(
+                stores.core.clone(),
+                Arc::clone(&credentials),
+            ));
+            app.manage(Arc::new(secrets::SecretsService::new(
+                credentials,
+                accounts,
+                Arc::clone(&connections),
+            )));
+            let health_handle = handle.clone();
+            let health_emitter: databases::health::HealthEmitter = Arc::new(move |event| {
+                if let Err(e) = health_handle.emit(EVENT_DB_HEALTH_SAMPLE, &event) {
+                    tracing::warn!(error = %e, "failed to emit db_health_sample");
+                }
+            });
+            app.manage(Arc::new(databases::health::HealthService::new(
+                Arc::clone(&connections),
+                health_emitter,
+                databases::health::GoogleConfig::production(),
+            )));
+            let query_sessions = Arc::new(
+                databases::QuerySessions::new(connections)
+                    .with_history(databases::history::QueryHistory::new(stores.history.clone()), settings.query_history),
+            );
+            app.manage(Arc::new(databases::SavedQueryService::new(stores.core.clone())));
+            app.manage(Arc::clone(&query_sessions));
+            // Idle sessions close after ten minutes (SPEC.md, Databases).
+            tauri::async_runtime::spawn(async move {
+                let mut ticker = tokio::time::interval(SCHEDULE_TICK);
+                loop {
+                    ticker.tick().await;
+                    query_sessions.close_idle(databases::sessions::IDLE_CLOSE);
+                }
+            });
+
             let knowledge_handle = handle.clone();
             let knowledge_emitter: notes::KnowledgeEmitter = Arc::new(move |event: KnowledgeEvent| {
                 let sent = match &event {
@@ -264,7 +312,11 @@ pub fn run() {
             // --- Native menu -------------------------------------------------
             build_menu(app)?;
             let menu_handle = handle.clone();
-            app.on_menu_event(move |_app, event| {
+            app.on_menu_event(move |app, event| {
+                if event.id().0 == "quit" {
+                    quit(app);
+                    return;
+                }
                 let _ = menu_handle.emit(EVENT_MENU, MenuEvent { id: event.id().0.clone() });
             });
 
@@ -362,6 +414,12 @@ pub fn run() {
             commands::list_forge_accounts,
             commands::save_forge_account,
             commands::remove_forge_account,
+            commands::test_forge_account,
+            commands::list_secrets,
+            commands::approve_secret_source,
+            commands::refresh_credential,
+            commands::retry_credential_cleanup,
+            commands::find_secret_program,
             commands::set_repository_forge,
             commands::update_workspace_pull_requests,
             commands::list_pull_requests,
@@ -382,6 +440,33 @@ pub fn run() {
             commands::get_merge_options,
             commands::merge_pull_request,
             commands::get_review_counts,
+            commands::list_db_connections,
+            commands::save_db_connection,
+            commands::delete_db_connection,
+            commands::test_db_connection,
+            commands::parse_db_url,
+            commands::unlock_db_connection,
+            commands::get_db_schema,
+            commands::run_statement,
+            commands::cancel_statement,
+            commands::close_db_session,
+            commands::link_db_connection,
+            commands::statement_parameters,
+            commands::end_transaction,
+            commands::export_result,
+            commands::open_db_transactions,
+            commands::list_saved_queries,
+            commands::save_query,
+            commands::delete_query,
+            commands::remember_query_parameters,
+            commands::query_history,
+            commands::clear_query_history,
+            commands::list_query_tabs,
+            commands::save_query_tabs,
+            commands::start_db_health,
+            commands::stop_db_health,
+            commands::signal_db_backend,
+            commands::list_docker_containers,
         ])
         .build(context)
         .expect("error while running Brainiac")
@@ -390,8 +475,44 @@ pub fn run() {
                 if let Some(agent) = app.try_state::<commands::Agent>() {
                     agent.close();
                 }
+                // End database sessions cleanly, so servers see Brainiac
+                // leave rather than a socket that went away.
+                let sessions = app
+                    .try_state::<Arc<databases::QuerySessions>>()
+                    .map(|s| Arc::clone(&s));
+                let health = app
+                    .try_state::<Arc<databases::health::HealthService>>()
+                    .map(|s| Arc::clone(&s));
+                tauri::async_runtime::block_on(async {
+                    let close = async {
+                        if let Some(sessions) = sessions {
+                            sessions.close_all().await;
+                        }
+                        if let Some(health) = health {
+                            health.close_all().await;
+                        }
+                    };
+                    let _ = tokio::time::timeout(Duration::from_secs(1), close).await;
+                });
             }
         });
+}
+
+/// Quit (⌘Q) closes the window, whose close guards save unsaved notes and
+/// ask before rolling back open transactions (SPEC.md, Databases: Safety);
+/// closing the last window quits. The standard Quit item would end the app
+/// without asking, so the menu has its own.
+fn quit(app: &tauri::AppHandle) {
+    match app.webview_windows().into_values().next() {
+        Some(window) => {
+            if let Err(e) = window.close() {
+                tracing::warn!(error = %e, "could not close the window to quit");
+                app.exit(0);
+            }
+        }
+        // Startup failed and only its error dialog showed.
+        None => app.exit(0),
+    }
 }
 
 /// Image types Live Preview shows from the vault.
@@ -546,6 +667,7 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
     let show_today = MenuItem::with_id(app, "show_today", "Today", true, None::<&str>)?;
     let show_tasks = MenuItem::with_id(app, "show_tasks", "Tasks", true, None::<&str>)?;
     let show_notes = MenuItem::with_id(app, "show_notes", "Notes", true, None::<&str>)?;
+    let show_databases = MenuItem::with_id(app, "show_databases", "Databases", true, None::<&str>)?;
     let check_updates = MenuItem::with_id(
         app,
         "check_updates",
@@ -570,7 +692,7 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
             &PredefinedMenuItem::hide_others(app, None)?,
             &PredefinedMenuItem::show_all(app, None)?,
             &PredefinedMenuItem::separator(app)?,
-            &PredefinedMenuItem::quit(app, None)?,
+            &MenuItem::with_id(app, "quit", "Quit Brainiac", true, Some("CmdOrCtrl+Q"))?,
         ],
     )?;
     let file = Submenu::with_items(
@@ -612,6 +734,7 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
             &show_today,
             &show_tasks,
             &show_notes,
+            &show_databases,
             &PredefinedMenuItem::separator(app)?,
             &refresh,
             &fetch,

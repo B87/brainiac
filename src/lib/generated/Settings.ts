@@ -16,4 +16,9 @@ write_note_ids: boolean,
 /**
  * What agents connected through `brainiac mcp` may do (SPEC.md, Agent access).
  */
-agent_access: AgentAccess, };
+agent_access: AgentAccess, 
+/**
+ * Keep a history of the statements run on database connections
+ * (SPEC.md, Databases: History).
+ */
+query_history: boolean, };

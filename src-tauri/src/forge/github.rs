@@ -11,9 +11,9 @@ use super::adapter::{
     GITHUB_CONTENTS_WRITE, GITHUB_PULL_REQUESTS_WRITE,
 };
 use super::http::{unexpected, Auth, Http, Response};
-use super::keychain::Token;
 use super::markdown;
 use super::{ForgeRepository, PullRequestRef};
+use crate::credentials::Token;
 use crate::models::{
     ActionAvailability, AppError, AppResult, ChangedFile, ChangedFileStatus, Check, CheckState,
     Comment, DiffSide, ErrorCode, ForgeKind, ForgeTokenKind, ForgeUser, MergeMethod, MergeOptions,
@@ -57,7 +57,7 @@ fn interpret_user(response: &Response, token: &Token) -> AppResult<AccountCheck>
         200 => {}
         401 => {
             return Err(AppError::new(
-                ErrorCode::PermissionDenied,
+                ErrorCode::Unauthenticated,
                 "GitHub did not accept this token. It may have expired, been revoked, or been copied only in part.",
             ))
         }

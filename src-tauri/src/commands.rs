@@ -331,10 +331,12 @@ pub async fn update_settings(
     service: State<'_, Service>,
     notes: State<'_, Notes>,
     agent: State<'_, Agent>,
+    databases: State<'_, Databases>,
 ) -> AppResult<crate::models::Settings> {
     let saved = service.update_settings(settings).await?;
     notes.set_write_note_ids(saved.write_note_ids);
     agent.set_access(saved.agent_access);
+    databases.set_history(saved.query_history);
     Ok(saved)
 }
 
@@ -701,6 +703,64 @@ pub async fn remove_forge_account(
     accounts.remove(kind).await
 }
 
+/// Test on an account's form: check the form's token without saving it.
+#[tauri::command]
+pub async fn test_forge_account(
+    request: SaveForgeAccountRequest,
+    accounts: State<'_, Accounts>,
+) -> AppResult<crate::models::ForgeAccountTestResult> {
+    accounts.test(request).await
+}
+
+// v0.4.x: where secrets come from (SPEC.md, Secrets).
+
+pub type Secrets = Arc<crate::secrets::SecretsService>;
+
+/// Settings → Secrets. Reads no secret and runs no program.
+#[tauri::command]
+pub async fn list_secrets(
+    secrets: State<'_, Secrets>,
+) -> AppResult<crate::models::SecretsOverview> {
+    secrets.overview().await
+}
+
+/// **Allow This Source**: confirm a restored source at the revision shown.
+#[tauri::command]
+pub async fn approve_secret_source(
+    owner: crate::models::CredentialOwner,
+    revision: i64,
+    secrets: State<'_, Secrets>,
+) -> AppResult<crate::models::SecretsOverview> {
+    secrets.approve(&owner, revision).await?;
+    secrets.overview().await
+}
+
+/// **Refresh**: forget the secret kept for this run, so it is read or asked for again.
+#[tauri::command]
+pub async fn refresh_credential(
+    owner: crate::models::CredentialOwner,
+    secrets: State<'_, Secrets>,
+) -> AppResult<()> {
+    secrets.refresh(&owner);
+    Ok(())
+}
+
+/// **Retry** a cleanup or removal of a Keychain item that did not finish.
+#[tauri::command]
+pub async fn retry_credential_cleanup(
+    owner: crate::models::CredentialOwner,
+    secrets: State<'_, Secrets>,
+) -> AppResult<crate::models::SecretsOverview> {
+    secrets.retry(&owner).await?;
+    secrets.overview().await
+}
+
+/// **Find…** on a command source: the full path of a program, by name.
+#[tauri::command]
+pub async fn find_secret_program(name: String) -> AppResult<String> {
+    crate::credentials::find_program(&name).map(|p| p.display().to_string())
+}
+
 /// Repository → Pull requests, **Change…**: where a repository's pull requests come from.
 #[tauri::command]
 pub async fn set_repository_forge(
@@ -883,4 +943,268 @@ pub async fn get_pull_request_checks(
     pull_requests: State<'_, PullRequests>,
 ) -> AppResult<PullRequestChecks> {
     pull_requests.checks(&reference, max_age_seconds).await
+}
+
+// Databases (v0.4, SPEC.md section 11): connections, schema, and read-only
+// statements in a session per tab.
+
+pub type Databases = Arc<crate::databases::QuerySessions>;
+
+#[tauri::command]
+pub async fn list_db_connections(
+    databases: State<'_, Databases>,
+) -> AppResult<Vec<crate::models::DbConnection>> {
+    databases.connections().list().await
+}
+
+#[tauri::command]
+pub async fn save_db_connection(
+    request: crate::models::SaveDbConnectionRequest,
+    databases: State<'_, Databases>,
+) -> AppResult<crate::models::DbConnection> {
+    databases.connections().save(request).await
+}
+
+#[tauri::command]
+pub async fn delete_db_connection(
+    id: String,
+    expected_version: i64,
+    databases: State<'_, Databases>,
+    health: State<'_, Health>,
+) -> AppResult<()> {
+    let deleted = databases.connections().delete(&id, expected_version).await;
+    // Once the connection is gone or being removed, its sessions and Health
+    // go too, even when the Keychain could not remove the password.
+    if deleted.is_ok() || databases.connections().is_removed(&id).await {
+        databases.close_connection(&id);
+        health.forget(&id);
+    }
+    deleted
+}
+
+/// Test Connection: connect once with the form's fields.
+#[tauri::command]
+pub async fn test_db_connection(
+    request: crate::models::SaveDbConnectionRequest,
+    databases: State<'_, Databases>,
+) -> AppResult<crate::models::DbTestResult> {
+    databases.connections().test(request).await
+}
+
+/// The fields of a pasted `postgres://` URL.
+#[tauri::command]
+pub async fn parse_db_url(url: String) -> AppResult<crate::models::DbUrlFields> {
+    crate::databases::connections::parse_url(&url)
+}
+
+/// The password of a connection that asks for it, kept for this run.
+#[tauri::command]
+pub async fn unlock_db_connection(
+    id: String,
+    password: String,
+    expected_version: i64,
+    databases: State<'_, Databases>,
+) -> AppResult<crate::models::DbConnection> {
+    databases
+        .connections()
+        .unlock(&id, &password, expected_version)
+        .await
+}
+
+#[tauri::command]
+pub async fn get_db_schema(
+    connection_id: String,
+    refresh: bool,
+    databases: State<'_, Databases>,
+) -> AppResult<crate::models::DbSchema> {
+    databases.schema(&connection_id, refresh).await
+}
+
+/// Run (`Cmd+Enter`) and Run All (`Shift+Cmd+Enter`), read only.
+#[tauri::command]
+pub async fn run_statement(
+    request: crate::models::RunStatementRequest,
+    databases: State<'_, Databases>,
+) -> AppResult<Vec<crate::models::StatementRun>> {
+    databases.run(request).await
+}
+
+/// Cancel (`Cmd+.`) the statement a tab is running.
+#[tauri::command]
+pub async fn cancel_statement(tab_id: String, databases: State<'_, Databases>) -> AppResult<()> {
+    databases.cancel(&tab_id).await;
+    Ok(())
+}
+
+/// Close a tab's session when the tab closes.
+#[tauri::command]
+pub async fn close_db_session(tab_id: String, databases: State<'_, Databases>) -> AppResult<()> {
+    databases.close(&tab_id);
+    Ok(())
+}
+
+/// Link a connection to a repository, or unlink it.
+#[tauri::command]
+pub async fn link_db_connection(
+    connection_id: String,
+    repository_id: String,
+    linked: bool,
+    databases: State<'_, Databases>,
+) -> AppResult<crate::models::DbConnection> {
+    databases
+        .connections()
+        .link(&connection_id, &repository_id, linked)
+        .await
+}
+
+/// The `:name` parameters a run would ask for.
+#[tauri::command]
+pub async fn statement_parameters(
+    request: crate::models::RunStatementRequest,
+    databases: State<'_, Databases>,
+) -> AppResult<Vec<String>> {
+    databases.parameters(&request).await
+}
+
+/// Commit or Roll Back a tab's transaction.
+#[tauri::command]
+pub async fn end_transaction(
+    tab_id: String,
+    commit: bool,
+    databases: State<'_, Databases>,
+) -> AppResult<()> {
+    databases.end_transaction(&tab_id, commit).await
+}
+
+/// Export…: every row of a statement, run again read only, to a file.
+#[tauri::command]
+pub async fn export_result(
+    request: crate::models::ExportRequest,
+    databases: State<'_, Databases>,
+) -> AppResult<crate::models::DbExportResult> {
+    databases.export(request).await
+}
+
+/// The query tabs with a transaction open, which the window asks about
+/// before it closes (SPEC.md, Databases: Safety).
+#[tauri::command]
+pub fn open_db_transactions(databases: State<'_, Databases>) -> Vec<String> {
+    databases.open_transactions()
+}
+
+pub type SavedQueries = Arc<crate::databases::SavedQueryService>;
+
+#[tauri::command]
+pub async fn list_saved_queries(
+    queries: State<'_, SavedQueries>,
+) -> AppResult<Vec<crate::models::SavedQuery>> {
+    queries.list().await
+}
+
+#[tauri::command]
+pub async fn save_query(
+    request: crate::models::SaveQueryRequest,
+    queries: State<'_, SavedQueries>,
+) -> AppResult<crate::models::SavedQuery> {
+    queries.save(request).await
+}
+
+#[tauri::command]
+pub async fn delete_query(
+    id: String,
+    expected_version: i64,
+    queries: State<'_, SavedQueries>,
+) -> AppResult<()> {
+    queries.delete(&id, expected_version).await
+}
+
+/// Keep the parameter values a saved query last ran with.
+#[tauri::command]
+pub async fn remember_query_parameters(
+    id: String,
+    values: Vec<crate::models::ParamValue>,
+    queries: State<'_, SavedQueries>,
+) -> AppResult<crate::models::SavedQuery> {
+    queries.remember_parameters(&id, values).await
+}
+
+fn history_store(databases: &Databases) -> AppResult<&crate::databases::history::QueryHistory> {
+    databases
+        .history()
+        .ok_or_else(|| crate::models::AppError::io("The history is not available."))
+}
+
+#[tauri::command]
+pub async fn query_history(
+    connection_id: String,
+    search: String,
+    offset: u32,
+    limit: u32,
+    databases: State<'_, Databases>,
+) -> AppResult<Vec<crate::models::HistoryEntry>> {
+    history_store(&databases)?
+        .list(&connection_id, &search, offset, limit)
+        .await
+}
+
+#[tauri::command]
+pub async fn clear_query_history(
+    connection_id: String,
+    databases: State<'_, Databases>,
+) -> AppResult<()> {
+    history_store(&databases)?.clear(&connection_id).await
+}
+
+/// The query tabs open when Brainiac quit, with their text.
+#[tauri::command]
+pub async fn list_query_tabs(
+    databases: State<'_, Databases>,
+) -> AppResult<Vec<crate::models::QueryTab>> {
+    history_store(&databases)?.tabs().await
+}
+
+#[tauri::command]
+pub async fn save_query_tabs(
+    tabs: Vec<crate::models::QueryTab>,
+    databases: State<'_, Databases>,
+) -> AppResult<()> {
+    history_store(&databases)?.save_tabs(tabs).await
+}
+
+pub type Health = Arc<crate::databases::health::HealthService>;
+
+/// Health became visible: sample every 10 seconds; returns the hour so far.
+#[tauri::command]
+pub async fn start_db_health(
+    connection_id: String,
+    health: State<'_, Health>,
+) -> AppResult<crate::models::HealthSnapshot> {
+    health.inner().start(&connection_id).await
+}
+
+/// Health was hidden or closed.
+#[tauri::command]
+pub async fn stop_db_health(connection_id: String, health: State<'_, Health>) -> AppResult<()> {
+    health.stop(&connection_id);
+    Ok(())
+}
+
+/// Cancel Query (`terminate` false) or End Session (`terminate` true) on a
+/// server session, after the window asked.
+#[tauri::command]
+pub async fn signal_db_backend(
+    connection_id: String,
+    pid: i32,
+    terminate: bool,
+    health: State<'_, Health>,
+) -> AppResult<bool> {
+    health.signal_backend(&connection_id, pid, terminate).await
+}
+
+/// Running Docker containers, for a connection's Runs on.
+#[tauri::command]
+pub async fn list_docker_containers(
+    socket: Option<String>,
+) -> AppResult<crate::models::DockerContainers> {
+    crate::databases::health::list_containers(socket.as_deref()).await
 }

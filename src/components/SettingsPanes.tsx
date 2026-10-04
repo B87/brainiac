@@ -24,6 +24,7 @@ import {
   parseInRange,
 } from "../lib/settings";
 import AccountsSection from "./AccountsSection";
+import SecretsSection from "./SecretsSection";
 import type { SaveSettings } from "./SettingsPage";
 import VaultSetup from "./VaultSetup";
 
@@ -115,7 +116,7 @@ function CommitField<T>({
 
   return (
     <div className="settings-row">
-      <div className="flex min-w-[220px] flex-1 flex-col gap-0.5">
+      <div className="flex min-w-55 flex-1 flex-col gap-0.5">
         <label htmlFor={id} className="font-medium">
           {label}
         </label>
@@ -330,7 +331,7 @@ export function NotesPane({
             )}
           </div>
           <div className="settings-row">
-            <div className="flex min-w-[220px] flex-1 flex-col gap-0.5">
+            <div className="flex min-w-55 flex-1 flex-col gap-0.5">
               <span className="font-medium">
                 {vault?.vault ? "Use another folder" : "Choose a vault"}
               </span>
@@ -346,7 +347,7 @@ export function NotesPane({
       <Group label="Note identity">
         <div className="settings-group">
           <label className="settings-row">
-            <span className="flex min-w-[220px] flex-1 flex-col gap-0.5">
+            <span className="flex min-w-55 flex-1 flex-col gap-0.5">
               <span className="font-medium">
                 Write <span className="mono">brainiac_id</span> into a note when
                 it first gets a task or a repository link
@@ -485,16 +486,77 @@ export function RepositoriesPane({
   );
 }
 
+export function DatabasesPane({
+  settings,
+  save,
+}: {
+  settings: Settings;
+  save: SaveSettings;
+}) {
+  return (
+    <>
+      <Lede>
+        Connections are added and edited from Databases. Passwords stay in the
+        Keychain or come from a source in Settings → Secrets; results stay in
+        memory until their tab closes.
+      </Lede>
+      <Group label="History">
+        <div className="settings-group">
+          <label className="settings-row">
+            <span className="flex min-w-55 flex-1 flex-col gap-0.5">
+              <span className="font-medium">
+                Keep a history of the statements run
+              </span>
+              <Hint>
+                The SQL, the connection, when, how long, and the row count or
+                error: never the rows. 90 days or 10,000 runs per connection.
+                Each connection's history can be cleared from its side panel.
+              </Hint>
+            </span>
+            <input
+              type="checkbox"
+              role="switch"
+              className="switch"
+              aria-checked={settings.query_history}
+              checked={settings.query_history}
+              onChange={(e) => void save({ query_history: e.target.checked })}
+            />
+          </label>
+        </div>
+      </Group>
+    </>
+  );
+}
+
 export function AccountsPane({ onChanged }: { onChanged: () => void }) {
   return (
     <>
       <Lede>
-        For pull requests on GitHub and Bitbucket Cloud. Tokens are kept in the
-        macOS Keychain and sent only to the service they belong to.
+        For pull requests on GitHub and Bitbucket Cloud. A token is kept in the
+        macOS Keychain, or read from a command such as{" "}
+        <span className="mono">gh auth token</span> or an environment variable,
+        and sent only to the service it belongs to.
       </Lede>
       <AccountsSection onChanged={onChanged} />
       <Hint>
         Pull requests stay off in each workspace until it turns them on.
+      </Hint>
+    </>
+  );
+}
+
+export function SecretsPane() {
+  return (
+    <>
+      <Lede>
+        Where each account's token and each connection's password comes from,
+        and what needs your attention. Change a source where it is entered: in
+        Accounts, or in the connection's Edit Connection….
+      </Lede>
+      <SecretsSection />
+      <Hint>
+        Brainiac keeps a secret it read for as long as it runs. Refresh forgets
+        it, so it is read, or asked for, again when next used.
       </Hint>
     </>
   );
@@ -644,7 +706,7 @@ export function BackupPane({
       </Lede>
       <div className="settings-group">
         <div className="settings-row">
-          <div className="flex min-w-[220px] flex-1 flex-col gap-0.5">
+          <div className="flex min-w-55 flex-1 flex-col gap-0.5">
             <span className="font-medium">Export</span>
             <Hint>The File menu has these too.</Hint>
           </div>

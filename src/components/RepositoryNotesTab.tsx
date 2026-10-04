@@ -17,6 +17,7 @@ import { createLatest } from "../lib/stale";
 import { localDate } from "../lib/tasks";
 import { LinkIcon, NoteIcon, PlusIcon } from "./icons";
 import { NoteEditor } from "./NoteEditor";
+import RepositoryDatabases from "./RepositoryDatabases";
 import TaskRow from "./TaskRow";
 import { toggleTask } from "./TasksView";
 
@@ -33,6 +34,7 @@ export default function RepositoryNotesTab({
   onNewNote,
   onEditTask,
   onError,
+  onNewQuery,
 }: {
   repository: RepositorySummary;
   snapshot: AppSnapshot;
@@ -41,6 +43,8 @@ export default function RepositoryNotesTab({
   onNewNote: () => void;
   onEditTask: (task: Task) => void;
   onError: (message: string | null) => void;
+  /** A new query tab on a connection linked to the repository (v0.4). */
+  onNewQuery: (connectionId: string) => void;
 }) {
   const [data, setData] = useState<RepositoryNotes | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -184,6 +188,11 @@ export default function RepositoryNotesTab({
               {data.suggested.map(noteRow)}
             </>
           )}
+          <RepositoryDatabases
+            repository={repository}
+            onNewQuery={onNewQuery}
+            onError={onError}
+          />
         </div>
       </div>
       <div className="flex min-w-0 flex-1 flex-col">

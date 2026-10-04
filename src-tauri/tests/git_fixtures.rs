@@ -150,6 +150,30 @@ async fn status_reports_staged_unstaged_and_untracked_separately() {
         .map(|e| e.group)
         .collect();
     assert!(b.contains(&ChangeGroup::Staged) && b.contains(&ChangeGroup::Unstaged));
+
+    // A new folder lists its files; a nested repository stays one entry.
+    write(&repo, "fresh/one.txt", "1\n");
+    write(&repo, "fresh/deeper/two.txt", "2\n");
+    let nested = repo.join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    fixture_repo(&nested);
+    let s = g.status(&repo).await.unwrap();
+    let mut untracked: Vec<_> = s
+        .entries
+        .iter()
+        .filter(|e| e.group == ChangeGroup::Untracked)
+        .map(|e| e.path.as_str())
+        .collect();
+    untracked.sort_unstable();
+    assert_eq!(
+        untracked,
+        [
+            "fresh/deeper/two.txt",
+            "fresh/one.txt",
+            "nested/",
+            "new.txt"
+        ]
+    );
 }
 
 #[tokio::test]

@@ -96,6 +96,17 @@
   --av4-fg: #5b3aa8;
   --av5-bg: #e0f2f4;
   --av5-fg: #1d6670;
+
+  /* Databases: SQL highlighting and the environment of a connection. */
+  --sql-keyword: #8a2bb0;
+  --sql-string: #1a7f45;
+  --sql-number: #2453a8;
+  --sql-type: #8a6100;
+  --env-local: #2a9d63;
+  --env-development: #2f6bdc;
+  --env-staging: #c08a1a;
+  --env-production: #d93a2f;
+  --err-bg: #fff4f3;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -175,6 +186,16 @@
     --av4-fg: #ddd0ff;
     --av5-bg: #1f4248;
     --av5-fg: #c4eef3;
+
+    --sql-keyword: #d6a2ff;
+    --sql-string: #8bd9a8;
+    --sql-number: #a9c6ff;
+    --sql-type: #f3d58c;
+    --env-local: #3fbf7f;
+    --env-development: #5b8def;
+    --env-staging: #e0a93a;
+    --env-production: #ff5a4f;
+    --err-bg: #2e1c1d;
   }
 }
 
@@ -1386,5 +1407,274 @@
   }
   .pr-fold[open] > summary::before {
     content: "▾";
+  }
+}
+
+/* Databases (SPEC.md, section 11). */
+@layer components {
+  /* A connection's environment, in words beside its color. */
+  .env-badge {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    height: 17px;
+    padding: 0 6px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: var(--env, var(--muted));
+    background: color-mix(in srgb, var(--env, var(--muted)) 14%, transparent);
+    white-space: nowrap;
+  }
+  [data-env="local"] {
+    --env: var(--env-local);
+  }
+  [data-env="development"] {
+    --env: var(--env-development);
+  }
+  [data-env="staging"] {
+    --env: var(--env-staging);
+  }
+  [data-env="production"] {
+    --env: var(--env-production);
+  }
+  .env-dot {
+    width: 8px;
+    height: 8px;
+    flex-shrink: 0;
+    border-radius: 50%;
+    background: var(--env, var(--muted));
+  }
+  /* The strip along a tab's editor; solid on production in read and write. */
+  .env-strip {
+    width: 3px;
+    flex-shrink: 0;
+    background: color-mix(in srgb, var(--env, var(--line)) 55%, transparent);
+  }
+  .env-strip[data-writable="true"] {
+    width: 5px;
+    background: var(--env, var(--line));
+  }
+
+  /* Query tabs. */
+  /* The query tabs scroll sideways without a scrollbar; the 1px of padding
+     below holds the selected tab, which covers the header's border. */
+  .db-tabs {
+    display: flex;
+    min-width: 0;
+    align-items: flex-end;
+    gap: 2px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    margin-bottom: -1px;
+    padding-bottom: 1px;
+  }
+  .db-tabs::-webkit-scrollbar {
+    display: none;
+  }
+  .db-tab {
+    height: 32px;
+    max-width: 220px;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 0 8px 0 10px;
+    border: 1px solid transparent;
+    border-bottom: 0;
+    border-radius: 7px 7px 0 0;
+    background: transparent;
+    color: var(--fg-2);
+    font: inherit;
+    font-size: 12.5px;
+    white-space: nowrap;
+  }
+  .db-tab[aria-selected="true"] {
+    background: var(--app);
+    border-color: var(--line);
+    color: var(--fg);
+    margin-bottom: -1px;
+    height: 33px;
+  }
+  .db-tab .close {
+    width: 16px;
+    height: 16px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    color: var(--muted);
+    visibility: hidden;
+  }
+  .db-tab:hover .close,
+  .db-tab[aria-selected="true"] .close {
+    visibility: visible;
+  }
+  .db-tab .close:hover {
+    background: var(--control);
+    color: var(--fg);
+  }
+  .unsaved-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--fg-2);
+  }
+
+  .db-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12.5px;
+  }
+  .db-table th {
+    text-align: left;
+    font-weight: 600;
+    font-size: 11.5px;
+    color: var(--muted);
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--line);
+    white-space: nowrap;
+  }
+  .db-table td {
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--line-soft);
+    vertical-align: top;
+  }
+  .db-table td.r,
+  .db-table th.r {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* The result grid: a table with fixed column widths, rows windowed. */
+  .rg {
+    table-layout: fixed;
+    border-collapse: separate;
+    border-spacing: 0;
+    font-family: var(--mono);
+    font-size: 12px;
+    outline: none;
+  }
+  .rg th,
+  .rg td {
+    height: 26px;
+    padding: 0 8px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    border-right: 1px solid var(--line-soft);
+    border-bottom: 1px solid var(--line-soft);
+    text-align: left;
+  }
+  .rg thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    padding: 0;
+    background: var(--header);
+    border-bottom-color: var(--line);
+    font-family: var(--sans);
+    font-weight: 600;
+    color: var(--fg);
+  }
+  .rg-sort {
+    width: 100%;
+    height: 26px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 8px;
+    background: transparent;
+    border: 0;
+    color: inherit;
+    font: inherit;
+  }
+  .rg thead .ty {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    font-weight: 400;
+    color: var(--muted);
+  }
+  .rg .grip {
+    position: absolute;
+    top: 0;
+    right: -3px;
+    width: 6px;
+    height: 100%;
+    cursor: col-resize;
+    z-index: 2;
+  }
+  .rg .rg-num {
+    color: var(--faint);
+    text-align: right;
+    background: var(--header);
+  }
+  .rg td.r {
+    text-align: right;
+  }
+  .rg td.null {
+    color: var(--faint);
+    font-style: italic;
+  }
+  .rg td[data-selected="true"] {
+    background: var(--sel);
+    box-shadow: inset 0 0 0 1.5px var(--sel-bar);
+  }
+  .rg:focus-visible td[data-selected="true"] {
+    box-shadow: inset 0 0 0 2px var(--focus);
+  }
+
+  /* An error from the database under the editor. */
+  .db-error {
+    display: flex;
+    gap: 10px;
+    max-width: 760px;
+    padding: 12px 14px;
+    border: 1px solid color-mix(in srgb, var(--conflict) 40%, transparent);
+    border-radius: 8px;
+    background: var(--err-bg);
+  }
+
+  /* Health tiles and meters. */
+  .tile {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+    padding: 12px 14px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--app);
+  }
+  .tile .value {
+    font-size: 22px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--fg);
+  }
+  .meter {
+    height: 6px;
+    border-radius: 3px;
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
+    overflow: hidden;
+  }
+  .meter > span {
+    display: block;
+    height: 100%;
+    border-radius: 3px;
+    background: var(--accent);
+  }
+  .meter[data-warn="true"] {
+    background: color-mix(in srgb, var(--env-staging) 18%, transparent);
+  }
+  .meter[data-warn="true"] > span {
+    background: var(--env-staging);
+  }
+  .spark {
+    color: color-mix(in srgb, var(--accent) 45%, var(--muted));
+  }
+  .spark .end {
+    fill: var(--accent);
   }
 }

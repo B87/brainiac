@@ -7,6 +7,16 @@ import {
   tokenSummary,
 } from "../lib/accounts";
 import { errorMessage, type ForgeAccountSlot, ipc } from "../lib/ipc";
+import {
+  commandPreview,
+  draftOf,
+  pendingLabel,
+  type SourceDraft,
+  type SourceKind,
+  sourceLabel,
+  sourceOf,
+} from "../lib/secrets";
+import SecretSourceFields from "./SecretSourceFields";
 
 /** Settings → Accounts: one GitHub and one Bitbucket Cloud account (SPEC.md, Accounts). */
 export default function AccountsSection({
@@ -39,6 +49,11 @@ export default function AccountsSection({
     setSlots(all);
     onChanged();
   };
+  const reload = () =>
+    ipc
+      .listForgeAccounts()
+      .then(replaceAll)
+      .catch((e) => setError(errorMessage(e)));
 
   return (
     <div className="flex flex-col gap-2">
@@ -57,6 +72,7 @@ export default function AccountsSection({
             loading={slots === null && !error}
             onSlot={replace}
             onSlots={replaceAll}
+            onReload={reload}
           />
         );
       })}
@@ -76,24 +92,42 @@ function AccountRow({
   loading,
   onSlot,
   onSlots,
+  onReload,
 }: {
   provider: Provider;
   slot: ForgeAccountSlot | null;
   loading: boolean;
   onSlot: (slot: ForgeAccountSlot) => void;
   onSlots: (slots: ForgeAccountSlot[]) => void;
+  onReload: () => Promise<void>;
 }) {
   const id = useId();
   const account = slot?.account ?? null;
   const [mode, setMode] = useState<Mode>({ kind: "idle" });
   const [token, setToken] = useState("");
   const [email, setEmail] = useState(account?.email ?? "");
+  const [source, setSource] = useState<SourceDraft>(() =>
+    draftOf(account?.token_source, "store"),
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  // A test result is for the form it ran with; editing makes it stale.
+  const [tested, setTested] = useState<{ key: string; text: string } | null>(
+    null,
+  );
+  const owner = { kind: "forge_account" as const, provider: p.kind };
 
   const startForm = (fromKeychain: boolean) => {
     setEmail(account?.email ?? "");
+    setSource(
+      fromKeychain
+        ? draftOf(null, "store")
+        : draftOf(account?.token_source, "store"),
+    );
     setError(null);
+    setNotice(null);
+    setTested(null);
     setMode({ kind: "form", useKeychain: fromKeychain });
   };
 
@@ -101,18 +135,63 @@ function AccountRow({
     setMode({ kind: "idle" });
     setToken("");
     setError(null);
+    setTested(null);
+  };
+
+  const formRequest = (readOnly: boolean, useKeychain: boolean) => ({
+    kind: p.kind,
+    source: sourceOf(source),
+    token:
+      source.kind === "store" && !useKeychain && token.trim() ? token : null,
+    email: p.needsEmail ? email : null,
+    read_only: readOnly,
+  });
+  const formKey = JSON.stringify(
+    formRequest(false, mode.kind === "form" && mode.useKeychain),
+  );
+
+  const test = async (useKeychain: boolean) => {
+    setBusy(true);
+    setError(null);
+    setTested(null);
+    try {
+      const result = await ipc.testForgeAccount(
+        formRequest(false, useKeychain),
+      );
+      setTested({
+        key: formKey,
+        text: result.missing.length
+          ? `Belongs to ${result.login}; read only, missing ${result.missing.join(", ")}.`
+          : `Belongs to ${result.login}.`,
+      });
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** Allow This Source, or Retry a cleanup or removal, then show the result. */
+  const act = async (action: () => Promise<unknown>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await action();
+      await onReload();
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
   };
 
   const save = async (readOnly: boolean, useKeychain: boolean) => {
     setBusy(true);
     setError(null);
     try {
-      const outcome = await ipc.saveForgeAccount({
-        kind: p.kind,
-        token: useKeychain ? null : token,
-        email: p.needsEmail ? email : null,
-        read_only: readOnly,
-      });
+      const outcome = await ipc.saveForgeAccount(
+        formRequest(readOnly, useKeychain),
+      );
       if (outcome.outcome === "read_only") {
         setMode({
           kind: "read_only",
@@ -127,6 +206,7 @@ function AccountRow({
         keychain_token: false,
       });
       reset();
+      setNotice(outcome.warning);
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -148,9 +228,21 @@ function AccountRow({
   };
 
   const useKeychain = mode.kind === "form" && mode.useKeychain;
+  const pastes = source.kind === "store" && !useKeychain;
+  const sourceReady =
+    source.kind === "store"
+      ? useKeychain ||
+        token.trim() !== "" ||
+        account?.token_source.kind === "store"
+      : source.kind === "environment"
+        ? source.name.trim() !== ""
+        : source.program.trim() !== "";
   const canSubmit =
     !busy &&
-    (useKeychain || token.trim() !== "") &&
+    (!pastes ||
+      token.trim() !== "" ||
+      account?.token_source.kind === "store") &&
+    sourceReady &&
     (!p.needsEmail || email.trim() !== "");
 
   return (
@@ -167,6 +259,8 @@ function AccountRow({
               {account.email && ` · ${account.email}`}
               {" · "}
               {tokenSummary(account)}
+              {account.token_source.kind !== "store" &&
+                ` · from ${sourceLabel(account.token_source)}`}
             </div>
           ) : slot?.keychain_token ? (
             <div className="text-[12px] text-fg-2">
@@ -186,7 +280,7 @@ function AccountRow({
                   className="btn btn-sm"
                   onClick={() => startForm(false)}
                 >
-                  Replace Token…
+                  Change Token…
                 </button>
                 <button
                   type="button"
@@ -233,6 +327,67 @@ function AccountRow({
         <p className="m-0 text-[12px] text-fg-2">{accessSummary(account)}</p>
       )}
 
+      {account?.credential.needs_approval && mode.kind === "idle" && (
+        <div className="flex flex-col gap-2" role="note">
+          <p className="m-0 text-[12.5px]">
+            Restored from a backup: Brainiac does not read its token until you
+            allow it. It reads{" "}
+            <span className="mono">{sourceLabel(account.token_source)}</span>{" "}
+            and sends the token only to {p.name}.
+          </p>
+          {account.token_source.kind === "command" && (
+            <>
+              <code className="mono selectable break-all rounded-md border bg-header px-2 py-1 text-[11.5px]">
+                {commandPreview(
+                  account.token_source.program,
+                  account.token_source.args,
+                )}
+              </code>
+              <p className="m-0 text-[12px] text-muted">
+                The program runs with your permissions, without a shell. Allow
+                it only if you recognize it and its arguments.
+              </p>
+            </>
+          )}
+          <button
+            type="button"
+            className="btn btn-sm self-start"
+            disabled={busy}
+            onClick={() =>
+              void act(() =>
+                ipc.approveSecretSource(owner, account.credential.revision),
+              )
+            }
+          >
+            Allow This Source
+          </button>
+        </div>
+      )}
+
+      {account?.credential.pending && mode.kind === "idle" && (
+        <div className="flex items-center gap-2" role="note">
+          <p className="m-0 flex-1 text-[12.5px]">
+            {pendingLabel(account.credential.pending)}
+          </p>
+          {account.credential.pending !== "save" && (
+            <button
+              type="button"
+              className="btn btn-sm"
+              disabled={busy}
+              onClick={() => void act(() => ipc.retryCredentialCleanup(owner))}
+            >
+              Retry
+            </button>
+          )}
+        </div>
+      )}
+
+      {notice && mode.kind === "idle" && (
+        <p role="note" className="m-0 text-[12.5px] text-conflict">
+          {notice}
+        </p>
+      )}
+
       {mode.kind === "form" && (
         <form
           className="flex flex-col gap-2"
@@ -255,6 +410,32 @@ function AccountRow({
             </label>
           )}
           {!useKeychain && (
+            <label className="flex flex-col gap-1" htmlFor={`${id}-source`}>
+              <span className="text-[12px]">Token from</span>
+              <select
+                id={`${id}-source`}
+                className="text-input"
+                value={source.kind}
+                onChange={(e) =>
+                  setSource({ ...source, kind: e.target.value as SourceKind })
+                }
+              >
+                <option value="store">Paste it: kept in the Keychain</option>
+                <option value="command">
+                  A command, such as gh auth token
+                </option>
+                <option value="environment">An environment variable</option>
+              </select>
+            </label>
+          )}
+          {!useKeychain && source.kind !== "store" && (
+            <SecretSourceFields
+              draft={source}
+              onChange={setSource}
+              what="token"
+            />
+          )}
+          {pastes && (
             <label className="flex flex-col gap-1" htmlFor={`${id}-token`}>
               <span className="text-[12px]">{p.tokenLabel}</span>
               <input
@@ -267,6 +448,11 @@ function AccountRow({
                 onChange={(e) => setToken(e.target.value)}
               />
             </label>
+          )}
+          {pastes && account?.token_source.kind === "store" && (
+            <span className="text-[12px] text-muted">
+              Leave it empty to check the token already in the Keychain again.
+            </span>
           )}
           {!useKeychain && (
             <span className="text-[12px] text-muted">
@@ -295,11 +481,24 @@ function AccountRow({
             <button
               type="button"
               className="btn btn-sm"
+              disabled={!canSubmit}
+              onClick={() => void test(useKeychain)}
+            >
+              Test
+            </button>
+            <button
+              type="button"
+              className="btn btn-sm"
               onClick={reset}
               disabled={busy}
             >
               Cancel
             </button>
+            {tested?.key === formKey && (
+              <span className="self-center text-[12px] text-clean">
+                {tested.text}
+              </span>
+            )}
           </div>
         </form>
       )}
@@ -335,9 +534,12 @@ function AccountRow({
       {mode.kind === "confirm_remove" && (
         <div className="flex flex-col gap-2" role="alert">
           <p className="m-0 text-[12.5px]">
-            Remove the {p.name} account? Its token is deleted from the Keychain
-            item <span className="mono">{p.keychainItem}</span>, and its pull
-            requests are no longer shown.
+            Remove the {p.name} account? Brainiac's Keychain item{" "}
+            <span className="mono">{p.keychainItem}</span> is deleted
+            {account && account.token_source.kind !== "store"
+              ? ` if there is one; ${sourceLabel(account.token_source)} is not changed`
+              : ""}
+            , and its pull requests are no longer shown.
           </p>
           <div className="flex gap-2">
             <button

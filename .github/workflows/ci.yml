@@ -34,6 +34,13 @@ jobs:
         with:
           workspaces: src-tauri
 
+      # The database tests start a throwaway PostgreSQL server with initdb
+      # and pg_ctl; without them they skip (docs/architecture.md, Databases).
+      - name: PostgreSQL for the database tests
+        run: |
+          brew install postgresql@16
+          echo "$(brew --prefix postgresql@16)/bin" >> "$GITHUB_PATH"
+
       - name: Rust format
         run: pnpm format:rust:check
       - name: Clippy

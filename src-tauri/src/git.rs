@@ -36,7 +36,8 @@ const AHEAD_BEHIND_ATOM: (u32, u32) = (2, 41);
 /// tags, and objects: no automatic cleanup, pruning, commit-graph writes, or
 /// hooks (the `reference-transaction` hook runs on ref updates). Per-remote
 /// settings such as `remote.<name>.prune` override `-c fetch.prune`, so
-/// `FETCH_FLAGS` repeats the pruning choice on the command line. SPEC.md, Fetching.
+/// `FETCH_FLAGS` repeats the pruning choice on the command line.
+/// docs/architecture.md, Fetch invocation.
 const FETCH_CONFIG: &[&str] = &[
     "-c",
     "gc.auto=0",
@@ -432,19 +433,27 @@ impl GitService {
     // Status
     // -----------------------------------------------------------------------
 
+    /// `--untracked-files=all` lists each file inside a new folder; a folder
+    /// holding its own repository is still one `folder/` entry.
     pub async fn status(&self, root: &Path) -> AppResult<StatusSnapshot> {
-        let out = self
-            .run_raw(
+        let (mut out, truncated) = self
+            .run_bounded(
                 Some(root),
                 &[
                     "status",
                     "--porcelain=v2",
                     "--branch",
-                    "--untracked-files=normal",
+                    "--untracked-files=all",
                     "-z",
                 ],
+                MAX_OUTPUT_BYTES,
             )
             .await?;
+        if truncated {
+            // The last record was cut mid-path: keep only whole records.
+            let whole = out.iter().rposition(|&b| b == 0).map_or(0, |i| i + 1);
+            out.truncate(whole);
+        }
         parse_status_v2(&out)
     }
 
@@ -1523,7 +1532,7 @@ fn missing_remote_ref(stderr: &str) -> Option<String> {
 }
 
 /// The lock file that shows another Git process is changing the repository,
-/// if any (SPEC.md, Fetching).
+/// if any (docs/architecture.md, Fetch invocation).
 pub fn busy_lock(git_dir: &Path, common_git_dir: &Path, remote: &str) -> Option<PathBuf> {
     for dir in [git_dir, common_git_dir] {
         for name in LOCK_FILES {

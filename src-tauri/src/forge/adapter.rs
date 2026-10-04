@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use super::budget::Budget;
 use super::http::{Auth, Http, Response};
-use super::keychain::Token;
 use super::{ForgeRepository, PullRequestRef};
+use crate::credentials::{LeaseHandle, Token};
 use crate::models::{
     ActionAvailability, AppError, AppResult, AvailableActions, ChangedFile, Check, CheckState,
     ChecksSummary, ErrorCode, ForgeAccount, ForgeKind, MergeOptions, MergeRequest, PullRequest,
@@ -29,9 +29,21 @@ pub struct Session {
     pub account: ForgeAccount,
     /// The provider's ID of the account's user, as pull requests name people.
     pub user_id: String,
+    /// The lease the token came from: a provider's 401 forgets exactly it,
+    /// so the next use reads the token again. `None` in the live tests.
+    pub credential: Option<LeaseHandle>,
 }
 
 impl Session {
+    /// Forget the token when the provider no longer accepts it.
+    fn observe(&self, result: &AppResult<Response>) {
+        if let (Ok(response), Some(credential)) = (result, &self.credential) {
+            if response.status == 401 {
+                credential.reject();
+            }
+        }
+    }
+
     pub fn auth(&self) -> Auth<'_> {
         match self.account.kind {
             ForgeKind::Github => Auth::Bearer(&self.token),
@@ -222,6 +234,7 @@ impl Client {
             .get(self.kind.label(), url, session.auth(), headers)
             .await;
         self.budget.observe(self.kind, &result);
+        session.observe(&result);
         result
     }
 
@@ -238,6 +251,7 @@ impl Client {
             .post_json(self.kind.label(), url, session.auth(), headers, body)
             .await;
         self.budget.observe(self.kind, &result);
+        session.observe(&result);
         result
     }
 
@@ -253,6 +267,7 @@ impl Client {
             .post_form(self.kind.label(), url, session.auth(), &[], fields)
             .await;
         self.budget.observe(self.kind, &result);
+        session.observe(&result);
         result
     }
 
@@ -269,6 +284,7 @@ impl Client {
             .put_json(self.kind.label(), url, session.auth(), headers, body)
             .await;
         self.budget.observe(self.kind, &result);
+        session.observe(&result);
         result
     }
 
@@ -284,6 +300,7 @@ impl Client {
             .delete(self.kind.label(), url, session.auth(), headers)
             .await;
         self.budget.observe(self.kind, &result);
+        session.observe(&result);
         result
     }
 }
@@ -296,7 +313,7 @@ pub fn write_error(kind: ForgeKind, what: &str, permission: &str, response: &Res
         String::from_utf8_lossy(&response.body[..response.body.len().min(500)]).into_owned();
     match response.status {
         401 => AppError::new(
-            ErrorCode::PermissionDenied,
+            ErrorCode::Unauthenticated,
             format!("{provider} no longer accepts the account's token. Replace it in Settings → Accounts."),
         ),
         403 => AppError::new(
@@ -361,7 +378,7 @@ pub fn read_error(kind: ForgeKind, what: &str, response: &Response) -> AppError 
     let provider = kind.label();
     match response.status {
         401 => AppError::new(
-            crate::models::ErrorCode::PermissionDenied,
+            crate::models::ErrorCode::Unauthenticated,
             format!("{provider} no longer accepts the account's token. Replace it in Settings → Accounts."),
         ),
         403 | 404 => AppError::new(

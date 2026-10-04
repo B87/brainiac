@@ -8,6 +8,9 @@ import {
 } from "./components/BackupDialogs";
 import CommandPalette from "./components/CommandPalette";
 import Dashboard, { type Discovered } from "./components/Dashboard";
+import DatabasesView, {
+  type DatabasesRequest,
+} from "./components/DatabasesView";
 import NotesView from "./components/NotesView";
 import PullRequestView from "./components/PullRequestView";
 import RepositoryView from "./components/RepositoryView";
@@ -18,9 +21,11 @@ import TaskEditor from "./components/TaskEditor";
 import TasksView from "./components/TasksView";
 import TodayView from "./components/TodayView";
 import UpdateBanner from "./components/UpdateBanner";
+import { listenForClose } from "./lib/closeGuard";
 import { shortPath } from "./lib/format";
 import {
   type AppSnapshot,
+  type DbConnection,
   type ExportResult,
   errorMessage,
   ipc,
@@ -29,6 +34,7 @@ import {
   onPullRequestChanged,
   onRepositoryChanged,
   type PinEntityType,
+  type SavedQuery,
   type SuggestedMove,
   subscribe,
   type Task,
@@ -104,6 +110,29 @@ export default function App() {
   const [reviewCounts, setReviewCounts] = useState<ReadonlyMap<string, number>>(
     new Map(),
   );
+  /** Databases stays mounted once opened, so its tabs keep their results. */
+  const [dbMounted, setDbMounted] = useState(view.kind === "databases");
+  const [dbRequest, setDbRequest] = useState<DatabasesRequest | null>(null);
+  const [dbLists, setDbLists] = useState<{
+    connections: DbConnection[];
+    queries: SavedQuery[];
+  }>({ connections: [], queries: [] });
+  const onDbLists = useCallback(
+    (connections: DbConnection[], queries: SavedQuery[]) =>
+      setDbLists({ connections, queries }),
+    [],
+  );
+  useEffect(() => {
+    if (view.kind === "databases") setDbMounted(true);
+  }, [view.kind]);
+  // Saved queries and connections for ⌘K, before Databases was opened.
+  useEffect(() => {
+    void Promise.all([ipc.listDbConnections(), ipc.listSavedQueries()])
+      .then(([connections, queries]) => setDbLists({ connections, queries }))
+      .catch(() => {});
+  }, []);
+  // The window's close button runs every close guard (unsaved notes, open transactions).
+  useEffect(() => listenForClose(), []);
   const viewRef = useRef(view);
   viewRef.current = view;
   const livePreviewRef = useRef(livePreview);
@@ -651,6 +680,8 @@ export default function App() {
       if (e.id === "show_today") actions.current.showView({ kind: "today" });
       if (e.id === "show_tasks") actions.current.showView({ kind: "tasks" });
       if (e.id === "show_notes") actions.current.showView({ kind: "notes" });
+      if (e.id === "show_databases")
+        actions.current.showView({ kind: "databases" });
     }).then((u) => (disposed ? u() : unlisteners.push(u)));
     return () => {
       disposed = true;
@@ -771,7 +802,8 @@ export default function App() {
                   onAddRepository={() => void openRepositoryPicker()}
                   onLocate={(id) => void locate(id)}
                 />
-              ) : view.kind === "pullRequest" ? (
+              ) : view.kind === "databases" ? null : view.kind ===
+                "pullRequest" ? (
                 <PullRequestView
                   key={view.reference}
                   reference={view.reference}
@@ -804,6 +836,14 @@ export default function App() {
                   }
                   onOpenSettings={openAccounts}
                   onChanged={() => void reloadSnapshot()}
+                  onNewQuery={(connectionId) => {
+                    setDbRequest({
+                      kind: "new_query",
+                      connectionId,
+                      tick: Date.now(),
+                    });
+                    showView({ kind: "databases" });
+                  }}
                 />
               ) : (
                 <Dashboard
@@ -892,6 +932,16 @@ export default function App() {
                   onOpenSettings={openAccounts}
                 />
               )}
+              {snapshot && dbMounted && (
+                <DatabasesView
+                  visible={view.kind === "databases"}
+                  saveTick={saveTick}
+                  request={dbRequest}
+                  onNotice={setNotice}
+                  onError={setBanner}
+                  onLists={onDbLists}
+                />
+              )}
             </main>
           </div>
         )}
@@ -940,6 +990,16 @@ export default function App() {
             onNewTask={() => {
               setPaletteOpen(false);
               void newTask();
+            }}
+            dbConnections={dbLists.connections}
+            dbQueries={dbLists.queries}
+            onDatabase={(request) => {
+              setPaletteOpen(false);
+              setDbRequest({
+                ...request,
+                tick: Date.now(),
+              } as DatabasesRequest);
+              showView({ kind: "databases" });
             }}
           />
         )}

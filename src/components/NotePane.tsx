@@ -1,7 +1,7 @@
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ask, open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { addCloseGuard } from "../lib/closeGuard";
 import type { NoteLink } from "../lib/editor/livePreview";
 import {
   errorMessage,
@@ -350,15 +350,15 @@ export default function NotePane(props: Props) {
   }, [props.flushRef, save]);
 
   // Closing the window saves unsaved edits first.
-  useEffect(() => {
-    const off = getCurrentWindow().onCloseRequested(async () => {
-      await save();
-      await followRef.current(true);
-    });
-    return () => {
-      void off.then((unlisten) => unlisten());
-    };
-  }, [save]);
+  useEffect(
+    () =>
+      addCloseGuard(async () => {
+        await save();
+        await followRef.current(true);
+        return true;
+      }),
+    [save],
+  );
 
   // Load the note; mark it recent. Unsaved edits are saved when leaving it.
   useEffect(() => {

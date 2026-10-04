@@ -13,9 +13,9 @@ use super::adapter::{
 };
 use super::github::split_list;
 use super::http::{unexpected, Auth, Http, Response};
-use super::keychain::Token;
 use super::markdown;
 use super::{ForgeRepository, PullRequestRef};
+use crate::credentials::Token;
 use crate::models::{
     AppError, AppResult, ChangedFile, ChangedFileStatus, Check, CheckState, Comment, DiffSide,
     ErrorCode, ForgeKind, ForgeTokenKind, ForgeUser, MergeMethod, MergeOptions, MergeRequest,
@@ -74,7 +74,7 @@ fn interpret_user(response: &Response) -> AppResult<AccountCheck> {
         200 => {}
         401 => {
             return Err(AppError::new(
-                ErrorCode::PermissionDenied,
+                ErrorCode::Unauthenticated,
                 "Bitbucket did not accept this email and API token. Use your Atlassian account's email, and check that the whole token was pasted: it is about 190 characters.",
             ))
         }

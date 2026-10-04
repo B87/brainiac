@@ -33,7 +33,7 @@ use crate::models::{
 /// Recorded tips used as identity evidence, besides the last `HEAD`.
 const MAX_EVIDENCE: u32 = 64;
 /// Rescan looks for at most this many missing members among at most this many
-/// untracked repositories (SPEC.md, Discovery and membership).
+/// untracked repositories (docs/architecture.md, Workspaces and discovery).
 const MAX_SUGGESTED_MEMBERS: usize = 16;
 const MAX_SUGGESTION_TARGETS: usize = 64;
 

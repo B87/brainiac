@@ -38,6 +38,22 @@ async fn an_export_restores_on_another_mac_with_tasks_and_links() {
         .await
         .unwrap();
 
+    // A connection whose password comes from a command: the reference is
+    // exported, and approval is not (SPEC.md, Secrets).
+    h.core
+        .call(|conn| {
+            Ok(conn.execute(
+                r#"INSERT INTO db_connections (id, name, kind, environment, host, port, database,
+                    user_name, tls, secret_source, created_at, updated_at)
+                 VALUES ('c1', 'Billing', 'postgres', 'local', 'db.example.com', 5432, 'app',
+                    'app', 'verify', '{"kind":"command","program":"/opt/homebrew/bin/op","args":["read","op://Work/db"]}',
+                    '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')"#,
+                [],
+            )?)
+        })
+        .await
+        .unwrap();
+
     let exports = h.tmp.path().join("exports");
     fs::create_dir_all(&exports).unwrap();
     let result = backup::export(&h.notes, &exports).await.unwrap();
@@ -135,6 +151,22 @@ async fn an_export_restores_on_another_mac_with_tasks_and_links() {
         .await
         .unwrap();
     assert_eq!(roots, vec![clone_root.display().to_string()]);
+    // The restored connection keeps where its password comes from, and waits
+    // for the user to allow it.
+    let (source, approved): (String, bool) = core
+        .call(|conn| {
+            Ok(conn.query_row(
+                "SELECT secret_source, source_approved FROM db_connections WHERE id = 'c1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?)
+        })
+        .await
+        .unwrap();
+    assert!(
+        source.contains("op://Work/db") && !approved,
+        "{source} {approved}"
+    );
     assert_eq!(
         fs::read_to_string(restored_vault.join("Projects/Plan.md")).unwrap(),
         h.read("Projects/Plan.md")
@@ -279,4 +311,60 @@ async fn migration_0002_upgrades_a_0_1_3_database_and_keeps_its_data() {
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
     assert!(user_version > 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_export_from_before_secret_sources_restores_with_every_source_to_allow() {
+    let h = Harness::new(false).await;
+    let exports = h.tmp.path().join("exports");
+    fs::create_dir_all(&exports).unwrap();
+    let result = backup::export(&h.notes, &exports).await.unwrap();
+    let export = std::path::PathBuf::from(&result.path);
+    // Replace the export's database with one as 0.4.0 wrote it: six
+    // migrations, a connection whose password is in the Keychain.
+    let old = export.join("brainiac.sqlite3");
+    fs::remove_file(&old).unwrap();
+    {
+        let mut conn = Connection::open(&old).unwrap();
+        conn.pragma_update(None, "application_id", db::APPLICATION_ID)
+            .unwrap();
+        let six = db::Store {
+            migrations: &db::CORE.migrations[..6],
+            ..db::CORE
+        };
+        db::migrate(&mut conn, &six).unwrap();
+        conn.execute(
+            "INSERT INTO db_connections (id, name, kind, environment, host, port, database,
+                user_name, tls, password, created_at, updated_at)
+             VALUES ('c1', 'Billing', 'postgres', 'local', 'db.example.com', 5432, 'app', 'app',
+                'verify', 'keychain', '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+    }
+    let other = tempfile::tempdir().unwrap();
+    let data = other.path().join("data");
+    let core = Db::open(&data.join(db::CORE_FILE)).unwrap();
+    let (notes, _) = Harness::service(&data, core.clone());
+    notes.disable_watching();
+    backup::restore(
+        &notes,
+        RestoreRequest {
+            export_path: export.display().to_string(),
+            vault_path: other.path().join("Notes").display().to_string(),
+            use_existing_vault: false,
+        },
+    )
+    .await
+    .unwrap();
+    let pending = Connection::open(data.join(backup::PENDING_RESTORE)).unwrap();
+    assert_eq!(db::schema_version(&pending).unwrap(), db::SCHEMA_VERSION);
+    let (source, approved): (String, bool) = pending
+        .query_row(
+            "SELECT secret_source, source_approved FROM db_connections WHERE id = 'c1'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((source.as_str(), approved), (r#"{"kind":"store"}"#, false));
 }

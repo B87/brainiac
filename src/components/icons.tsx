@@ -319,3 +319,68 @@ export const ArchiveIcon = (p: IconProps) => (
     <path d="M3.5 6v6.5h9V6M6.5 8.5h3" strokeLinejoin="round" />
   </Svg>
 );
+
+/** A cylinder: a database. */
+export const DatabaseIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <ellipse cx="8" cy="3.8" rx="5" ry="2" />
+    <path d="M3 3.8v8.4c0 1.1 2.2 2 5 2s5-.9 5-2V3.8" />
+    <path d="M3 8c0 1.1 2.2 2 5 2s5-.9 5-2" />
+  </Svg>
+);
+
+export const HomeIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M2.5 7.5L8 3l5.5 4.5V13.5h-3.5v-3.5h-4v3.5H2.5z" />
+  </Svg>
+);
+
+/** A filled triangle: Run. */
+export const PlayIcon = ({ size = 11, className }: IconProps) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 16 16"
+    fill="currentColor"
+    className={className}
+    aria-hidden="true"
+  >
+    <path d="M4 2.5l9 5.5-9 5.5z" />
+  </svg>
+);
+
+/** A filled square: Cancel. */
+export const StopIcon = ({ size = 10, className }: IconProps) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 16 16"
+    fill="currentColor"
+    className={className}
+    aria-hidden="true"
+  >
+    <rect x="3" y="3" width="10" height="10" rx="1.5" />
+  </svg>
+);
+
+export const LockIcon = (p: IconProps) => (
+  <Svg strokeWidth={1.6} {...p}>
+    <rect x="3" y="7" width="10" height="7" rx="1.5" />
+    <path d="M5.5 7V5a2.5 2.5 0 015 0v2" />
+  </Svg>
+);
+
+/** A key: Settings → Secrets. */
+export const KeyIcon = (p: IconProps) => (
+  <Svg strokeWidth={1.5} {...p}>
+    <circle cx="5.5" cy="10.5" r="2.5" />
+    <path d="M7.3 8.7L13 3m-2 2l1.5 1.5M9.5 6.5L11 8" strokeLinecap="round" />
+  </Svg>
+);
+
+/** A pulse line: Health. */
+export const PulseIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M1.5 8.5h3l1.5-4 3 8 1.5-4h4" />
+  </Svg>
+);

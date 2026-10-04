@@ -38,7 +38,7 @@ The product can eventually include PR and CI status, calendar context, recurring
 
 ## 2. Release boundaries
 
-**v0.1 — Git viewer and single/multi-repository tracker** shipped as 0.1.3. **v0.2 — knowledge, tasks, and code context** shipped as 0.2.0: one Markdown vault, tasks, Today, keyword search, and links between notes, tasks, and the repositories v0.1 tracks (sections 5–8). **v0.2.x — agent access** lets agents such as Claude Code work with Brainiac's notes, tasks, and repository links through a local MCP server (section 9). **v0.3 — pull requests** is the current release, because the Git features proved the most useful: reviewing and merging the pull requests of a workspace's repositories on GitHub and Bitbucket Cloud (section 10). Content imports, global capture, and AI follow it.
+**v0.1 — Git viewer and single/multi-repository tracker** shipped as 0.1.3. **v0.2 — knowledge, tasks, and code context** shipped as 0.2.0: one Markdown vault, tasks, Today, keyword search, and links between notes, tasks, and the repositories v0.1 tracks (sections 5–8). **v0.2.x — agent access** lets agents such as Claude Code work with Brainiac's notes, tasks, and repository links through a local MCP server (section 9). **v0.3 — pull requests** shipped as 0.3.1: reviewing and merging the pull requests of a workspace's repositories on GitHub and Bitbucket Cloud (section 10). **v0.4 — databases** is the current release: SQLite and PostgreSQL connections, a query editor and result grid, saved queries, and a PostgreSQL server's health, next to the repositories they belong to (section 11). Content imports, global capture, and AI follow it.
 
 | Capability | Release | Scope |
 | --- | --- | --- |
@@ -58,11 +58,15 @@ The product can eventually include PR and CI status, calendar context, recurring
 | Agent access | v0.2.x | Local MCP server for agents such as Claude Code: search, notes, tasks, repository links; off by default |
 | Pull requests | v0.3 | GitHub and Bitbucket Cloud, per workspace and off by default: the workspace's and each repository's pull requests, overview, files changed, review, and merge |
 | Pull request follow-ups | v0.3.x | A daily view of what waits on you, a task's pull request, creating a pull request, agent tools; chosen by use |
-| External content imports | v0.4 | Paste, bookmarks, Markdown copies, articles, `.eml`, provenance and duplicate handling |
-| Global capture window and Inbox | v0.4 | System shortcut, floating capture, Inbox triage of captured and imported items, shared backend state |
-| Authenticated import adapters | v0.4.x | Selected Jira issues/mail messages; provider choice and video transcript acquisition validated separately |
-| Semantic search | v0.5 | Optional local embeddings and hybrid retrieval |
-| Grounded AI answers | v0.6 | Citation-backed local RAG |
+| Databases | v0.4 | SQLite and PostgreSQL connections, read only by default; query editor and result grid, saved queries, history, and a PostgreSQL connection's health |
+| Secrets | v0.4.x | An account's token or a connection's password read from the Keychain, an environment variable, or a command such as `gh auth token` or `op read`, and Settings → Secrets (section 12) |
+| Database and credential follow-ups | v0.4.x | SSH tunnels, editing rows in the grid, saved queries as files, and secrets from Google Secret Manager, Git's credential helper, and `.pgpass`; chosen by use |
+| Agent runs | v0.5 | A coding agent's command-line tool (Claude Code, Codex, Gemini CLI) run in a container on the Mac or a remote host, with guided setup, a live trace, and a review of its branch before anything is pushed |
+| External content imports | v0.6 | Paste, bookmarks, Markdown copies, articles, `.eml`, provenance and duplicate handling |
+| Global capture window and Inbox | v0.6 | System shortcut, floating capture, Inbox triage of captured and imported items, shared backend state |
+| Authenticated import adapters | v0.6.x | Selected Jira issues/mail messages; provider choice and video transcript acquisition validated separately |
+| Semantic search | v0.7 | Optional local embeddings and hybrid retrieval |
+| Grounded AI answers | v0.8 | Citation-backed local RAG |
 | Other pull request providers, CI beyond pull request checks, other Git mutations, sync, plugins | Later | Separate features after the v0.3 providers are useful |
 
 v0.1 requires a usable local Git binary. Detect it on startup and provide a clear setup message when absent; do not silently install developer tools. Core Git viewing works offline and requires no Markdown vault, Ollama instance, remote-service account, or elevated macOS permissions. Ahead/behind information reflects existing local refs and may be stale relative to the remote server until someone fetches: the user, their editor, or Brainiac's Fetch now and opt-in auto-fetch (section 4, Fetching). Fetching is the only operation that writes to a repository, and it touches remote-tracking refs and objects only. From v0.3, pull requests are reviewed and merged on GitHub or Bitbucket, never in the local repository (section 10).
@@ -97,7 +101,7 @@ The sidebar switches scope and shares the window's title bar area with the traff
 
 ### Main window — v0.2
 
-The sidebar gains a section level above the repository tree: **Today**, **Tasks**, and **Notes**, then All repositories, Workspaces, and Pinned as in v0.1. The section that holds the notes is called Notes; "brain" names the whole app. There is no Inbox section before v0.4 (section 6).
+The sidebar gains a section level above the repository tree: **Today**, **Tasks**, and **Notes**, then All repositories, Workspaces, and Pinned as in v0.1. The section that holds the notes is called Notes; "brain" names the whole app. There is no Inbox section before v0.6 (section 6).
 
 - Brainiac reopens the section that was open when it quit. The first launch after upgrading to v0.2 opens Workspaces as before, and the sidebar shows one **Set up your vault** row until a vault is chosen.
 - Today, Tasks, and Notes are never shown empty: before a vault is chosen they offer the vault setup, and Today and Tasks work without a vault.
@@ -157,6 +161,13 @@ Repository name/path filtering and commit-message/hash filtering belong to the G
 | `[` / `]` | Previous / next file in a commit or the changes list |
 | `N` / `P` | Next / previous hunk in the shown diff |
 | `/` | Focus the filter of the current list |
+| `Cmd+Enter`, v0.4 | In a query tab: run the statement under the cursor, or the selection |
+| `Shift+Cmd+Enter`, v0.4 | Run every statement in the query tab |
+| `Cmd+.`, v0.4 | Cancel the running statement |
+| `Cmd+E`, v0.4 | Explain the statement under the cursor |
+| `Cmd+T`, v0.4 | New query tab |
+| `Cmd+1` … `Cmd+9`, v0.4 | In Databases: Home, then the query tabs |
+| `Cmd+S`, v0.4 | In a query tab: save the query |
 | `Cmd+,` | Settings |
 | `Escape` | Dismiss the palette, a dialog, or a menu |
 
@@ -191,16 +202,13 @@ When a root exists, it has its own status, history, branches, and diffs, and eac
 #### Discovery and membership
 
 - **Add workspace from folder** selects a folder and a discovery folder relative to it. The discovery folder defaults to the selected folder itself; the user can point it at any subfolder. The preview lists the root (if the selected folder is a repository) and the discovered repositories, and the user chooses which to track.
-- Enumerate immediate child directories of the discovery folder; query Git to resolve each candidate's working-tree root and metadata paths. Register a child only when its resolved canonical Git root equals the candidate directory. A plain folder that inherits the enclosing root's Git context is not another repository.
-- Handle `.git` directories and `.git` files, including linked worktrees and actual submodules. Preserve the detected relationship; do not assume every child is a submodule.
-- Membership records each member's path, origin (discovered or manual), and repository when it is one; an explicitly selected non-Git folder has none. The root is identified by the workspace's `root_repository_id`, not by a per-member role. Repository records can still appear in other workspaces.
-- Deduplicate by canonical checkout root, retaining distinct linked worktree paths. Do not combine separate repositories merely because their current branch names match.
-- A missing discovery folder leaves the root and any manually added members usable and shows the discovery issue. Non-Git children are skipped with a preview explanation.
-- For discovered workspaces, watch the discovery folder for added/removed child folders and expose **Rescan**. Surface additions for the user to track; never add them silently. Mark removed or inaccessible registered members missing; preserve registrations and future context links until explicitly removed or relocated.
-- Rescan runs when a discovered workspace opens and on **Rescan**. When a missing member and exactly one untracked repository in the discovery folder are the same repository (Relocating a repository, below), Rescan suggests the move (**Update**) instead of listing that folder as new. A folder that matches several missing members, or a member that matches several folders, gets no suggestion and is listed as new. Rescan looks for up to 16 missing members among up to 64 untracked repositories, with one Git run per untracked repository plus one per match.
+- Only the discovery folder's immediate children are candidates, and a child counts as a repository only when it is the top of its own working tree: a plain folder inside the root's working tree is not another repository. Linked worktrees and actual submodules are recognised as what they are; not every child is assumed to be a submodule. Non-Git children are skipped with an explanation in the preview.
 - Stay within the discovery folder. Symlinked external repositories require explicit selection. Deeper descendants require explicit addition; do not crawl arbitrary nested dependency trees.
+- A repository is listed once however it was found, while distinct linked worktrees stay separate. Separate repositories are never combined because their current branch names match. A repository can belong to several workspaces.
+- A missing discovery folder leaves the root and any manually added members usable and shows the discovery issue.
+- For discovered workspaces, watch the discovery folder for added/removed child folders and expose **Rescan**. Surface additions for the user to track; never add them silently. Mark removed or inaccessible registered members missing; preserve registrations and future context links until explicitly removed or relocated.
+- Rescan runs when a discovered workspace opens and on **Rescan**. When a missing member and exactly one untracked repository in the discovery folder are the same repository (Relocating a repository, below), Rescan suggests the move (**Update**) instead of listing that folder as new. A folder that matches several missing members, or a member that matches several folders, gets no suggestion and is listed as new. How many it looks for is bounded (`docs/architecture.md`, Workspaces and discovery).
 - Brainiac owns its tracked-repository selection independently of editor configuration. Any workspace can gain manually added repositories or drop members, whichever way it was created.
-- A discovered workspace stores the selected folder as `discovery_root` and the scanned folder relative to it as `discovery_path` (absent when the selected folder itself is scanned), so Rescan works whether or not the selected folder is a repository.
 
 #### Relocating a repository
 
@@ -208,31 +216,24 @@ A registration keeps its identity when its folder moves. **Locate…** points it
 
 - **Locate…** appears wherever a missing repository is shown: its overview row, the selected-repository panel, and its viewer. The viewer's More menu and the command palette offer it for the open repository even when its folder exists, for example to switch to a fresh clone. The folder picker opens in the old folder's parent.
 - The chosen folder must be inside a Git working tree; a folder below the top of a working tree stands for that working tree.
-- **Same repository** means the chosen working tree contains a commit Brainiac recorded for the registration: the last observed `HEAD`, or a recorded tip of a watched remote branch or tag. A fresh clone qualifies through the remote tips. The registration then moves without a question.
-- The check never downloads: Git runs with `GIT_NO_LAZY_FETCH=1`, so a partial clone answers from the objects it has. A partial clone with Git older than 2.44, which ignores that variable, counts as unverified.
-- Otherwise Brainiac asks first and says why: the chosen folder is below the top of the working tree, the histories share no recorded commit, or nothing was recorded to compare with. The confirmation covers the working-tree root it was shown; if the folder resolves to another root by then, Brainiac asks again. Confirming a repository whose history is unrelated or unverified starts its activity over: the old Git directory's feed is dropped when no other registration uses it, and the new one starts silently.
+- **Same repository** means the chosen working tree contains a commit Brainiac recorded for the registration: the last observed `HEAD`, or a recorded tip of a watched remote branch or tag. A fresh clone qualifies through the remote tips. The registration then moves without a question. The check never downloads anything.
+- Otherwise Brainiac asks first and says why: the chosen folder is below the top of the working tree, the histories share no recorded commit, or nothing was recorded to compare with. Confirming a repository whose history is unrelated or unverified starts its activity over, silently.
 - A folder already registered as another repository is refused with `CONFLICT`; remove one of the two registrations first. Merging two registrations is not supported.
 - What moves along:
-  - Every membership points at the new folder, and the member's name becomes the new folder name. In a discovered workspace the member counts as discovered when the new folder is the discovery root or directly inside the discovery folder, and as manual otherwise. A workspace's root repository that ends up anywhere other than its `discovery_root` stops being the root and stays an ordinary member.
-  - **The folder that moved** is the highest folder that is gone among the old folder and those of its parents whose names the new path repeats: relocating `code/web` to `src/web` while `code` is gone means `code` became `src`. Nothing moves along when the old folder still exists, as when switching to a second clone.
-  - Inside the folder that moved: a workspace `discovery_root`, missing registrations, and missing non-Git members move to the same relative path in the new folder when it exists. A repository moves only when that path is its working-tree root and the same repository; the others, including any Git cannot check, stay missing.
-  - When a main checkout's Git directory is gone from its old place and the history is the same, its registered linked worktrees are pointed at the new location. They work again once `git worktree repair` has run; Brainiac does not run it.
-  - Activity (baseline, feed, read state) follows the registration to the new Git directory when the history is the same, no other registration still uses the old Git directory, and none already uses the new one. When the new one is in use, the old feed is dropped once nothing uses it. When registrations remain on the old Git directory, its feed stays with them.
-- A status observation that started before a relocation and finishes after it is discarded.
+  - Every membership points at the new folder, and the member's name becomes the new folder name. A workspace's root repository that ends up outside the workspace's selected folder stops being the root and stays an ordinary member.
+  - When a parent folder was renamed or moved (relocating `code/web` to `src/web` while `code` is gone means `code` became `src`), the other missing repositories, missing members, and discovery folders inside it move to the same place under the new folder when they are there; a repository moves only when it is the same repository. Nothing else moves when the old folder still exists, as when switching to a second clone.
+  - A moved main checkout's registered linked worktrees are pointed at the new location. They work again once `git worktree repair` has run; Brainiac does not run it.
+  - The activity feed and its read state follow the registration when the history is the same.
 - Afterwards the moved registrations are refreshed and watched at their new folders. Branches that moved while a repository was missing arrive as ordinary activity events.
 - Relocating writes nothing to any repository.
+
+The exact rules (which folder counts as moved, discovered or manual after a move, activity, and concurrent changes) are in `docs/architecture.md`, Relocation.
 
 #### Presentation and Git boundaries
 
 In the sidebar and the overview, a workspace with a root shows the root first, followed by its other members; discovered members are grouped under the discovery folder's name. A manual workspace shows a flat list. The overview has no layout-specific scope switch: users narrow it with the name/path and state filters and by opening one repository. Aggregate counts retain per-repository attribution; histories and diffs are never implicitly merged into one Git history.
 
 Root-repository status is exactly what Git reports for the root. Member status is collected independently, including when the root ignores the discovery folder. If the root tracks a member as a gitlink/submodule or reports a nested directory as untracked, display that parent entry as its own observation; it is not a substitute for the member's detailed status. Do not add member file counts into the root's own dirty-file count.
-
-Route working-tree notifications to the most specific registered repository root. Refresh an ancestor when its own tracked state or detected Git relationship may have changed; avoid a full parent status job on every child keystroke. Keep a separate lightweight watcher for workspace membership discovery. Treat each linked worktree's available project folders independently; do not assume a root worktree automatically contains every child checkout.
-
-### Relationship to editor workspace files
-
-Editor workspace files such as VS Code's `.code-workspace` often describe a similar grouping: a list of folders, some commented out, alongside editor-only settings such as `files.exclude` and task definitions. Reading, importing, watching, rewriting, or synchronizing such files is not a v0.1 requirement.
 
 A discovered workspace with a root renders in the sidebar like this; a manual one omits the root and the group:
 
@@ -244,11 +245,9 @@ Product
     search
 ```
 
-v0.1 recreates such a grouping by discovery from a folder, by manual selection, or both. Brainiac's selection is persisted in its own SQLite configuration; an editor's active or commented folder entries do not determine membership.
+### Relationship to editor workspace files
 
-Editor display settings such as hiding folders or `.git` do not change Brainiac's tracking model. Each selected repository remains independently inspectable. Task or launch definitions found in such files introduce no launcher requirement and are never executed.
-
-A `.code-workspace` convenience importer can be considered later if useful. It is outside v0.1 acceptance criteria, with no required ongoing synchronization.
+Editor workspace files such as VS Code's `.code-workspace` often describe a similar grouping: a list of folders, some commented out, alongside editor-only settings such as `files.exclude` and task definitions. Brainiac does not read, import, watch, rewrite, or synchronize them. The same grouping is recreated by discovery from a folder, by manual selection, or both, and kept in Brainiac's own configuration. An editor's active or commented folder entries, its display settings (hidden folders or `.git`), and its task or launch definitions change nothing in Brainiac, and tasks are never executed. A `.code-workspace` importer may come later, without ongoing synchronization.
 
 ### Single-repository viewer
 
@@ -256,35 +255,31 @@ A registered repository opens directly; workspace membership is optional. Keep t
 
 #### Changes and diffs
 
-- Group staged, unstaged, untracked, and conflicted files. Show paths, change kinds, rename source/destination, and added/removed line counts with a small change bar (`git diff --numstat` for the index and the working tree). Groups fold; long folder names are shortened in the middle so the file name always shows.
+- Group staged, unstaged, untracked, and conflicted files. Show paths, change kinds, rename source/destination, and added/removed line counts with a small change bar. Groups fold; long folder names are shortened in the middle so the file name always shows.
 - For tracked text, display a unified diff with line numbers, additions/deletions, and context. Separate HEAD-to-index and index-to-working-tree comparisons; the same file can appear in both groups. The comparison switch shows each side's counts and offers **Both** (HEAD to working tree, one combined patch).
-- Every patch view offers Unified/Split layouts, changed-word highlights inside a modified line pair (computed in the frontend), **Ignore whitespace** (`git diff -w`), hunk position with previous/next hunk jumps, and a hunk header that stays pinned while scrolling.
+- Every patch view offers Unified/Split layouts, changed-word highlights inside a modified line pair, **Ignore whitespace**, hunk position with previous/next hunk jumps, and a hunk header that stays pinned while scrolling.
+- Untracked lists each file, including every file inside a new folder; a folder that holds its own repository is one entry. A group draws its first 1,000 entries and offers **Show more** for the rest.
 - Untracked files use a bounded, read-only text preview labeled untracked. Conflicted files show conflict status and current contents; conflict resolution is later scope.
 - Binary files, submodule changes, Git LFS pointers, symlinks, and oversized patches receive explicit summaries rather than misleading text diffs. Do not download LFS objects or traverse submodules automatically.
 - Display limits: 1 MiB or 10,000 patch lines per file by default, whichever comes first, changed in Settings → Repositories. Mark truncation and offer Open in editor; never silently omit remaining content.
-- Load only the selected patch. Revalidate/invalidate displayed working-tree diffs when repository state changes and discard obsolete requests after selection switches.
-- Keep patch rendering read-only, virtualize long output, and escape source text.
-
-Git supplies comparisons of working tree, index, and commits; disable external diff/text-conversion helpers and paginate/bound output. [Git diff documentation](https://git-scm.com/docs/git-diff)
+- A displayed working-tree diff updates when the repository changes; patches are read-only.
 
 #### History and commit details
 
-- Default history is the current HEAD's reachable commits, newest/topologically ordered. Load 100 records per page, anchored to the selected ref's resolved commit ID so new commits do not shift an in-progress traversal unexpectedly.
+- Default history is the current HEAD's reachable commits, newest/topologically ordered. It loads 100 commits at a time, and new commits do not shift a list being scrolled.
 - Show commit hash, subject, author, authored/committed time, parent IDs, and branch/tag decorations. Display full message in commit details.
-- Offer ref selection and commit-message/hash filtering; an `author:` token in the filter limits by author (`git log --author`). Queries remain scoped to the selected repository/ref; indicate loading and cancellation.
+- Offer ref selection and commit-message/hash filtering; an `author:` token in the filter limits by author. Queries remain scoped to the selected repository/ref; indicate loading and cancellation.
 - Each row shows the author's initials and name; the day heading stays pinned while scrolling. The commit's file list can be hidden to give the patch the full width, shows a +/− bar per file, and a file stepper ("1 / 7", `[` and `]`) moves through files.
 - Selecting a commit loads its changed-file list; selecting a file loads its patch. Compare a normal commit with its parent, a root commit with an empty tree, and a merge commit with its first parent by default. Label the chosen parent and permit selecting another parent.
 - Copy commit hash and relative file path. Display removed files and rename history correctly; opening a historical path is separate from opening its current working-tree file.
 - A graphical branch-lane visualization and blame are future additions. A useful history list and parent links are sufficient for v0.1.
 
-Use Git's history/object commands behind structured Rust DTOs rather than parsing terminal-decorated output. [Git log documentation](https://git-scm.com/docs/git-log), [Git show documentation](https://git-scm.com/docs/git-show)
-
 #### Branches and tags
 
-List local branches, remote-tracking branches, and tags, marking the current branch and upstream where present. Selecting a ref changes the history view without checking out the branch. Resolve refs to object IDs in Rust before comparison/history queries. [Git ref enumeration](https://git-scm.com/docs/git-for-each-ref)
+List local branches, remote-tracking branches, and tags, marking the current branch and upstream where present. Selecting a ref changes the history view without checking out the branch.
 
 - Sort by recent activity (default) or name. Branches whose tip is older than three months fold into their own group; remote-tracking branches fold per remote; tags sort newest version first. Long names keep their start and end, shortened in the middle.
-- Compare every branch with the repository's default branch: the remote's `HEAD` target (such as `origin/main`), else a local `main` or `master`. Show "ahead/behind main" next to the upstream comparison (`%(ahead-behind:<base>)` on Git 2.41+, `git rev-list --left-right --count` otherwise).
+- Compare every branch with the repository's default branch: the remote's `HEAD` target (such as `origin/main`), else a local `main` or `master`. Show "ahead/behind main" next to the upstream comparison.
 - The selected ref's side panel separates "commits not on main" from the shared history.
 
 ### Multi-repository dashboard
@@ -293,14 +288,12 @@ Show repository name/path, branch or detached HEAD, staged/unstaged/untracked/co
 
 ### Refresh strategy
 
-Watching `.git/HEAD`, refs, and index alone misses changes to unstaged working files. Observe both Git metadata and working-tree changes, excluding ignored/generated trees from expensive recursive observation.
+Brainiac notices changes to unstaged working files as well as to Git's own state (commits, branch switches, staging), with no manual refresh (`docs/architecture.md`, Refresh).
 
-- Debounce repository invalidation for approximately 500 ms.
-- Resolve worktree-specific and shared Git metadata directories explicitly.
-- Reconcile on launch, wake, activation, and manual refresh.
-- Use a slow safety refresh, proposed 60 seconds while the dashboard is visible, for missed events. Back off on expensive repositories and label stale data.
-- If status exceeds a proposed 5-second timeout, preserve the last snapshot with a warning and retry option.
-- Batch/coalesce event bursts; never run a status command per keystroke or per watcher callback.
+- A burst of changes causes one refresh after a short pause, never one per file saved or keystroke.
+- Everything is reconciled on launch, wake, window activation, and manual refresh.
+- A slow safety refresh, proposed every 60 seconds while the dashboard is visible, catches missed changes. Expensive repositories back off, and data that may be out of date is labelled stale.
+- If status takes longer than a proposed 5 seconds, the last snapshot stays on screen with a warning and a retry option.
 
 v0.1 actions are inspect status/diffs/history/refs, copy hashes/paths, refresh, fetch, reveal in Finder, and open in editor. Knowledge/task associations arrive in v0.2. Fetching (below) is the only operation that writes to a repository, and automatic fetching happens only for workspaces that opted in. Branch checkout, commit, stash, pull, and automatic dev-server startup remain future, explicit actions.
 
@@ -308,15 +301,15 @@ v0.1 actions are inspect status/diffs/history/refs, copy hashes/paths, refresh, 
 
 Fetching updates remote-tracking refs (`refs/remotes/...`), the objects they need, and tags that point into the fetched history. It never touches the working tree, the index, local branches, `HEAD`, or the stash, so it cannot change anything the user is working on. It is still a write to `.git`, so it happens in exactly two cases:
 
-- **Fetch now:** an explicit action on a repository (header button, menu) or on a workspace (every member). It fetches the remote of the current branch's upstream, else `origin`, else the only remote, with the remote's configured refspecs, keeping only those whose destination is under `refs/remotes/<remote>/`, or that copy a tag to the same name without forcing (a mirror refspec such as `+refs/heads/*:refs/heads/*` is dropped, and so is anything that could overwrite the user's own tags). When none is left, the standard `+refs/heads/*:refs/remotes/<remote>/*` is used.
-- **Auto-fetch:** a per-workspace setting, **off by default**. While Brainiac runs, each Git directory that an auto-fetching workspace contains fetches only that workspace's watched branch patterns (`+refs/heads/<pattern>:refs/remotes/<remote>/<pattern>`) from `origin`, else the only remote, else the current branch's upstream remote, so a branch that tracks a fork does not change what is watched. It runs at most every 15 minutes (a global setting) and backs off exponentially after failures up to 6 hours.
+- **Fetch now:** an explicit action on a repository (header button, menu) or on a workspace (every member). It fetches the remote of the current branch's upstream, else `origin`, else the only remote, with the remote's configured refspecs, leaving out any that could write a local branch or overwrite the user's own tags.
+- **Auto-fetch:** a per-workspace setting, **off by default**. While Brainiac runs, each repository of an auto-fetching workspace fetches only that workspace's watched branch patterns from `origin`, else the only remote, else the current branch's upstream remote, so a branch that tracks a fork does not change what is watched. It runs at most every 15 minutes (a global setting) and backs off exponentially after failures up to 6 hours.
 
-Both use the same hardened invocation with explicit, checked refspecs, so a fetch never prunes, runs hooks, recurses into submodules, or writes outside remote-tracking refs and tags, whatever the user's configuration says (`docs/architecture.md`, Git).
+Both use the same hardened invocation with explicit, checked refspecs, so a fetch never prunes, runs hooks, recurses into submodules, or writes outside remote-tracking refs and tags, whatever the user's configuration says (`docs/architecture.md`, Fetch invocation).
 
-- **Credentials:** a background process cannot answer prompts. Git runs with `GIT_TERMINAL_PROMPT=0` and `GCM_INTERACTIVE=never`; when the user has not configured `core.sshCommand`, SSH runs with `BatchMode=yes`. Credential helpers such as the macOS keychain keep working. Authentication failures are reported as "needs sign-in" with the recovery step (fetch once from a terminal or editor), never as a prompt. Hardware keys and password-manager SSH agents may still ask for approval on each fetch; the auto-fetch setting says so.
-- **Deleted branches:** when the remote no longer has a branch an explicit refspec names, the fetch is retried without it instead of failing, and auto-fetch leaves it out for 24 hours (Fetch now forgets this), so missing default branches cost no extra connections.
-- **Other Git processes:** before fetching, look for the lock files of what a fetch writes (`packed-refs.lock`, `shallow.lock`, the reftable lock, and `*.lock` under the remote's refs and the tags; a commit in progress does not block). A fresh lock means "busy": nothing is recorded and auto-fetch retries on its next turn, waiting a full interval after three busy attempts in a row. A lock older than ten minutes, or dated more than a minute in the future, is a leftover that also blocks the user's own Git commands; it is reported as an error that names the file.
-- **Concurrency:** at most two fetches run at once. A Git directory never has two fetches in flight: a second request (such as Fetch all over a checkout and its linked worktree) waits for the first and shares its result.
+- **Credentials:** a background process cannot answer prompts, so a fetch never asks for a password or passphrase. Credential helpers such as the macOS keychain keep working. Authentication failures are reported as "needs sign-in" with the recovery step (fetch once from a terminal or editor), never as a prompt. Hardware keys and password-manager SSH agents may still ask for approval on each fetch; the auto-fetch setting says so.
+- **Deleted branches:** a watched branch the remote no longer has does not make the fetch fail, and it costs no extra connections.
+- **Other Git processes:** while another Git process is changing what a fetch writes, the fetch is skipped as busy, records nothing, and auto-fetch tries again later; a commit in progress does not block. A lock file left behind by another process, which also blocks the user's own Git commands, is reported as an error that names the file.
+- **Concurrency:** fetches run a few at a time, and a repository never has two in flight: a second request (such as Fetch all over a checkout and its linked worktree) shares the first one's result.
 - **Freshness:** a repository's "last fetched" time is the later of Brainiac's own last fetch and the modification time of `FETCH_HEAD` (written by the user's own fetches). The activity feed warns when a watched repository has not been fetched for two days.
 - After a fetch every checkout of the Git directory is refreshed as after a watcher event, which updates ahead/behind and the activity feed. A fetch that had nothing to fetch reports no fetch time.
 
@@ -324,21 +317,21 @@ Both use the same hardened invocation with explicit, checked refspecs, so a fetc
 
 The Activity tab of a workspace answers "what did the team merge or release since I last looked?". It reads local refs only; news arrives when a fetch (the user's, their editor's, or Brainiac's) moves remote-tracking refs.
 
-- **Watched refs** are per workspace: branch names or patterns matched against remote-tracking branches without their remote prefix (`main`, `develop`, `release/*`), and tag patterns (`v*`). `*` matches any run of characters; branch patterns become fetch refspecs, so they may contain one `*` at most. Patterns must be valid ref names (`git check-ref-format`), and `?`, `[`, `]`, `:`, `^`, `~`, `\`, spaces, and a bare `@` are rejected. Defaults: branches `main`, `master`, `develop`; tags `v*`.
-- **Tracking is per Git directory** (`common_git_dir`), so a checkout and its linked worktrees share one set of tips and one feed. One tracking pass runs per Git directory at a time; it follows each status observation and is skipped cheaply when neither the ref files (their modification times) nor the watched patterns changed in the last five minutes (after that a full pass runs anyway, for filesystems with coarse modification times).
-- A pass compares the tips of the refs any containing workspace watches with the stored baseline. The baseline remembers which patterns it covered: refs that start matching later (the first observation, a new pattern, a second workspace) join it silently, and so do the branches of a remote that is new to it (an added or renamed remote). Changing a workspace's watched patterns takes a pass right away from the last status, and a repository joining a workspace is refreshed, so branches created afterwards still arrive as news. Each moved ref becomes one event, at most twenty per pass, newest first by tag or commit date (the rest join the baseline):
+- **Watched refs** are per workspace: branch names or patterns matched against remote-tracking branches without their remote prefix (`main`, `develop`, `release/*`), and tag patterns (`v*`). `*` matches any run of characters, at most once in a branch pattern; patterns must be valid ref names. Defaults: branches `main`, `master`, `develop`; tags `v*`.
+- A checkout and its linked worktrees share one feed (`docs/architecture.md`, Activity tracking).
+- Refs that start being watched (the first observation, a new pattern, a second workspace, a newly added or renamed remote) join silently; only their later moves are news. Branches created after a pattern changes or a repository joins a workspace still arrive as news. Each moved ref becomes one event, at most twenty at a time, newest first by tag or commit date:
   - **advanced:** the old tip is an ancestor of the new one; record the commit and merge counts, up to five newest commits, and the authors.
-  - **rewritten:** history was replaced (force-push), or the old tip no longer exists; record how many commits were replaced and added. Shown in red. Any other failure while deciding (a timeout) fails the pass, which is retried, rather than reporting a rewrite.
+  - **rewritten:** history was replaced (force-push), or the old tip no longer exists; record how many commits were replaced and added. Shown in red.
   - **created:** a watched branch appeared.
   - **tagged:** a new tag matching a tag pattern, with the number of commits since the previous tag.
-- Details are best effort: when they cannot be read, the event is recorded without them and the tips still advance, so one bad ref cannot stop the feed.
-- **Conflict risk:** paths changed by an advanced range (`git diff --name-only old new`, bounded) that the user also changes in the working tree are listed on the event.
-- **Drift:** when the current branch is behind its upstream after the move, or behind the watched branch it was forked from (the watched branch with the fewest commits unique to `HEAD`), the event says by how much.
+- Details are best effort: when they cannot be read, the event is recorded without them, so one bad ref cannot stop the feed.
+- **Conflict risk:** paths changed by an advanced range that the user also changes in the working tree are listed on the event.
+- **Drift:** when the current branch is behind its upstream after the move, or behind the watched branch it was forked from, the event says by how much.
 - **Each workspace sees what it watches:** the feed, the unread count, Mark all as seen, and notifications use the workspace's own patterns, and only events observed after the workspace started watching the matching pattern, even when another workspace watching the same repository has more or older ones. Seen state belongs to the event, so an event both workspaces show is seen in both.
 - **Unread:** the tab shows a divider between unread and seen events, Mark seen per event and Mark all as seen, and the sidebar shows the workspace's unread count.
-- **Team pulse:** commits, merges, and releases on the watched refs in the last seven days, and the most active authors, counted from local refs. It is a separate request so the feed never waits for it; each Git directory is read again only when its ref files changed (the tracking fingerprint), otherwise its last reading is reused and filtered to the current seven days.
+- **Team pulse:** commits, merges, and releases on the watched refs in the last seven days, and the most active authors, counted from local refs. It loads separately, so the feed never waits for it.
 - **Let me know:** optional per workspace, all off except the conflict-risk warning: a macOS notification when a watched branch moves (at most one per repository and workspace per hour), a morning digest at 09:00 local time when there are unread events, and the conflict-risk warning on events.
-- Events older than 90 days are pruned. Removing the last checkout of a Git directory deletes its tips and events; a Git directory no workspace watches loses its baseline, so watching it again starts silently.
+- Events older than 90 days are pruned. Removing the last checkout of a repository deletes its feed; a repository no workspace watches forgets what it saw, so watching it again starts silently.
 
 ## 5. Notes — v0.2
 
@@ -414,7 +407,7 @@ A note is edited as its Markdown text, so a save contains exactly what the user 
 - A task has a title, a short plain-text description, a status (to do, in progress, done, cancelled), an optional planned date, an optional deadline, and links to at most one note and one repository. Work spanning several repositories links a note that covers them. Longer material belongs in the linked note.
 - Planning a task and giving it a deadline are separate actions. Dates are calendar days in the Mac's time zone, so a task due today stays due today when travelling or when the clocks change.
 - Completing a task records when; reopening it clears that. A task is drawn with a round check, never a square checkbox.
-- **To sort:** a new task without a planned date or deadline is *to sort* until it gets one or is marked **Sorted**. v0.2 has no Inbox: everything is created inside the app, and an inbox earns its place only when items arrive faster than they are sorted, which starts with v0.4's capture and imports. Quick notes go to an ordinary `Inbox/` folder in the vault.
+- **To sort:** a new task without a planned date or deadline is *to sort* until it gets one or is marked **Sorted**. v0.2 has no Inbox: everything is created inside the app, and an inbox earns its place only when items arrive faster than they are sorted, which starts with v0.6's capture and imports. Quick notes go to an ordinary `Inbox/` folder in the vault.
 - **Today** lists open tasks that are overdue, due today, or planned for today or an earlier day (unfinished work carries over), then those completed today. Tasks to sort appear as one folded **To sort · N** line above them; expanding it lists them. Each task shows its linked note and repository, the repository with its live state. A side panel lists the repositories in today's work with their state and **Fetch** and **Open**. "Today" follows the Mac's date, including across midnight and after waking.
 - **Tasks** lists all tasks, filtered by status and by **To sort**.
 - Two edits of the same task, from two places, never overwrite each other silently: the later one is refused with a conflict and shows the current task.
@@ -466,13 +459,14 @@ Review and merge the pull requests of a workspace's repositories, on GitHub and 
 
 ### Accounts
 
-- **Settings → Accounts** lists one account per provider: its login, the kind of token, when it expires, and what it allows, with **Replace Token…** and **Remove**.
+- **Settings → Accounts** lists one account per provider: its login, the kind of token, when it expires, where the token comes from, and what it allows, with **Change Token…** and **Remove**.
 - GitHub takes a fine-grained personal access token with pull requests read and write, contents read, and checks and commit statuses read; merging and resolving threads also need contents read and write, which also lets the token push, so Accounts says so and leaves the choice to the user. Bitbucket Cloud takes an Atlassian API token, with the account's email, scoped to `read:user:bitbucket` (to know which pull requests are yours and wait on you), `read:repository:bitbucket`, `read:pullrequest:bitbucket`, and `write:pullrequest:bitbucket`; Bitbucket's app passwords no longer work.
 - Adding an account checks the token with one request. For Bitbucket that request also returns the token's scopes, so a missing one is named at once, and a token that can read but not write is offered **Save as Read-Only**. GitHub shows a fine-grained token's expiry but not its permissions, so a missing permission is found the first time GitHub refuses an action: that action is then turned off and the message names the permission to add.
 - An Atlassian API token is about 190 characters, longer than Terminal's hidden password prompt keeps (`security … -w` with nothing after it cuts the input short). Paste it into Accounts, or add it from Terminal from the clipboard with `security add-generic-password -U -s brainiac -a bitbucket -w "$(pbpaste)"`.
-- Tokens are kept in the macOS Keychain, in the item with service `brainiac` and account `github` or `bitbucket`, and sent only to the service they belong to, over HTTPS. They never appear in logs, exports, or the database.
+- A token is kept in the macOS Keychain, in the item with service `brainiac` and account `github` or `bitbucket`, or read from a command or an environment variable (**Token from**; section 12), and sent only to the service it belongs to, over HTTPS. Tokens never appear in logs, exports, or the database.
+- **Test** on the account form checks the form's token with the same request, without saving anything.
 - A token already in that item, such as one added with `security add-generic-password -s brainiac -a github -w`, is found when Accounts opens without reading it, and **Use This Token** checks it like a pasted one; Bitbucket still asks for the account's email. The first time Brainiac reads an item it did not create, macOS asks to allow it.
-- A token is stored only once its check passes. **Remove** deletes the account and its token from the Keychain.
+- A token is stored only once its check passes. **Remove** deletes the account and Brainiac's Keychain item; a command or a variable it read the token from is not changed.
 
 ### Which pull requests a repository has
 
@@ -531,3 +525,148 @@ The fifth tab of a repository (`Cmd+5`, after Notes).
 - Bitbucket allows each user about 1,000 requests an hour and GitHub 5,000. A workspace of 30 repositories costs about 400 an hour on Bitbucket and far fewer on GitHub, where asking whether anything changed is free. Brainiac spends them in order (the pull request on screen, then lists, then everything else), asks only for what changed, and shows each account's use. When a provider is out of requests or unreachable, Brainiac shows what it had with its age, says when it will try again, and the Git views keep working.
 - Pull requests, files, and conversations are cached on the Mac so the tabs open at once. The cache is never backed up or exported, can be deleted, and forgets a pull request 14 days after it closes. Review drafts are the user's own text and are backed up with Brainiac's data.
 - An edit refused because the pull request changed since it was shown (new commits, or someone else's edit) shows the current pull request and keeps what the user wrote, like a note save conflict.
+
+## 11. Databases — v0.4
+
+A database client next to the repositories, notes, and tasks it relates to: saved connections to SQLite files and PostgreSQL servers, an editor that runs SQL, a fast result grid, saved queries for the ones used every week, and a live view of a PostgreSQL server's health. It covers what a programmer reaches for daily, not everything a full database tool does (`docs/design/databases.md`, Not in this design). The design behind it, and the options compared, are in that file.
+
+### Boundaries
+
+- **Read only unless allowed.** A connection is read only unless its access is set to Read and write, and even then each tab on a Production connection starts read only. On a read-only connection a statement cannot change data (Safety, below).
+- **Passwords are kept only in the Keychain**, asked for once per run of Brainiac, or read from an environment variable or a command (section 12). They never appear in Brainiac's files, logs, backups, or exports.
+- **Results stay in memory** while their tab is open. Copy and Export are the only ways rows leave the app; the history keeps statements, never rows.
+- Brainiac's own databases (`brainiac.sqlite3`, `index.sqlite3`, `history.sqlite3`, `forge.sqlite3`) can be opened, always read only.
+- Agents get no database tools, and nothing writes SQL for the user.
+
+### Connections
+
+- **Databases** is a sidebar section after Notes (also View › Databases and `Cmd+K`). It opens on **Home**: the connections as cards (kind, where it points, access, and a SQLite file's size), each with **New Query** and, for PostgreSQL, **Health**; the saved queries by folder, each with **Run**, **Open**, **Copy as Markdown**, and **Delete…**; and one field that filters both. Home is always the first tab.
+- **New Connection…** asks for a kind and its fields:
+  - **SQLite:** the database file, chosen with the macOS file dialog. Brainiac never creates a file.
+  - **PostgreSQL:** host, port, database, user, password, and TLS: **Verify** (the default: the Mac's trust store plus an optional CA file, for providers whose certificates the Mac does not trust), **Require without verifying**, or **Off**. Pasting a `postgres://` or `postgresql://` URL fills the fields and moves its password into the password field.
+  - **Name**, **Environment** (Local, Development, Staging, Production), **Access** (Read only, or Read and write; a new Production connection starts read only), the **time limit** of a statement (30 seconds by default), and for PostgreSQL **Runs on** (Health, below).
+  - **Password:** kept in the Keychain (item `brainiac/db:<connection id>`), asked for once each time Brainiac runs, read from an environment variable or a command (section 12), or none. Editing a connection without typing a password keeps the saved one; **Refresh Password** forgets the one kept for this run.
+- **Test Connection** connects once with the form's fields, reading the form's password source afresh, and reports the server's version, or the reason in words: a password the server refused, a database that does not exist, nothing listening at the host and port, a host not found, a certificate this Mac does not trust or that is for another host name, or a server that does not offer TLS.
+- A connection's environment is its color everywhere it appears, and its name in words beside it: a strip along the tab's editor, a dot on its tabs, a label on Home and in the switcher. Production is red.
+- A connection can be linked to repositories. A repository's Notes tab lists its linked connections, each with **New Query**, and **Link a connection…** adds one.
+- **Delete Connection…** asks first, removes its Keychain item, and leaves the database itself untouched; saved queries that ran on it keep their SQL and lose their connection. A Keychain item that cannot be deleted leaves the removal in Settings → Secrets, with **Retry**.
+
+### The query view
+
+- **Tabs.** Each tab is one editor with its own connection and its own database session, so a setting or a transaction in one tab never reaches another. A tab shows its saved query's name or "Untitled n", a dot in its connection's environment color, and a dot while its text differs from its saved query (or, untitled, is not empty). Tabs and their text are kept across restarts. `Cmd+T` opens a tab; `Cmd+1` is Home and `Cmd+2`…`Cmd+9` the tabs after it. Closing a tab with unsaved text that is not a saved query asks first.
+- **Connection.** The toolbar's connection button names the tab's connection, its environment, and "Read only" when the tab cannot write, and opens a filterable list to switch the tab to another connection, or add one. Switching keeps the text and closes the tab's session.
+- **Editor.** SQL in the connection's dialect, with completion of keywords, tables (qualified, and bare for the default schema), and columns from the schema.
+- **Running.** `Cmd+Enter` runs the statement under the cursor, or each statement in the selection; with the cursor after a statement's `;`, that statement. `Shift+Cmd+Enter` (**Run All**) runs every statement in turn and stops at the first failure; each statement that ran gets its own result. `Cmd+.` (**Cancel**) cancels the statement on the server and stops Run All. A statement that runs longer than the connection's time limit is stopped by the server.
+- **Errors** are shown under the editor with the database's own message, detail, hint, and code, the line and column when the database reports where, and **Go to Error**, which puts the cursor there; the place is also underlined in the editor until the text changes.
+- **Explain** (`Cmd+E`, or the Explain menu) shows the plan of the statement under the cursor as an indented tree with costs and estimated rows, without running it. **Explain Analyze** runs it to measure it, adding actual rows, time, and loops; in a tab that can write it asks first. SQLite shows its query plan, and its Explain Analyze times the statement.
+- **Side panel** (shown or hidden from the toolbar) holds three things for the tab's connection only: **Schema** (schemas, tables, views, and materialized views with PostgreSQL's row estimate; expanding one lists its columns with type, nullability, and default, its indexes, and its foreign keys, and **Select Rows** opens `select * from <table> limit 100` in a new tab; **Refresh Schema** reads it again; the schema is read when a tab on screen first uses the connection, once however many tabs ask), **Saved** (the saved queries that run on this connection), and **History**.
+
+### Results
+
+- **Grid.** Only the rows on screen are drawn, so a 10,000-row result scrolls like a short one. Headers show each column's name and type; columns resize by dragging their edge; clicking a header sorts the rows on screen (ascending, descending, then as returned), with NULLs last. Numbers are right-aligned, `NULL` is drawn apart from the text "NULL", and long values are cut with an ellipsis. The arrow keys move the selected cell.
+- **Inspector.** Hidden until its button shows it, and then kept shown: the selected cell's whole value beside the grid: JSON pretty-printed, long text wrapped, binary as its size and hex. A value is cut at 64 KB for the window, and binary at its first 4 KB; the inspector says so, and Export writes the whole value.
+- **Values** are shown as the database prints them: exact `numeric`, intervals as `1 year 2 mons 3 days 04:05:06`, arrays as `{1,2,NULL}`. Integers beyond 2⁵³ stay exact. `timestamptz` is shown in the Mac's time zone with its offset. A few rarely selected PostgreSQL types (geometry such as `polygon`, `tsvector`, the `reg*` types) are shown as their type with "cast to ::text".
+- **How much is fetched.** A statement returns at most 1,000 rows, and says "first 1,000 rows · more available". **Fetch All** runs it again for up to 100,000, and stops sooner when the rows reach 128 MB, counting each value as shown; it is offered only when the statement ran read only, so fetching more never repeats a write.
+- **Copy** the rows as tab-separated text (pastes into a spreadsheet), CSV, JSON, a Markdown table (pastes into a note), or SQL `INSERT` statements; `Cmd+C` in the grid, or the inspector's **Copy**, copies the selected value. Copy takes values as the result holds them, so a value cut for the window is copied cut, and the notice says how many were; Export writes them whole.
+- **Export…** writes every row to a CSV or JSON file chosen in the save dialog by running the statement again read only, so it is offered only for statements that ran read only. The file appears only once it is complete.
+- A statement without rows shows its command tag ("UPDATE 42") and whether it committed or waits in the open transaction.
+
+### Saved queries
+
+- **Save Query** (`Cmd+S`) names the tab's text: a name, a folder (`Billing`, `Support/Weekly`), an optional description, and the connection it runs on. Saving a tab opened from a saved query updates it; **Save as New** makes another. If the saved query changed elsewhere since the tab opened it, the save is refused and the tab keeps its text.
+- **Parameters.** `:name` in a statement is a parameter; inside strings, quoted names, comments, and `::type` casts, `:` is not. Running a statement with parameters shows a form above the editor with a field per name, prefilled with the last values, and a **NULL** switch per field. Values are sent as values, never pasted into the SQL: PostgreSQL reads each with the type it expects there and says so when it cannot ("abc" for an integer); SQLite gets a number when the value is one, and text otherwise. A saved query keeps the values it last ran with.
+- Saved queries are listed on Home, in the side panel's **Saved** for their connection, and in `Cmd+K`, which finds them by name, folder, description, or SQL and runs one at once on its connection, asking for its parameters.
+- **Copy as Markdown** puts the query's name, connection, description, and a fenced `sql` block on the clipboard, for a note.
+- Saved queries are the user's own text: kept in Brainiac's data and backed up with it.
+
+### History
+
+- Every statement that runs is recorded: its SQL, the connection, when, how long it took, and the rows returned or changed or the error, never the rows themselves. The side panel's **History** lists the tab's connection's last runs, newest first, and searches their SQL; opening one puts its SQL in a new tab. **Clear History of** *connection* asks first.
+- History keeps 90 days or 10,000 runs per connection, whichever is fewer, and is turned off in Settings → Databases.
+
+### Safety
+
+- **Read only means read only.** On a read-only connection, or in a tab running read only, a statement cannot change data: every PostgreSQL statement runs alone in its own read-only transaction, so it cannot also turn the transaction to read and write, and a SQLite file is opened read only by SQLite itself; `ATTACH` and `VACUUM INTO`, which could write another file, are refused. A statement that tries to write fails with "This connection is read only"; `nextval` is refused the same way, and so are PostgreSQL's `COPY` and `LOAD`, which can write files or run programs on the server. Side effects outside the data are not covered: advisory locks, `dblink`, and the server functions a powerful role may call (`pg_terminate_backend`, `lo_export`, `pg_reload_conf`). A read-only database role remains the real guarantee.
+- **Modes.** A tab on a read-and-write connection runs **Read only**, **Auto-commit** (each statement commits), or **Manual**. New tabs start in Auto-commit, except on Production, where they start read only and turning on writes asks first and applies to that tab only. In Auto-commit a statement still runs read only first, so the result knows whether running it again (Fetch All, Export) is safe; a statement the database refuses as a write then runs for real, unless Cancel came first. In Auto-commit and Manual, a PostgreSQL statement waits at most 5 seconds for a lock another session holds and then fails, so a schema change does not queue every later query on its table behind it. A typed `BEGIN`, `COMMIT`, or `ROLLBACK` runs only in Manual: elsewhere each statement is its own transaction, so it is refused with a pointer to Manual rather than seeming to hold back the statements after it. Editing a connection makes a tab's mode fit it: a mode the connection no longer allows, or writes on a connection that became Production, goes back to the connection's default.
+- **Manual transactions.** The first statement opens a transaction, and a bar above the editor says "Transaction open · 3 statements · since 14:02" with **Commit** and **Roll Back**; a typed `BEGIN`, `COMMIT`, or `ROLLBACK` does the same. A `COMMIT` the server refuses (a deferred constraint, a serialization failure) still ends the transaction, and the error says nothing in it was committed. After a failed statement PostgreSQL refuses more until Roll Back, and the bar says "Transaction failed · Roll Back to continue". After 5 idle minutes (2 on Production) the bar turns amber, since an open transaction holds locks others may wait on; the server ends a transaction left idle for 15 minutes (5 on Production). While a transaction is open the tab stays in Manual, its connection and mode cannot change while a statement runs, and an edit to its connection applies once the transaction ends. Closing the tab, switching its connection, or quitting (`Cmd+Q` or closing the window, which quits) with a transaction open asks first, and the answer rolls it back. Quitting from the Dock or when logging out does not ask: the server rolls the transaction back.
+- **Sessions.** A tab's session opens on its first run, closes after 10 idle minutes (never with a transaction open), and at most 8 are open at once, the least recently used idle one closing first. A tab whose session was closed or lost runs on a new one and says "reconnected", since settings such as `SET search_path` are gone. A read-only statement that hits a lost connection runs again once on a new session; any other says the connection was lost and that the statement may or may not have been applied, and an open transaction was rolled back by the server. A PostgreSQL server is asked to notice within about two minutes that Brainiac went away (the Mac slept or changed network) and to close a session left idle for 15 minutes; quitting ends Brainiac's sessions cleanly.
+- A SQLite file inside a repository is the user's file, like a note in a vault that is a Git repository: Brainiac writes to it only through a read-and-write connection, on a statement the user runs, and touches nothing else in the repository.
+
+### Health
+
+What a PostgreSQL server is doing now and over the last hour, as a tab opened from a connection's card on Home. It is a live view, not monitoring: it samples every 10 seconds only while the tab is visible and Brainiac's window is not minimized or hidden, on a session of its own named "Brainiac health" with a 2-second time limit, keeps the hour in memory only, and sends no alerts. A SQLite connection has no Health.
+
+- **From PostgreSQL itself**, with nothing to set up:
+  - **Connections** in use against `max_connections`, split into active, idle, and idle in transaction, marked **Near the limit** (an icon and words, and a banner) from 85%.
+  - **Cache hit ratio** and **transactions per second**, with rollbacks and deadlocks, each with a one-hour line.
+  - **Longest open transaction**, and the temporary files written in the last hour (queries that ran out of `work_mem`).
+  - **Sessions**: pid, user, application, state, how long, what it waits for, and its statement; idle-in-transaction and waiting sessions first. Health's own session is not listed.
+  - **Waiting on locks**: each waiting session and the sessions blocking it.
+  - **Most time spent**: the statements that took the most total time, from `pg_stat_statements`; a row opens its statement with `explain` in a new tab. Without the extension, the panel says how to enable it.
+  - **Largest tables**: size with indexes and TOAST as of the last vacuum or analyze (read without waiting for a table someone holds locked), rows, the share of dead rows, and the last autovacuum.
+- Seeing other users' statements needs the `pg_monitor` role; without it they are shown as hidden and Health names the role to grant.
+- **From where the server runs**, because PostgreSQL does not report its machine's memory, CPU, or disk. The connection's **Runs on** names one place:
+  - **Google Cloud SQL** (project and instance): memory, CPU, and disk from Cloud Monitoring, read once a minute and about a minute behind, with the Google credentials `gcloud auth application-default login` saves on the Mac. Brainiac reads that file when needed and never copies it; the account needs the Monitoring Viewer role.
+  - **Docker container** on this Mac: memory against the container's limit (without reclaimable page cache, as `docker stats` shows it), CPU, and disk I/O, from Docker's API; **List Containers** offers the running ones. Brainiac sends Docker only read requests.
+  - **Not set**: Health shows the PostgreSQL panels and offers to set it. Coolify is listed as needing SSH tunnels, which come later.
+- Each value says where it came from: "Postgres", "Docker", or "Cloud Monitoring · 1 min behind".
+- Health reads the connection's password only to connect. When it cannot be read or the server refuses it, Health shows why and tries again after a minute, so a locked password manager is not asked every 10 seconds.
+- **Cancel Query** and **End Session** are offered on other sessions when the connection's access is Read and write; each asks first, naming the session's user, application, and statement.
+
+## 12. Secrets — v0.4.x
+
+Where an account's token and a connection's password come from. Brainiac writes secrets only to its own items in the macOS Keychain; every other source is read, never changed. The design, the options compared, and the sources still to come are in `docs/design/secrets.md`.
+
+### Sources
+
+| Source | For | What Brainiac saves |
+| --- | --- | --- |
+| **Keychain** (the default, and every secret saved before) | Accounts and PostgreSQL connections | Nothing: the item is `brainiac/github`, `brainiac/bitbucket`, or `brainiac/db:<connection id>` |
+| **Ask each run** | PostgreSQL connections | Nothing: typed once per run of Brainiac and kept in memory |
+| **Environment variable** | Accounts and PostgreSQL connections | The variable's name |
+| **Command** | Accounts and PostgreSQL connections | The program's full path and each argument |
+| **No password** | Connections (SQLite always) | Nothing |
+
+- What is saved says where to look, never the secret, and it is exported and backed up. The command picker says so: an argument holds a reference such as `op://Work/db/password`, never a password or token.
+- **Environment variables** are Brainiac's own, as they were at launch. An app opened from Finder or the Dock does not get a shell's variables, so they suit `pnpm tauri dev` and scripts; the picker says so and suggests a command.
+
+### Commands
+
+- The program is chosen by name or path. **Find…** looks a name up in Brainiac's `PATH`, then `/opt/homebrew/bin` and `/usr/local/bin`, and the full path found is shown and saved; it is never looked up again. A program that is gone asks to be chosen again.
+- Each argument is its own field, and the picker shows the exact array the program runs with, such as `["/opt/homebrew/bin/gh","auth","token","--hostname","github.com"]`. There is no shell: no quoting, variables, `~`, or pipes.
+- The program runs without a terminal and with nothing on its input, in a folder of Brainiac's own, with Brainiac's environment and `GIT_TERMINAL_PROMPT=0`. A password manager may show its unlock window. It runs with the user's permissions; Brainiac does not sandbox it.
+- It must print only the secret. Exactly one final line break is removed; everything else, spaces included, is kept. More than 64 KiB on its output or its messages stops it, as do 60 seconds, together with anything it started.
+- Its output and messages are never shown, logged, or saved, even when it fails. An error names the program's file name and its exit status, and suggests running it in Terminal to see whether it waits for a sign-in.
+
+### When a secret is read
+
+- When it is first needed in a run of Brainiac, and then kept in memory until Brainiac quits. Uses that need it at the same time share one read, so the Keychain asks at most once.
+- **Refresh** (Settings → Secrets, and **Refresh Password** on a connection) forgets it, so it is read, or asked for, again when next used. A server that refuses it forgets exactly that secret: a newer one read meanwhile is kept. An open database session keeps the credentials it connected with.
+- An account's token read afresh is checked with the provider before it is used, once per read. It must belong to the saved account's user: a command whose tool switched accounts is refused with both names, and Brainiac never switches the account by itself. The check updates the token's kind, expiry, and scopes, but never makes a read-only account able to write.
+- **Test** reads the form's source afresh and never uses or changes what is kept for the run. Its result is for the fields it ran with and disappears when they change. A test of exactly what is saved is shown in Settings → Secrets until the source changes or Brainiac quits.
+
+### Saving and removing
+
+- A secret typed for the Keychain is written there only after the account or connection is marked as being saved, and the mark is cleared once both are saved. A save cut off in between, by a failure or a crash, leaves the account or connection unusable, with a message, until it is saved again with the secret typed again or another source. Brainiac never finishes such a save by itself. A new connection whose password cannot be kept is not added at all, so trying again does not leave a second one.
+- Moving from the Keychain to another source uses the new source at once and then deletes the old item. An item that cannot be deleted is shown in Settings → Secrets with **Retry**, and saving says so; it is never used instead of the new source, nor taken up again by choosing the Keychain without typing the secret.
+- **Remove** (an account) and **Delete Connection…** mark it as being removed, delete Brainiac's Keychain item whatever the source is, and then remove it. When the item cannot be deleted, the removal stays in Settings → Secrets with **Retry**.
+
+### Settings → Secrets
+
+- The store in use, and each account and connection with a secret: where it comes from, where Brainiac sends it ("api.github.com as octo", "db.example.com:5432/app as app"), and its state: **not read until allowed** (restored), a save that did not finish, a cleanup or removal to retry, a password to be asked for, or the last test and when it ran ("Not tested" otherwise).
+- **Allow…**, **Retry**, and **Refresh**. Where a connection's password is sent includes its TLS mode and CA file. A source is changed where it is entered: in Accounts, or in Edit Connection….
+- Opening it reads no secret, runs no program, and does not unlock the Keychain.
+
+### Restore
+
+- Every restored account and connection keeps where its secret comes from, and Brainiac reads none of them until the user allows each one: neither to use it nor to test it. **Allow…** shows where it reads, where it sends the secret, and, for a command, the exact program and arguments, and then **Allow This Source**. An item with the same name in this Mac's Keychain is not trusted without it. Saving the account or connection also allows what it shows.
+- A save, cleanup, or removal that had not finished when the export was made is shown as such. Neither restoring nor saving a restored account or connection deletes an item in this Mac's Keychain: only **Retry** does.
+- A snapshot from the `backups` folder is this Mac's own data. Copied back by hand, it keeps the sources it allowed.
+- Upgrading keeps every existing Keychain item and what each connection did before, and reads nothing.
+
+### Boundaries
+
+- A secret never reaches the window, a log, Brainiac's databases, a snapshot, or an export. A secret the user types travels once to Brainiac's backend, and the form clears it.
+- A secret is sent only where it belongs: an account's token to its provider's API, a connection's password to its own server.
+- Agents can neither read a secret nor change where one comes from.
+- Later: Google Secret Manager, Git's credential helper, and `~/.pgpass` (v0.4.x, chosen by use), and the Secret Service if Brainiac ever builds for Linux.

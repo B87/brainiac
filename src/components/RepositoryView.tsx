@@ -68,6 +68,8 @@ type Props = {
   onOpenNote: (noteId: string) => void;
   onNewNote: () => void;
   onEditTask: (task: Task) => void;
+  /** A new query tab on a linked database connection (v0.4). */
+  onNewQuery: (connectionId: string) => void;
   /** Pull requests (v0.3): open one, or Settings → Accounts. */
   onOpenPullRequest: (reference: string) => void;
   onOpenSettings: () => void;
@@ -93,6 +95,7 @@ export default function RepositoryView({
   onOpenNote,
   onNewNote,
   onEditTask,
+  onNewQuery,
   onOpenPullRequest,
   onOpenSettings,
   onChanged,
@@ -358,6 +361,7 @@ export default function RepositoryView({
           onNewNote={onNewNote}
           onEditTask={onEditTask}
           onError={onError}
+          onNewQuery={onNewQuery}
         />
       ) : unavailable ? (
         <Unavailable

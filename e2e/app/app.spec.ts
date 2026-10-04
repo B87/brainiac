@@ -426,6 +426,140 @@ test("Settings adds a GitHub account and saves a Bitbucket token as read-only", 
   await expect(settings.getByText("No account.")).toBeVisible();
 });
 
+test("an account's token comes from a command and is tested before it is saved", async ({
+  page,
+}) => {
+  await openSettings(page, "Accounts");
+  const settings = page.getByRole("main");
+  await settings.getByRole("button", { name: "Add Account…" }).click();
+  await settings.getByLabel("Token from").selectOption("command");
+  await settings.getByLabel("Program").fill("gh");
+  await settings.getByRole("button", { name: "Find…" }).click();
+  for (const [i, arg] of [
+    "auth",
+    "token",
+    "--hostname",
+    "github.com",
+  ].entries()) {
+    await settings.getByRole("button", { name: "Add Argument" }).click();
+    await settings.getByLabel(`Argument ${i + 1}`, { exact: true }).fill(arg);
+  }
+  await settings.getByRole("button", { name: "Test" }).click();
+  await expect(settings.getByText("Belongs to octo.")).toBeVisible();
+  await settings.getByRole("button", { name: "Check and Add" }).click();
+  await expect(settings.getByText(/from Command gh auth token/)).toBeVisible();
+  expect((await calls(page, "save_forge_account")).at(-1)).toMatchObject({
+    request: {
+      kind: "github",
+      token: null,
+      source: {
+        kind: "command",
+        program: "/opt/homebrew/bin/gh",
+        args: ["auth", "token", "--hostname", "github.com"],
+      },
+    },
+  });
+});
+
+test("Settings → Secrets reads nothing, allows a restored source, and retries a cleanup", async ({
+  page,
+}) => {
+  await page.evaluate(() => {
+    window.fake.dbConnections.push({
+      id: "conn-billing",
+      name: "billing",
+      kind: "postgres",
+      environment: "production",
+      access: "read_only",
+      file_path: null,
+      host: "db.example.com",
+      port: 5432,
+      database: "billing",
+      user: "app",
+      tls: "verify",
+      ca_file: null,
+      password: {
+        kind: "command",
+        program: "/opt/homebrew/bin/op",
+        args: ["read", "op://Work/billing/password"],
+      },
+      password_ready: true,
+      credential: { needs_approval: true, pending: null, revision: 3 },
+      statement_timeout_seconds: 30,
+      file_size: null,
+      repository_ids: [],
+      runs_on: null,
+      version: 1,
+    });
+    window.fake.accounts = window.fake.accounts.map((s) =>
+      s.kind === "github"
+        ? {
+            ...s,
+            account: {
+              kind: "github",
+              login: "octo",
+              user_id: "42",
+              display_name: null,
+              email: null,
+              token_kind: "fine_grained",
+              expires_at: null,
+              scopes: null,
+              read_only: false,
+              missing: [],
+              checked_at: "2026-10-02T09:00:00.000Z",
+              token_source: { kind: "environment", name: "GITHUB_TOKEN" },
+              credential: {
+                needs_approval: false,
+                pending: "cleanup",
+                revision: 2,
+              },
+            },
+          }
+        : s,
+    );
+  });
+  await openSettings(page, "Secrets");
+  const settings = page.getByRole("main");
+  await expect(settings.getByText(/macOS login keychain/)).toBeVisible();
+  const github = settings.getByRole("region", { name: "GitHub" });
+  await expect(
+    github.getByText(
+      "Environment variable GITHUB_TOKEN → api.github.com as octo",
+    ),
+  ).toBeVisible();
+  const billing = settings.getByRole("region", { name: "billing" });
+  await expect(billing.getByText(/not read until you allow it/)).toBeVisible();
+  // Opening the page asked for nothing but the list.
+  const asked = await page.evaluate(() =>
+    window.fake.calls
+      .map((c) => c.cmd)
+      .filter((c) => /secret|credential|test_/.test(c)),
+  );
+  expect(asked.length).toBeGreaterThan(0);
+  expect(asked.every((c) => c === "list_secrets")).toBe(true);
+
+  await billing.getByRole("button", { name: "Allow…" }).click();
+  await expect(
+    billing.getByText(
+      '["/opt/homebrew/bin/op","read","op://Work/billing/password"]',
+    ),
+  ).toBeVisible();
+  await billing.getByRole("button", { name: "Allow This Source" }).click();
+  await expect(billing.getByText("Not tested.")).toBeVisible();
+  expect((await calls(page, "approve_secret_source")).at(-1)).toEqual({
+    owner: { kind: "db_connection", id: "conn-billing" },
+    revision: 3,
+  });
+
+  await expect(
+    github.getByText(/old Keychain item could not be deleted/),
+  ).toBeVisible();
+  await github.getByRole("button", { name: "Retry" }).click();
+  await expect(github.getByText("Not tested.")).toBeVisible();
+  await github.getByRole("button", { name: "Refresh" }).click();
+  await expect(github.getByText(/read, or asked for, again/)).toBeVisible();
+});
+
 test("edits typed after a conflict survive leaving the note", async ({
   page,
 }) => {
