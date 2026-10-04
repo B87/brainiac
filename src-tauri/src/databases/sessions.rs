@@ -53,7 +53,12 @@ struct TabSession {
 pub struct QuerySessions {
     connections: Arc<ConnectionService>,
     tabs: Mutex<HashMap<String, Arc<TabSession>>>,
-    schemas: Mutex<HashMap<String, (i64, DbSchema)>>,
+    /// Each connection's schema: the connection version and when it was read.
+    schemas: Mutex<HashMap<String, (i64, Instant, DbSchema)>>,
+    /// One lock per connection, so tabs that ask for the same schema at once
+    /// share one read of the catalog instead of one connection each.
+    // `Arc` so a caller can hold the lock after the map's own lock is released.
+    schema_loads: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// Where runs are recorded; `None` in tests that do not need it.
     history: Option<QueryHistory>,
     /// Settings → Databases: keep a history of runs.
@@ -75,6 +80,7 @@ impl QuerySessions {
             connections,
             tabs: Mutex::new(HashMap::new()),
             schemas: Mutex::new(HashMap::new()),
+            schema_loads: Mutex::new(HashMap::new()),
             history: None,
             history_on: AtomicBool::new(false),
         }
@@ -283,6 +289,12 @@ impl QuerySessions {
                     .await
                 {
                     Ok(r) => {
+                        if session.is_closed() && session.transaction().is_none() {
+                            // A connection that stopped answering is let go now,
+                            // not held open until the tab's next run.
+                            *guard = None;
+                            tab.had_session.store(true, Ordering::SeqCst);
+                        }
                         ran = Some(r);
                         break;
                     }
@@ -461,6 +473,24 @@ impl QuerySessions {
         }
     }
 
+    /// Close every session that is not running a statement, when Brainiac
+    /// quits. An open transaction was asked about already, and is rolled
+    /// back by the server when its session ends.
+    pub async fn close_all(&self) {
+        let tabs: Vec<Arc<TabSession>> = self
+            .tabs
+            .lock()
+            .expect("tabs lock")
+            .values()
+            .cloned()
+            .collect();
+        let sessions: Vec<Session> = tabs
+            .iter()
+            .filter_map(|tab| tab.session.try_lock().ok().and_then(|mut s| s.take()))
+            .collect();
+        futures_util::future::join_all(sessions.into_iter().map(Session::close)).await;
+    }
+
     /// Close every session of a connection, and forget its schema, when it is deleted.
     pub fn close_connection(&self, connection_id: &str) {
         let ids: Vec<String> = self
@@ -477,6 +507,10 @@ impl QuerySessions {
         self.schemas
             .lock()
             .expect("schemas lock")
+            .remove(connection_id);
+        self.schema_loads
+            .lock()
+            .expect("schema loads lock")
             .remove(connection_id);
     }
 
@@ -519,19 +553,29 @@ impl QuerySessions {
     /// The connection's schema, read on first use and on Refresh Schema with
     /// a session of its own, never a tab's.
     pub async fn schema(&self, connection_id: &str, refresh: bool) -> AppResult<DbSchema> {
-        let connection = self.connections.get(connection_id).await?;
-        if !refresh {
-            if let Some((version, schema)) = self
-                .schemas
+        let asked = Instant::now();
+        let load = Arc::clone(
+            self.schema_loads
                 .lock()
-                .expect("schemas lock")
-                .get(connection_id)
-            {
-                if *version == connection.version {
-                    return Ok(schema.clone());
-                }
+                .expect("schema loads lock")
+                .entry(connection_id.to_string())
+                .or_default(),
+        );
+        // A read already under way finishes first; one that started after
+        // this call was made answers it, even a Refresh.
+        let _loading = load.lock().await;
+        let connection = self.connections.get(connection_id).await?;
+        if let Some((version, read, schema)) = self
+            .schemas
+            .lock()
+            .expect("schemas lock")
+            .get(connection_id)
+        {
+            if *version == connection.version && (!refresh || *read >= asked) {
+                return Ok(schema.clone());
             }
         }
+        let read = Instant::now();
         let mut session = self.connections.open(&connection).await?;
         let (schemas, default_schema) = session.schema().await?;
         let schema = DbSchema {
@@ -540,10 +584,10 @@ impl QuerySessions {
             default_schema,
             read_at: now_rfc3339(),
         };
-        self.schemas
-            .lock()
-            .expect("schemas lock")
-            .insert(connection.id.clone(), (connection.version, schema.clone()));
+        self.schemas.lock().expect("schemas lock").insert(
+            connection.id.clone(),
+            (connection.version, read, schema.clone()),
+        );
         Ok(schema)
     }
 }

@@ -37,9 +37,18 @@ export default function DbHealth({
   const [sample, setSample] = useState<HealthSample | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Sampled only while the tab is visible; the hour so far stays in Brainiac.
+  // Brainiac's window is minimised or hidden: Health stops sampling.
+  const [pageVisible, setPageVisible] = useState(() => !document.hidden);
   useEffect(() => {
-    if (!visible) return;
+    const check = () => setPageVisible(!document.hidden);
+    document.addEventListener("visibilitychange", check);
+    return () => document.removeEventListener("visibilitychange", check);
+  }, []);
+  const sampling = visible && pageVisible;
+
+  // Sampled only while the tab is on screen; the hour so far stays in Brainiac.
+  useEffect(() => {
+    if (!sampling) return;
     let disposed = false;
     let unlisten: (() => void) | null = null;
     void onDbHealthSample((e) => {
@@ -64,7 +73,7 @@ export default function DbHealth({
       unlisten?.();
       void ipc.stopDbHealth(connection.id).catch(() => {});
     };
-  }, [visible, connection.id]);
+  }, [sampling, connection.id]);
 
   const used = sample?.total_connections ?? 0;
   const max = sample?.max_connections ?? 0;

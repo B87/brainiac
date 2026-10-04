@@ -23,6 +23,7 @@ use crate::models::{
     ErrorCode, HealthEvent, HealthPoint, HealthSample, HealthSession, HealthSnapshot,
     HealthStatement, HealthTable, MachineSample, RunsOn,
 };
+use tokio_postgres::Statement;
 
 /// How often a monitor samples.
 pub const SAMPLE_EVERY: Duration = Duration::from_secs(10);
@@ -31,6 +32,8 @@ pub const POINTS: usize = 360;
 /// The table list and Cloud Monitoring are read this often, not every sample.
 const SLOW_EVERY: Duration = Duration::from_secs(60);
 const STATEMENT_TIMEOUT: Duration = Duration::from_secs(2);
+/// A sample that takes longer than this means the connection is gone.
+const READ_WAIT: Duration = Duration::from_secs(10);
 /// How long Health waits before reading a password again that could not be
 /// read or that the server refused.
 const CREDENTIAL_RETRY: Duration = Duration::from_secs(60);
@@ -106,6 +109,20 @@ struct State {
     /// before then, so a failing command or a locked password manager is
     /// not asked every 10 seconds. The problem is shown meanwhile.
     credential_retry: Option<(Instant, String)>,
+    /// The sample's statements, prepared once per session.
+    prepared: Option<Prepared>,
+}
+
+/// Health's statements on the current session: parsed and planned once, then
+/// only executed, and sent together so a sample costs two round trips.
+struct Prepared {
+    activity: Statement,
+    database: Statement,
+    sessions: Statement,
+    tables: Statement,
+    /// `None` until `pg_stat_statements` is first seen installed; then
+    /// `Some(None)` when its columns are older than PostgreSQL 13's.
+    statements: Option<Option<Statement>>,
 }
 
 struct Monitor {
@@ -236,6 +253,25 @@ impl HealthService {
         }
     }
 
+    /// End every Health session, when Brainiac quits.
+    pub async fn close_all(&self) {
+        let monitors: Vec<Arc<Monitor>> = self
+            .monitors
+            .lock()
+            .expect("monitors lock")
+            .values()
+            .cloned()
+            .collect();
+        let mut sessions = Vec::new();
+        for monitor in monitors {
+            monitor.watchers.store(0, Ordering::SeqCst);
+            if let Ok(mut state) = monitor.state.try_lock() {
+                sessions.extend(state.session.take());
+            }
+        }
+        futures_util::future::join_all(sessions.into_iter().map(PgSession::close)).await;
+    }
+
     /// Forget a deleted connection's hour.
     pub fn forget(&self, connection_id: &str) {
         let removed = self
@@ -307,7 +343,10 @@ impl HealthService {
                     state.credential_retry = None;
                     match self.health_target(&monitor.connection_id).await {
                         Ok((target, lease)) => match PgSession::connect(&target).await {
-                            Ok(s) => state.session = Some(s),
+                            Ok(s) => {
+                                state.session = Some(s);
+                                state.prepared = None;
+                            }
                             Err(e) => {
                                 if e.code == ErrorCode::Unauthenticated {
                                     if let Some(lease) = &lease {
@@ -331,9 +370,22 @@ impl HealthService {
             }
         }
         if state.session.is_some() {
-            if let Err(e) = read_server(&mut state, &mut sample).await {
-                sample.problem = Some(e);
-                state.session = None;
+            match tokio::time::timeout(READ_WAIT, read_server(&mut state, &mut sample)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    sample.problem = Some(e);
+                    // An error from the server, such as Health's own time
+                    // limit on a busy server, keeps the session: reconnecting
+                    // every 10 seconds would only add to the load.
+                    state.prepared = None;
+                    if state.session.as_ref().is_some_and(PgSession::is_closed) {
+                        state.session = None;
+                    }
+                }
+                Err(_) => {
+                    sample.problem = Some("The server stopped answering.".into());
+                    state.session = None;
+                }
             }
         }
         sample.machine = match runs_on {
@@ -604,7 +656,8 @@ SELECT current_setting('max_connections')::int,
        (extract(epoch FROM max(now() - xact_start)
             FILTER (WHERE datname = current_database() AND pid <> pg_backend_pid())))::float8,
        pg_has_role(current_user, 'pg_monitor', 'MEMBER')
-         OR (SELECT rolsuper FROM pg_roles WHERE rolname = current_user)
+         OR (SELECT rolsuper FROM pg_roles WHERE rolname = current_user),
+       EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements')
   FROM pg_stat_activity
  WHERE backend_type = 'client backend'";
 
@@ -612,16 +665,19 @@ const DATABASE: &str = "
 SELECT xact_commit, xact_rollback, blks_hit, blks_read, deadlocks, temp_files
   FROM pg_stat_database WHERE datname = current_database()";
 
-/// Idle-in-transaction and waiting sessions first, then the longest in their state.
+/// Idle-in-transaction and waiting sessions first, then the longest in their
+/// state. `pg_blocking_pids` briefly locks the server's lock table, so it is
+/// asked only for sessions waiting on a lock.
 const SESSIONS: &str = "
 SELECT pid, usename::text, coalesce(application_name, ''), client_addr::text, state,
        extract(epoch FROM now() - state_change)::float8,
        extract(epoch FROM now() - xact_start)::float8,
        CASE WHEN wait_event IS NOT NULL THEN wait_event_type || ': ' || wait_event END,
-       pg_blocking_pids(pid), query, application_name LIKE 'Brainiac%'
+       CASE WHEN wait_event_type = 'Lock' THEN pg_blocking_pids(pid) END,
+       query, application_name LIKE 'Brainiac%'
   FROM pg_stat_activity
  WHERE backend_type = 'client backend' AND datname = current_database() AND pid <> pg_backend_pid()
- ORDER BY (state LIKE 'idle in transaction%') DESC, cardinality(pg_blocking_pids(pid)) > 0 DESC,
+ ORDER BY (state LIKE 'idle in transaction%') DESC, (wait_event_type IS NOT DISTINCT FROM 'Lock') DESC,
           state = 'active' DESC, state_change
  LIMIT 200";
 
@@ -654,7 +710,34 @@ async fn read_server(state: &mut State, sample: &mut HealthSample) -> Result<(),
         Some(db) => db.message().to_string(),
         None => format!("The server stopped answering: {e}"),
     };
-    let row = client.query_one(ACTIVITY, &[]).await.map_err(text)?;
+    if state.prepared.is_none() {
+        // `try_join!` polls the four at once, so they travel as one round
+        // trip, and returns the first error if any fails.
+        let (activity, database, sessions, tables) = tokio::try_join!(
+            client.prepare(ACTIVITY),
+            client.prepare(DATABASE),
+            client.prepare(SESSIONS),
+            client.prepare(TABLES),
+        )
+        .map_err(text)?;
+        state.prepared = Some(Prepared {
+            activity,
+            database,
+            sessions,
+            tables,
+            statements: None,
+        });
+    }
+    let prepared = state.prepared.as_mut().expect("prepared just above");
+
+    let (activity, database, sessions) = tokio::try_join!(
+        client.query_one(&prepared.activity, &[]),
+        client.query_one(&prepared.database, &[]),
+        client.query(&prepared.sessions, &[]),
+    )
+    .map_err(text)?;
+
+    let row = activity;
     sample.max_connections = row.get::<_, i32>(0).max(0) as u32;
     sample.active = row.get::<_, i32>(1) as u32;
     sample.idle = row.get::<_, i32>(2) as u32;
@@ -662,8 +745,9 @@ async fn read_server(state: &mut State, sample: &mut HealthSample) -> Result<(),
     sample.total_connections = row.get::<_, i32>(4) as u32;
     sample.longest_transaction_seconds = row.get(5);
     sample.sees_all = row.get::<_, Option<bool>>(6).unwrap_or(false);
+    let installed: bool = row.get(7);
 
-    let row = client.query_one(DATABASE, &[]).await.map_err(text)?;
+    let row = database;
     let now = Counters {
         at: Instant::now(),
         commits: row.get(0),
@@ -702,8 +786,7 @@ async fn read_server(state: &mut State, sample: &mut HealthSample) -> Result<(),
         .unwrap_or(0)
         .max(0);
 
-    let rows = client.query(SESSIONS, &[]).await.map_err(text)?;
-    sample.sessions = rows
+    sample.sessions = sessions
         .iter()
         .map(|r| {
             let query: Option<String> = r.get(9);
@@ -723,34 +806,45 @@ async fn read_server(state: &mut State, sample: &mut HealthSample) -> Result<(),
         })
         .collect();
 
-    let installed: bool = client
-        .query_one(
-            "SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements')",
-            &[],
-        )
-        .await
-        .map_err(text)?
-        .get(0);
-    sample.statements = if installed {
+    if installed && prepared.statements.is_none() {
         // Before PostgreSQL 13 the columns had other names; such servers show none.
-        client.query(STATEMENTS, &[]).await.ok().map(|rows| {
-            rows.iter()
-                .map(|r| HealthStatement {
-                    query: r.get(0),
-                    calls: r.get(1),
-                    total_ms: r.get(2),
-                    mean_ms: r.get(3),
-                    rows: r.get(4),
-                })
-                .collect()
-        })
-    } else {
-        None
+        prepared.statements = Some(client.prepare(STATEMENTS).await.ok());
+    }
+    let statements = match (installed, &prepared.statements) {
+        (true, Some(Some(statement))) => Some(statement),
+        _ => None,
     };
+    let tables_due = state.tables_at.is_none_or(|at| at.elapsed() >= SLOW_EVERY);
+    let (top, tables) = tokio::join!(
+        async {
+            match statements {
+                Some(statement) => Some(client.query(statement, &[]).await),
+                None => None,
+            }
+        },
+        async {
+            if tables_due {
+                Some(client.query(&prepared.tables, &[]).await)
+            } else {
+                None
+            }
+        },
+    );
+    sample.statements = top.and_then(Result::ok).map(|rows| {
+        rows.iter()
+            .map(|r| HealthStatement {
+                query: r.get(0),
+                calls: r.get(1),
+                total_ms: r.get(2),
+                mean_ms: r.get(3),
+                rows: r.get(4),
+            })
+            .collect()
+    });
 
-    if state.tables_at.is_none_or(|at| at.elapsed() >= SLOW_EVERY) {
+    if let Some(read) = tables {
         // Best effort: the previous list stays when this fails.
-        let rows = client.query(TABLES, &[]).await.unwrap_or_default();
+        let rows = read.unwrap_or_default();
         state.tables = rows
             .iter()
             .map(|r| {

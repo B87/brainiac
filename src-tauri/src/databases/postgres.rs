@@ -38,7 +38,24 @@ use crate::models::{
 /// How long to wait for a server to answer a connection.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// The server ends a transaction left idle this long (SPEC.md, Databases: Safety).
-const IDLE_IN_TRANSACTION: Duration = Duration::from_secs(15 * 60);
+pub const IDLE_IN_TRANSACTION: Duration = Duration::from_secs(15 * 60);
+/// The same on a Production connection, where held locks cost most.
+pub const IDLE_IN_TRANSACTION_PRODUCTION: Duration = Duration::from_secs(5 * 60);
+/// How long a statement in a writable mode waits for a lock before failing,
+/// so typed DDL does not queue every other query on its table behind it.
+const LOCK_TIMEOUT: Duration = Duration::from_secs(5);
+/// The server probes an idle connection after this long, so one left by a
+/// Mac that slept or changed network is closed in about two minutes, not
+/// hours later. The client probes the server the same way.
+const KEEPALIVE_IDLE: Duration = Duration::from_secs(60);
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(10);
+const KEEPALIVE_COUNT: u32 = 6;
+/// The server closes a session idle this long, as a backstop to Brainiac
+/// closing it after 10 minutes (PostgreSQL 14 and later).
+const IDLE_SESSION: Duration = Duration::from_secs(15 * 60);
+/// While a statement runs, the server checks this often that Brainiac is
+/// still there, and stops the statement if not (PostgreSQL 14 and later).
+const CONNECTION_CHECK: Duration = Duration::from_secs(10);
 /// Rows fetched at a time when exporting.
 const EXPORT_BATCH: usize = 1000;
 /// How long past the statement timeout to wait before giving up on a server
@@ -46,6 +63,8 @@ const EXPORT_BATCH: usize = 1000;
 const UNRESPONSIVE_GRACE: Duration = Duration::from_secs(10);
 /// How long a cancel request may take when the server stopped answering.
 const CANCEL_WAIT: Duration = Duration::from_secs(2);
+/// How long closing waits for the server to see the session end.
+const CLOSE_WAIT: Duration = Duration::from_millis(500);
 
 /// Where and how to connect.
 #[derive(Debug, Clone)]
@@ -58,6 +77,8 @@ pub struct PgTarget {
     pub tls: DbTls,
     pub ca_file: Option<PathBuf>,
     pub statement_timeout: Duration,
+    /// `idle_in_transaction_session_timeout` in the modes that write.
+    pub idle_in_transaction: Duration,
     /// Shown in `pg_stat_activity`: `Brainiac`, or `Brainiac health`.
     pub application_name: String,
 }
@@ -71,8 +92,11 @@ impl PgTarget {
 /// One connection, owned by one tab.
 pub struct PgSession {
     client: Client,
+    /// The task that drives the connection, until it ends.
+    connection: tokio::task::JoinHandle<()>,
     cancel: PgCanceller,
     timeout: Duration,
+    idle_in_transaction: Duration,
     server_version: String,
     /// The connection stopped answering; the session must not be used again.
     broken: bool,
@@ -132,7 +156,10 @@ impl PgSession {
             .dbname(&target.database)
             .user(&target.user)
             .application_name(&target.application_name)
-            .connect_timeout(CONNECT_TIMEOUT);
+            .connect_timeout(CONNECT_TIMEOUT)
+            .keepalives_idle(KEEPALIVE_IDLE)
+            .keepalives_interval(KEEPALIVE_INTERVAL)
+            .keepalives_retries(KEEPALIVE_COUNT);
         if let Some(password) = &target.password {
             config.password(password.expose());
         }
@@ -153,25 +180,26 @@ impl PgSession {
             match &tls {
                 Some(tls) => {
                     let (client, connection) = config.connect(tls.clone()).await?;
-                    tokio::spawn(async move {
+                    let task = tokio::spawn(async move {
                         if let Err(e) = connection.await {
                             tracing::debug!(error = %e, "a database connection ended");
                         }
                     });
-                    Ok::<_, tokio_postgres::Error>(client)
+                    Ok::<_, tokio_postgres::Error>((client, task))
                 }
                 None => {
                     let (client, connection) = config.connect(NoTls).await?;
-                    tokio::spawn(async move {
+                    let task = tokio::spawn(async move {
                         if let Err(e) = connection.await {
                             tracing::debug!(error = %e, "a database connection ended");
                         }
                     });
-                    Ok(client)
+                    Ok((client, task))
                 }
             }
         };
-        let client = match tokio::time::timeout(CONNECT_TIMEOUT * 2, connecting).await {
+        let (client, connection) = match tokio::time::timeout(CONNECT_TIMEOUT * 2, connecting).await
+        {
             Ok(Ok(client)) => client,
             Ok(Err(e)) => return Err(connect_error(&e, target)),
             Err(_) => {
@@ -183,17 +211,43 @@ impl PgSession {
             }
         };
         let timeout_ms = target.statement_timeout.as_millis().max(1);
-        client
-            .batch_execute(&format!(
-                "SET default_transaction_read_only = on; SET statement_timeout = {timeout_ms}"
-            ))
-            .await
-            .map_err(|e| connect_error(&e, target))?;
-        let server_version = client
-            .query_one("SHOW server_version", &[])
-            .await
-            .and_then(|row| row.try_get::<_, String>(0))
-            .map_err(|e| connect_error(&e, target))?;
+        let settings = format!(
+            "SET default_transaction_read_only = on; SET statement_timeout = {timeout_ms}; \
+             SET tcp_keepalives_idle = {}; SET tcp_keepalives_interval = {}; \
+             SET tcp_keepalives_count = {KEEPALIVE_COUNT}",
+            KEEPALIVE_IDLE.as_secs(),
+            KEEPALIVE_INTERVAL.as_secs()
+        );
+        // Settings older servers lack are skipped through `pg_settings`; one
+        // a server's platform refuses fails alone, since each message sent
+        // runs in its own implicit transaction.
+        let backstops = format!(
+            "SELECT pg_catalog.set_config(s.name, v.value, false)
+               FROM (VALUES ('idle_session_timeout', '{}'),
+                            ('client_connection_check_interval', '{}')) AS v(name, value)
+               JOIN pg_catalog.pg_settings s ON s.name = v.name",
+            IDLE_SESSION.as_millis(),
+            CONNECTION_CHECK.as_millis()
+        );
+        // Sent together, so connecting waits for one round trip, not three:
+        // `tokio-postgres` pipelines requests whose futures are polled at once.
+        let (set, version, backstop) = tokio::join!(
+            client.batch_execute(&settings),
+            client.simple_query("SHOW server_version"),
+            client.simple_query(&backstops)
+        );
+        set.map_err(|e| connect_error(&e, target))?;
+        let server_version = version
+            .map_err(|e| connect_error(&e, target))?
+            .into_iter()
+            .find_map(|m| match m {
+                tokio_postgres::SimpleQueryMessage::Row(row) => row.get(0).map(str::to_string),
+                _ => None,
+            })
+            .unwrap_or_default();
+        if let Err(e) = backstop {
+            tracing::debug!(error = %e, "the server refused a session backstop");
+        }
         let cancel = PgCanceller {
             token: client.cancel_token(),
             tls,
@@ -201,8 +255,10 @@ impl PgSession {
         };
         Ok(PgSession {
             client,
+            connection,
             cancel,
             timeout: target.statement_timeout,
+            idle_in_transaction: target.idle_in_transaction,
             server_version: format!("PostgreSQL {server_version}"),
             broken: false,
             read_only_default: true,
@@ -220,6 +276,14 @@ impl PgSession {
 
     pub fn is_closed(&self) -> bool {
         self.broken || self.client.is_closed()
+    }
+
+    /// Say goodbye to the server and wait briefly for it, so quitting ends
+    /// the session cleanly rather than leaving the server to find the
+    /// socket gone. Dropping the client makes its task send `Terminate`.
+    pub async fn close(self) {
+        drop(self.client);
+        let _ = tokio::time::timeout(CLOSE_WAIT, self.connection).await;
     }
 
     /// The connection itself, for Health's catalog queries.
@@ -349,13 +413,16 @@ impl PgSession {
             return Ok(());
         }
         let sql = if on {
-            "SET default_transaction_read_only = on".to_string()
+            "SET default_transaction_read_only = on; RESET lock_timeout".to_string()
         } else {
             // An open transaction holds locks others wait on; the server ends
-            // one left idle this long, as a last resort.
+            // one left idle this long, as a last resort. A statement waiting
+            // for a lock fails rather than queue everyone else behind it.
             format!(
-                "SET default_transaction_read_only = off; SET idle_in_transaction_session_timeout = {}",
-                IDLE_IN_TRANSACTION.as_millis()
+                "SET default_transaction_read_only = off; \
+                 SET idle_in_transaction_session_timeout = {}; SET lock_timeout = {}",
+                self.idle_in_transaction.as_millis(),
+                LOCK_TIMEOUT.as_millis()
             )
         };
         self.client.batch_execute(&sql).await?;
@@ -767,7 +834,7 @@ async fn fetch_read_only(
     let params = refs(values);
     if statement.columns().is_empty() {
         let count = tx.execute(&statement, &params).await?;
-        tx.commit().await?;
+        commit_unawaited(tx);
         return Ok(Fetched::Command { count });
     }
     let portal = tx.bind(&statement, &params).await?;
@@ -794,12 +861,24 @@ async fn fetch_read_only(
         }
     }
     drop(portal);
-    tx.commit().await?;
+    commit_unawaited(tx);
     Ok(Fetched::Rows {
         statement,
         rows,
         more,
     })
+}
+
+/// Send `COMMIT` without waiting for its answer, saving a round trip per
+/// run. A read-only transaction has nothing a commit could refuse, and
+/// the session's next request queues behind it, so it still ends first.
+/// (Rolling back by dropping `tx` would be as quick, but would count every
+/// read as a rollback in the server's statistics.)
+fn commit_unawaited(tx: tokio_postgres::Transaction<'_>) {
+    use futures_util::FutureExt;
+    // `tokio-postgres` sends a request on the future's first poll; the
+    // answer is read and dropped by the connection's task.
+    let _ = tx.commit().now_or_never();
 }
 
 /// One statement in the session's own transaction state: an implicit
@@ -1059,7 +1138,7 @@ async fn read_schema(
                    JOIN pg_catalog.pg_class i ON i.oid = x.indexrelid
                    JOIN pg_catalog.pg_class c ON c.oid = x.indrelid
                    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-                  WHERE {USER_SCHEMAS}
+                  WHERE NOT c.relispartition AND {USER_SCHEMAS}
                   ORDER BY 1, 2, 3"
             ),
             &[],
@@ -1082,7 +1161,7 @@ async fn read_schema(
                    FROM pg_catalog.pg_constraint k
                    JOIN pg_catalog.pg_class c ON c.oid = k.conrelid
                    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-                  WHERE k.contype = 'f' AND {USER_SCHEMAS}
+                  WHERE k.contype = 'f' AND NOT c.relispartition AND {USER_SCHEMAS}
                   ORDER BY 1, 2, 3"
             ),
             &[],

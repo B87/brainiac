@@ -475,6 +475,25 @@ pub fn run() {
                 if let Some(agent) = app.try_state::<commands::Agent>() {
                     agent.close();
                 }
+                // End database sessions cleanly, so servers see Brainiac
+                // leave rather than a socket that went away.
+                let sessions = app
+                    .try_state::<Arc<databases::QuerySessions>>()
+                    .map(|s| Arc::clone(&s));
+                let health = app
+                    .try_state::<Arc<databases::health::HealthService>>()
+                    .map(|s| Arc::clone(&s));
+                tauri::async_runtime::block_on(async {
+                    let close = async {
+                        if let Some(sessions) = sessions {
+                            sessions.close_all().await;
+                        }
+                        if let Some(health) = health {
+                            health.close_all().await;
+                        }
+                    };
+                    let _ = tokio::time::timeout(Duration::from_secs(1), close).await;
+                });
             }
         });
 }

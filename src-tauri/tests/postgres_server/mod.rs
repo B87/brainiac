@@ -148,6 +148,7 @@ impl PgServer {
             tls: DbTls::Off,
             ca_file: None,
             statement_timeout: Duration::from_secs(30),
+            idle_in_transaction: Duration::from_secs(15 * 60),
             application_name: "Brainiac".into(),
         }
     }

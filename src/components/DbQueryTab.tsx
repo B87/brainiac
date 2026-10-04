@@ -168,18 +168,20 @@ export default function DbQueryTab(props: Props) {
     }
   }, [tab.text]);
 
-  // The schema is read when the tab's connection is first used.
+  // The schema is read when the tab's connection is first used, and only
+  // for the tab on screen: restored tabs do not each open a connection.
   // biome-ignore lint/correctness/useExhaustiveDependencies: once per connection.
   useEffect(() => {
-    if (connection?.password_ready && !props.schema)
+    if (props.visible && connection?.password_ready && !props.schema)
       props.onSchema(connection.id, false);
-  }, [connection?.id, connection?.password_ready]);
+  }, [connection?.id, connection?.password_ready, props.visible]);
 
   useEffect(() => {
     if (props.visible) view.current?.focus();
   }, [props.visible]);
 
-  // The transaction header turns amber after 5 idle minutes.
+  // The transaction header turns amber after 5 idle minutes (2 on
+  // Production, where the server ends it after 5).
   useEffect(() => {
     if (!transaction) return;
     const t = setInterval(() => setNow(Date.now()), 30_000);
@@ -420,6 +422,8 @@ export default function DbQueryTab(props: Props) {
 
   const writable = tab.mode !== "read_only";
   const idleMinutes = transaction ? (Date.now() - lastRunAt) / 60_000 : 0;
+  const idleWarning =
+    idleMinutes >= (connection?.environment === "production" ? 2 : 5);
 
   return (
     <div
@@ -624,7 +628,7 @@ export default function DbQueryTab(props: Props) {
             className={`flex flex-wrap items-center gap-2 border-b px-3 py-1.5 text-[12.5px] ${
               transaction.failed
                 ? "bg-red-50 text-red-900 dark:bg-red-950 dark:text-red-100"
-                : idleMinutes >= 5
+                : idleWarning
                   ? "bg-amber-50 text-amber-900 dark:bg-amber-950 dark:text-amber-100"
                   : "bg-info-bg text-info-fg"
             }`}
@@ -637,7 +641,7 @@ export default function DbQueryTab(props: Props) {
                 ? "· Roll Back to continue"
                 : `· ${transaction.statements} statement${transaction.statements === 1 ? "" : "s"} · since ${new Date(transaction.since).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`}
               {!transaction.failed &&
-                idleMinutes >= 5 &&
+                idleWarning &&
                 " · idle, holding locks others may wait on"}
             </span>
             <span className="flex-1" />

@@ -659,3 +659,38 @@ async fn the_schema_lists_relations_columns_indexes_and_keys() {
     assert!(customers.indexes.iter().any(|i| i.unique && !i.primary));
     let _ = ColumnKind::Text;
 }
+
+#[tokio::test]
+async fn each_read_only_run_ends_its_transaction_without_waiting() {
+    let Some(server) = PgServer::start() else {
+        return;
+    };
+    let mut s = session(&server).await;
+    let started = |r| text(&single(r));
+    let first = started(run(&mut s, "select transaction_timestamp()::text").await);
+    let second = started(run(&mut s, "select transaction_timestamp()::text").await);
+    // A second transaction, so the first one's COMMIT reached the server.
+    assert_ne!(first, second);
+    // And the session is left idle, holding nothing.
+    let mut observer = PgSession::connect(&PgTarget {
+        application_name: "observer".into(),
+        ..server.target()
+    })
+    .await
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let state = text(&single(
+            run(
+                &mut observer,
+                "select state from pg_stat_activity where application_name = 'Brainiac'",
+            )
+            .await,
+        ));
+        if state == "idle" {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the session stayed {state}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}

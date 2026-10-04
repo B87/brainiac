@@ -59,21 +59,21 @@ B fits "notes are ordinary Markdown" best on paper, but it makes the query view 
 
 ## Performance on the connected database
 
-A review on 4 Oct 2026 read the v0.4 code and measured it against a local PostgreSQL 16. The test database had 5,000 tables, about 17,000 indexes, and a table with 1,000 partitions, behind a proxy that added 25 ms to every round trip. This section records what using Brainiac costs a server and what could make it cheaper. Hosted providers add their own round-trip time, about 20–50 ms to a Cloud SQL instance from a laptop.
+A review on 4 Oct 2026 read the v0.4 code and measured it against a local PostgreSQL 16. The test database had 5,000 tables, about 17,000 indexes, and a table with 1,000 partitions, behind a proxy that added 25 ms to every round trip. This section records what using Brainiac costs a server, what was changed after the review, and what is still open. Hosted providers add their own round-trip time, about 20–50 ms to a Cloud SQL instance from a laptop.
 
-### What a session costs today
+### What a session costs
 
 | Source | Server connections | Lifetime | Queries |
 | --- | --- | --- | --- |
 | Query tab | One per tab, opened on its first Run (restoring tabs opens none) | Closed when the tab closes or switches connection, or after 10 idle minutes; at most 8 across all connections, but a tab with an open transaction or a running statement is never closed early | Only what the user runs |
-| Health | One (`Brainiac health`) while the Health tab is on screen | Dropped within 10 s of the tab being hidden | 5 small queries every 10 s, table sizes every 60 s |
-| Schema for completion | One per load | Closed after the catalog read | 6 catalog queries in one read-only transaction; cached per connection version |
+| Health | One (`Brainiac health`) while the Health tab is on screen and the window is not minimized or hidden | Dropped within 10 s of the tab being hidden | 5 small queries every 10 s, table sizes every 60 s; two round trips per sample |
+| Schema for completion | One per connection, when a tab on screen first uses it | Closed after the catalog read | 6 catalog queries in one read-only transaction; shared by every tab that asks while it runs, and cached per connection version |
 | Test, Cancel, End Session | One per click | A moment | — |
 
-- **Round trips per run.** A read-only run takes 5 round trips: `START TRANSACTION READ ONLY`, Parse and Describe, Bind, Execute, and `COMMIT`. A result that needs a second batch of 1,000 rows adds one more.
-  - Measured at 25 ms per round trip: about 135 ms of overhead per run, so about 125–300 ms on Cloud SQL.
-  - A new connection with TLS and SCRAM takes about 7–8 round trips.
-- **Nothing stays open in Read only or AutoCommit.** Each run opens and ends its transaction inside the call, so no lock or snapshot outlives it.
+- **Round trips per run.** A read-only run takes 4 round trips: `START TRANSACTION READ ONLY`, Parse and Describe, Bind, and Execute. `COMMIT` is sent without waiting for its answer. A result that needs a second batch of 1,000 rows adds one more.
+  - Before the change, measured at 25 ms per round trip: about 135 ms of overhead per run, so about 125–300 ms on Cloud SQL. The change saves one round trip, about 20–50 ms on Cloud SQL.
+  - A new connection with TLS and SCRAM takes about 7–8 round trips. Its settings and `SHOW server_version` now travel together as one more, where they took three.
+- **Nothing stays open in Read only or Auto-commit.** Each run opens and ends its transaction inside the call, so no lock or snapshot outlives it.
 - **The portal path stops server work at the cap.** It asks for at most cap + 1 rows, then closes the portal and commits.
   - The exception is a plan that must finish before it returns its first row, such as a sort or a hash aggregate.
 - **Things the app avoids:**
@@ -81,43 +81,40 @@ A review on 4 Oct 2026 read the v0.4 code and measured it against a local Postgr
   - No implicit `SELECT *` previews and no `count(*)`: row estimates come from `reltuples`, and Select rows opens `select … limit 100` without running it.
   - Health reads table sizes from `relpages` rather than `pg_total_relation_size`, so it never waits on locks.
 - **Session settings.**
-  - Set: `application_name`; `statement_timeout` (30 s by default, 2 s for Health); `default_transaction_read_only`; and, in writable modes only, `idle_in_transaction_session_timeout = 15min`.
-  - Not set: `lock_timeout`, `idle_session_timeout`, the server's TCP keepalives, and `client_connection_check_interval`. The client keepalive is `tokio-postgres`'s default, 2 hours.
-- **Worst case for one server.** About 8 query sessions, Health, one connection per concurrent schema load, and short-lived ones. Small Cloud SQL tiers allow 25–100 connections, so Brainiac alone can take a fifth or more of them.
+  - Every session:
+    - `application_name`;
+    - `statement_timeout` (30 s by default, 2 s for Health);
+    - `default_transaction_read_only`;
+    - server TCP keepalives (60 s idle, 10 s apart, 6 probes), with the client probing the same way;
+    - where the server has them (PostgreSQL 14 and later), `idle_session_timeout` (15 minutes) and `client_connection_check_interval` (10 seconds).
+  - Writable modes only: `lock_timeout = 5s`, and `idle_in_transaction_session_timeout` of 15 minutes, or 5 on Production.
+- **Worst case for one server.** About 8 query sessions, Health, one schema read per connection, and short-lived ones. Small Cloud SQL tiers allow 25–100 connections, so Brainiac alone can take a fifth or more of them.
 
 ### Findings
 
-| Impact | What happens on the server | When it matters | Remedy |
+Status as of 4 Oct 2026.
+
+| Impact | What happens on the server | When it matters | Status |
 | --- | --- | --- | --- |
-| High | **Manual mode holds locks.** After a Manual `SELECT` the backend is `idle in transaction` with `AccessShareLock` on the table. A migration's `ALTER TABLE` queues behind it, and every later query on the table queues behind the migration. After a write, the transaction also holds row locks and holds back VACUUM until Commit, Roll Back, or the 15-minute server timeout. | Production with migrations or busy writers | `lock_timeout` in writable modes; a shorter `idle_in_transaction_session_timeout` per environment (2–5 min on Production) |
-| High in Manual | **A `SELECT` in Manual mode streams the whole result.** Statements in an open transaction use the simple path, which reads and drops every row past the cap until the statement ends or reaches `statement_timeout`. On a hosted server that is a full scan plus all its network egress. AutoCommit's writable retry uses the same path. | Large tables in Manual | Read row-returning statements in Manual through a cursor (`DECLARE … NO SCROLL CURSOR`, `FETCH cap+1`, `CLOSE`) |
-| Medium | **Restored tabs load the schema at once.** When the Databases view first mounts, every tab, hidden ones included, asks for its connection's schema, and nothing deduplicates loads already in flight. N tabs on one connection open N connections that each read the whole catalog: about 450 ms of server time and 3.5 MB on the test catalog, most of it `pg_get_indexdef`. The index and foreign-key queries also return partitions' rows, which the client then drops. | Many restored tabs, big catalogs | One load per connection in flight; load only for the visible tab; `AND NOT c.relispartition` in both queries |
-| Medium | **No `lock_timeout` in writable modes.** DDL typed in AutoCommit or Manual waits for its lock until the statement time limit, and every reader and writer of the table queues behind it. | Production | `SET lock_timeout` (for example 5 s) with the other writable settings |
-| Medium | **AutoCommit tries every write read-only first.** Each write costs about 3 extra round trips. It also leaves `cannot execute … in a read-only transaction`, with the statement text, in the server log, and counts a rollback in `xact_rollback` that Health and hosted dashboards then show. A `SELECT` that calls a writing function runs twice. | Every AutoCommit write | Send statements that obviously write (`INSERT`, `UPDATE`, `DELETE`, `MERGE`, DDL) straight to the writable path; keep read-only-first for ambiguous ones |
-| Medium-low | **Health:** <br>• Any error drops the session, including its own 2 s timeout, so on a struggling server it reconnects every 10 s. <br>• A wrong password is retried every 10 s and never forgotten. <br>• It keeps sampling while the window is minimised. <br>• Each sample is 10–12 round trips, measured 265 ms against 27 ms prepared and pipelined. <br>• `pg_blocking_pids` runs for every backend, and it locks the lock manager's shared state. | Health open on a busy or remote server | Keep the session on SQL errors; forget the password on `28P01`; pause when the window is hidden; prepare and pipeline the queries; call `pg_blocking_pids` only when `wait_event_type = 'Lock'` |
-| Medium (SQLite) | **A Manual transaction on SQLite is held until the user ends it.** No server ends it. In rollback-journal mode a read keeps other programs from committing; in WAL mode the WAL cannot be reset; a write holds the write lock. | A file another program writes to | Roll back idle SQLite Manual transactions after a few minutes and tell the tab |
-| Low-medium | **Dead connections linger.** After sleep or a network change the server keeps the backend until its own keepalive gives up, often after 2 hours or more. On quit, sockets close without a Terminate message, which logs `unexpected EOF`. | Laptops, small connection limits | At connect: `tcp_keepalives_idle = 60`, `tcp_keepalives_interval = 10`, `tcp_keepalives_count = 6`; `idle_session_timeout` and `client_connection_check_interval` on PostgreSQL 14+; a shorter client keepalive; close sessions on exit |
-| Low | **The byte budget does not bound transfer.** Each value counts at most 64 KB toward the 128 MB budget, but every batch of 1,000 rows arrives whole: 1,000 values of 10 MB each are detoasted and sent before the check runs. | Wide `jsonb` or `bytea` columns | Size batches from the bytes already seen, starting small |
-| Low | **Export keeps a snapshot open for its whole run.** It reads in one read-only transaction with no overall limit, so a long export of a large production table holds back VACUUM for as long as it runs. | Large exports on Production | Warn or cap the duration on Production |
-| Low | **Smaller items:** <br>• A client-side timeout during a multi-batch fetch marks the session broken but keeps its socket until the next run. <br>• Explain Analyze in Read only executes the whole query, where a Run stops at the cap. <br>• `application_name` does not tell tabs apart. | — | Drop a broken session at once; name the tab and mode in `application_name` |
+| High | **Manual mode holds locks.** After a Manual `SELECT` the backend is `idle in transaction` with `AccessShareLock` on the table. A migration's `ALTER TABLE` queues behind it, and every later query on the table queues behind the migration. After a write, the transaction also holds row locks and holds back VACUUM until Commit, Roll Back, or the server's idle limit. | Production with migrations or busy writers | **Reduced.** On Production the server now ends an idle transaction after 5 minutes rather than 15, and the bar turns amber after 2. The locks themselves are what Manual is for. |
+| High in Manual | **A `SELECT` in Manual mode streams the whole result.** Statements in an open transaction use the simple path, which reads and drops every row past the cap until the statement ends or reaches `statement_timeout`. On a hosted server that is a full scan plus all its network egress. Auto-commit's writable retry uses the same path. | Large tables in Manual | **Open.** Read row-returning statements in Manual through a cursor (`DECLARE … NO SCROLL CURSOR`, `FETCH cap+1`, `CLOSE`). |
+| Medium | **Restored tabs loaded the schema at once.** Every tab, hidden ones included, asked for its connection's schema, and nothing deduplicated loads already in flight. N tabs on one connection opened N connections that each read the whole catalog: about 450 ms of server time and 3.5 MB on the test catalog, most of it `pg_get_indexdef`. The index and foreign-key queries also returned partitions' rows, which the client then dropped. | Many restored tabs, big catalogs | **Done.** One read per connection at a time, in the window and in Rust; only the tab on screen asks; partitions' indexes and keys are skipped. |
+| Medium | **No `lock_timeout` in writable modes.** DDL typed in Auto-commit or Manual waited for its lock until the statement time limit, and every reader and writer of the table queued behind it. | Production | **Done.** `lock_timeout = 5s` in writable modes, reset on a return to Read only. |
+| Medium | **Auto-commit tries every write read-only first.** Each write costs about 3 extra round trips. It also leaves `cannot execute … in a read-only transaction`, with the statement text, in the server log, and counts a rollback in `xact_rollback` that Health and hosted dashboards then show. A `SELECT` that calls a writing function runs twice. | Every Auto-commit write | **Open.** Send statements that obviously write (`INSERT`, `UPDATE`, `DELETE`, `MERGE`, DDL) straight to the writable path, and keep read-only-first for ambiguous ones. |
+| Medium-low | **Health:** <br>• Any error dropped the session, including its own 2 s timeout, so on a struggling server it reconnected every 10 s. <br>• A wrong password was retried every 10 s. <br>• It kept sampling while the window was minimized. <br>• Each sample took 10–12 round trips: measured 265 ms, against 27 ms prepared and pipelined. <br>• `pg_blocking_pids` ran for every backend, and it locks the lock manager's shared state. | Health open on a busy or remote server | **Done.** <br>• Errors from the server keep the session; a sample with no answer in 10 s drops it. <br>• A refused or unreadable password waits a minute (done with secrets). <br>• Sampling pauses while the window is hidden. <br>• Statements are prepared once per session and pipelined. <br>• `pg_blocking_pids` runs only for sessions waiting on a lock. |
+| Medium (SQLite) | **A Manual transaction on SQLite is held until the user ends it.** No server ends it. In rollback-journal mode a read keeps other programs from committing; in WAL mode the WAL cannot be reset; a write holds the write lock. | A file another program writes to | **Open.** Roll back idle SQLite Manual transactions after a few minutes and tell the tab. |
+| Low-medium | **Dead connections lingered.** After sleep or a network change the server kept the backend until its own keepalive gave up, often after 2 hours or more. On quit, sockets closed without a `Terminate` message, which logs `unexpected EOF`. | Laptops, small connection limits | **Done.** <br>• Keepalives on both ends. <br>• `idle_session_timeout` and `client_connection_check_interval` on PostgreSQL 14 and later. <br>• Quitting closes idle sessions with `Terminate`. |
+| Low | **The byte budget does not bound transfer.** Each value counts at most 64 KB toward the 128 MB budget, but every batch of 1,000 rows arrives whole: 1,000 values of 10 MB each are detoasted and sent before the check runs. | Wide `jsonb` or `bytea` columns | **Open.** Size batches from the bytes already seen, starting small. |
+| Low | **Export keeps a snapshot open for its whole run.** It reads in one read-only transaction with no overall limit, so a long export of a large production table holds back VACUUM for as long as it runs. | Large exports on Production | **Open.** Warn or cap the duration on Production. |
+| Low | **Smaller items:** <br>• A client-side timeout during a multi-batch fetch marked the session broken but kept its socket until the next run. <br>• Explain Analyze in Read only executes the whole query, where a Run stops at the cap. <br>• `application_name` does not tell tabs apart. | — | **The first is done:** a broken session is dropped at once. The other two are open. |
 
 ### Next steps
 
-Quick wins, each under half a day:
-
-- `lock_timeout` and a per-environment idle-transaction limit.
-- One schema load per connection, and the partition filter.
-- The Health fixes.
-- Keepalives and idle limits at connect, and closing sessions on quit.
-- Sending `BEGIN READ ONLY` together with Parse and not waiting for `COMMIT`. Measured at 25 ms per round trip, a run went from 135 ms to 78 ms.
-
-Larger changes:
-
-- Cursor reads in Manual.
-- Classifying statements so AutoCommit writes skip the failing read-only attempt.
-- Rolling back idle SQLite Manual transactions.
-- Batches sized by bytes.
-- Limits on long exports.
+- **Cursor reads in Manual.** This is the largest remaining cost.
+- **Classifying statements** so Auto-commit writes skip the failing read-only attempt.
+- **Rolling back idle SQLite Manual transactions.**
+- **Batches sized by bytes**, and limits on long exports.
+- **Pipelining `BEGIN READ ONLY` with Parse** would save one more round trip per run: the review measured 78 ms against 135 ms at 25 ms per round trip, together with the commit change. `tokio-postgres` offers portals only on a `Transaction`, which it creates after `BEGIN` answers, so this needs a change upstream or a different way to read a portal.
 
 ## Not in this design
 

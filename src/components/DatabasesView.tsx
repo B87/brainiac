@@ -184,8 +184,12 @@ export default function DatabasesView(props: Props) {
     [],
   );
 
+  // Connections whose schema is being read: tabs that ask at once share it.
+  const schemaLoads = useRef(new Set<string>());
   const loadSchema = useCallback(
     async (connectionId: string, refresh: boolean) => {
+      if (!refresh && schemaLoads.current.has(connectionId)) return;
+      schemaLoads.current.add(connectionId);
       setSchemas((m) => {
         const next = new Map(m);
         const before = m.get(connectionId);
@@ -204,6 +208,8 @@ export default function DatabasesView(props: Props) {
             error: errorMessage(e),
           }),
         );
+      } finally {
+        schemaLoads.current.delete(connectionId);
       }
     },
     [],

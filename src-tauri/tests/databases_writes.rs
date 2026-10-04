@@ -824,3 +824,85 @@ async fn sqlite_keeps_no_transaction_outside_manual_and_exports_after_a_cancel()
         .unwrap();
     assert_eq!(exported.rows, 5001);
 }
+
+#[tokio::test]
+async fn sessions_limit_lock_waits_idle_transactions_and_dead_clients() {
+    let Some(server) = PgServer::start() else {
+        return;
+    };
+    server.psql("CREATE TABLE t (id int)");
+    let h = harness();
+    let c = h
+        .sessions
+        .connections()
+        .save(SaveDbConnectionRequest {
+            environment: DbEnvironment::Production,
+            ..postgres(&server, DbAccess::ReadWrite)
+        })
+        .await
+        .unwrap();
+    let setting = |name: &str| format!("select setting from pg_settings where name = '{name}'");
+    // Every session: the server notices a client that went away.
+    for (name, value) in [
+        ("tcp_keepalives_idle", "60"),
+        ("tcp_keepalives_interval", "10"),
+        ("tcp_keepalives_count", "6"),
+        ("idle_session_timeout", "900000"),
+        ("client_connection_check_interval", "10000"),
+        ("lock_timeout", "0"),
+    ] {
+        let runs = run(&h, "s", &c.id, &setting(name), RunMode::ReadOnly).await;
+        assert_eq!(cell(&runs[0]), Cell::Text(value.into()), "{name}");
+    }
+    // Modes that write wait 5 seconds for a lock, and Production ends an
+    // idle transaction after 5 minutes.
+    for (name, value) in [
+        ("lock_timeout", "5000"),
+        ("idle_in_transaction_session_timeout", "300000"),
+    ] {
+        let runs = run(&h, "s", &c.id, &setting(name), RunMode::AutoCommit).await;
+        assert_eq!(cell(&runs[0]), Cell::Text(value.into()), "{name}");
+    }
+    let runs = run(&h, "s", &c.id, &setting("lock_timeout"), RunMode::ReadOnly).await;
+    assert_eq!(cell(&runs[0]), Cell::Text("0".into()));
+
+    // A table another tab's transaction reads: DDL fails instead of queueing
+    // every later query on the table behind it.
+    run(&h, "holder", &c.id, "select * from t", RunMode::Manual).await;
+    let started = std::time::Instant::now();
+    let runs = run(
+        &h,
+        "ddl",
+        &c.id,
+        "alter table t add column x int",
+        RunMode::AutoCommit,
+    )
+    .await;
+    let (_, message) = failed(&runs[0]);
+    assert!(message.contains("lock timeout"), "{message}");
+    assert!(started.elapsed() < Duration::from_secs(10));
+    h.sessions.end_transaction("holder", false).await.unwrap();
+}
+
+#[tokio::test]
+async fn tabs_asking_for_a_schema_at_once_share_one_read() {
+    let Some(server) = PgServer::start() else {
+        return;
+    };
+    let h = harness();
+    let c = h
+        .sessions
+        .connections()
+        .save(postgres(&server, DbAccess::ReadOnly))
+        .await
+        .unwrap();
+    let (a, b) = tokio::join!(
+        h.sessions.schema(&c.id, false),
+        h.sessions.schema(&c.id, false)
+    );
+    let (a, b) = (a.unwrap(), b.unwrap());
+    assert_eq!(a.read_at, b.read_at);
+    // Refresh Schema reads again.
+    let again = h.sessions.schema(&c.id, true).await.unwrap();
+    assert_ne!(again.read_at, a.read_at);
+}

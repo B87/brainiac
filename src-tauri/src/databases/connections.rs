@@ -14,7 +14,7 @@ use std::time::Duration;
 use rusqlite::{params, Connection, OptionalExtension, Row};
 
 use super::driver::{Session, Target};
-use super::postgres::PgTarget;
+use super::postgres::{PgTarget, IDLE_IN_TRANSACTION, IDLE_IN_TRANSACTION_PRODUCTION};
 use crate::credentials::{
     describe, Binding, CredentialService, LeaseHandle, OwnerGate, Probe, Resolution, Secret,
     SecretBytes,
@@ -703,6 +703,11 @@ fn target(fields: &Fields, password: Option<Secret>) -> Target {
             tls: fields.tls.unwrap_or(DbTls::Verify),
             ca_file: fields.ca_file.as_ref().map(PathBuf::from),
             statement_timeout: timeout,
+            idle_in_transaction: if fields.environment == DbEnvironment::Production {
+                IDLE_IN_TRANSACTION_PRODUCTION
+            } else {
+                IDLE_IN_TRANSACTION
+            },
             application_name: "Brainiac".to_string(),
         }),
     }

@@ -132,6 +132,14 @@ impl Session {
         }
     }
 
+    /// End the session, telling a PostgreSQL server it is over.
+    pub async fn close(self) {
+        match self {
+            Session::Postgres(s) => s.close().await,
+            Session::Sqlite(_) => {}
+        }
+    }
+
     pub fn is_closed(&self) -> bool {
         match self {
             Session::Postgres(s) => s.is_closed(),
