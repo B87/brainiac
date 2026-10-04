@@ -2,28 +2,18 @@
 //! password with service `brainiac` and account `github` or `bitbucket`, a
 //! fixed name so a token can also be added from Terminal with `security`.
 //!
-//! Reading an item another program created (such as `security`) makes macOS
-//! ask the user to allow it, and the call waits for the answer, so callers run
-//! these on a blocking thread, never on the async executor.
+//! The Keychain calls themselves are shared with database passwords
+//! (`credentials.rs`); like them, these run on a blocking thread.
 
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Mutex;
 
-use security_framework::base::Error as SecError;
-use security_framework::item::{ItemClass, ItemSearchOptions, Limit};
-use security_framework::passwords;
-
-use crate::models::{AppError, AppResult, ErrorCode, ForgeKind};
+use crate::credentials;
+use crate::models::{AppError, AppResult, ForgeKind};
 
 /// The Keychain service name of every account token.
-pub const SERVICE: &str = "brainiac";
-
-/// `errSecItemNotFound`.
-const NOT_FOUND: i32 = -25300;
-/// `errSecUserCanceled`, `errSecAuthFailed`, and `errSecInteractionNotAllowed`:
-/// the user (or the system, for a locked keychain) refused access.
-const REFUSED: [i32; 3] = [-128, -25293, -25308];
+pub use crate::credentials::SERVICE;
 
 /// A token. It has no `Display` and its `Debug` prints nothing of it, so it
 /// cannot end up in a message or a log by accident; `expose` is called only
@@ -72,69 +62,30 @@ pub trait Keychain: Send + Sync {
 /// The login keychain of the user running Brainiac.
 pub struct MacKeychain;
 
-fn item_name(kind: ForgeKind) -> String {
-    format!("{SERVICE}/{}", kind.keychain_account())
-}
-
-fn keychain_error(kind: ForgeKind, action: &str, e: SecError) -> AppError {
-    let code = if REFUSED.contains(&e.code()) {
-        ErrorCode::PermissionDenied
-    } else {
-        ErrorCode::Io
-    };
-    AppError::new(
-        code,
-        format!(
-            "Brainiac could not {action} the Keychain item {}.",
-            item_name(kind)
-        ),
-    )
-    .with_details(e.to_string())
-}
-
 impl Keychain for MacKeychain {
     fn contains(&self, kind: ForgeKind) -> AppResult<bool> {
-        let found = ItemSearchOptions::new()
-            .class(ItemClass::generic_password())
-            .service(SERVICE)
-            .account(kind.keychain_account())
-            .load_attributes(true)
-            .limit(Limit::Max(1))
-            .search();
-        match found {
-            Ok(items) => Ok(!items.is_empty()),
-            Err(e) if e.code() == NOT_FOUND => Ok(false),
-            Err(e) => Err(keychain_error(kind, "look for", e)),
-        }
+        credentials::contains(kind.keychain_account())
     }
 
     fn get(&self, kind: ForgeKind) -> AppResult<Option<Token>> {
-        match passwords::get_generic_password(SERVICE, kind.keychain_account()) {
-            Ok(bytes) => {
-                let text = String::from_utf8(bytes).map_err(|_| {
-                    AppError::validation(format!(
-                        "The Keychain item {} does not hold a token.",
-                        item_name(kind)
-                    ))
-                })?;
-                Token::new(&text).map(Some)
-            }
-            Err(e) if e.code() == NOT_FOUND => Ok(None),
-            Err(e) => Err(keychain_error(kind, "read", e)),
-        }
+        let Some(bytes) = credentials::read(kind.keychain_account())? else {
+            return Ok(None);
+        };
+        let text = String::from_utf8(bytes).map_err(|_| {
+            AppError::validation(format!(
+                "The Keychain item {SERVICE}/{} does not hold a token.",
+                kind.keychain_account()
+            ))
+        })?;
+        Token::new(&text).map(Some)
     }
 
     fn set(&self, kind: ForgeKind, token: &Token) -> AppResult<()> {
-        passwords::set_generic_password(SERVICE, kind.keychain_account(), token.expose().as_bytes())
-            .map_err(|e| keychain_error(kind, "save", e))
+        credentials::write(kind.keychain_account(), token.expose().as_bytes())
     }
 
     fn delete(&self, kind: ForgeKind) -> AppResult<()> {
-        match passwords::delete_generic_password(SERVICE, kind.keychain_account()) {
-            Ok(()) => Ok(()),
-            Err(e) if e.code() == NOT_FOUND => Ok(()),
-            Err(e) => Err(keychain_error(kind, "delete", e)),
-        }
+        credentials::remove(kind.keychain_account())
     }
 }
 

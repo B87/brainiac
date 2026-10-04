@@ -2,11 +2,11 @@
 
 Brainiac is an open-source macOS desktop app: Rust backend inside a Tauri v2 shell, React + TypeScript + Vite frontend. What the app does is `SPEC.md`; how it is built is `docs/architecture.md`; milestones and later releases are `docs/roadmap.md`.
 
-## Current scope: v0.3 — pull requests
+## Current scope: v0.4 — databases
 
-v0.1 (the Git viewer and repository tracker) shipped as 0.1.3 and v0.2 (vault, notes, tasks, Today, keyword search, links, export/restore) as 0.2.0; both are maintained, and v0.2.x (agent access over MCP, `SPEC.md` section 9) is merged and awaits release. Build v0.3: GitHub and Bitbucket Cloud accounts, per-workspace pull request tracking, the workspace's and each repository's Pull requests tab, the pull request overview, files changed, review, and merge (`SPEC.md` section 10; `docs/architecture.md`, Pull requests — v0.3). Ship read-only first, then the review writes, merge last. Nothing from v0.3.x onward (a daily pull request view, agent tools for pull requests, imports, global capture, embeddings, AI) is in scope. Do not add dependencies or tables for later releases.
+v0.1 (the Git viewer and repository tracker) shipped as 0.1.3, v0.2 (vault, notes, tasks, Today, keyword search, links, export/restore) as 0.2.0, and v0.3 (pull requests on GitHub and Bitbucket Cloud) as 0.3.1; all are maintained, with agent access over MCP (v0.2.x, `SPEC.md` section 9) among them. Build v0.4: SQLite and PostgreSQL connections, a query view with a session per tab, saved queries, history, read-only by default with writes per tab, and a PostgreSQL connection's Health (`SPEC.md` section 11; `docs/architecture.md`, Databases — v0.4). Nothing from v0.4.x onward (SSH tunnels, editing rows in the grid, saved queries as files, agent tools for databases, imports, global capture, embeddings, AI) is in scope, nor the v0.3.x pull request follow-ups. Do not add dependencies or tables for later releases.
 
-Read `SPEC.md` and `docs/architecture.md` for v0.3 work. Open `docs/roadmap.md` only for planning or milestone checklists.
+Read `SPEC.md` and `docs/architecture.md` for v0.4 work. Open `docs/roadmap.md` only for planning or milestone checklists.
 
 Docs lifecycle: write a behavior change in `SPEC.md` first (or in the same commit as the code); update `docs/architecture.md` in the same commit as the code it describes; add decisions at the end of its Decisions section and never edit an accepted one; when a release starts, move its design from `docs/roadmap.md` into `SPEC.md` and `docs/architecture.md`.
 
@@ -22,6 +22,7 @@ Docs lifecycle: write a behavior change in `SPEC.md` first (or in the same commi
 - Every write goes through a domain service, which emits the committed change event; task writes carry the expected version.
 - Agent access (v0.2.x): MCP served by `rmcp` over a Unix socket closed to other users, reached through `brainiac mcp` (the app's own executable as a stdio byte pipe). MCP tool shapes live in `src-tauri/src/mcp/tools.rs`, not `models.rs`. Tools call the domain services; none deletes, touches Git, or changes settings.
 - Pull requests (v0.3): a provider-neutral `PullRequestService` over one `ForgeAdapter` per provider, HTTP only in Rust (`reqwest` with rustls), tokens only in the Keychain (`security-framework`), a deletable cache in `forge.db`. Writes to GitHub and Bitbucket happen only on an explicit user action; review, approve, and merge carry the expected head commit.
+- Databases (v0.4): `tokio-postgres` with rustls and `rusqlite`, behind one `driver::Session`; a session per query tab; every statement read only (its own `BEGIN READ ONLY` on PostgreSQL, a read-only file or `query_only` on SQLite) unless the connection allows writes and the tab's mode says so; passwords only in the Keychain (`credentials.rs`); results never written to disk; saved queries in `brainiac.db`, run history and tabs in `history.db`.
 
 ## Hard rules
 

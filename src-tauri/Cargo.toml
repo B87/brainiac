@@ -26,7 +26,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 ts-rs = { version = "11", features = ["serde-compat"] }
-rusqlite = { version = "0.40", features = ["bundled", "backup"] }
+rusqlite = { version = "0.40", features = ["bundled", "backup", "hooks", "column_decltype"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time", "sync", "io-util", "io-std", "net"] }
 notify = "8"
 uuid = { version = "1", features = ["v4"] }
@@ -44,6 +44,14 @@ libc = "0.2"
 # and account tokens in the macOS Keychain.
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "json", "system-proxy"] }
 security-framework = "3"
+# Databases (v0.4): PostgreSQL over its extended protocol with rustls (the same
+# rustls, crypto provider, and macOS trust store verifier that reqwest uses).
+tokio-postgres = "0.7"
+tokio-postgres-rustls = { version = "0.14", features = ["aws-lc-rs"] }
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "std", "tls12"] }
+rustls-platform-verifier = "0.7"
+bytes = "1"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 tempfile = "3"

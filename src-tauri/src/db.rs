@@ -38,6 +38,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0005_review_drafts",
         include_str!("../migrations/0005_review_drafts.sql"),
     ),
+    (
+        "0006_databases",
+        include_str!("../migrations/0006_databases.sql"),
+    ),
 ];
 
 /// How many daily backups to keep.
@@ -113,6 +117,10 @@ pub const HISTORY: Store = Store {
         (
             "0002_agent",
             include_str!("../migrations/history/0002_agent.sql"),
+        ),
+        (
+            "0003_queries",
+            include_str!("../migrations/history/0003_queries.sql"),
         ),
     ],
     backups: Backups::Every { days: 7, keep: 2 },

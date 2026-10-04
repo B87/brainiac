@@ -3,6 +3,8 @@
 pub mod activity;
 pub mod backup;
 pub mod commands;
+pub mod credentials;
+pub mod databases;
 pub mod db;
 pub mod fetcher;
 pub mod forge;
@@ -35,6 +37,9 @@ pub const EVENT_NOTE_MISSING: &str = "note_missing";
 pub const EVENT_TASK_CHANGED: &str = "task_changed";
 pub const EVENT_INDEX_STATUS_CHANGED: &str = "index_status_changed";
 pub const EVENT_PR_CHANGED: &str = "pr_changed";
+/// Quitting waits: a query tab has a transaction open (SPEC.md, Databases: Safety).
+pub const EVENT_DB_QUIT_BLOCKED: &str = "db_quit_blocked";
+pub const EVENT_DB_HEALTH_SAMPLE: &str = "db_health_sample";
 
 /// Minimum age of a vault scan before focus or wake triggers another.
 const VAULT_ACTIVATION_MIN_AGE: Duration = Duration::from_secs(30);
@@ -177,6 +182,37 @@ pub fn run() {
                     return Ok(());
                 }
             };
+            // --- Databases (v0.4) --------------------------------------------
+            let connections = Arc::new(databases::ConnectionService::new(
+                stores.core.clone(),
+                Arc::new(credentials::MacSecrets),
+            ));
+            let health_handle = handle.clone();
+            let health_emitter: databases::health::HealthEmitter = Arc::new(move |event| {
+                if let Err(e) = health_handle.emit(EVENT_DB_HEALTH_SAMPLE, &event) {
+                    tracing::warn!(error = %e, "failed to emit db_health_sample");
+                }
+            });
+            app.manage(Arc::new(databases::health::HealthService::new(
+                Arc::clone(&connections),
+                health_emitter,
+                databases::health::GoogleConfig::production(),
+            )));
+            let query_sessions = Arc::new(
+                databases::QuerySessions::new(connections)
+                    .with_history(databases::history::QueryHistory::new(stores.history.clone()), settings.query_history),
+            );
+            app.manage(Arc::new(databases::SavedQueryService::new(stores.core.clone())));
+            app.manage(Arc::clone(&query_sessions));
+            // Idle sessions close after ten minutes (SPEC.md, Databases).
+            tauri::async_runtime::spawn(async move {
+                let mut ticker = tokio::time::interval(SCHEDULE_TICK);
+                loop {
+                    ticker.tick().await;
+                    query_sessions.close_idle(databases::sessions::IDLE_CLOSE);
+                }
+            });
+
             let knowledge_handle = handle.clone();
             let knowledge_emitter: notes::KnowledgeEmitter = Arc::new(move |event: KnowledgeEvent| {
                 let sent = match &event {
@@ -382,16 +418,64 @@ pub fn run() {
             commands::get_merge_options,
             commands::merge_pull_request,
             commands::get_review_counts,
+            commands::list_db_connections,
+            commands::save_db_connection,
+            commands::delete_db_connection,
+            commands::test_db_connection,
+            commands::parse_db_url,
+            commands::unlock_db_connection,
+            commands::get_db_schema,
+            commands::run_statement,
+            commands::cancel_statement,
+            commands::close_db_session,
+            commands::link_db_connection,
+            commands::statement_parameters,
+            commands::end_transaction,
+            commands::export_result,
+            commands::quit_rolling_back,
+            commands::list_saved_queries,
+            commands::save_query,
+            commands::delete_query,
+            commands::remember_query_parameters,
+            commands::query_history,
+            commands::clear_query_history,
+            commands::list_query_tabs,
+            commands::save_query_tabs,
+            commands::start_db_health,
+            commands::stop_db_health,
+            commands::signal_db_backend,
+            commands::list_docker_containers,
         ])
         .build(context)
         .expect("error while running Brainiac")
         .run(|app, event| {
+            if let tauri::RunEvent::ExitRequested { api, code, .. } = &event {
+                // `code` is set when the app asked to exit itself, after the window asked.
+                if code.is_none() && open_transactions(app) {
+                    api.prevent_exit();
+                }
+            }
             if let tauri::RunEvent::Exit = event {
                 if let Some(agent) = app.try_state::<commands::Agent>() {
                     agent.close();
                 }
             }
         });
+}
+
+/// Whether a query tab has a transaction open; if so, the window is asked
+/// to confirm rolling it back before Brainiac quits (⌘Q). Closing the window
+/// asks from the window itself, before it closes.
+fn open_transactions(app: &tauri::AppHandle) -> bool {
+    let Some(databases) = app.try_state::<commands::Databases>() else {
+        return false;
+    };
+    let open = databases.open_transactions();
+    if open.is_empty() {
+        return false;
+    }
+    let _ = app.emit(EVENT_DB_QUIT_BLOCKED, open);
+    true
 }
 
 /// Image types Live Preview shows from the vault.
@@ -546,6 +630,7 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
     let show_today = MenuItem::with_id(app, "show_today", "Today", true, None::<&str>)?;
     let show_tasks = MenuItem::with_id(app, "show_tasks", "Tasks", true, None::<&str>)?;
     let show_notes = MenuItem::with_id(app, "show_notes", "Notes", true, None::<&str>)?;
+    let show_databases = MenuItem::with_id(app, "show_databases", "Databases", true, None::<&str>)?;
     let check_updates = MenuItem::with_id(
         app,
         "check_updates",
@@ -612,6 +697,7 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
             &show_today,
             &show_tasks,
             &show_notes,
+            &show_databases,
             &PredefinedMenuItem::separator(app)?,
             &refresh,
             &fetch,

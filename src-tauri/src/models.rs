@@ -156,6 +156,9 @@ pub struct Settings {
     pub write_note_ids: bool,
     /// What agents connected through `brainiac mcp` may do (SPEC.md, Agent access).
     pub agent_access: AgentAccess,
+    /// Keep a history of the statements run on database connections
+    /// (SPEC.md, Databases: History).
+    pub query_history: bool,
 }
 
 /// Settings → Agent access (SPEC.md, section 9). Off by default.
@@ -201,6 +204,7 @@ impl Default for Settings {
             fetch_timeout_seconds: 60,
             write_note_ids: true,
             agent_access: AgentAccess::Off,
+            query_history: true,
         }
     }
 }
@@ -2430,4 +2434,748 @@ pub enum PullRequestChangeOrigin {
     App,
     /// Read from the provider.
     Remote,
+}
+
+// ---------------------------------------------------------------------------
+// v0.4: databases (SPEC.md, section 11)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum DbKind {
+    Sqlite,
+    Postgres,
+}
+
+impl DbKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DbKind::Sqlite => "sqlite",
+            DbKind::Postgres => "postgres",
+        }
+    }
+}
+
+/// Where a connection points; its color everywhere it appears.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum DbEnvironment {
+    Local,
+    Development,
+    Staging,
+    Production,
+}
+
+impl DbEnvironment {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DbEnvironment::Local => "local",
+            DbEnvironment::Development => "development",
+            DbEnvironment::Staging => "staging",
+            DbEnvironment::Production => "production",
+        }
+    }
+}
+
+/// What statements on a connection may do. Every connection is read only
+/// until writes arrive (SPEC.md, Databases: Safety).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum DbAccess {
+    ReadOnly,
+    ReadWrite,
+}
+
+/// PostgreSQL TLS: verify the certificate and host name, encrypt without
+/// verifying, or connect in plain text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum DbTls {
+    Verify,
+    Require,
+    Off,
+}
+
+/// Where a connection's password comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum DbPassword {
+    /// The Keychain item `brainiac/db:<id>`.
+    Keychain,
+    /// Asked for once per run of Brainiac and kept in memory.
+    Ask,
+    /// No password: SQLite, or a server that trusts local users.
+    None,
+}
+
+/// A saved connection. Its password never leaves Rust.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DbConnection {
+    pub id: String,
+    pub name: String,
+    pub kind: DbKind,
+    pub environment: DbEnvironment,
+    pub access: DbAccess,
+    /// SQLite: the database file.
+    pub file_path: Option<String>,
+    pub host: Option<String>,
+    pub port: Option<u16>,
+    pub database: Option<String>,
+    pub user: Option<String>,
+    pub tls: Option<DbTls>,
+    /// A PEM file of certificate authorities to trust besides the Mac's.
+    pub ca_file: Option<String>,
+    pub password: DbPassword,
+    /// Whether a statement can run without asking for the password first:
+    /// false only for `Ask` before the password was entered in this run.
+    pub password_ready: bool,
+    pub statement_timeout_seconds: u32,
+    /// SQLite: the file's size, or `None` when it is missing.
+    #[ts(type = "number | null")]
+    pub file_size: Option<u64>,
+    /// Repositories the connection is linked to, shown in their side panels.
+    pub repository_ids: Vec<String>,
+    /// Where a PostgreSQL server runs, for Health's machine metrics.
+    pub runs_on: Option<RunsOn>,
+    #[ts(type = "number")]
+    pub version: i64,
+}
+
+/// New Connection… and Edit Connection….
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SaveDbConnectionRequest {
+    /// `None` for a new connection.
+    pub id: Option<String>,
+    /// The version the form was opened on; a save over a newer one is refused.
+    #[ts(type = "number | null")]
+    pub expected_version: Option<i64>,
+    pub name: String,
+    pub kind: DbKind,
+    pub environment: DbEnvironment,
+    pub access: DbAccess,
+    pub file_path: Option<String>,
+    pub host: Option<String>,
+    pub port: Option<u16>,
+    pub database: Option<String>,
+    pub user: Option<String>,
+    pub tls: Option<DbTls>,
+    pub ca_file: Option<String>,
+    pub password_storage: DbPassword,
+    /// A typed password; `None` keeps the one in the Keychain.
+    pub password: Option<String>,
+    pub statement_timeout_seconds: u32,
+    pub runs_on: Option<RunsOn>,
+}
+
+// Written by hand instead of derived so a typed password never reaches a log.
+impl std::fmt::Debug for SaveDbConnectionRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SaveDbConnectionRequest")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("kind", &self.kind)
+            .field("host", &self.host)
+            .field("database", &self.database)
+            .field("password_storage", &self.password_storage)
+            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
+/// Test Connection: what the server said about itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DbTestResult {
+    /// Such as "PostgreSQL 16.4" or "SQLite 3.50.2".
+    pub server_version: String,
+}
+
+/// The fields of a pasted `postgres://` URL, to fill the form.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DbUrlFields {
+    pub host: Option<String>,
+    pub port: Option<u16>,
+    pub database: Option<String>,
+    pub user: Option<String>,
+    /// The URL's password, moved into the form's password field.
+    pub password: Option<String>,
+    pub tls: Option<DbTls>,
+}
+
+impl std::fmt::Debug for DbUrlFields {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DbUrlFields")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("database", &self.database)
+            .field("user", &self.user)
+            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
+            .field("tls", &self.tls)
+            .finish()
+    }
+}
+
+/// What a column holds, for alignment and the inspector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ColumnKind {
+    Bool,
+    Number,
+    Numeric,
+    Text,
+    Json,
+    Temporal,
+    Uuid,
+    Bytes,
+    Array,
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ResultColumn {
+    pub name: String,
+    /// The database's name for the type, such as `int4` or `timestamptz`.
+    pub type_name: String,
+    pub kind: ColumnKind,
+}
+
+/// One value of a result. Most values travel as JSON scalars: `null`, a
+/// boolean, a number (integers only up to 2^53), or the text the database
+/// would print; values that need more say so in an object.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(untagged)]
+#[ts(export)]
+pub enum Cell {
+    Null,
+    Bool(bool),
+    Number(f64),
+    Text(String),
+    Value(CellValue),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[ts(export)]
+pub enum CellValue {
+    /// Text cut for the trip to the window; `length` is the whole value's in bytes.
+    Cut {
+        text: String,
+        #[ts(type = "number")]
+        length: u64,
+    },
+    /// Binary: its size and the hex of its first 4 KiB.
+    Bytes {
+        #[ts(type = "number")]
+        size: u64,
+        hex: String,
+    },
+    /// A type Brainiac cannot show: its size, and how to see it.
+    Other {
+        type_name: String,
+        #[ts(type = "number")]
+        size: u64,
+    },
+}
+
+/// Why a statement did not complete. Shown under the editor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum DbFailureReason {
+    /// The database refused the statement.
+    Sql,
+    /// The statement tried to write on a read-only connection.
+    ReadOnly,
+    Cancelled,
+    Timeout,
+    /// The connection could not be opened or was lost.
+    Connection,
+    /// The statement has parameters, such as `$1`, and none were given.
+    Parameters,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DbFailure {
+    pub reason: DbFailureReason,
+    /// The database's own message.
+    pub message: String,
+    /// PostgreSQL's SQLSTATE or SQLite's result code name.
+    pub code: Option<String>,
+    pub detail: Option<String>,
+    pub hint: Option<String>,
+    /// Where in the tab's text the error is, in UTF-16 code units.
+    pub position: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[ts(export)]
+pub enum StatementResult {
+    Rows {
+        columns: Vec<ResultColumn>,
+        rows: Vec<Vec<Cell>>,
+        /// More rows were available than were fetched.
+        more: bool,
+    },
+    /// A statement that returns no rows, such as `SET`: its command tag.
+    Command {
+        tag: String,
+    },
+    /// Explain and Explain Analyze.
+    Plan {
+        plan: PlanNode,
+        planning_ms: Option<f64>,
+        execution_ms: Option<f64>,
+    },
+    Failed {
+        failure: DbFailure,
+    },
+}
+
+/// One node of a query plan, as an indented tree.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PlanNode {
+    /// Such as `Index Scan using invoices_pkey on invoices`.
+    pub label: String,
+    pub startup_cost: Option<f64>,
+    pub total_cost: Option<f64>,
+    /// The planner's estimate.
+    pub rows: Option<f64>,
+    /// Explain Analyze: rows per loop and time of the last row, in ms.
+    pub actual_rows: Option<f64>,
+    pub actual_ms: Option<f64>,
+    pub loops: Option<f64>,
+    /// Conditions and other details, such as `Filter: (paid_at IS NULL)`.
+    pub details: Vec<String>,
+    pub children: Vec<PlanNode>,
+}
+
+/// How a tab runs statements (SPEC.md, Databases: Safety).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum RunMode {
+    /// Each statement in its own read-only transaction.
+    ReadOnly,
+    /// Each statement commits.
+    AutoCommit,
+    /// The first statement opens a transaction that stays open until Commit or Roll Back.
+    Manual,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ExplainMode {
+    Plan,
+    /// Runs the statement to measure it.
+    Analyze,
+}
+
+/// A tab's open transaction, in Manual mode.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct TransactionInfo {
+    /// Statements run in it so far.
+    pub statements: u32,
+    pub since: String,
+    /// A statement failed: PostgreSQL refuses more until Roll Back.
+    pub failed: bool,
+}
+
+/// A value for a `:name` parameter, as typed; `None` is `NULL`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ParamValue {
+    pub name: String,
+    pub value: Option<String>,
+}
+
+/// One statement that ran.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct StatementRun {
+    /// The statement's place in the tab's text, in UTF-16 code units.
+    pub from: u32,
+    pub to: u32,
+    pub sql: String,
+    pub result: StatementResult,
+    pub elapsed_ms: u32,
+    /// The session was opened again first, losing session settings such as `SET`.
+    pub reconnected: bool,
+    /// The statement ran in a read-only transaction, so running it again
+    /// (Fetch All, Export) cannot repeat a write.
+    pub ran_read_only: bool,
+    /// The tab's transaction after the statement, when one is open.
+    pub transaction: Option<TransactionInfo>,
+}
+
+/// Run (`Cmd+Enter`): the statement under the cursor, or each statement in
+/// the selection. Run All (`Shift+Cmd+Enter`): every statement in the text.
+/// Statements run in turn and stop at the first failure.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RunStatementRequest {
+    /// The tab, which owns the session.
+    pub tab_id: String,
+    pub connection_id: String,
+    pub text: String,
+    /// The selection in UTF-16 code units; `from == to` is the cursor.
+    pub from: u32,
+    pub to: u32,
+    /// Every statement in `text`, whatever the selection.
+    pub all: bool,
+    /// Fetch up to the most rows a result may have instead of the usual cap.
+    pub fetch_all: bool,
+    pub mode: RunMode,
+    /// Values for the statements' `:name` parameters.
+    pub parameters: Vec<ParamValue>,
+    /// Explain the statement instead of running it.
+    pub explain: Option<ExplainMode>,
+}
+
+/// Export…: a statement run again, read only, with every row written to a file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ExportRequest {
+    pub tab_id: String,
+    pub connection_id: String,
+    pub sql: String,
+    pub parameters: Vec<ParamValue>,
+    pub format: ExportFormat,
+    /// Chosen in the save dialog.
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ExportFormat {
+    Csv,
+    Json,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DbExportResult {
+    #[ts(type = "number")]
+    pub rows: u64,
+    pub path: String,
+}
+
+/// A saved query (SPEC.md, Databases: Saved queries).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SavedQuery {
+    pub id: String,
+    pub name: String,
+    /// Such as `Billing` or `Billing/Monthly`; empty at the top.
+    pub folder: String,
+    pub description: String,
+    /// The connection it runs on, if it still exists.
+    pub connection_id: Option<String>,
+    pub sql: String,
+    /// The last values of its parameters, kept because they rarely change.
+    pub parameters: Vec<ParamValue>,
+    #[ts(type = "number")]
+    pub version: i64,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SaveQueryRequest {
+    pub id: Option<String>,
+    #[ts(type = "number | null")]
+    pub expected_version: Option<i64>,
+    pub name: String,
+    pub folder: String,
+    pub description: String,
+    pub connection_id: Option<String>,
+    pub sql: String,
+}
+
+/// One run in a connection's history: never its rows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct HistoryEntry {
+    pub id: String,
+    pub connection_id: String,
+    pub sql: String,
+    pub ran_at: String,
+    pub elapsed_ms: u32,
+    /// Rows returned or changed, when it succeeded.
+    #[ts(type = "number | null")]
+    pub rows: Option<i64>,
+    /// The failure's message, when it failed.
+    pub error: Option<String>,
+}
+
+/// An open query tab, kept so tabs and their text survive a restart.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct QueryTab {
+    pub id: String,
+    pub connection_id: Option<String>,
+    pub saved_query_id: Option<String>,
+    /// The saved query's name, or "Untitled n".
+    pub title: String,
+    pub text: String,
+    /// The saved query's version the text was opened from or saved as.
+    #[ts(type = "number | null")]
+    pub saved_version: Option<i64>,
+    /// Whether the text differs from the saved query's.
+    pub dirty: bool,
+    pub mode: RunMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum RelationKind {
+    Table,
+    View,
+    MaterializedView,
+    ForeignTable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DbColumn {
+    pub name: String,
+    pub type_name: String,
+    pub nullable: bool,
+    pub default: Option<String>,
+    pub primary_key: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DbIndex {
+    pub name: String,
+    /// Such as `CREATE UNIQUE INDEX … USING btree (email)`, or SQLite's columns.
+    pub definition: String,
+    pub unique: bool,
+    pub primary: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DbForeignKey {
+    pub name: String,
+    /// Such as `FOREIGN KEY (customer_id) REFERENCES customers(id)`.
+    pub definition: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DbRelation {
+    pub name: String,
+    pub kind: RelationKind,
+    /// PostgreSQL's estimate of the rows, when it has analyzed the table.
+    #[ts(type = "number | null")]
+    pub estimated_rows: Option<i64>,
+    pub columns: Vec<DbColumn>,
+    pub indexes: Vec<DbIndex>,
+    pub foreign_keys: Vec<DbForeignKey>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DbSchemaGroup {
+    /// PostgreSQL's schema, or SQLite's `main`.
+    pub name: String,
+    pub relations: Vec<DbRelation>,
+}
+
+/// What the schema browser and completion show for a connection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DbSchema {
+    pub connection_id: String,
+    pub schemas: Vec<DbSchemaGroup>,
+    /// The schema an unqualified name means first, such as `public`.
+    pub default_schema: Option<String>,
+    pub read_at: String,
+}
+
+/// Where a PostgreSQL server runs, for the machine metrics PostgreSQL does
+/// not report (SPEC.md, Databases: Health).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[ts(export)]
+pub enum RunsOn {
+    /// Google Cloud SQL, read from Cloud Monitoring.
+    CloudSql { project: String, instance: String },
+    /// A Docker container on this Mac, read from Docker's API.
+    Docker {
+        container: String,
+        /// The Docker socket; `None` tries Docker Desktop's, then the system one.
+        socket: Option<String>,
+    },
+}
+
+/// A running Docker container, for choosing what a connection runs on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DockerContainer {
+    pub id: String,
+    pub name: String,
+    pub image: String,
+    /// Such as `5432→5432`.
+    pub ports: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DockerContainers {
+    pub socket: String,
+    pub containers: Vec<DockerContainer>,
+}
+
+/// One session in Health's list.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct HealthSession {
+    pub pid: i32,
+    pub user: Option<String>,
+    pub application: String,
+    pub client: Option<String>,
+    /// `active`, `idle`, `idle in transaction`, …
+    pub state: Option<String>,
+    /// Seconds in its state, and since its transaction began.
+    pub state_seconds: Option<f64>,
+    pub transaction_seconds: Option<f64>,
+    /// Such as `Lock: transactionid`.
+    pub wait: Option<String>,
+    /// Sessions it waits for.
+    pub blocked_by: Vec<i32>,
+    /// Its current statement; `None` when the role may not see it.
+    pub query: Option<String>,
+    /// Brainiac's own sessions.
+    pub own: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct HealthStatement {
+    pub query: String,
+    #[ts(type = "number")]
+    pub calls: i64,
+    pub total_ms: f64,
+    pub mean_ms: f64,
+    #[ts(type = "number")]
+    pub rows: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct HealthTable {
+    pub schema: String,
+    pub name: String,
+    /// Size with indexes and TOAST.
+    #[ts(type = "number")]
+    pub total_bytes: i64,
+    #[ts(type = "number")]
+    pub live_rows: i64,
+    pub dead_ratio: Option<f64>,
+    pub last_autovacuum: Option<String>,
+}
+
+/// Memory, CPU, and disk from where the server runs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct MachineSample {
+    /// Such as "Docker" or "Cloud Monitoring · 1 min behind".
+    pub source: String,
+    #[ts(type = "number | null")]
+    pub memory_used: Option<u64>,
+    #[ts(type = "number | null")]
+    pub memory_limit: Option<u64>,
+    pub memory_ratio: Option<f64>,
+    /// Share of the CPUs available to it, 0 to 1.
+    pub cpu_ratio: Option<f64>,
+    #[ts(type = "number | null")]
+    pub disk_used: Option<u64>,
+    #[ts(type = "number | null")]
+    pub disk_quota: Option<u64>,
+    /// Bytes per second (Docker reports I/O, not space used).
+    pub disk_read_rate: Option<f64>,
+    pub disk_write_rate: Option<f64>,
+    /// Why the source could not be read this time.
+    pub problem: Option<String>,
+}
+
+/// One reading of a server, every 10 seconds while Health is open.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct HealthSample {
+    pub connection_id: String,
+    pub at: String,
+    pub max_connections: u32,
+    pub active: u32,
+    pub idle: u32,
+    pub idle_in_transaction: u32,
+    /// Every connection to the server, all databases.
+    pub total_connections: u32,
+    /// Blocks found in memory, 0 to 1, since the previous sample.
+    pub cache_hit_ratio: Option<f64>,
+    pub transactions_per_second: Option<f64>,
+    pub rollbacks_per_second: Option<f64>,
+    /// Since the previous sample.
+    #[ts(type = "number")]
+    pub deadlocks: i64,
+    /// Temporary files written in the last hour, from queries that ran out of `work_mem`.
+    #[ts(type = "number")]
+    pub temp_files_hour: i64,
+    pub longest_transaction_seconds: Option<f64>,
+    pub sessions: Vec<HealthSession>,
+    /// `None` when `pg_stat_statements` is not installed.
+    pub statements: Option<Vec<HealthStatement>>,
+    pub tables: Vec<HealthTable>,
+    /// Whether the role sees other users' statements (`pg_monitor`).
+    pub sees_all: bool,
+    pub machine: Option<MachineSample>,
+    /// Why the server could not be read this time.
+    pub problem: Option<String>,
+}
+
+/// The values Health draws as a line over the last hour.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct HealthPoint {
+    pub at: String,
+    pub connections: u32,
+    pub cache_hit_ratio: Option<f64>,
+    pub transactions_per_second: Option<f64>,
+    pub memory_ratio: Option<f64>,
+    pub cpu_ratio: Option<f64>,
+}
+
+/// What Health shows when it opens: the hour so far and the latest sample.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct HealthSnapshot {
+    pub points: Vec<HealthPoint>,
+    pub latest: Option<HealthSample>,
+}
+
+/// Emitted as `db_health_sample`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct HealthEvent {
+    pub sample: HealthSample,
+    pub point: HealthPoint,
 }

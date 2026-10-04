@@ -21,7 +21,9 @@ Rust owns application behavior and persistence. The UI remains a web frontend in
 | Identity/content versions | **`uuid`, `sha2`** | Stable IDs and SHA-256 content hashes |
 | Agent access, v0.2.x | **`rmcp`**, the official MCP Rust SDK | The MCP server agents reach over a Unix socket |
 | HTTP, v0.3 | **`reqwest`** with rustls | GitHub and Bitbucket Cloud APIs; later Ollama |
-| Credentials, v0.3 | **`security-framework`** | Account tokens in the macOS Keychain |
+| Credentials, v0.3 | **`security-framework`** | Account tokens in the macOS Keychain; database passwords from v0.4 |
+| PostgreSQL, v0.4 | **`tokio-postgres`** with **`tokio-postgres-rustls`** and **`rustls-platform-verifier`** | Query sessions over the extended protocol, cancel, TLS with the macOS trust store |
+| SQL editor, v0.4 | **`@codemirror/lang-sql`** and **`@codemirror/autocomplete`** | Dialect highlighting and schema completion in the query view |
 | Git inspection, v0.1 | **System Git CLI invoked from Rust** | Status, discovery, history, refs, file contents, and diffs |
 | Local inference, later | **Ollama via the same `reqwest`** | Embeddings and streamed generation |
 | Vector storage, later | **`sqlite-vec` Rust binding** | Local nearest-neighbor retrieval |
@@ -40,7 +42,7 @@ flowchart TD
     Main[Main WebView] --> IPC[Tauri commands]
     Agent[Agent through brainiac mcp, v0.2.x] --> MCP[MCP server]
     MCP --> Services
-    Capture[Quick capture WebView, v0.4] --> IPC
+    Capture[Quick capture WebView, v0.5] --> IPC
     IPC --> Services[Rust domain services]
     Services --> Files[Markdown files, v0.2]
     Services --> DB[SQLite worker]
@@ -48,8 +50,8 @@ flowchart TD
     Queue --> Services
     Services --> Git[Git subprocesses, v0.1]
     Services --> Forges[GitHub and Bitbucket Cloud, v0.3]
-    Services --> AI[Ollama, v0.5+]
-    DB --> Search[FTS5, v0.2; vectors, v0.5]
+    Services --> AI[Ollama, v0.6+]
+    DB --> Search[FTS5, v0.2; vectors, v0.6]
     Services --> Events[Committed change events]
     Events --> Main
     Events --> Capture
@@ -105,7 +107,7 @@ brainiac/
 
 The Claude Code plugin is outside the Cargo project: `.claude-plugin/marketplace.json` at the repository root lists `plugins/brainiac/`, which holds `.claude-plugin/plugin.json`, `.mcp.json`, and `skills/brainiac/SKILL.md`.
 
-Create modules as their behavior is implemented; the scaffold does not need empty placeholders for every file. Add `imports.rs` in v0.4, then AI modules at their milestones.
+Create modules as their behavior is implemented; the scaffold does not need empty placeholders for every file. Add `imports.rs` in v0.5, then AI modules at their milestones.
 
 In Rust, a **package** is described by `Cargo.toml`; a **crate** is a compilation unit, such as its library or executable; a **module** organizes code within a crate. Tauri's scaffold has a small desktop binary (`main.rs`) that delegates to the application library (`lib.rs`). This is scaffold reuse, not a separate backend service.
 
@@ -120,7 +122,7 @@ Files become modules through declarations such as `mod notes;` in `lib.rs`. A di
 - Start with two concurrent Git status jobs and one embedding job; adjust after measurement.
 - On sleep, suspend timers; on wake and application activation, reconcile stale state.
 - On quit, flush accepted saves and draft checkpoints, cancel jobs, close the database, and unregister shortcuts. If flushing fails, preserve the draft and offer retry or quit with recovery.
-- Support a single application instance. Before v0.4, closing the last window quits after flushing. In v0.4, closing the window may keep capture available in the menu bar; `Cmd+Q` still quits.
+- Support a single application instance. Before v0.5, closing the last window quits after flushing. In v0.5, closing the window may keep capture available in the menu bar; `Cmd+Q` still quits.
 
 ## Storage
 
@@ -140,6 +142,9 @@ Files become modules through declarations such as `mod notes;` in `lib.rs`. A di
 | Revisions and unsaved editor drafts | `history.db` | Recovery data, not the saved note |
 | Forge accounts, repository overrides, per-workspace pull request settings, review drafts | `brainiac.db` (tokens in the Keychain) | Requires backup/export; tokens are never exported |
 | Pull requests, files, conversations, checks | `forge.db` | Yes, from GitHub and Bitbucket |
+| Database connections (no passwords), their repository links, saved queries with their last parameter values | `brainiac.db` (passwords in the Keychain) | Requires backup/export; passwords are never exported |
+| Query run history and open query tabs | `history.db` | Optional recovery data |
+| Database schemas, results, and Health samples | Memory | Rebuilt on use; never written |
 
 This ownership table covers the full roadmap. In v0.1, persist workspace membership, repository registration, pins, and settings; cache Git observations with timestamps; keep the activity feed's ref tips and events. Note/task/import stores are introduced at their later milestones.
 
@@ -157,8 +162,8 @@ Only two things cannot be rebuilt: the vault's Markdown files and a small core d
 | --- | --- | --- | --- |
 | Vault (`.md` files) | Note text, frontmatter including `brainiac_id`, links written in notes | Source of truth | By the user, and in Brainiac's export |
 | `brainiac.db` | Settings, repositories, workspaces, pins, activity, vaults, note identity, tasks and their search table, note-to-repository links | No | Snapshots before migrations and daily, and export |
-| `index.db` | Note bodies, the notes search table, parsed links between notes; chunks and vectors from v0.5 | Yes, from the vault | Never; rebuilt after a restore |
-| `history.db` | Note revisions and draft checkpoints | No, but optional | Its own snapshots, less often than `brainiac.db` |
+| `index.db` | Note bodies, the notes search table, parsed links between notes; chunks and vectors from v0.6 | Yes, from the vault | Never; rebuilt after a restore |
+| `history.db` | Note revisions and draft checkpoints; from v0.4, query run history and open query tabs | No, but optional | Its own snapshots, less often than `brainiac.db` |
 | `forge.db`, v0.3 | Cached pull requests, files, conversations, checks, and each request's ETag | Yes, from the providers | Never |
 
 - Under WAL, a transaction across attached database files is atomic within each file but not across them; a crash during commit can leave one file updated and another not. [SQLite ATTACH](https://www.sqlite.org/lang_attach.html) The split is safe only because `index.db` is rebuildable: each indexed row records the content hash it was built from, and startup re-indexes rows whose hash no longer matches `brainiac.db`.
@@ -168,7 +173,7 @@ Only two things cannot be rebuilt: the vault's Markdown files and a small core d
 
 ### Data model
 
-Tables of v0.4 onward are in `docs/roadmap.md` and are not created before their release; v0.3's are created by the code that first uses them. IDs are UUID strings and timestamps are UTC instants. The v0.1 schema is `src-tauri/migrations/0001_init.sql`; v0.2's core tables arrive in `0002`, v0.3's accounts in `0003` and its forge mapping in `0004`, and `index.db` and `history.db` get their own migration lists.
+Tables of v0.5 onward are in `docs/roadmap.md` and are not created before their release; v0.3's and v0.4's are created by the code that first uses them. IDs are UUID strings and timestamps are UTC instants. The v0.1 schema is `src-tauri/migrations/0001_init.sql`; v0.2's core tables arrive in `0002`, v0.3's accounts in `0003`, its forge mapping in `0004`, and review drafts in `0005`; v0.4's databases in `0006`; `index.db` and `history.db` get their own migration lists.
 
 | Entity | Essential fields and constraints | Release |
 | --- | --- | --- |
@@ -212,6 +217,16 @@ v0.3 adds:
 | `review_drafts` | core | `id`, pull request reference, anchor (path, side, line, optional start line, the commit it was written on), body, origin (`user`; `agent` later), the remote comment ID once sent; the user's unsent text, so it is kept and backed up. A row without a path is the summary of a submission under way, with its verdict and the head it goes on, so a submission cut off midway resumes |
 | `pull_requests`, `list_reads`, `pull_request_files`, `pull_request_checks`, `pull_request_conversations`, `pull_request_patch_sets`, `pull_request_patches` | `forge.db` | A pull request as the neutral model in JSON with its state, update time, close time, and version; when each repository's open or closed list was last read, with the provider's ETag; a head commit's files and checks, replaced when the head moves; the conversation (threads and comments in JSON) with when it was read; the provider's diff of a head that is not on the Mac, cut per file (a renamed file under both paths). A closed pull request is dropped 14 days after it closed, with all of these |
 
+v0.4 adds:
+
+| Entity | File | Essential fields and constraints |
+| --- | --- | --- |
+| `db_connections` | core | `id`, name, kind (`sqlite`, `postgres`), environment, access (`read_only`, `read_write`), file path or host, port, database, user, TLS mode and CA file, password source (`keychain`, `ask`, `none`), statement time limit, `runs_on` (JSON: a Cloud SQL instance or a Docker container), version; never a password |
+| `db_connection_repositories` | core | `connection_id`, `repository_id`; cascades from both |
+| `saved_queries` | core | `id`, name, folder, description, `connection_id?` (set null when the connection is deleted), SQL, the last parameter values as JSON, version |
+| `query_runs` | history | `id`, `connection_id`, SQL (cut at 100 KB), `ran_at`, elapsed ms, row count or error; 90 days or 10,000 per connection |
+| `query_tabs` | history | `id`, position, connection, saved query and its version, title, text, whether it differs from the saved query, mode |
+
 `planned_date` and `due_date` are local calendar dates (`YYYY-MM-DD`), not UTC instants, so Today does not shift with time zones or daylight saving. Completing a task sets `completed_at`; reopening clears it; a task is to sort while `triaged_at` is empty. Every task write carries the expected `version` and fails with `CONFLICT` when it changed.
 
 Use foreign keys, WAL mode, a bounded busy timeout, and explicit transactions. Repository status is a cache with an observation time, never an authoritative copy of Git state.
@@ -244,7 +259,7 @@ An export is a new folder `Brainiac Export <date> <time>` holding `manifest.json
 - Migrations stay append-only and run at startup after a pre-migration snapshot; an app refuses a database newer than it knows (Storage, above). That is enough for one user on one machine.
 - Rows use UUIDs, notes are identified by vault ID plus relative path, and unknown frontmatter keys are preserved, so multiple vaults or sync can be added later without rewriting identity. Absolute paths stay only where they are local by nature, such as a repository's folder; its remote URL is the identity that travels.
 - Sync, if it comes, cannot migrate every device at once, because devices run different app versions: record a format version on synced records and translate on read. [Ink & Switch: Cambria](https://www.inkandswitch.com/cambria/)
-- New embedding models or chunkers (v0.5) add a profile; they never change existing vectors in place.
+- New embedding models or chunkers (v0.6) add a profile; they never change existing vectors in place.
 
 ## Git
 
@@ -339,7 +354,7 @@ How `SPEC.md`, Workspace activity, is tracked:
 
 ## IPC
 
-The app exposes repository and workspace registration, Git queries, fetching, the activity feed, settings and pins, and application snapshots; v0.2 adds the vault, notes, tasks, search, and backups; v0.3 adds accounts and pull requests. Commands of v0.4 onward are in `docs/roadmap.md`.
+The app exposes repository and workspace registration, Git queries, fetching, the activity feed, settings and pins, and application snapshots; v0.2 adds the vault, notes, tasks, search, and backups; v0.3 adds accounts and pull requests; v0.4 adds database connections, query sessions, saved queries, and Health. Commands of v0.5 onward are in `docs/roadmap.md`.
 
 Commands are thin adapters over Rust services. Use `#[tauri::command]`, serializable request/response DTOs, and a typed TypeScript client. Generate DTO types from Rust or verify shared schemas in CI; do not assume Tauri automatically creates complete TypeScript bindings. [Tauri command documentation](https://v2.tauri.app/develop/calling-rust/)
 
@@ -369,6 +384,11 @@ Commands are thin adapters over Rust services. Use `#[tauri::command]`, serializ
 | `list_forge_accounts` / `save_forge_account` / `remove_forge_account` / `set_repository_forge` / `update_workspace_pull_requests` | v0.3: accounts checked with one request; a repository's forge override; a workspace's switch and accounts |
 | `list_pull_requests` / `get_pull_request` / `list_pull_request_files` / `get_pull_request_diff` / `get_pull_request_conversation` / `get_review_counts` | v0.3: workspace or repository scope and a filter (merged and closed ones of the last 30 days for one repository, loaded when asked for), or a pull request reference; cached results with their age and version; diffs identified by base and head commit; each workspace's count of reviews waiting, from the cache |
 | `save_review_draft` / `discard_review_draft` / `submit_review` / `comment_on_pull_request` / `reply_to_thread` / `resolve_thread` / `get_merge_options` / `merge_pull_request` | v0.3: expected head commit on submit, approve, and merge, expected version on edits; `CONFLICT` with the current state when either moved; the merge methods and branch default read when the confirmation opens |
+
+| `list_db_connections` / `save_db_connection` / `delete_db_connection` / `test_db_connection` / `parse_db_url` / `unlock_db_connection` / `link_db_connection` | v0.4: connections with expected versions; a typed password goes to the Keychain (or memory, for `ask`) and never comes back; a test returns the server's version or a classified error |
+| `get_db_schema` / `statement_parameters` / `run_statement` / `cancel_statement` / `end_transaction` / `close_db_session` / `export_result` / `quit_rolling_back` | v0.4: tab, connection, text and selection in UTF-16 offsets, mode, parameter values, explain; one `StatementRun` per statement that ran, with its place in the text, a result (rows, command, plan, or failure with its position), whether it ran read only, and the tab's transaction |
+| `list_saved_queries` / `save_query` / `delete_query` / `remember_query_parameters` / `query_history` / `clear_query_history` / `list_query_tabs` / `save_query_tabs` | v0.4: saved queries with expected versions (`CONFLICT` when changed elsewhere); a connection's history, searched; the open tabs |
+| `start_db_health` / `stop_db_health` / `signal_db_backend` / `list_docker_containers` | v0.4: the hour so far and the latest sample, then `db_health_sample` events every 10 seconds; cancel or end a server session (read-and-write connections only); running containers |
 
 Errors expose stable codes: `VALIDATION`, `NOT_FOUND`, `CONFLICT`, `PERMISSION_DENIED`, `IO`, `DB`, `DEPENDENCY_UNAVAILABLE`, `TIMEOUT`, and `CANCELLED`. Include a user-facing message and retryability, keeping low-level diagnostics in local logs.
 
@@ -503,6 +523,35 @@ Provider details from spike S6 (Decisions, 3 Oct 2026):
 - GraphQL reports errors in a `200` response's `errors`, so the GitHub adapter checks the body as well as the status (`FORBIDDEN` is `PERMISSION_DENIED`). A fine-grained token without a permission gets `403` "Resource not accessible by personal access token", which becomes `PERMISSION_DENIED` naming the permission (`Pull requests: Read and write` for comments and reviews, `Contents: Read and write` for resolving and merging; `write:pullrequest:bitbucket` on Bitbucket); the service then records it on the account (`AccountService::mark_missing`), which turns the action off in `available_actions` until the token is replaced. Other refusals keep their meaning: `422` and GitHub's `405` (not mergeable: protection, a required check) are `VALIDATION` with the provider's own message (a draft on a line outside the diff), `409` is `CONFLICT`.
 - `pr_changed` carries the reference, the version, and its origin (`app` or `remote`); commands return definitive state.
 
+## Databases — v0.4
+
+What the user sees is `SPEC.md`, section 11. The design, the options compared, and what was left out are in `docs/design/databases.md`.
+
+```text
+Main WebView ── Tauri commands ──▶ ConnectionService   (connections, Keychain passwords, test, URL parsing)
+                                   SavedQueryService   (saved queries with versions, last parameter values)
+                                   QuerySessions       (one session per tab, modes, transactions, cancel, history, export, schemas)
+                                     └─ driver::Session ─┬─ PostgreSQL: tokio-postgres over the extended protocol, rustls
+                                                         └─ SQLite: rusqlite on a thread of its own per session
+                                   HealthService       (a monitor per connection with Health open; Docker and Cloud Monitoring)
+```
+
+- **Code** lives in `databases.rs` and `databases/`: `connections.rs`, `queries.rs`, `sessions.rs`, `history.rs` (runs and tabs in `history.db`), `driver.rs` (the `Session` enum and `Target`), `postgres.rs`, `sqlite.rs`, `statements.rs` (splitting, the statement at the cursor, `:name` parameters, UTF-16 offsets), `values.rs` (PostgreSQL's binary format to neutral cells), `export.rs`, and `health.rs`. Command handlers stay thin.
+- **Credentials.** The Keychain calls are shared in `credentials.rs`: `forge/keychain.rs` uses them for account tokens, and database passwords are generic passwords with service `brainiac` and account `db:<connection id>`, wrapped in a `Secret` whose `Debug` prints nothing. A password read from the Keychain, or entered for an `ask` connection, is kept in memory for the run; a password the server refuses is forgotten, so it is read or asked for again.
+- **The driver.** `Session` is an enum over `PgSession` and `SqliteSession` rather than a trait object: there are two drivers, and `async fn` in a trait cannot be called through `dyn`. Sessions, commands, and the window never see a PostgreSQL type or a SQLite pragma. A statement's result is neutral: columns with a name, the database's type name, and a kind (for alignment and the inspector), and rows of `Cell`s, which travel as JSON scalars (`null`, a boolean, a number up to 2⁵³, or text) or, for cut text, binary, and types Brainiac cannot show, an object. Text is cut at 64 KB and binary at its first 4 KB for the window; Export writes whole values.
+- **PostgreSQL values.** Results arrive in binary format and are decoded by type in `values.rs` into the text PostgreSQL would print: exact `numeric` from its base-10000 digits, dates and timestamps (with `infinity` and BC), intervals in the default style, network types, bit strings, `pg_lsn`, geometric points, arrays (nested braces, PostgreSQL's quoting), ranges and multiranges, composite values, enums and domains through their kinds, and `citext`. `timestamptz` is shown in the Mac's time zone. The spike's sweep of every built-in type is a test (`tests/databases_postgres.rs`); the types left as "cast to ::text" are listed there.
+- **Running a statement.** Each call is one statement over the extended protocol. **Run All** and selections are split by `statements.rs`, a small lexer that knows quotes, `E''` strings, dollar quoting, nested comments (PostgreSQL), bracket and backtick names (SQLite), and `BEGIN … END` in SQLite triggers and PostgreSQL `BEGIN ATOMIC` bodies. Offsets cross the IPC boundary in UTF-16 code units, as CodeMirror counts; an error's position (a 1-based character position from PostgreSQL, a byte offset from SQLite) is mapped back through the `:name` rewrite into the tab's text.
+- **Read only.** PostgreSQL runs each statement in `BEGIN READ ONLY … COMMIT` with `default_transaction_read_only = on`, and binds rows to a portal with a row limit of cap + 1, so a large result stops at the cap without rewriting the SQL and the transaction ends before the result is shown. SQLite opens a read-only connection's file with `SQLITE_OPEN_READ_ONLY`; in a read-only tab on a read-and-write connection it sets `query_only` and refuses a statement `sqlite3_stmt_readonly` says would write (which covers `VACUUM INTO`); its authorizer refuses `ATTACH`. Brainiac's own files, recognized by their `application_id`, never open writable.
+- **Modes.** Auto-commit on PostgreSQL first runs a statement read only; when the server refuses it as a write (`25006`), as not runnable in a transaction block (`25001`, such as `VACUUM`), or as ending the transaction itself (`2D000`, a procedure that commits), it runs again outside an explicit transaction, so `ran_read_only` is exact and Fetch All and Export never repeat a write. Manual sends `BEGIN` before the first statement and tracks `BEGIN`, `COMMIT`, `ROLLBACK`, and `ROLLBACK TO` typed by the user; a failed statement marks the transaction failed. Writable sessions set `idle_in_transaction_session_timeout` to 15 minutes. SQLite reads the transaction state from `sqlite3_get_autocommit`.
+- **Parameters.** `:name` becomes `$1…$n` for PostgreSQL, and each value is sent in text format, so the server parses it with the type it inferred for the parameter (`TextParam`, a `ToSql` whose `encode_format` is text). SQLite binds `:name` directly, as an integer or real when the text is one.
+- **Cancel and time limits.** PostgreSQL cancels with the session's `CancelToken` (over the same TLS) and limits statements with `statement_timeout`; a flag set by Cancel tells a cancel from a timeout, since both are SQLSTATE `57014`. A server that does not answer within the limit plus 10 seconds is treated as gone. SQLite runs on its own thread and is stopped by its interrupt handle and a progress handler that checks the deadline.
+- **Sessions.** `QuerySessions` keeps one `TabSession` per tab: the driver session behind a `tokio::sync::Mutex` (held across the statement's `await`, which also keeps a tab to one statement at a time), its canceller outside the lock, and its last use. A tab whose connection changed or was edited gets a new session. A minute tick closes sessions idle for 10 minutes; opening a ninth closes the least recently used idle one; neither closes a session with a transaction open. A lost connection reruns a read-only statement once on a new session and otherwise reports it, and a session found closed with a transaction open reports the rollback rather than starting a new transaction. Runs are recorded in `history.db` after each statement when the setting is on.
+- **Schema.** Read on a session of its own, never a tab's, when a connection is first used and on Refresh Schema, and kept in memory per connection version. PostgreSQL reads `pg_catalog` in one read-only transaction (schemas, relations without partitions, columns with defaults and primary keys, `pg_get_indexdef`, `pg_get_constraintdef`, `reltuples` as the estimate); SQLite reads `sqlite_schema` and its `pragma_*` table functions.
+- **TLS.** `Verify` uses `rustls-platform-verifier` (the macOS trust store, plus the CA file's certificates as extra roots); `Require` accepts any certificate but still checks the handshake's signatures; `Off` is plain. The crypto provider is named explicitly (`aws-lc-rs`), because two are compiled into the app and rustls cannot pick one. Connection errors are classified by SQLSTATE, the rustls error in the chain, and the I/O error, into messages that say what to change.
+- **Export** streams the statement's rows from a read-only transaction in batches of 1,000 into a `.brainiac-partial` file next to the target, renamed into place when complete and removed on failure.
+- **Health.** `HealthService` keeps a monitor per connection with Health open: watchers counted by `start_db_health` and `stop_db_health`, a sampling task every 10 seconds while any watcher remains, a 360-point ring buffer, and the latest sample, all in memory. Its PostgreSQL session is named `Brainiac health` and has a 2-second `statement_timeout`. A sample reads `pg_stat_activity` (counts, sessions, `pg_blocking_pids`), `pg_stat_database` (rates from the previous sample's counters; temporary files over the last hour from a queue of readings), `pg_stat_statements` when installed, and, once a minute, the largest tables, sized from `pg_class.relpages` because `pg_total_relation_size` waits for a table someone holds locked. Machine metrics: Docker's `GET /containers/{id}/stats?stream=false&one-shot=true` over its Unix socket (`reqwest`'s `unix_socket`), CPU and I/O rates from two samples; Cloud Monitoring's `timeSeries` for `cloudsql.googleapis.com/database/{memory/utilization, memory/quota, cpu/utilization, disk/bytes_used, disk/quota}`, once a minute, with an access token from the `authorized_user` Application Default Credentials file, refreshed and kept in memory. `signal_db_backend` runs `pg_cancel_backend` or `pg_terminate_backend` on a fresh health session and is refused unless the connection is read and write.
+- **Window.** The query view keeps each tab's CodeMirror editor and results mounted while hidden, and Databases stays mounted once opened, so switching sections loses nothing. Closing the window runs `closeGuard.ts`'s guards, one handler for the whole app, so the note editor's save and a database tab's open transaction cannot race; `Cmd+Q` is caught in Rust (`RunEvent::ExitRequested`), which asks the window through `db_quit_blocked`.
+
 ## Security, privacy, and distribution
 
 Tauri capabilities constrain which windows can access core/plugin APIs. Define separate main and capture capabilities, explicitly select them in configuration, and avoid permissions shared unintentionally across windows. [Tauri capabilities](https://v2.tauri.app/security/capabilities/)
@@ -537,7 +586,7 @@ These are initial targets to measure, not framework guarantees. Use a release bu
 | Local note edit reflected in an idle editor, v0.2 | Within 2 seconds when watcher delivery succeeds |
 | Selected text diff / first 100 history records, v0.1 | p95 under 500 ms on representative repos, with visible loading beyond that |
 | Local Git change reflected in viewer, v0.1 | Within 2 seconds after event delivery on representative repos; stale state visible otherwise |
-| Quick-capture activation, v0.4 | p95 under 250 ms with warm window |
+| Quick-capture activation, v0.5 | p95 under 250 ms with warm window |
 | Idle CPU with dashboard/AI inactive | Under 1% averaged over five minutes |
 | Core app memory, AI runtime excluded | Initial budget under 250 MiB, measured across app/WebView processes |
 
@@ -614,3 +663,8 @@ Decisions already made. Add new ones at the end with a date; do not edit an acce
 - **3 Oct 2026 — v0.3 writes to GitHub and Bitbucket on an explicit action, and adds `reqwest` and `security-framework`.** Commenting, replying, resolving threads, submitting reviews, and merging write to the hosting service, each a visible action the user takes, and merging asks for confirmation. This is separate from the rule that fetching is the only write to a local repository, which stays: Brainiac still never checks out, pushes, or deletes a branch. HTTP runs only in Rust, through `reqwest` with rustls (the client already planned for local models), and account tokens live in the macOS Keychain through `security-framework`. The design moved from `docs/roadmap.md` into `SPEC.md`, section 10, and Pull requests — v0.3 above. Spike S6 (Bitbucket Cloud's behavior) is recorded separately when it runs.
 - **3 Oct 2026 — Spike S6: what GitHub and Bitbucket Cloud do with reviews and merges.** Against a throwaway repository on each provider, with a fine-grained GitHub token (pull requests read and write, contents and commit statuses read) and a scoped Bitbucket API token. Both providers created draft pull requests, took comments on one line, a range of lines (GitHub `start_line`, Bitbucket `start_to`), and the old side, replied, and answered `If-None-Match` with `304`; GitHub's `304`s left its rate-limit count unchanged, and Bitbucket sends no rate-limit headers to tell. Five findings change the design. GitHub accepted a review naming the previous commit after a push, so every review checks the head first, not only merges. Bitbucket reported a pull request's previous commit for one to two seconds after a push while the branch already had the new one, and a merge in that window merged the new commit; its merge takes no commit, so Brainiac compares the branch tip just before merging and a push within that second is still merged. Bitbucket returns 12-character hashes, expanded before comparison. GitHub refused merging and resolving a thread with pull requests write alone ("Resource not accessible by personal access token", as a GraphQL error inside a `200` for the thread), and both worked once the token also had contents read and write, which also allows pushing, so that choice is left to the user; a merge naming an older commit was refused with `409` ("Head branch was modified"), and `sha` must be the full 40 characters. A fine-grained token's permissions cannot be read, while Bitbucket returns a token's scopes on every response; `/user`, which gives the identity needed for "waiting on you", needs `read:user:bitbucket`, added to the required scopes. Smaller findings: Bitbucket merged synchronously in 3.9 s and with `async=true` answered `202` and finished in about 2 s, so merges use the task; it allows approving your own pull request and GitHub does not; it lists six merge strategies on the target branch; its pending comments have no documented publish call, so drafts stay local; GitHub's combined status is `pending` when a commit has no statuses. Estimated cost of a workspace of 30 repositories: about 450 Bitbucket requests an hour.
 - **3 Oct 2026 — Settings is a page of the main window, not a dialog.** It had grown to six sections in one scrolling dialog. It is now a view (`kind: "settings"`, with the section and the view to go back to): its own sidebar of sections replaces the app's, and **Back** returns to that view, which is also what Brainiac reopens at launch. A separate Settings window was built and dropped: it kept the app usable beside it, but needed a second webview, capability, and cross-window events to keep the main window current, while a page reloads the snapshot itself. Each change saves at once, one after another, so a refused change undoes only itself. The refresh interval is now read on each wait, so a change applies without restarting; the status timeout, set when Git is first found, gets no field.
+- **4 Oct 2026 — Databases become v0.4, and the releases after it move one number on.** A database client is used most working days next to the repositories it belongs to, like pull requests, so SQLite and PostgreSQL connections, the query view, saved queries, and connection health come before imports and capture (now v0.5, with authenticated import adapters in v0.5.x), semantic search (now v0.6), and grounded AI answers (now v0.7). Release numbers in the entries above refer to the earlier plan: v0.4 there now means v0.5, v0.5 means v0.6, and v0.6 means v0.7. The design is in `docs/design/databases.md` and `docs/roadmap.md`, Databases — v0.4; its dependencies (`tokio-postgres` and its rustls connector) are recorded when that release starts.
+- **4 Oct 2026 — v0.4 spike: PostgreSQL through `tokio-postgres`, verified against a throwaway server.** The checks the design asked for are tests in `tests/databases_postgres.rs`, run against a server `initdb` and `pg_ctl` start in a temporary folder (CI installs PostgreSQL with Homebrew; without it the tests skip). Every built-in type decodes from the binary format through a raw `FromSql`, `numeric` exactly; the 15 types still shown as "cast to ::text" are listed in the test. A portal's row limit leaves `INSERT … RETURNING` complete: all 10 rows were written when 3 were fetched. The read-only wrapper held against 14 writes (DML, DDL, `SELECT … FOR UPDATE`, `nextval`, `DO`, procedures that commit, `COPY FROM`, a writable CTE, `set_config('transaction_read_only', …)`) and against 7 statements that change the session's or a transaction's mode, each followed by a write; `COPY … TO STDOUT` fails cleanly and leaves the session usable. Cancel took about 1 ms on the Mac. TLS verified against a CA made for the test (`Verify` with the CA file, refused without it or for another host name, `Require` encrypting without verifying, a server without TLS named as such). Hosted providers (RDS, Cloud SQL, Supabase, Neon) were not tried: that stays open in `docs/design/databases.md`. The same session showed that table sizes must not come from `pg_total_relation_size` in Health, since it waits on a locked table.
+- **4 Oct 2026 — v0.4 adds `tokio-postgres`, `tokio-postgres-rustls`, `rustls`, `rustls-platform-verifier`, `bytes`, and `futures-util`, and `@codemirror/lang-sql` and `@codemirror/autocomplete`.** `tokio-postgres` gives the controls a GUI needs (portals, a cancel token, raw values, text-format parameters) in pure Rust with no C library to sign; its TLS goes through the rustls, crypto provider, and macOS trust-store verifier `reqwest` already brings in, so the new Rust crates add no new TLS stack. `rusqlite` gains its `hooks` and `column_decltype` features (the authorizer, the progress handler, declared column types). `sqlx` and `libpq` were compared in `docs/design/databases.md`.
+- **4 Oct 2026 — Saved queries are found by `Cmd+K`, not by the notes and tasks search, and connections are linked from a repository's Notes tab.** The palette filters saved queries by name, folder, description, and SQL itself, which is enough for the dozens a person keeps, without a search table in `index.db`, a new search kind in the search UI and the agents' search tool, or index rebuilding. The repository's Notes tab already holds what is linked to a repository; the design's side panel had no room for a list. Both can move if use asks for it.
+
