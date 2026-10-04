@@ -1,58 +1,58 @@
 # Design: agent runs in containers
 
-Design notes for running a coding agent's command-line tool (Claude Code, Codex, Gemini CLI, and others) inside a container, on the Mac or on a remote machine, and following the run from Brainiac: a setup flow with every credential the run needs, a live trace of what the agent does, and a review of the result before anything leaves the container. These notes are not the specification and not yet on the roadmap. When a release takes them, the behavior moves into [`SPEC.md`](../../SPEC.md), the design into [`architecture.md`](../architecture.md), and this file keeps only the background and open questions.
+Design notes for running a coding agent inside a container and following its work from Brainiac: guided setup, a live trace, follow-up prompts, and review before its result is published to a Git remote. Code and prompts reach the selected model provider during execution; review gates publication of the result, not that disclosure. These notes describe the planned v0.5 on [`roadmap.md`](../roadmap.md), not current behavior. When the release starts, behavior moves into [`SPEC.md`](../../SPEC.md), architecture into [`architecture.md`](../architecture.md), and this file keeps the background and remaining questions.
 
-They build on what Brainiac already has: credentials kept only in the Keychain (`architecture.md`, Pull requests — v0.3, and `credentials.rs` in v0.4), or from the other sources of [`secrets.md`](secrets.md) once that design is taken, all outside I/O in Rust, Docker's Engine API reached over its Unix socket for Health (`architecture.md`, Databases — v0.4), the Git CLI with argument arrays, the diff viewer of v0.1, tasks that link to a repository (v0.2), and writes to GitHub and Bitbucket only on an explicit user action (v0.3).
-
-## Status: planned for v0.5 (4 Oct 2026)
-
-On the roadmap as v0.5 (`roadmap.md`, v0.5 — Agent runs), after v0.4.x's secrets (`secrets.md`), which it needs for its credentials. Nothing here adds a dependency or a table before the release starts. The first step is the spike under Open questions; its answers decide whether phase 1 is worth building.
+This builds on v0.4's Docker socket discovery and Health requests, v0.4.x's [`secrets.md`](secrets.md), the Git CLI with argument arrays, the diff viewer, tasks linked to repositories, and the provider-neutral pull request service. Health's short HTTP requests provide discovery/client setup; bidirectional attach streams, archives, and lifecycle recovery need their own implementation and spike. Nothing here adds a dependency, table, or accepted architecture decision before v0.5 starts. Remote hosts also depend on v0.4.x's SSH tunnels; Create pull request depends on the v0.3.x follow-up.
 
 ## Why
 
-Agents are most useful when they can work without asking before every command, and that is exactly when running them on the Mac is a risk: they see every file, every credential in the environment, and every repository. A container bounds what a run can reach. It also lets several runs go at once without sharing a working copy, and lets a long run happen on a bigger machine while the laptop sleeps.
+A container gives each run its own working copy and bounds the files and credentials the agent can reach. The user's checkout is never mounted or modified. Several runs can work independently, including on repositories with no remote. A later remote runtime can keep working while the laptop sleeps, once its control and recovery protocol is proven.
 
-Doing this by hand today means writing a Dockerfile, copying tokens into environment variables, cloning the repository inside, watching a terminal, and getting the changes out again. Brainiac already knows the repositories, the tasks they belong to, the forge accounts, and the Keychain, so it can do the setup once and make each run a single action.
+Brainiac knows the repositories, linked tasks, and credential sources. It can turn the manual sequence of creating an image, delivering credentials, watching an agent, and extracting changes into one workflow. The first release supports one tested ACP agent, API-key authentication, and complete local Git repositories. Unsupported cases fail before credentials are delivered.
 
 ## What the user gets
 
-- **Agent setup** in Settings, a guided flow that ends in a working test run:
-  1. **Where runs happen.** A local Docker-compatible engine (Docker Desktop, OrbStack, Colima) found from its socket, or a remote host reached over SSH. Brainiac checks that the engine answers and shows its version.
-  2. **Which agents.** Claude Code, Codex, Gemini CLI, and any other agent that speaks ACP (Agent interface, below). Each agent shows how it signs in.
-  3. **Sign in.** For each agent, an API key or the agent's own long-lived login token, pasted once and stored in the Keychain (Credentials, below).
-  4. **The image.** Brainiac builds its default image from a Dockerfile the user can read, with Git, the chosen agents, and their ACP adapters at pinned versions.
-  5. **Test.** A run in a throwaway container that starts each agent, sends it a one-line prompt, and shows the reply. Setup is done when every chosen agent answers.
-- **New run**, from a repository or a task: the agent, the branch and commit to start from (the branch's head by default), a prompt (prefilled from the task's title, description, and linked note), and a time limit. The run gets its own branch name, `agent/<short-name>`.
-- **The run view.** A live trace: the agent's messages, its plan, each tool call with its status, files it changed, and its cost when the agent reports one. **Cancel** stops the run. **Send** adds a follow-up prompt to the same session. When the agent asks for permission (Isolation, below), the run view shows the request and waits.
-- **Review.** When a run finishes, its commits open in the diff viewer against the commit it started from. From there the user can:
-  - **Save patch** or **Copy patch**, to apply by hand;
-  - **Push branch**, which pushes the run's branch to the repository's remote;
-  - then **Create pull request** through v0.3's `PullRequestService`.
-- **Runs** in the sidebar: running, waiting for the user, finished, failed, cancelled. A run linked to a task shows on that task.
+- **Agent setup** in Settings: choose a local Docker-compatible engine, a supported agent and credential source, build the readable default Dockerfile, and run a small paid test prompt. The image pins the base image, agent, adapter, and collector; setup records the resulting digest and capability test. Engine access grants control over containers on that engine. An approved remote host and its operator can inspect a run's code and credentials.
+- **New run** from a repository, and from a task later: choose the starting branch or commit, prompt, time limit, and resource limits. Brainiac resolves the start to an immutable commit. It shows that local uncommitted changes are excluded, which history is copied, the provider/host/image, and each injected credential. Phase 1 says outbound network access is unrestricted. Task-derived text is editable before sending.
+- **The run view:** messages, plans, tool activity, reported file changes, and usage/cost when available. Missing cost says “Unavailable”; a time limit is not a spending cap. **Send** starts the next turn when idle. **Cancel** ends the run and attempts to preserve partial work. **Finish and collect** ends an idle session and captures its working tree. Permission requests follow the selected run policy and appear in the trace.
+- **Review:** a stable comparison between the starting commit and a collected result snapshot, including edits the agent never committed. The first release publishes one Brainiac-authored snapshot commit; intermediate agent commits are not preserved. Save patch and Copy patch export this comparison, including binary changes within artifact limits. A later **Push branch** publishes the exact reviewed snapshot to a new remote branch, then **Create pull request** once its dependency exists.
+- **Runs** show preparation, activity, idle/permission waiting, stopping, collection, and terminal outcome. Failed/interrupted runs can still have partial results. Collection and cleanup failures have separate recovery actions and never silently discard the working volume.
 
-## The repository rule
+## The repository rule and artifacts
 
-Brainiac never writes to a user's repository (AGENTS.md, Hard rules). An agent's job is to write code, so the design keeps every write inside places the user did not ask Brainiac to protect:
+Brainiac never writes to the user's checkout, index, refs, or Git configuration. It may write to run containers and app-owned scratch/bare repositories. Push changes the explicitly selected remote on a user action. These future exceptions need a new architecture decision when v0.5 starts; this document does not change today's rule.
 
-- **In:** Brainiac makes a Git bundle of the starting commit (`git bundle create`, which only reads the repository) in the app's own data folder and copies it into the container through the Engine API (`PUT /containers/{id}/archive`). The agent clones from the bundle. The same path works for a remote host, and the user's working copy is never mounted. Uncommitted changes are not part of a run; New run says so when the working copy has any.
-- **Out:** when the run ends, Brainiac asks the container for a bundle of the run's branch and copies it out (`GET /containers/{id}/archive`) into a bare repository that Brainiac owns in its data folder. The diff viewer reads that bare repository, not the user's.
-- **Landing:** Push branch runs `git push` from Brainiac's bare repository to the user's remote, on the user's action, with hooks disabled and no other refs. It writes to the forge, as v0.3's merge does, and never to the local repository. The user fetches the branch as they would any colleague's.
+### Input: an immutable start
 
-This needs a new entry in the Decisions log when a release takes it: the bundle in, the bundle out, and the app-owned bare repository are the only Git operations, and none of them touches a working copy.
+`RunArtifacts` resolves the selected ref once and prepares an app-owned bare export repository with a named ref at that exact commit. A bare object ID cannot be passed directly to `git bundle create`: it needs a named ref. No temporary branch/tag is created in the source. The spike must prove a read-only object-transfer path into the export repository, including a branch moving during export and source objects disappearing. Failure asks the user to retry; it never silently selects a newer commit.
 
-## Review of the first proposal
+The bundle is self-contained: the selected commit and reachable ancestor history, with only the intended export ref advertised. New run explains this scope. It excludes working-tree/index changes, stash and unrelated refs, configuration, hooks, and remotes. Brainiac copies it through the Engine archive API; the run clones into a new volume and removes the input bundle from the agent's working area after setup. A trusted copy remains for recovery/collection.
 
-The first sketch (in conversation, 4 Oct 2026) had the agent clone the remote and push its own branch with a forge token, an adapter for each CLI that parsed its headless output, a setting choosing between automatic and manual pushes, and a relay binary in the container so a remote run survives a disconnect. Reviewed with the vocabulary of *A Philosophy of Software Design*:
+Phase 1 supports complete local SHA-1 repositories. Shallow/partial repositories, unavailable objects, LFS pointers, and gitlinks/submodules in the selected tree are rejected with a remedy before starting a container or resolving credentials. It never invokes lazy fetch, LFS filters, or submodule checkout to make a run work. Those need another transfer/authentication contract. Export uses hardened Git with hooks, maintenance, external helpers, replacement refs, and repository/environment overrides disabled. Git 2.30 remains the minimum; the spike checks every proposed flag against it.
 
-| Finding | Symptom | Change |
-| --- | --- | --- |
-| The agent held a forge token to push its own branch | **Unknown unknown:** a prompt injection in the repository, an issue, or a web page could push anywhere the token reaches, or leak it | The agent never holds a credential that writes outside the container, other than its own model key. Pushing happens from Brainiac's bare repository, after review (The repository rule). |
-| A setting for automatic or manual pushes | A hard decision (when is an unreviewed push safe?) handed to the user | **Define the error out of existence:** a run always ends in a branch to review, and pushing is always the user's action. No setting. |
-| Cloning the remote inside the container | Two code paths (remote URL and local path), a forge read token in the container, and a local-only repository can't be used | One path for every repository and host: a bundle of the commit, copied in. |
-| An adapter per CLI parsing `stream-json`, `exec --json`, and the rest | **Information leakage:** each CLI's output format, which changes without notice, known to the service and the UI | **Deep module:** speak one protocol, ACP, and keep each CLI's native output only as a fallback (Agent interface). |
-| A relay binary in the container for reconnecting | A Linux binary to build, sign, and ship beside a macOS app | Docker already keeps a container's stdin open across attaches and replays its output from the logs (Local and remote). |
-| Keeping full transcripts | Traces can hold code, secrets the agent printed, and company data | Traces are kept as files with a retention period, the injected secrets are redacted by exact value, and deleting a run deletes everything it left (Traces). |
-| Honoring `.devcontainer.json` from the start | A Node dependency for the Dev Containers CLI and a second way to build images | Later, if one image per repository turns out to be needed (Not in this design). |
+### Output: collect the final working tree
+
+For Finish, Cancel, expiry, process failure, or interruption, first stop all agent processes and confirm the workload container is stopped. A separate collector container mounts its volume read-only, has no network/injected credentials, and uses an approved image digest, its own writable scratch area, and the original input bundle. It does not execute the agent's entrypoint or trust its Git configuration, index, refs, hooks, or commits.
+
+The collector constructs a final tree and one snapshot commit whose sole parent is the recorded starting commit. Existing tracked paths are included even when newly ignored. Added untracked files follow an exclusion policy captured from the starting tree plus Brainiac's fixed exclusions; edited ignore files cannot hide previously eligible output. New ignored/generated files, Git metadata, credential/home/cache directories, and special devices are excluded. Review lists excluded additions and offers bounded recovery selection of eligible regular files; it does not treat all files on the volume as safe output. Symlinks are recorded as link text and never followed outside the workspace. Executable bits/deletions are preserved. Unsupported path encodings, unreadable files, or exceeded limits fail explicitly rather than produce an incomplete snapshot labelled complete.
+
+Regular bytes are hashed without clean/smudge filters or text conversion. Snapshot construction uses collector-owned Git metadata with hooks and repository config disabled. A no-change tree is valid and needs no new commit. The spike must demonstrate uncommitted/staged edits, new files, binaries, symlinks, and cancellation without any agent commit.
+
+The collector is trusted code; its inputs and returned archive remain untrusted. Brainiac streams only the expected `result.bundle` regular-file entry into a new temporary file. It rejects extra/duplicate entries, absolute/traversing paths, links, devices, and oversized archives without extracting arbitrary host paths. Verify bundle prerequisites, object integrity, the single expected advertised ref, and exactly the original start as the result's parent; the no-change case instead requires the result OID to equal the recorded start. Bound object/ref counts and expanded sizes as well as transfer bytes. Import only into an app-generated run namespace; serialize shared bare-repository updates and GC.
+
+Publish verified artifacts/metadata atomically before exposing a result. An artifact hash, immutable base/result IDs, and collection generation identify it; diff, patch, and push use these IDs and the existing hardened diff policy. ACP file reports are advisory; the collected tree is authoritative. An agent may write or encode secrets into files; trace redaction cannot certify an artifact. Review precedes export/push.
+
+Collection failure retains the stopped working volume and input, with **Retry collection**, bounded recovery export, and **Discard work**. Discard is explicit. Successful collection permits container/scratch cleanup; when additions were excluded, retain the stopped volume until the user accepts the displayed exclusion manifest or selects eligible additions for a new collection generation. Review exposes **Keep this snapshot**; patch export or Push can confirm the same displayed manifest. An accepted snapshot permits volume cleanup, and an exclusion-free result needs no extra confirmation. Deleting a run with retained/uncollected work asks for confirmation of the displayed loss.
+
+### Landing: publish the reviewed snapshot
+
+Push requires a verified result. The action carries its expected generation/OID, approved credential binding, explicit destination URL/forge repository, and a unique validated branch name such as `agent/<short-name>-<run-id>`. The UI shows the destination and commit. A changed result, destination, account, or approval invalidates the action before network I/O. A local repository rename cannot rebind pending publication.
+
+The first push is create-only: one explicit `<reviewed-oid>:refs/heads/<branch>` refspec and an explicit empty expected remote ref lease. Refuse an existing branch even if an update would fast-forward. No force update, mirror, tags, submodules, hooks, or additional push URLs. Push configuration/URL rewriting cannot add destinations or redirect credentials outside approved context. Secrets never appear in URLs, arguments, logs, or persisted Git config.
+
+After a lost response, publication is uncertain. Reconcile the exact remote ref: reviewed OID means already published, absence permits the same create-only retry, another OID means conflict. Never blindly repeat a push or create duplicate pull requests. Record intent before sending and the observed result afterwards. Create pull request uses the verified source repository/branch/head and explicit target branch, with the provider service's own reconciliation policy.
+
+Phase 2 first supports HTTPS publication to supported GitHub/Bitbucket Cloud hosts with tested Git-compatible credentials. REST and Git authentication are distinct capabilities; a working API token does not automatically qualify. Resolve a Git-helper source on the Mac for the approved host/user/path. A private per-invocation credential bridge supplies only that destination without `credential approve`/`reject`; child output uses safe mapped diagnostics. Unsupported formats fail before push. For SSH URLs offer the equivalent HTTPS destination; SSH/custom-remotes need their own authentication policy. Publishing to a fork is explicit and never inferred from the checkout's remote.
 
 ## Design it twice
 
@@ -60,155 +60,188 @@ The first sketch (in conversation, 4 Oct 2026) had the agent clone the remote an
 
 | | A. Docker Engine API (chosen) | B. Dev Containers CLI | C. Hosted agents |
 | --- | --- | --- | --- |
-| Shape | Brainiac creates, attaches to, and removes containers over the Engine API | `devcontainer up` and `exec` driven from Rust, configured by each repository | Codex Cloud, Claude Code on the web, and similar services run the agent |
-| Local and remote | One client: a Unix socket, local or forwarded over SSH | Local; remote through Docker contexts | Remote only |
-| Reuses | Health's Docker client | The repository's own toolchain definition | Nothing in Brainiac but a link |
-| Costs | A default image to maintain | Node and the CLI on the Mac; each repository's setup code runs at build time | Code and credentials leave the Mac; one service per provider; no local runs |
+| Shape | Streams, archives, and owned resources behind one runtime | Repository-defined environments driven through another CLI | Provider runs the job |
+| Local/remote | Local socket first; SSH plus durable control later | Local or Docker contexts | Remote only |
+| Costs | Image and lifecycle/transport implementation | Node/CLI dependency and repository build code | Provider-specific integration/data policy |
 
-A puts the work in one module and works with every Docker-compatible engine on the Mac. B is worth adding later for repositories that already have a dev container. C is what Brainiac would link to, not build. Apple's `container` tool has no Engine API; it would need a second runtime behind the same interface, so it waits until someone asks for it.
+A gives one artifact workflow for supported engines and repositories. Compatibility is proven, not inferred from a socket existing. Dev containers, hosted services, and Apple's separate runtime wait for usage to justify them.
 
 ### Agent interface
 
-| | A. ACP client, native output as fallback (chosen) | B. Brainiac's own adapter per CLI |
+| | A. ACP only (chosen) | B. Native output parsers |
 | --- | --- | --- |
-| Code per agent | None for an agent with ACP support; an image line and its sign-in | A parser for its output and its invocation |
-| Steering (cancel, follow-up, permission) | Part of the protocol | Mostly impossible once the run starts |
-| Trace | The recorded ACP messages | Brainiac's own normalized events |
-| Risk | A young protocol; adapters for Claude Code and Codex are third-party and lag behind the CLIs | Output formats change without notice, for each CLI |
+| Interface | Negotiated protocol normalized into Brainiac events | Per-agent invocation, parsing, and control |
+| Cost | Pin/test adapter and CLI capabilities | Several execution models/error contracts |
+| Missing feature | Reject unsupported agent or hide unavailable feature | Add another fallback workflow |
 
-The Agent Client Protocol (ACP, from Zed) is JSON-RPC over stdio between a client, usually an editor, and an agent. It already describes what the run view needs: `session/update` notifications for message chunks, plans, and tool calls with their status and diffs; `session/cancel`; `session/request_permission`; and follow-up prompts in the same session. Gemini CLI speaks it directly, and Claude Code and Codex speak it through adapters. With A, Brainiac is one more ACP client, and a new agent costs a line in the image rather than a parser.
+ACP covers session setup, turns, cancellation, permissions, and updates. Phase 1 supports tested agents, not arbitrary ACP programs. Built-in descriptors hold immutable launch arguments, credential names, pinned packages, and capability matrix. A descriptor does not prove sign-in, autonomous tools, diffs, or restart support; adapters may need integration work. Native-output fallback is excluded.
+
+### Disconnect policy
+
+| | A. Attached session, interrupt on loss (phases 1–2) | B. Durable controller (required for phase 3) |
+| --- | --- | --- |
+| Authority | Brainiac owns request state while connected | Engine-host controller owns session/journal |
+| Lost connection | Stop and collect once engine is reachable | Reconcile requests and replay by sequence/cursor |
+| Cost | No conversational resume/log replay | Component to package, secure, upgrade, and test |
+
+A makes local collection useful without treating Docker logs as a durable RPC protocol. Phase 3 must prove B before promising continuation during laptop sleep. Keeping stdin open or advertising optional ACP session loading is insufficient.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
   UI[Run view / Settings] --> Runs[AgentRunService]
-  Runs --> Engine[DockerEngine]
-  Runs --> Acp[AcpClient]
-  Runs --> Git[Git CLI: bundles, bare repo, push]
+  Runs --> Runtime[RunRuntime]
+  Runs --> Artifacts[RunArtifacts]
   Runs --> Creds[CredentialService]
-  Engine -- Unix socket --> Local[Local engine]
-  Engine -- ssh -L socket --> Remote[Remote engine]
-  Acp -- attached stdio --> Agent[ACP agent in container]
+  Runtime --> Engine[DockerEngine]
+  Runtime --> ACP[AcpClient]
+  Runtime --> Trace[TraceJournal]
+  Artifacts --> Git[Hardened Git CLI / collector]
+  Engine -- Unix socket --> Host[Approved engine]
+  ACP -- non-TTY attached stream --> Agent[ACP agent in container]
 ```
 
-- **`AgentRunService`** owns a run from start to cleanup: it makes the bundle, creates the container with the run's credentials, attaches the ACP client, records the trace, collects the result bundle, and removes the container. It emits `agent_run_changed` for every state change and `agent_run_update` for each trace entry, and keeps every rule above in one place.
-- **`DockerEngine`** is the Engine API calls the service needs: build, create, start, attach, logs, archive in and out, wait, and remove. It grows out of Health's client in `databases/health.rs` into a shared module, so Brainiac doesn't have two Docker clients.
-- **`AcpClient`** speaks ACP over the attached stream: `initialize` (advertising no file system and no terminal, so the agent uses its own tools inside the container), `session/new`, `session/prompt`, `session/cancel`, and answers to `session/request_permission`. It turns ACP messages into trace entries the UI renders; nothing above it sees JSON-RPC.
-- **Agents are data, not code.** Each supported agent is a descriptor: its name, its lines in the Dockerfile, the environment variables or file its credential goes into, the command that starts it under ACP, and its native headless command as the fallback.
-- **Source code** would live in `src-tauri/src/agents/` (`service.rs`, `engine.rs`, `acp.rs`, `agents.rs`, `image/Dockerfile`). Command handlers stay thin, as elsewhere.
+- **`AgentRunService`** owns domain validation/versioning, destination approvals, leases, user actions, committed state/events, and restart reconciliation. It holds no database transaction while awaiting engine/Git/credential I/O. Stale observations/actions carry a run version/generation and are discarded/refused.
+- **`RunRuntime`** owns session/resource lifecycle: start, serialized turns, permission replies, bounded stop, status, and stopped-volume handoff. It hides transport/correlation from the service. Its resource ledger is persisted as IDs become known; single-session ownership prevents duplicate attached writers.
+- **`DockerEngine`** owns discovery/API negotiation, non-TTY framing, concurrent stdout/stderr drainage, streaming archives, create/start/stop/wait/remove, and typed bounded diagnostics. Health retains short request timeouts; attach/build/archive have separate cancellation/budget policies. Raw engine responses never become UI errors.
+- **`AcpClient`** owns capability negotiation, sessions, request IDs, cancellation, and permissions. It advertises no client filesystem/terminal and passes no Brainiac MCP servers. The supported adapter must prove tools work inside the container; requests for Mac-side tools are refused. It emits normalized events, not JSON-RPC for callers to interpret.
+- **`RunArtifacts`** owns immutable export identity, collector policy, hostile-output verification, app-owned Git refs, diff/patch, and exact-result publication. **`TraceJournal`** owns sanitization, sequences, quotas, durable append, and UI replay. Each hides one authoritative representation from its callers.
+- Code would live in `src-tauri/src/agents/` with readable image/entrypoint/collector sources. Future UI DTOs live only in `models.rs`, generated with `ts-rs`; this document does not define IPC shapes.
 
-### A run's states
+### State and actions
 
-`preparing` (bundle, container, sign-in) → `running` → `waiting` (a permission request or the agent's turn ended and it waits for a follow-up) → `finished`, `failed`, or `cancelled`. The time limit cancels a run that is still `running` or `waiting`. A run that ends any way keeps its trace and, when the agent committed anything, its result bundle; its container is removed.
+Activity, result availability, and cleanup are separate facts. Waiting has an idle/permission reason. Terminal outcomes are finished, failed, cancelled, expired, or interrupted. Result status is absent, collecting, ready/no-changes, or collection-failed; cleanup may independently be pending. Transport loss means execution is uncertain until engine-confirmed stop.
 
-## Credentials
+| Trigger | Contract |
+| --- | --- |
+| Start | Persist intent/immutable start, prepare artifacts/resources, recheck leases/approval, deliver once, initialize. Preparation is cancellable and has its own deadline. |
+| Send | Only while idle; duplicate action IDs return the existing outcome. Never queue/replay uncertain delivery. |
+| Turn ends | Record reason; become idle, or fail on unrecoverable protocol/process error. `end_turn` does not delete resources. |
+| Permission | Bind to exact request/session/turn. Ask waits; autonomous selects a valid allow-once option. Unknown/malformed requests are refused; late replies after cancellation have no effect. |
+| Finish | Only while idle; stop all writers, collect. Finished outcome can coexist with collection failure, with publication disabled until verified. |
+| Cancel/expiry | Reject new prompts, answer pending permissions cancelled, request ACP cancellation, then engine stop with bounded grace/forced termination. Confirm stop before collecting; ACP cooperation is not the sole mechanism. |
+| Disconnect/restart | Persist uncertainty, inspect/stop recorded owned resources when engine returns, collect as interrupted. No ACP replay or fresh credential delivery. |
+| Delete | Refuse while execution uncertain. Stop/collect or explicitly discard, persist cleanup intent, remove owned artifacts/resources idempotently. |
 
-| Credential | Used for | Where it goes in the container |
+The run limit begins at workload start. In phases 1–2 Brainiac enforces it while connected. If Brainiac stops/sleeps or cannot reach the engine, work may continue until reconciliation; setup/UI states this limitation and never labels it stopped/deadline-enforced while unconfirmed. Restart prioritizes pending stops. Runtime failure never automatically creates another container. Container restart policy is disabled.
+
+## Credentials and disclosure
+
+| Credential | Scope/delivery |
+| --- | --- |
+| Model API key | Supported provider/agent; bootstrap stdin, then agent-process environment |
+| Registry token, after phase 1 | Stable `registry:<id>` owner, approved repository/registry context, read-only private-package access |
+| Git publication credential | Mac only, approved HTTPS destination; never workload/collector |
+| Subscription/login files | Deferred pending provider terms, renewal/format, and sanitization verification |
+
+Sources use `CredentialService` leases; starting a run does not clear its process cache. Model owner is `agent:<profile id>`; registry IDs survive renaming. Validate key format and reserved delivery names without echoing bytes. Registry configuration cannot override executable-loading variables, provider URLs, agent startup options, or forge credentials. Refuse publish/admin scope where inspectable; otherwise require explicit user attestation to read-only scope and state that limitation. Phase 1 injects no registry tokens.
+
+Approval includes source binding, provider endpoint, descriptor/version, image digest, host identity, and repository/registry recipients. Changes require confirmation before resolution/delivery, including cache hits. Snapshot non-secret identities so editing a profile cannot change a running session. Recheck leases immediately before delivery; obsolete leases abort preparation. Rotation afterwards cannot erase the agent's copy; cancel/restart to replace it. Test probes the displayed draft afresh and records its time, without guaranteeing validity of future runs.
+
+Resolve on the Mac for every host. The entrypoint reads a bounded bootstrap frame from attached stdin before ACP, accepts descriptor-approved keys only, exports to its child, and clears the bootstrap buffer. Secrets never go into Docker `Env`, image/build args, volumes, labels, argv, or settings. No inspect-visible environment fallback; incompatible agents are unsupported. Put home/auth/cache on tmpfs where supported. Bootstrap failure reports a generic error. Verify buffering cannot consume subsequent ACP bytes.
+
+The agent and engine operator can read delivered credentials. An agent may copy a key into its workspace/output; Brainiac cannot guarantee all agent-produced files are secret-free. Fixed endpoints and limited scopes reduce reach. Before Start, display model-provider/code/prompt transfer, engine-host trust, network policy, and credential scope.
+
+Restored/imported hosts/profiles are disabled until source/destination/image/host confirmation under `secrets.md`. Matching IDs/Keychain names confer no trust. Imported data never authorizes reconnecting runs, building images, executing descriptors, injecting credentials, or deleting engine resources; stopping locally owned work before restore is a separate existing obligation. Local upgrades preserving a binding are separate from restore. Rust enforces approvals; MCP cannot start runs/change settings in this release.
+
+## Isolation and permissions
+
+Workload/collector run unprivileged, all capabilities dropped, `no-new-privileges`, no host namespaces/devices, compatible seccomp, CPU/memory/PID limits, and bounded workspace storage. No checkout, home, Docker socket, or Brainiac MCP socket is mounted. Image builds use app-controlled context only; setup never executes repository Dockerfiles/dev-container hooks. The agent may run repository scripts inside its workload as part of its work.
+
+Phase 1 calls outbound access unrestricted and claims no host-service/network isolation. Phase 2 adds registry tokens only with tested allowlist mode. An internal run network reaches an app-owned egress proxy with no direct host/Internet route. Tests cover direct IPs, IPv6, DNS/rebinding, CONNECT, redirects, gateways, private/link-local/metadata endpoints, and proxy bypass. The proxy resolves/checks destinations and permits explicit provider/registry/user-added hosts; arbitrary tunnelling/IP-literal destinations are refused. Extra hosts require explicit policy change. Incompatible clients fail visibly with no unrestricted fallback. Private registries require a separately displayed destination exception.
+
+Start explicitly selects autonomous container work or ask for adapter requests; phase 1 offers both after capability tests. Autonomous mode authorizes only that run's work, never Push, new credentials, image/host changes, or network expansion. ACP permissions do not prove every subprocess/network operation is mediated.
+
+Workspace disk must be enforced by a supported runtime mechanism, not reported after exhaustion. The spike chooses a quota-capable volume or another bounded implementation; engines unable to meet it are unsupported. Finite defaults for workspace/artifact/trace/concurrency are chosen from measurements and shown when material.
+
+## Local, remote, and durable control
+
+Phases 1–2 discover the local socket as Health does, identify the approved engine, use non-TTY attach, and disable Docker logging on workload/collector (`LogConfig.Type=none`). Daemon defaults cannot forward raw protocol/stderr to disk/external logging. Logs are never the transcript/replay source. Adapter private logs must be disabled or on disposable tmpfs, tested for every supported version.
+
+Phase 3 uses system SSH with argument arrays, verified host keys, and existing tunnel policy to the approved socket. Unknown/changed host keys never auto-accept. Imported host records cannot launch tunnels. Transport alone does not promise offline continuation.
+
+Continuation needs a trusted controller on the engine host, outside the agent's writable area/process authority, with single-writer ownership, persistent redacted journal, sequence cursors, and request IDs. Record prompt intent before forwarding/acknowledging; lost responses reconcile by ID rather than becoming new turns. ACP provides no general exactly-once guarantee: controller failure after forwarding but before recording leaves uncertain delivery, so stop/collect instead of repeating. Scope permission replies the same way; reconcile before accepting input. Never invoke unadvertised adapter load/resume capabilities. Reopening Brainiac uses the controller's status/journal instead of the phase-1 stop-on-restart rule; losing or restarting that controller still interrupts the workload.
+
+The controller enforces expiry, cancellation, and bounded resources while Brainiac is offline. Redaction material stays in memory. A controller restart losing that material stops the agent before processing more raw output and records a trace gap. Engine restart interrupts the run, with no credential reinjection or automatic workload restart. Packaging/deployment, authorization, upgrades, journal limits, and emergency stop are phase-3 gates; if unproven, continuation stays unavailable. Remote credential resolution/subscription renewal need separate designs.
+
+## Traces, quotas, and rendering
+
+Persist a versioned Brainiac journal, `agent-runs/<run-id>/trace.jsonl`, not raw ACP. `TraceJournal` assigns monotonic sequences and records turn/request/tool identities, timestamp, safe content, and reported usage/provenance. Live/replay use the same normalized events; UI gaps recover by cursor. Skip unknown extensions with safe diagnostics; adapter upgrades cannot redefine old journals. No raw protocol/bootstrap/stderr/engine bodies are persisted.
+
+Sanitize before disk, IPC, notifications, or diagnostics. Decode string content before matching JSON escapes; use bounded look-behind for secrets split across chunks and redact before releasing the pending tail. Flush safely at turn/end/error. Register each injected scalar; any future structured login format must register component tokens, not just whole JSON. Replace matches with source names. Encoded/transformed values, repository-held credentials, and unknown secrets cannot be guaranteed absent. Empty/invalid keys fail validation; errors name operations without confidential output.
+
+Finite budgets cover frames, stderr drainage, bootstrap, event/journal content, archives, expanded Git objects, workspace disk, and concurrency, before unbounded allocation/decompression. Slow UI cannot block protocol/permission/cancel processing: bounded batches and cursor replay replace per-token events. Oversized frames/journal exhaustion stop the run, mark a gap, and preserve partial work. Control messages are never silently dropped to continue execution.
+
+Escape code/text; sanitize Markdown under existing app policy; load no remote images or executable HTML/terminal escapes. File links resolve only inside verified artifacts, never arbitrary Mac paths. External links use explicit opener actions.
+
+Default retention removes traces/prompts/results/history together 30 days after terminal outcome. Recovery work and excluded additions awaiting acceptance remain displayed until collected/accepted/discarded; retention never silently removes them or active/uncertain work. Delete/expiry remove visible artifacts/input/scratch/journal/run refs, then bounded GC of unreachable objects. Shared objects retained by other runs stay. No secure-erasure claim for SSD blocks/snapshots/provider/remote-host copies. Runs/traces/artifacts are excluded from vault export; if an export includes copied history, run rows are filtered from that copy. Core profiles/hosts follow source-reference export and restore confirmation. Local history snapshots may retain expired sanitized prompts until their own retention ends, but never carry injected credential bytes/redaction material.
+
+## Persistence, restart, and cleanup
+
+| What | Where | Meaning |
 | --- | --- | --- |
-| Claude Code: an Anthropic API key, or the long-lived token from `claude setup-token` | The model | `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` |
-| Codex: an OpenAI API key, or the login file from `codex login` | The model | `OPENAI_API_KEY`, or `auth.json` on a tmpfs |
-| Gemini CLI: a Gemini API key | The model | `GEMINI_API_KEY` |
-| Package registry tokens (optional) | Private dependencies | Named environment variables, chosen per repository |
-| Forge token | Push branch | Never in the container; used by Brainiac's push |
+| `agent_hosts` | `brainiac.db` | Stable ID, name, approved endpoint/engine identity, revision; no credentials |
+| `agent_profiles` | `brainiac.db` | Stable ID, descriptor/source bindings, registry IDs/contexts, approved image digest, revision; no secret bytes |
+| `agent_runs` | `history.db` | Immutable start/profile/image/host context, prompt/version, activity/outcome, result identity, resource/recovery ledger, expiry, safe errors, publication intent/result |
+| Journals/artifacts | App data `agent-runs/<run-id>/` | Sanitized journal, immutable bundles, verified metadata, atomic-publication temporary files |
+| Bare results | App data `agent-runs/repos/<repository-id>.git` | App-generated refs/objects, serialized writes/GC |
 
-- Every credential comes through `CredentialService` and the source saved for it ([`secrets.md`](secrets.md)): the store by default, or a command, Google Secret Manager, or another source the user keeps it in. A profile's model key has the owner `agent:<profile id>`, a registry token `registry:<name>`, and Push branch may use Git's credential helper for the forge host.
-- Credentials are read on the Mac when the run starts, for every host. On a remote host each value crosses the SSH tunnel once, to the container it is for.
-- **Delivery.** Docker keeps a container's environment in its configuration, where `docker inspect` shows it to anyone who can reach the engine, and the archive API cannot write into a tmpfs mount. So Brainiac's image starts a small entrypoint that reads one JSON line of credentials from the attached stdin, writes the file credentials (Codex's `auth.json`) to a tmpfs and exports the rest into the agent's process only, then replaces itself with the ACP agent, whose protocol uses the same stdin from then on. Environment variables in the container's configuration are only the fallback for an agent the entrypoint cannot serve, and New run says so for that agent.
-- A credential is never in the image, a volume, the container's configuration (except that fallback), the database, or a log Brainiac keeps, and it lives in the container only as long as the run.
-- The trace redacts the exact values `CredentialService` handed to the run, whatever their source.
-- Setup tests each credential with the agent itself, so a wrong or expired token fails in Settings and not in the middle of a run.
-- Whether each provider's terms allow a subscription login in automated containers is an open question; API keys are the default the docs recommend.
+These are domain concepts; final schema belongs in architecture at release start, not DTO definitions here. Cleanup can use a ledger in the run row without another table. Labels hold installation/run/attempt IDs and role, never prompt/path/credential. Commit intent before side effects and IDs afterwards. A lost create response reconciles the owned label/attempt before retry; name equality alone is insufficient. Artifacts/publication follow the same intent/reconciliation principle.
 
-## Isolation
+Persist only sanitized prompts and safe errors. Initial raw prompt text stays in memory during preparation until the injected keys are known and matching values can be removed from the history copy; the early intent may omit prompt content. Follow-up intent stores a sanitized copy before sending the raw prompt in memory. Neither restart nor a controller uses stored prompt content to replay a turn. Unknown secrets pasted into prompts have the same documented limits as arbitrary output; history is not a secret-scanning guarantee.
 
-- The container runs as an unprivileged user, with no added capabilities, `no-new-privileges`, CPU and memory limits, and a writable work directory on a volume of its own.
-- Nothing from the Mac is mounted: not the repository, not the home folder, not the Docker socket, and not Brainiac's MCP socket.
-- **Network.** Phase 1 allows outbound traffic, and says so in New run, because the only credential inside is the model key. Phase 2 adds an allowlist: the container sits on an internal network whose only way out is a proxy Brainiac starts, allowing the model API, the package registries, and hosts the user adds. Which agents honor `HTTPS_PROXY` is a spike question.
-- **Permissions.** Inside the container the agent runs in its most autonomous mode, because the container is the boundary. The ACP adapter still sends `session/request_permission` for what it considers risky; Brainiac allows those by default and shows them in the trace, and a per-run choice can make it ask instead.
+The installation identity is generated locally outside exported/snapshotted databases; applying a restore starts a new ownership epoch. Before restore, attempt to stop/collect current runs and refuse replacement while execution is uncertain unless the user explicitly accepts the displayed recovery obligation; retain the local old-epoch resource ledger outside the restored data until cleanup completes. Restart enumerates resources only for the current installation/trusted host and these retained local obligations, correlates to history, stops interrupted workloads, then collects. Missing/unreachable resources retain explicit execution/cleanup uncertainty. Unknown owned-looking orphans require user-directed recovery/removal, never adoption as runnable sessions. Restored history inherits no active ownership or authority to reconcile another installation's resources.
 
-## Local and remote
+Cleanup includes workload/collector containers, named/anonymous volumes, run networks/proxies/controllers, temporary input/export data, and expired refs. Removing a container is insufficient. Shared images are installation caches. Deletes are idempotent/restricted to recorded ownership/attempt; obsolete cleanup cannot touch newer runs. Failed collection keeps the stopped volume. Failed cleanup stays visible/retryable without blocking review of a verified result. Ledger tombstones remain until resources are gone even after visible history expires.
 
-- **Local:** the engine's Unix socket, found the way Health finds it.
-- **Remote:** the system `ssh` forwards a local Unix socket to the host's Docker socket (`ssh -N -L <local.sock>:/var/run/docker.sock host`), using the user's `~/.ssh/config` and agent, as Git uses the system CLI. The rest of Brainiac sees one more socket. This waits for v0.4.x's SSH tunnels (`roadmap.md`, v0.4) rather than adding its own.
-- **Disconnecting.** The agent runs as the container's main process with stdin kept open (`OpenStdin`, not `StdinOnce`). When the Mac sleeps or the tunnel drops, the run continues. Brainiac reattaches on wake and reads what it missed from the container's logs, which hold every ACP message the agent wrote. An agent waiting on a permission request or a follow-up simply waits. That this works with each adapter is a spike question; ACP's optional `session/load` is the alternative.
+## Phases and exit gates
 
-## Traces
-
-- A trace is the ACP messages of a run, written as JSON Lines to the app's data folder (`agent-runs/<run-id>/trace.jsonl`) as they arrive, with the run's injected credentials replaced by their names. The run view renders the live stream and a finished run's file with the same code.
-- Traces are kept for 30 days by default, and **Delete run** removes the trace, the result bundle, and the run's branch in the bare repository.
-- Traces are not indexed for search and not exported in the vault export; they are history, like query runs, and the export question is open.
-
-## Storage
-
-| What | Where | Fields |
-| --- | --- | --- |
-| `agent_hosts` | `brainiac.db` | `id`, name, kind (`local`, `ssh`), socket path or SSH host, image tag and its Dockerfile version, `created_at`; never a credential |
-| `agent_profiles` | `brainiac.db` | `id`, agent (`claude_code`, `codex`, `gemini`, an ACP command), credential kind and its source (`secrets.md`), registry tokens by name with their sources, `created_at`; never a credential |
-| `agent_runs` | `history.db` | `id`, host, profile, repository, task?, start commit, branch, prompt, state, started and ended times, cost?, error?, result commit? |
-| Traces and result bundles | App data folder, `agent-runs/<run-id>/` | `trace.jsonl`, `result.bundle` |
-| Bare repositories | App data folder, `agent-runs/repos/<repository-id>.git` | One per repository, holding the branches of its runs |
-
-Hosts and profiles are in `brainiac.db` because they can't be rebuilt, and a restore on a new Mac needs the credentials entered again, as with v0.3's accounts. Runs are history and live in `history.db`.
-
-## Phases
-
-1. **Local runs with one agent.** Setup with a local engine and Claude Code, the image built from Brainiac's Dockerfile, a run from a repository with the bundle in and out, the live ACP trace, cancel and follow-up prompts, review in the diff viewer, Save patch, and Delete run.
-2. **Landing and more agents.** Push branch and Create pull request, Codex and Gemini CLI, the network allowlist, and permission requests that ask.
-3. **Remote hosts**, once SSH tunnels exist: setup over SSH, reattaching after sleep.
-4. **Runs from tasks.** New run from a task, the run shown on the task, and Today's line for runs that wait for the user.
-
-**Exit gate (phases 1 and 2):**
-- Set up Claude Code and Codex from nothing, ending in passing test runs.
-- Run an agent on a repository with no remote, and save its patch.
-- Cancel a run halfway, then start one and steer it with a follow-up prompt.
-- Push a run's branch and open a pull request from it; the local repository's refs, index, and working copy are unchanged.
-- Confirm that a run's container could not reach a host off the allowlist, and that no credential appears in a trace, the database, the image, or the container's configuration (`docker inspect`).
-
-## Not in this design
-
-- **Scheduled or recurring runs**, and agents that keep running between tasks.
-- **Several agents on one branch**, or a run that continues another run's branch.
-- **An image per repository** or `.devcontainer.json` support (Runtime, above).
-- **Brainiac's MCP tools inside a run.** ACP's `session/new` can pass MCP servers, but the socket is closed to other users on purpose (`architecture.md`, Agent access), and opening it to containers is its own design.
-- **Hosted agent services**, beyond perhaps a link to them.
-- **Hiding the model key from the agent** with a proxy that adds it to requests; worth revisiting if the allowlist is not enough.
+1. **Spike before implementation.** Pin one Claude adapter with API-key auth on target engines. Prove the lifecycle below, arbitrary-commit export on Git 2.30, stopped-volume collection, bootstrap/no raw logs, enforceable disk budgets. Choose toolchains/default limits from measurement; failed gates narrow supported engines/agents rather than add fallbacks.
+2. **Phase 1 — local runs.** Setup/Test, complete local repositories, ACP turns/permissions, Cancel/Finish/expiry, interrupted-run recovery, snapshot/patch review, bounded journal, Delete. API keys only, no registry tokens/push/conversational reconnect. Gate: uncommitted/staged/new/binary edits, mid-tool cancellation, app restart mid-request, partial collection/retry, source checkout/refs/index/config unchanged, owned resources cleaned up.
+3. **Phase 2 — landing and agents.** Tested Codex/Gemini descriptors; create-only HTTPS push and Create pull request after its dependency; enforced allowlist before read-only registry tokens. Gate: safe bad credentials, existing-branch refusal, lost-push reconciliation, exact reviewed publication, adversarial bypass/private-host rejection, real setup/work for each supported pair.
+4. **Phase 3 — remote/durable continuation.** SSH dependency plus controller spike. Gate: sleep/disconnect during prompt/permission/replay, expiry/emergency stop offline, controller crash with uncertain delivery, host-key changes, tunnel/engine loss and cleanup; no duplicate prompt/credential delivery or raw replay logs.
+5. **Phase 4 — tasks.** Task launch/linkage and Today waiting indicator. Inputs are snapshotted/editable; later task changes cannot steer a run. Task removal/relocation does not delete runs/artifacts.
 
 ## Testing
 
-- `AgentRunService` tests run against a fake engine and a fake ACP agent in memory: a run that finishes, fails, is cancelled, hits its time limit, asks for permission, and is reattached after a disconnect.
-- `AcpClient` tests replay recorded ACP sessions from each supported adapter, with generic prompts and file names.
-- An integration test, skipped without a Docker engine, runs a small ACP agent stub in a real container: bundle in, a commit, bundle out, and removal.
-- The bundle and bare repository code is tested against Git fixtures the tests build, as elsewhere, including a check that the source repository's refs and index are unchanged.
-- The setup flow and the run view are tested in WebKit over the fake backend.
+- Fake-runtime/service tests: versions, duplicate actions, stale events/leases, edit/restore approvals, all transitions, uncertain stop, no publication without explicit current action.
+- ACP fixtures/fake peers: negotiation, extensions, malformed IDs/frames, late permissions/cancel, split secrets/JSON escapes, stdout/stderr floods and UI backpressure; generic names/prompts/fake keys.
+- Temporary Git fixtures: arbitrary OID/ref races/missing objects, ignored tracked and eligible/excluded untracked files, binaries/modes/symlinks/no-change, hostile config/filters, wrong parents/refs, malformed/compression-bomb bundles and tar traversal/link/device/duplicate entries. Assert no source writes/lazy fetch.
+- Real-engine integration (opt-in): ACP stub and collector, faults at intent/create/ID-record/start/bootstrap/stop/collect/import/publish/remove, restart reconciliation, enforced quotas, forced-stop collection, retained work, partial cleanup, ownership isolation.
+- Publication with temporary remotes/provider stand-ins: create-only collisions, stale destination/artifact, missing/incompatible credentials, one-ref/no-tag, uncertain success/retry, pull request reconciliation. Network bypass tests independent of agent cooperation.
+- Leak fixtures: known injected values absent from Docker configuration/labels/argv, image/build cache, persistent daemon/adapter logs, journals/IPC/errors/snapshots. Separately demonstrate documented encoded/artifact leakage limitations; export never claims confidentiality certification.
+- Retention/recovery: volume removal, expired prompts/results, shared objects/GC, disk exhaustion/tombstones, unreachable engine, restore with running/cleanup state. WebKit fake backend: setup/disclosure, idle/permissions, Finish/Cancel, uncertainty, partial review/discard confirmation.
 
-## Open questions
+## Not in this design
+
+- Scheduled runs, agents sharing a branch, continuation from a prior result, or preservation of intermediate agent commit history.
+- Arbitrary ACP commands, native fallback, repository images/dev-container hooks, hosted services, other runtimes.
+- Subscription auth/renewal, remote sources, SSH/custom-remote push, automatic force updates.
+- Brainiac MCP/Mac filesystem/terminal inside runs, or a proxy hiding the model key. Each needs another authority/destination design.
+
+## Open questions and spikes
+
+Behavior above is decided; these are feasibility/default gates, not unspecified fallback behavior.
 
 | Unknown | How to resolve | Needed before |
 | --- | --- | --- |
-| ACP adapters in a container | Spike: run Claude Code's and Codex's ACP adapters over an attached stdio stream, with the client advertising no file system or terminal; check that they use their own tools and still report diffs | Phase 1 |
-| Reattaching | Spike: detach and reattach to a running container, replaying from the logs; check what each adapter does when its client disappears mid-request; compare with `session/load` | Phase 1 (local), phase 3 |
-| Subscription logins | Whether Anthropic's and OpenAI's terms allow `claude setup-token` and Codex's login file in automated containers, and how long they last | Phase 1 |
-| The default image | What it contains beyond Git and the agents (common language toolchains or none), its size, and how a user adds what a repository needs | Phase 1 |
-| Proxy support | Spike: which agents and package managers honor `HTTPS_PROXY`; how the proxy is started and stopped with the run | Phase 2 |
-| Credentials for Push branch | The user's own Git credential helper (a source in `secrets.md`), or v0.3's forge token passed to `git push` for one invocation | Phase 2 |
-| Delivering credentials without environment variables | Spike: the stdin entrypoint with each agent and its ACP adapter; check that each reads its key from an inherited environment or a file, and that nothing shows in `docker inspect` or the engine's logs | Phase 1 |
-| Credentials read by a remote host | A source resolved on the host (Secret Manager through a cloud VM's service account) keeps a secret off the Mac, but gives the container a credential that reaches beyond its model key; worth it only with a narrowly scoped account and the allowlist | Phase 3 |
-| Engines | Check Docker Desktop, OrbStack, and Colima for the archive, attach, and logs calls used here | Phase 1 |
-| Trace size and retention | Measure a typical run's trace; decide whether 30 days is right and whether traces belong in the export | Phase 1 defaults |
+| Adapter capabilities | Pinned versions, no client filesystem/terminal; sign-in, autonomous/ask, follow-up, cancellation, safe stderr, no private persistent logs | Phase 1 and each agent |
+| Complete local lifecycle | Uncommitted edit, lost attach mid-request, stop/reconcile, volume collection/cleanup; no log replay | Phase 1 |
+| Export arbitrary commit | App-owned ref/object transfer, minimum Git, source refs/index/config unchanged, missing objects fail locally | Phase 1 |
+| Collector policy | Direct-byte trees, eligibility policy, hostile tar/Git expansion, retention after failure | Phase 1 |
+| Bootstrap | Exact bytes/framing, inspect/log/build leakage, split-secret redaction, tmpfs home | Phase 1 |
+| Engines/budgets | Docker Desktop/OrbStack/Colima framing/archive/stop, quotas, typical trace/image size and toolchains | Phase 1 defaults |
+| HTTPS credentials | Git formats/scopes, private bridge, no URL/argv/config leaks, empty-ref lease on minimum Git | Phase 2 |
+| Egress | Route/proxy bypass tests, package managers, private exceptions, proxy lifecycle | Phase 2 before registry tokens |
+| Controller | Packaging/deployment alternatives; reconciliation, sanitized journal, offline deadline, ownership and crash stop | Phase 3 |
 
 ## Sources
 
-Not yet verified in a spike.
+Primary documentation checked during review; container/adapter compatibility still requires the spikes above.
 
-- Agent Client Protocol — <https://agentclientprotocol.com>
-- Zed's ACP adapter for Claude Code — <https://github.com/zed-industries/claude-code-acp>
-- Zed's ACP adapter for Codex — <https://github.com/zed-industries/codex-acp>
-- Claude Code, headless use and authentication — <https://docs.anthropic.com/en/docs/claude-code/sdk/sdk-headless>
-- Codex CLI — <https://github.com/openai/codex>
-- Gemini CLI — <https://github.com/google-gemini/gemini-cli>
-- Docker Engine API: containers, attach, logs, and archive — <https://docs.docker.com/reference/api/engine/>
-- Git bundles — <https://git-scm.com/docs/git-bundle>
-- Development Containers specification — <https://containers.dev>
-- Apple's `container` tool — <https://github.com/apple/container>
-- John Ousterhout, *A Philosophy of Software Design*, the vocabulary of the review above
+- ACP [initialization](https://agentclientprotocol.com/protocol/initialization), [turns/cancellation](https://agentclientprotocol.com/protocol/prompt-turn), [sessions/loading](https://agentclientprotocol.com/protocol/session-setup), [permissions](https://agentclientprotocol.com/protocol/tool-calls).
+- Current [Claude adapter](https://github.com/agentclientprotocol/claude-agent-acp) and [Codex adapter](https://github.com/agentclientprotocol/codex-acp); earlier Zed repository/package references moved. [Gemini CLI](https://github.com/google-gemini/gemini-cli).
+- Docker [Engine API](https://docs.docker.com/reference/api/engine/), [attach](https://docs.docker.com/reference/cli/docker/container/attach/), [logging](https://docs.docker.com/engine/logging/), [explicit logging drivers](https://docs.docker.com/engine/logging/configure/).
+- Git [bundle refs/verification](https://git-scm.com/docs/git-bundle), [push refspecs/leases](https://git-scm.com/docs/git-push).
+- [Development Containers](https://containers.dev), [Apple container](https://github.com/apple/container), John Ousterhout's *A Philosophy of Software Design* for comparisons/information hiding.
