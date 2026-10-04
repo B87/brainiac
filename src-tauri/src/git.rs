@@ -36,7 +36,8 @@ const AHEAD_BEHIND_ATOM: (u32, u32) = (2, 41);
 /// tags, and objects: no automatic cleanup, pruning, commit-graph writes, or
 /// hooks (the `reference-transaction` hook runs on ref updates). Per-remote
 /// settings such as `remote.<name>.prune` override `-c fetch.prune`, so
-/// `FETCH_FLAGS` repeats the pruning choice on the command line. SPEC.md, Fetching.
+/// `FETCH_FLAGS` repeats the pruning choice on the command line.
+/// docs/architecture.md, Fetch invocation.
 const FETCH_CONFIG: &[&str] = &[
     "-c",
     "gc.auto=0",
@@ -1531,7 +1532,7 @@ fn missing_remote_ref(stderr: &str) -> Option<String> {
 }
 
 /// The lock file that shows another Git process is changing the repository,
-/// if any (SPEC.md, Fetching).
+/// if any (docs/architecture.md, Fetch invocation).
 pub fn busy_lock(git_dir: &Path, common_git_dir: &Path, remote: &str) -> Option<PathBuf> {
     for dir in [git_dir, common_git_dir] {
         for name in LOCK_FILES {

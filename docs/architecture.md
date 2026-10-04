@@ -254,6 +254,52 @@ Run Git without a pager, with lazy fetching disabled (`GIT_NO_LAZY_FETCH=1`, so 
 
 Use the CLI first for compatibility with the user's installed Git. Hide it behind a `GitService` boundary; `git2` or `gix` can be evaluated later if measured bottlenecks justify another implementation.
 
+### Workspaces and discovery
+
+How `SPEC.md`, Discovery and membership, is carried out:
+
+- Enumerate the immediate child directories of the discovery folder and ask Git for each candidate's working-tree root and metadata paths. Register a child only when its resolved canonical Git root equals the candidate directory; a plain folder that inherits the enclosing root's Git context is not another repository.
+- Handle `.git` directories and `.git` files, including linked worktrees and actual submodules. Preserve the detected relationship.
+- Deduplicate by canonical checkout root, retaining distinct linked worktree paths.
+- Membership records each member's path, origin (discovered or manual), and repository when it is one; an explicitly selected non-Git folder has none. The root is identified by the workspace's `root_repository_id`, not by a per-member role.
+- A discovered workspace stores the selected folder as `discovery_root` and the scanned folder relative to it as `discovery_path` (absent when the selected folder itself is scanned), so Rescan works whether or not the selected folder is a repository.
+- Rescan looks for up to 16 missing members among up to 64 untracked repositories, with one Git run per untracked repository plus one per match.
+
+### Relocation
+
+The rules behind `SPEC.md`, Relocating a repository:
+
+- The same-repository check runs Git with `GIT_NO_LAZY_FETCH=1`, so a partial clone answers from the objects it has. A partial clone with Git older than 2.44, which ignores that variable, counts as unverified.
+- A confirmation covers the working-tree root it was shown; if the folder resolves to another root by then, Brainiac asks again.
+- Confirming an unrelated or unverified history drops the old Git directory's feed when no other registration uses it, and the new one starts silently.
+- In a discovered workspace a moved member counts as discovered when the new folder is the `discovery_root` or directly inside the discovery folder, and as manual otherwise. A root repository that ends up anywhere other than its `discovery_root` stops being the root.
+- **The folder that moved** is the highest folder that is gone among the old folder and those of its parents whose names the new path repeats. Nothing moves along when the old folder still exists.
+- Inside the folder that moved, a workspace `discovery_root`, missing registrations, and missing non-Git members move to the same relative path in the new folder when it exists. A repository moves only when that path is its working-tree root and the same repository; the others, including any Git cannot check, stay missing.
+- Linked worktrees are re-pointed when a main checkout's Git directory is gone from its old place and the history is the same.
+- Activity (baseline, feed, read state) follows the registration to the new Git directory when the history is the same, no other registration still uses the old Git directory, and none already uses the new one. When the new one is in use, the old feed is dropped once nothing uses it. When registrations remain on the old Git directory, its feed stays with them (Activity tracking, below).
+- A status observation that started before a relocation and finishes after it is discarded.
+
+### Refresh
+
+Watching `.git/HEAD`, refs, and the index alone misses changes to unstaged working files, so `crate::watcher` observes both Git metadata and the working tree, excluding ignored and generated trees from expensive recursive observation (`SPEC.md`, Refresh strategy).
+
+- Debounce repository invalidation for about 500 ms; batch and coalesce bursts, and never run a status command per keystroke or per watcher callback.
+- Resolve worktree-specific and shared Git metadata directories explicitly.
+- Route working-tree notifications to the most specific registered repository root. Refresh an ancestor when its own tracked state or detected Git relationship may have changed; avoid a full parent status job on every child keystroke.
+- Keep a separate lightweight watcher for workspace membership discovery.
+- Treat each linked worktree's available project folders independently; do not assume a root worktree contains every child checkout.
+
+### Diffs and history
+
+- Change counts come from `git diff --numstat` for the index and the working tree. **Ignore whitespace** is `git diff -w`; changed-word highlights are computed in the frontend.
+- Git supplies the comparisons of working tree, index, and commits, with external diff and text-conversion helpers disabled and output paginated and bounded. [Git diff documentation](https://git-scm.com/docs/git-diff)
+- Load only the selected patch. Revalidate or invalidate displayed working-tree diffs when repository state changes, and discard obsolete requests after the selection switches.
+- Patch rendering virtualizes long output and escapes source text.
+- History pages are anchored to the selected ref's resolved commit ID, so new commits do not shift a traversal in progress. The `author:` filter is `git log --author`.
+- History and objects are read through Git's commands into structured Rust DTOs, never by parsing terminal-decorated output. [Git log documentation](https://git-scm.com/docs/git-log), [Git show documentation](https://git-scm.com/docs/git-show)
+- Refs are resolved to object IDs in Rust before comparison and history queries. [Git ref enumeration](https://git-scm.com/docs/git-for-each-ref)
+- Ahead/behind the default branch uses `%(ahead-behind:<base>)` on Git 2.41+ and `git rev-list --left-right --count` otherwise.
+
 ### Fetch invocation
 
 Fetching (`SPEC.md`, Fetching) is the only command that writes to a repository. Every fetch runs, with explicit refspecs that are each checked to write only `refs/remotes/<remote>/` or `refs/tags/`:
@@ -269,12 +315,27 @@ git -c gc.auto=0 -c maintenance.auto=false -c fetch.prune=false -c fetch.pruneTa
 - The environment sets `GIT_TERMINAL_PROMPT=0`, `GCM_INTERACTIVE=never`, empty `GIT_ASKPASS`/`SSH_ASKPASS`, and, unless the user configured `core.sshCommand`, `GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=15"`.
 - Timeout 60 seconds. Git is stopped with SIGTERM, which lets it remove its lock files, and only killed if it is still running three seconds later.
 - `-c transfer.bundleURI=false` keeps a fetch from downloading bundles into `refs/bundles/`.
+- **Fetch now refspecs:** the remote's configured refspecs, keeping only those whose destination is under `refs/remotes/<remote>/`, or that copy a tag to the same name without forcing. A mirror refspec such as `+refs/heads/*:refs/heads/*` is dropped, and so is anything that could overwrite the user's own tags. When none is left, the standard `+refs/heads/*:refs/remotes/<remote>/*` is used.
+- **Auto-fetch refspecs:** each Git directory that an auto-fetching workspace contains fetches that workspace's watched branch patterns as `+refs/heads/<pattern>:refs/remotes/<remote>/<pattern>`.
+- **Deleted branches:** when the remote no longer has a branch an explicit refspec names, the fetch is retried without it, and auto-fetch leaves it out for 24 hours (Fetch now forgets this).
+- **Locks:** before fetching, look for the lock files of what a fetch writes: `packed-refs.lock`, `shallow.lock`, the reftable lock, and `*.lock` under the remote's refs and the tags. A fresh lock means busy; after three busy attempts in a row, auto-fetch waits a full interval. A lock older than ten minutes, or dated more than a minute in the future, is a leftover and is reported as an error naming the file.
+- **Concurrency:** at most two fetches run at once, and a Git directory has at most one in flight; a second request waits for the first and shares its result.
 - `crate::fetcher::Fetcher` owns remote and refspec choice, lock checks, one fetch per Git directory (later requests join it), outcome recording, auto-fetch scheduling and backoff, and the branches a remote no longer has; it reports `Fetched`, `Joined`, `Busy`, or `Failed`. `GitService::fetch` owns the command line.
 - On a timeout, and when output is truncated, Git's stdout is closed or the process stopped right away, so a large diff comes back truncated instead of timing out.
 
 ### Activity tracking
 
 `crate::activity::ActivityTracker` is the only code that reads or writes `ref_baselines`, `ref_tips`, and `activity_events` (its private `store` module), so its in-memory state (per-directory locks, fingerprints, the team-pulse cache) cannot go stale behind its back. Removing a repository's last checkout calls `ActivityTracker::forget`; relocating a registration can call `ActivityTracker::relocate`, which re-keys a Git directory's baseline, tips, and events under both directories' locks and does nothing when the old key holds nothing (a repeated relocation). The relocation transaction re-reads each registration and fails with `CONFLICT` when another relocation changed it first. Feeds, unread counts, and Mark seen filter in SQL: a pattern's `*` is SQLite's `GLOB` `*`, and each pattern also has a start time (`workspaces.watched_since_json`).
+
+How `SPEC.md`, Workspace activity, is tracked:
+
+- **Per Git directory** (`common_git_dir`), so a checkout and its linked worktrees share one set of tips and one feed. One tracking pass runs per Git directory at a time. It follows each status observation and is skipped cheaply when neither the ref files (their modification times) nor the watched patterns changed; after five minutes a full pass runs anyway, for filesystems with coarse modification times.
+- **Baseline.** A pass compares the tips of the refs any containing workspace watches with the stored baseline, which remembers the patterns it covered; newly matching refs and the branches of a remote new to it join it silently. Changing a workspace's watched patterns runs a pass right away from the last status, and a repository joining a workspace is refreshed. Past twenty events in a pass, the remaining moved refs join the baseline without an event.
+- **Rewritten or failed.** A pass reports a rewrite only when the old tip is gone or not an ancestor. Any other failure while deciding (a timeout) fails the pass, which is retried. When only an event's details cannot be read, the tips still advance.
+- **Conflict risk** comes from `git diff --name-only old new`, bounded. **Drift** measures against the watched branch with the fewest commits unique to `HEAD`.
+- **Patterns** become fetch refspecs, so a branch pattern may contain one `*` at most. Validation uses `git check-ref-format` and rejects `?`, `[`, `]`, `:`, `^`, `~`, `\`, spaces, and a bare `@`.
+- **Team pulse** is cached per Git directory and read again only when its ref files changed (the tracking fingerprint); otherwise the last reading is reused and filtered to the current seven days.
+- Removing the last checkout of a Git directory deletes its tips and events; a Git directory no workspace watches loses its baseline.
 
 ## IPC
 
