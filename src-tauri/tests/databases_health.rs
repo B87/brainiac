@@ -459,3 +459,81 @@ async fn the_statements_that_took_longest_come_from_pg_stat_statements() {
     assert_eq!(top.calls, 3);
     assert!(top.total_ms > 0.0);
 }
+
+/// A program that prints `password` and counts its runs in `<name>.runs`.
+fn counting_command(dir: &std::path::Path, name: &str, body: &str) -> SecretSource {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join(name);
+    std::fs::write(
+        &path,
+        format!(
+            "#!/bin/sh\necho run >> '{}'\n{body}\n",
+            dir.join(format!("{name}.runs")).display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    SecretSource::Command {
+        program: path.display().to_string(),
+        args: vec![],
+    }
+}
+
+fn runs(dir: &std::path::Path, name: &str) -> usize {
+    std::fs::read_to_string(dir.join(format!("{name}.runs")))
+        .map(|s| s.lines().count())
+        .unwrap_or(0)
+}
+
+#[tokio::test]
+async fn health_reads_the_password_only_to_connect_and_backs_off_after_a_failure() {
+    let Some(server) = PgServer::start() else {
+        return;
+    };
+    let h = harness(GoogleConfig::production());
+    let dir = h.tmp.path().to_path_buf();
+    let good = counting_command(
+        &dir,
+        "op",
+        &format!("printf '%s\\n' '{}'", postgres_server::PASSWORD),
+    );
+    let c = h
+        .connections
+        .save(SaveDbConnectionRequest {
+            password_source: good,
+            password: None,
+            ..connection(&server, DbAccess::ReadOnly, None)
+        })
+        .await
+        .unwrap();
+    let first = h.health.start(&c.id).await.unwrap().latest.unwrap();
+    assert_eq!(first.problem, None);
+    assert_eq!(runs(&dir, "op"), 1);
+    // Forgotten for the run, but the open session needs no password.
+    h.connections.refresh(&c.id);
+    h.health.stop(&c.id);
+    let second = h.health.start(&c.id).await.unwrap().latest.unwrap();
+    assert_eq!(second.problem, None);
+    assert_eq!(runs(&dir, "op"), 1);
+    h.health.stop(&c.id);
+
+    // A command that fails is not run again on the next sample.
+    let bad = counting_command(&dir, "locked", "exit 1");
+    let b = h
+        .connections
+        .save(SaveDbConnectionRequest {
+            name: "Locked".into(),
+            password_source: bad,
+            password: None,
+            ..connection(&server, DbAccess::ReadOnly, None)
+        })
+        .await
+        .unwrap();
+    let failed = h.health.start(&b.id).await.unwrap().latest.unwrap();
+    assert!(failed.problem.unwrap().contains("exited with status 1"));
+    h.health.stop(&b.id);
+    let again = h.health.start(&b.id).await.unwrap().latest.unwrap();
+    assert!(again.problem.unwrap().contains("exited with status 1"));
+    assert_eq!(runs(&dir, "locked"), 1);
+    h.health.stop(&b.id);
+}

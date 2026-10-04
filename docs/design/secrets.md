@@ -303,6 +303,7 @@ No new table. Pending markers are recoverable state, not a general credential jo
 | --- | --- | --- |
 | GUI executable discovery | Built: **Find…** looks in the launch `PATH`, then `/opt/homebrew/bin` and `/usr/local/bin`, and saves the path shown. Still to verify from Finder on an Intel Mac | Phase 1b exit gate |
 | Password-manager unlock and process cleanup | Process cleanup is built and tested with scripts (hangs, floods on either stream, a child holding the output open). Still to spike: `op read` and `bw get` from the GUI app, their unlock windows, and whether 60 seconds is enough | Phase 1b exit gate |
+| Snapshots copied back by hand | Phase 1 cannot tell a snapshot copied into place from the database it replaces, so a snapshot keeps its approvals (`architecture.md`, Secrets — v0.4.x). Restoring snapshots from the app would let it apply restore's rule | When snapshots are restored from the app |
 | Save recovery in the existing rows | Resolved: a marker column in each row; `tests/secrets.rs` fails the Keychain write and deletion and restarts the service at each boundary | — |
 | Git helper compatibility | Spike `osxkeychain` and Git Credential Manager with explicit username/path selectors, API checks, askpass disabled, and interactive sign-in disabled; test minimum Git and available expiry metadata | Phase 2 |
 | Google decoding and checksum support | Reuse current HTTP/authentication infrastructure; choose small base64/CRC32C support at phase start and verify resource/version error mapping | Phase 2 |

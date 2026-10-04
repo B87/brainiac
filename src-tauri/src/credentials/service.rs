@@ -169,6 +169,9 @@ struct Reading {
 struct OwnerState {
     /// The newest revision seen for this owner.
     revision: i64,
+    /// The owner was removed at this revision: bindings at or below it are
+    /// gone, so a read that started before the removal cannot run its source.
+    removed: i64,
     generation: u64,
     /// A save or removal is under way: nothing resolves until it commits.
     blocked: bool,
@@ -218,6 +221,10 @@ pub struct CredentialService {
     store: Arc<dyn SecretStore>,
     runner: CommandRunner,
     owners: Owners,
+}
+
+fn removed() -> AppError {
+    AppError::not_found("This was removed while its secret was being read.")
 }
 
 fn stale() -> AppError {
@@ -355,6 +362,9 @@ impl CredentialService {
         check_binding(binding)?;
         let mut owners = self.owners.lock().expect("credentials lock");
         let state = owners.entry(binding.owner.clone()).or_default();
+        if binding.revision <= state.removed {
+            return Err(removed());
+        }
         if binding.revision < state.revision {
             return Err(stale());
         }
@@ -388,7 +398,10 @@ impl CredentialService {
                 let lease = state.lease(&binding.owner, binding.revision, &cached.value);
                 return Ok(Step::Done(Resolution::Secret(lease)));
             }
-            state.cached = None;
+            // Expired or obsolete: a new generation, so the read that
+            // replaces it is a new lease, checked again by its domain, and a
+            // late refusal of the old one cannot evict it.
+            state.invalidate();
         }
         if let Some(reading) = &state.reading {
             if reading.generation == state.generation {
@@ -474,6 +487,9 @@ impl CredentialService {
         }
         let mut owners = self.owners.lock().expect("credentials lock");
         let state = owners.entry(binding.owner.clone()).or_default();
+        if binding.revision <= state.removed {
+            return Err(removed());
+        }
         if binding.revision < state.revision {
             return Err(stale());
         }
@@ -599,13 +615,26 @@ impl CredentialService {
     }
 
     /// The owner is gone: forget everything about it except its gate.
+    ///
+    /// Its revision is kept: an owner added again under the same key (an
+    /// account of the same provider) starts above it (`next_revision`).
     pub fn forget(&self, gate: &OwnerGate) {
         self.with_state(&gate.owner, |s| {
             s.invalidate();
-            s.revision = 0;
+            s.removed = s.removed.max(s.revision);
             s.blocked = false;
             s.last_test = None;
         });
+    }
+
+    /// The revision a new binding of this owner starts at: above every
+    /// revision seen in this run, including a removed owner's.
+    pub fn next_revision(&self, owner: &str) -> i64 {
+        self.owners
+            .lock()
+            .expect("credentials lock")
+            .get(owner)
+            .map_or(1, |s| s.revision.max(s.removed) + 1)
     }
 
     /// Create or replace the owner's store item.
@@ -876,6 +905,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_removed_owner_is_not_read_by_an_old_binding_and_restarts_above_it() {
+        let store = Arc::new(MemoryStore::default());
+        store.insert("github", "old");
+        let credentials = service(store.clone());
+        let old = Binding {
+            owner: "github".into(),
+            ..store_binding(5)
+        };
+        secret(credentials.resolve(&old).await.unwrap());
+        let gate = credentials.gate("github").await;
+        credentials.forget(&gate);
+        drop(gate);
+        // A read that started before the removal finds it gone.
+        assert_eq!(
+            credentials.resolve(&old).await.unwrap_err().code,
+            ErrorCode::NotFound
+        );
+        assert_eq!(store.reads(), 1);
+        // The account added again starts above the removed one.
+        let next = credentials.next_revision("github");
+        assert_eq!(next, 6);
+        let new = Binding {
+            revision: next,
+            ..old.clone()
+        };
+        secret(credentials.resolve(&new).await.unwrap());
+        assert_eq!(credentials.next_revision("db:never-seen"), 1);
+    }
+
+    #[tokio::test]
     async fn expired_values_are_read_again() {
         let store = Arc::new(MemoryStore::default());
         store.insert("db:1", "pw");
@@ -884,8 +943,13 @@ mod tests {
             expires_at: Some(Utc::now() - chrono::Duration::seconds(1)),
             ..store_binding(1)
         };
-        secret(credentials.resolve(&binding).await.unwrap());
-        secret(credentials.resolve(&binding).await.unwrap());
+        let first = secret(credentials.resolve(&binding).await.unwrap());
+        let second = secret(credentials.resolve(&binding).await.unwrap());
         assert_eq!(store.reads(), 2);
+        // Each read is a lease of its own: checked again, and a refusal of
+        // the first does not evict the second.
+        assert!(!first.same_read(&second));
+        credentials.reject(&first);
+        assert!(credentials.is_current(&second));
     }
 }

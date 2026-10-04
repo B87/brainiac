@@ -1,4 +1,4 @@
-import { open } from "@tauri-apps/plugin-dialog";
+import { message, open } from "@tauri-apps/plugin-dialog";
 import { useState } from "react";
 import { ENV_LABEL, ENVIRONMENTS } from "../lib/databases";
 import {
@@ -183,7 +183,17 @@ export default function DbConnectionDialog({
     setBusy("save");
     setError(null);
     try {
-      onSaved(await ipc.saveDbConnection(request()));
+      const saved = await ipc.saveDbConnection(request());
+      // Saved, but the old Keychain item is still there (SPEC.md, Secrets).
+      if (
+        saved.credential.pending === "cleanup" &&
+        c?.credential.pending !== "cleanup"
+      )
+        await message(
+          `${pendingLabel("cleanup")} Retry in Settings → Secrets.`,
+          { title: "Connection Saved", kind: "warning" },
+        );
+      onSaved(saved);
     } catch (e) {
       setError(errorMessage(e));
     } finally {

@@ -31,6 +31,9 @@ pub const POINTS: usize = 360;
 /// The table list and Cloud Monitoring are read this often, not every sample.
 const SLOW_EVERY: Duration = Duration::from_secs(60);
 const STATEMENT_TIMEOUT: Duration = Duration::from_secs(2);
+/// How long Health waits before reading a password again that could not be
+/// read or that the server refused.
+const CREDENTIAL_RETRY: Duration = Duration::from_secs(60);
 
 /// Receives every sample, to emit as `db_health_sample`.
 pub type HealthEmitter = Arc<dyn Fn(HealthEvent) + Send + Sync>;
@@ -99,6 +102,10 @@ struct State {
     tables_at: Option<Instant>,
     docker: Option<DockerPrevious>,
     cloud: Option<(Instant, MachineSample)>,
+    /// After the password could not be read or was refused: not read again
+    /// before then, so a failing command or a locked password manager is
+    /// not asked every 10 seconds. The problem is shown meanwhile.
+    credential_retry: Option<(Instant, String)>,
 }
 
 struct Monitor {
@@ -266,14 +273,13 @@ impl HealthService {
     async fn health_target(
         &self,
         connection_id: &str,
-    ) -> AppResult<(PgTarget, Option<RunsOn>, Option<LeaseHandle>)> {
+    ) -> AppResult<(PgTarget, Option<LeaseHandle>)> {
         let connection = self.connections.get(connection_id).await?;
-        let runs_on = connection.runs_on.clone();
         match self.connections.target(&connection).await? {
             (Target::Postgres(mut target), lease) => {
                 target.application_name = "Brainiac health".into();
                 target.statement_timeout = STATEMENT_TIMEOUT;
-                Ok((target, runs_on, lease))
+                Ok((target, lease))
             }
             (Target::Sqlite { .. }, _) => {
                 Err(AppError::validation("Health is for PostgreSQL servers."))
@@ -284,28 +290,46 @@ impl HealthService {
     async fn sample(&self, monitor: &Monitor) -> HealthSample {
         let mut state = monitor.state.lock().await;
         let mut sample = empty_sample(&monitor.connection_id);
-        let runs_on = match self.health_target(&monitor.connection_id).await {
-            Ok((target, runs_on, lease)) => {
-                if state.session.as_ref().is_none_or(PgSession::is_closed) {
-                    match PgSession::connect(&target).await {
-                        Ok(s) => state.session = Some(s),
-                        Err(e) => {
-                            if e.code == ErrorCode::Unauthenticated {
-                                if let Some(lease) = &lease {
-                                    lease.reject();
-                                }
-                            }
-                            sample.problem = Some(e.message)
-                        }
-                    }
-                }
-                runs_on
-            }
+        let runs_on = match self.connections.get(&monitor.connection_id).await {
+            Ok(connection) => connection.runs_on,
             Err(e) => {
                 sample.problem = Some(e.message);
                 None
             }
         };
+        // The password is read only to connect: an open session needs none.
+        if state.session.as_ref().is_none_or(PgSession::is_closed) {
+            match &state.credential_retry {
+                Some((at, problem)) if Instant::now() < *at => {
+                    sample.problem = Some(problem.clone());
+                }
+                _ => {
+                    state.credential_retry = None;
+                    match self.health_target(&monitor.connection_id).await {
+                        Ok((target, lease)) => match PgSession::connect(&target).await {
+                            Ok(s) => state.session = Some(s),
+                            Err(e) => {
+                                if e.code == ErrorCode::Unauthenticated {
+                                    if let Some(lease) = &lease {
+                                        lease.reject();
+                                    }
+                                    state.credential_retry = Some((
+                                        Instant::now() + CREDENTIAL_RETRY,
+                                        e.message.clone(),
+                                    ));
+                                }
+                                sample.problem = Some(e.message)
+                            }
+                        },
+                        Err(e) => {
+                            state.credential_retry =
+                                Some((Instant::now() + CREDENTIAL_RETRY, e.message.clone()));
+                            sample.problem = Some(e.message);
+                        }
+                    }
+                }
+            }
+        }
         if state.session.is_some() {
             if let Err(e) = read_server(&mut state, &mut sample).await {
                 sample.problem = Some(e);
@@ -347,7 +371,7 @@ impl HealthService {
                 "Cancelling another session needs a connection whose access is read and write.",
             ));
         }
-        let (target, _, _) = self.health_target(connection_id).await?;
+        let (target, _) = self.health_target(connection_id).await?;
         let session = PgSession::connect(&target).await?;
         let function = if terminate {
             "pg_terminate_backend"

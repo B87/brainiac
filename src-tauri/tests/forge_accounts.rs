@@ -9,11 +9,13 @@ use std::sync::{Arc, Mutex};
 
 use brainiac_lib::credentials::{CommandRunner, CredentialService, MemoryStore, SecretStore};
 use brainiac_lib::db::Db;
+use brainiac_lib::forge::adapter::{Client, Session};
+use brainiac_lib::forge::budget::Budget;
 use brainiac_lib::forge::http::Http;
 use brainiac_lib::forge::{AccountService, Endpoints};
 use brainiac_lib::models::{
-    ErrorCode, ForgeKind, ForgeTokenKind, SaveForgeAccountOutcome, SaveForgeAccountRequest,
-    SecretSource,
+    CredentialPending, ErrorCode, ForgeKind, ForgeTokenKind, SaveForgeAccountOutcome,
+    SaveForgeAccountRequest, SecretSource,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -489,4 +491,163 @@ async fn a_move_to_a_command_deletes_the_item_and_a_restored_source_waits_for_ap
         .unwrap();
     let (token, _) = h.accounts.token(ForgeKind::Github).await.unwrap();
     assert_eq!(token.expose(), "gho_first");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_token_read_again_after_its_expiry_is_checked_again() {
+    let mona = r#"{"login":"mona","id":43,"name":"Mona"}"#;
+    let (base, requests) = serve(vec![
+        (
+            200,
+            vec![(
+                "github-authentication-token-expiration",
+                "2020-01-01 00:00:00 UTC",
+            )],
+            GITHUB_USER,
+        ),
+        (200, vec![], mona),
+    ])
+    .await;
+    let h = harness(&base);
+    let source = h.token_command("gho_first");
+    h.accounts
+        .save(SaveForgeAccountRequest {
+            source,
+            ..request(ForgeKind::Github, None, None)
+        })
+        .await
+        .unwrap();
+    // The saved expiry has passed: the token is read again, and the new
+    // read is checked like any other, so the switch is caught.
+    h.set_token("gho_mona");
+    let err = h.accounts.token(ForgeKind::Github).await.unwrap_err();
+    assert!(err.message.contains("belongs to mona"), "{}", err.message);
+    assert_eq!(requests.lock().unwrap().len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_item_left_by_a_failed_cleanup_is_never_taken_up_again() {
+    let (base, _) = serve(vec![(200, vec![], GITHUB_USER), (200, vec![], GITHUB_USER)]).await;
+    let h = harness(&base);
+    h.accounts
+        .save(request(ForgeKind::Github, Some("github_pat_old"), None))
+        .await
+        .unwrap();
+    h.store.fail_deletes(true);
+    let source = h.token_command("gho_first");
+    let outcome = h
+        .accounts
+        .save(SaveForgeAccountRequest {
+            source,
+            ..request(ForgeKind::Github, None, None)
+        })
+        .await
+        .unwrap();
+    let SaveForgeAccountOutcome::Saved { account, warning } = outcome else {
+        panic!("not saved: {outcome:?}");
+    };
+    assert!(warning.unwrap().contains("could not be deleted"));
+    assert_eq!(account.credential.pending, Some(CredentialPending::Cleanup));
+
+    // Back to the Keychain without pasting: refused, not the old token.
+    let err = h
+        .accounts
+        .save(request(ForgeKind::Github, None, None))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::Validation);
+    let err = h
+        .accounts
+        .test(request(ForgeKind::Github, None, None))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::Validation);
+    assert_eq!(h.store.text("github").as_deref(), Some("github_pat_old"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_interrupted_account_save_stays_blocked_until_saved_again() {
+    let (base, _) = serve(vec![
+        (200, vec![], GITHUB_USER),
+        (200, vec![], GITHUB_USER),
+        (200, vec![], GITHUB_USER),
+    ])
+    .await;
+    let mut h = harness(&base);
+    h.accounts
+        .save(request(ForgeKind::Github, Some("github_pat_one"), None))
+        .await
+        .unwrap();
+    h.store.fail_writes(true);
+    let err = h
+        .accounts
+        .save(request(ForgeKind::Github, Some("github_pat_two"), None))
+        .await
+        .unwrap_err();
+    assert!(
+        err.message.contains("until its token is saved again"),
+        "{err:?}"
+    );
+    h.restart();
+    let account = h
+        .accounts
+        .account(ForgeKind::Github)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(account.credential.pending, Some(CredentialPending::Save));
+    assert_eq!(
+        h.accounts.token(ForgeKind::Github).await.unwrap_err().code,
+        ErrorCode::PermissionDenied
+    );
+    // Checking the item again is not enough: what it holds is unknown.
+    let err = h
+        .accounts
+        .save(request(ForgeKind::Github, None, None))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::Validation);
+    h.store.fail_writes(false);
+    h.accounts
+        .save(request(ForgeKind::Github, Some("github_pat_three"), None))
+        .await
+        .unwrap();
+    let (token, _) = h.accounts.token(ForgeKind::Github).await.unwrap();
+    assert_eq!(token.expose(), "github_pat_three");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_401_from_any_request_forgets_the_token_it_used() {
+    let (base, _) = serve(vec![(200, vec![], GITHUB_USER), (401, vec![], "")]).await;
+    let h = harness(&base);
+    h.accounts
+        .save(request(ForgeKind::Github, Some("github_pat_abc"), None))
+        .await
+        .unwrap();
+    let (token, credential) = h.accounts.token(ForgeKind::Github).await.unwrap();
+    let account = h
+        .accounts
+        .account(ForgeKind::Github)
+        .await
+        .unwrap()
+        .unwrap();
+    let session = Session {
+        token,
+        email: None,
+        user_id: account.user_id.clone(),
+        account,
+        credential: Some(credential.clone()),
+    };
+    let client = Client::new(
+        ForgeKind::Github,
+        base.clone(),
+        Http::insecure_for_tests().unwrap(),
+        Arc::new(Budget::default()),
+    );
+    let response = client
+        .get(&session, &format!("{base}/repos/acme/api"), &[])
+        .await
+        .unwrap();
+    assert_eq!(response.status, 401);
+    assert!(!credential.is_current());
 }

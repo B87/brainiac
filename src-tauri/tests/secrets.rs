@@ -263,29 +263,92 @@ async fn an_interrupted_keychain_save_stays_blocked_until_saved_again() {
     assert!(fixed.credential.revision > saved.credential.revision);
     assert_eq!(h.password(&fixed).await, Ok(Some("third".into())));
 
-    // A new connection whose item cannot be written is kept, blocked.
+    // A new connection whose item cannot be written is not added, so
+    // trying Save again does not leave a second one behind.
     h.store.fail_writes(true);
-    assert!(h
+    for _ in 0..2 {
+        let err = h
+            .connections
+            .save(request(SecretSource::Store, Some("new"), port))
+            .await
+            .unwrap_err();
+        assert!(err.message.contains("was not added"), "{err:?}");
+    }
+    assert_eq!(h.connections.list().await.unwrap().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restored_cleanup_marker_never_deletes_this_macs_item_on_save() {
+    let mut h = Harness::new();
+    let program = h.script("op", "pw");
+    let saved = h
         .connections
-        .save(request(SecretSource::Store, Some("new"), port))
+        .save(request(command(&program), None, closed_port()))
         .await
-        .is_err());
-    let provisional = h
-        .connections
-        .list()
-        .await
-        .unwrap()
-        .into_iter()
-        .find(|c| c.id != saved.id)
         .unwrap();
-    assert_eq!(
-        provisional.credential.pending,
-        Some(CredentialPending::Save)
-    );
-    assert_eq!(
-        h.password(&provisional).await,
-        Err(ErrorCode::PermissionDenied)
-    );
+    let owner = format!("db:{}", saved.id);
+    // Restored with a cleanup that had not finished, and an item of that
+    // name in this Mac's Keychain.
+    h.store.insert(&owner, "this mac's");
+    h.sql("UPDATE db_connections SET source_approved = 0, credential_pending = 'cleanup'")
+        .await;
+    h.restart();
+    let restored = h.connections.get(&saved.id).await.unwrap();
+    let renamed = h
+        .connections
+        .save(SaveDbConnectionRequest {
+            name: "Renamed".into(),
+            ..edit(&restored, command(&program), None)
+        })
+        .await
+        .unwrap();
+    assert_eq!(renamed.credential.pending, Some(CredentialPending::Cleanup));
+    assert_eq!(h.store.text(&owner).as_deref(), Some("this mac's"));
+    // Only an explicit Retry deletes it.
+    h.connections.retry_cleanup(&saved.id).await.unwrap();
+    assert_eq!(h.store.text(&owner), None);
+
+    // A restored Keychain connection moved to a command keeps the item too.
+    let kept = h
+        .connections
+        .save(request(SecretSource::Store, Some("pw"), closed_port()))
+        .await
+        .unwrap();
+    let kept_owner = format!("db:{}", kept.id);
+    h.sql("UPDATE db_connections SET source_approved = 0").await;
+    h.restart();
+    let restored = h.connections.get(&kept.id).await.unwrap();
+    let moved = h
+        .connections
+        .save(edit(&restored, command(&program), None))
+        .await
+        .unwrap();
+    assert_eq!(moved.credential.pending, Some(CredentialPending::Cleanup));
+    assert_eq!(h.store.text(&kept_owner).as_deref(), Some("pw"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_save_while_a_connection_is_in_use_is_picked_up_not_refused() {
+    let h = Harness::new();
+    let first = h.script("op", "first");
+    let second = h.script("bw", "second");
+    let saved = h
+        .connections
+        .save(request(command(&first), None, closed_port()))
+        .await
+        .unwrap();
+    // A caller read the connection, then it was saved with another source.
+    let before = h.connections.get(&saved.id).await.unwrap();
+    h.password(&before).await.unwrap();
+    h.connections
+        .save(edit(&before, command(&second), None))
+        .await
+        .unwrap();
+    let (target, _) = h.connections.target(&before).await.unwrap();
+    let Target::Postgres(target) = target else {
+        panic!()
+    };
+    assert_eq!(target.password.unwrap().expose(), "second");
 }
 
 #[tokio::test(flavor = "multi_thread")]

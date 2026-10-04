@@ -610,6 +610,7 @@ What a PostgreSQL server is doing now and over the last hour, as a tab opened fr
   - **Docker container** on this Mac: memory against the container's limit (without reclaimable page cache, as `docker stats` shows it), CPU, and disk I/O, from Docker's API; **List Containers** offers the running ones. Brainiac sends Docker only read requests.
   - **Not set**: Health shows the PostgreSQL panels and offers to set it. Coolify is listed as needing SSH tunnels, which come later.
 - Each value says where it came from: "Postgres", "Docker", or "Cloud Monitoring · 1 min behind".
+- Health reads the connection's password only to connect. When it cannot be read or the server refuses it, Health shows why and tries again after a minute, so a locked password manager is not asked every 10 seconds.
 - **Cancel Query** and **End Session** are offered on other sessions when the connection's access is Read and write; each asks first, naming the session's user, application, and statement.
 
 ## 12. Secrets — v0.4.x
@@ -646,20 +647,21 @@ Where an account's token and a connection's password come from. Brainiac writes 
 
 ### Saving and removing
 
-- A secret typed for the Keychain is written there only after the account or connection is marked as being saved, and the mark is cleared once both are saved. A save cut off in between, by a failure or a crash, leaves the account or connection unusable, with a message, until it is saved again with the secret typed again or another source. Brainiac never finishes such a save by itself.
-- Moving from the Keychain to another source uses the new source at once and then deletes the old item. An item that cannot be deleted is shown in Settings → Secrets with **Retry**, and is never used instead of the new source.
+- A secret typed for the Keychain is written there only after the account or connection is marked as being saved, and the mark is cleared once both are saved. A save cut off in between, by a failure or a crash, leaves the account or connection unusable, with a message, until it is saved again with the secret typed again or another source. Brainiac never finishes such a save by itself. A new connection whose password cannot be kept is not added at all, so trying again does not leave a second one.
+- Moving from the Keychain to another source uses the new source at once and then deletes the old item. An item that cannot be deleted is shown in Settings → Secrets with **Retry**, and saving says so; it is never used instead of the new source, nor taken up again by choosing the Keychain without typing the secret.
 - **Remove** (an account) and **Delete Connection…** mark it as being removed, delete Brainiac's Keychain item whatever the source is, and then remove it. When the item cannot be deleted, the removal stays in Settings → Secrets with **Retry**.
 
 ### Settings → Secrets
 
 - The store in use, and each account and connection with a secret: where it comes from, where Brainiac sends it ("api.github.com as octo", "db.example.com:5432/app as app"), and its state: **not read until allowed** (restored), a save that did not finish, a cleanup or removal to retry, a password to be asked for, or the last test and when it ran ("Not tested" otherwise).
-- **Allow…**, **Retry**, and **Refresh**. A source is changed where it is entered: in Accounts, or in Edit Connection….
+- **Allow…**, **Retry**, and **Refresh**. Where a connection's password is sent includes its TLS mode and CA file. A source is changed where it is entered: in Accounts, or in Edit Connection….
 - Opening it reads no secret, runs no program, and does not unlock the Keychain.
 
 ### Restore
 
 - Every restored account and connection keeps where its secret comes from, and Brainiac reads none of them until the user allows each one: neither to use it nor to test it. **Allow…** shows where it reads, where it sends the secret, and, for a command, the exact program and arguments, and then **Allow This Source**. An item with the same name in this Mac's Keychain is not trusted without it. Saving the account or connection also allows what it shows.
-- A save, cleanup, or removal that had not finished when the export was made is shown as such; restoring never deletes an item by itself.
+- A save, cleanup, or removal that had not finished when the export was made is shown as such. Neither restoring nor saving a restored account or connection deletes an item in this Mac's Keychain: only **Retry** does.
+- A snapshot from the `backups` folder is this Mac's own data. Copied back by hand, it keeps the sources it allowed.
 - Upgrading keeps every existing Keychain item and what each connection did before, and reads nothing.
 
 ### Boundaries

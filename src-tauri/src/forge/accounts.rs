@@ -156,11 +156,17 @@ impl AccountService {
     /// The provider's token, for the adapters only, with the lease it came
     /// from so a refusal forgets exactly it.
     pub async fn token(&self, kind: ForgeKind) -> AppResult<(Token, LeaseHandle)> {
-        for _ in 0..2 {
+        for attempt in 0..2 {
             let account = self.account(kind).await?.ok_or_else(|| no_account(kind))?;
             let binding = binding(&account);
             let source = describe(&account.token_source, &binding.owner);
-            let resolved = self.credentials.resolve(&binding).await.map_err(|e| {
+            let resolved = match self.credentials.resolve(&binding).await {
+                // A save committed between reading the row and resolving it:
+                // read the row again.
+                Err(e) if e.code == ErrorCode::Conflict && attempt == 0 => continue,
+                other => other,
+            };
+            let resolved = resolved.map_err(|e| {
                 if e.code == ErrorCode::NotFound && account.token_source == SecretSource::Store {
                     AppError::new(
                         ErrorCode::PermissionDenied,
@@ -335,12 +341,21 @@ impl AccountService {
             return Ok(token.clone());
         }
         let owner = kind.keychain_account();
-        if *source == SecretSource::Store
-            && stored.is_some_and(|s| s.credential.pending == Some(CredentialPending::Save))
-        {
-            return Err(AppError::validation(
-                "The last save of this token did not finish. Paste the token again.",
-            ));
+        if *source == SecretSource::Store {
+            if stored.is_some_and(|s| s.credential.pending == Some(CredentialPending::Save)) {
+                return Err(AppError::validation(
+                    "The last save of this token did not finish. Paste the token again.",
+                ));
+            }
+            // Only an item the account already uses, or one stored from
+            // Terminal before there was an account, is read: an item left by
+            // a failed cleanup is never taken up again.
+            if let Some(s) = stored.filter(|s| s.token_source != SecretSource::Store) {
+                return Err(AppError::validation(format!(
+                    "Paste the token to keep in the Keychain: this account reads its token from {}.",
+                    describe(&s.token_source, owner)
+                )));
+            }
         }
         let read = self.credentials.probe(owner, source).await.map_err(|e| {
             if e.code == ErrorCode::NotFound && *source == SecretSource::Store {
@@ -458,13 +473,19 @@ impl AccountService {
         let old_source = stored.as_ref().map(|s| s.token_source.clone());
         let old_pending = stored.as_ref().and_then(|s| s.credential.pending);
         // A save always binds anew: the check may have found another user.
-        let revision = stored.as_ref().map_or(0, |s| s.credential.revision) + 1;
-        let cleanup = source != SecretSource::Store
+        // An account added again starts above the one removed in this run.
+        let revision = (stored.as_ref().map_or(0, |s| s.credential.revision) + 1)
+            .max(self.credentials.next_revision(kind.keychain_account()));
+        // The old item is deleted when this save moves away from it. A
+        // cleanup already pending is kept for Retry, and a restored account's
+        // item on this Mac is only scheduled for it, never deleted by a save.
+        let uncertain = source != SecretSource::Store
             && (old_source == Some(SecretSource::Store)
-                || matches!(
-                    old_pending,
-                    Some(CredentialPending::Save | CredentialPending::Cleanup)
-                ));
+                || old_pending == Some(CredentialPending::Save));
+        let pending_cleanup = source != SecretSource::Store
+            && (uncertain || old_pending == Some(CredentialPending::Cleanup));
+        let restored = stored.as_ref().is_some_and(|s| s.credential.needs_approval);
+        let cleanup = uncertain && !restored;
         let expires_at = expiry(&check);
 
         if pasted.is_some() {
@@ -514,7 +535,7 @@ impl AccountService {
                         read_only,
                         source: &saved_source,
                         revision,
-                        pending: cleanup.then_some(CredentialPending::Cleanup),
+                        pending: pending_cleanup.then_some(CredentialPending::Cleanup),
                         now: &now,
                     },
                 )?;
@@ -547,6 +568,11 @@ impl AccountService {
                     e.message
                 )
             })
+        } else if uncertain {
+            Some(
+                "The account came from a backup, so its Keychain item on this Mac was kept. Delete it with Retry in Settings → Secrets."
+                    .to_string(),
+            )
         } else {
             None
         };

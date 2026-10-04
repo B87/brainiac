@@ -171,14 +171,18 @@ impl ConnectionService {
                 marked?;
                 self.credentials.begin(&gate);
                 let bytes = SecretBytes::from_text(secret.expose());
-                self.credentials
-                    .write_item(&gate, bytes)
-                    .await
-                    .map_err(partial_save)?;
                 let revision = old_revision + 1;
-                self.commit(&id, &fields, revision, None, existing)
-                    .await
-                    .map_err(partial_save)?;
+                let saved = match self.credentials.write_item(&gate, bytes).await {
+                    Ok(()) => self.commit(&id, &fields, revision, None, existing).await,
+                    Err(e) => Err(e),
+                };
+                if let Err(e) = saved {
+                    return Err(if existing {
+                        partial_save(e)
+                    } else {
+                        self.undo_new(&gate, &id, e).await
+                    });
+                }
                 self.credentials.commit(&gate, revision);
                 self.credentials.prime(
                     &gate,
@@ -205,15 +209,18 @@ impl ConnectionService {
             // Ask, None, or a source Brainiac only reads: the row first, then
             // the old Keychain item is deleted, never used as a fallback.
             (source, typed) => {
-                let cleanup = old_source == Some(SecretSource::Store)
-                    || matches!(
-                        old_pending,
-                        Some(CredentialPending::Save | CredentialPending::Cleanup)
-                    );
+                // The old item is deleted when this save moves away from it.
+                // A cleanup already pending is kept for Retry, and a restored
+                // connection's item on this Mac is only scheduled for it,
+                // never deleted by a save.
+                let uncertain = old_source == Some(SecretSource::Store)
+                    || old_pending == Some(CredentialPending::Save);
+                let cleanup = uncertain && !was_unapproved;
                 let interrupted = old_pending == Some(CredentialPending::Save);
                 let changed = source_changed || destination_changed || interrupted;
                 let revision = old_revision + i64::from(changed);
-                let pending = cleanup.then_some(CredentialPending::Cleanup);
+                let pending = (uncertain || old_pending == Some(CredentialPending::Cleanup))
+                    .then_some(CredentialPending::Cleanup);
                 self.commit(&id, &fields, revision, pending, existing)
                     .await?;
                 if changed || was_unapproved {
@@ -233,6 +240,24 @@ impl ConnectionService {
         let connection = self.get(&id).await?;
         tracing::info!(connection = %connection.id, kind = connection.kind.as_str(), "database connection saved");
         Ok(connection)
+    }
+
+    /// A new connection whose password could not be kept: take back its
+    /// provisional row, so a retried Save does not leave a second one. The
+    /// row stays, blocked, only when the item cannot be deleted either.
+    async fn undo_new(&self, gate: &OwnerGate, id: &str, e: AppError) -> AppError {
+        if self.credentials.delete_item(gate).await.is_err() {
+            return partial_save(e);
+        }
+        let key = id.to_string();
+        if self.db.call(move |conn| delete(conn, &key)).await.is_err() {
+            return partial_save(e);
+        }
+        self.credentials.forget(gate);
+        AppError::new(
+            e.code,
+            format!("{} The connection was not added.", e.message),
+        )
     }
 
     async fn commit(
@@ -497,9 +522,21 @@ impl ConnectionService {
         &self,
         connection: &DbConnection,
     ) -> AppResult<(Target, Option<LeaseHandle>)> {
+        let mut binding = binding(connection);
+        let mut resolved = self.credentials.resolve(&binding).await;
+        // Saved again since the caller read it: use what is saved now.
+        let fresh;
+        let connection = match resolved {
+            Err(ref e) if e.code == ErrorCode::Conflict => {
+                fresh = self.get(&connection.id).await?;
+                binding = self::binding(&fresh);
+                resolved = self.credentials.resolve(&binding).await;
+                &fresh
+            }
+            _ => connection,
+        };
         let fields = Fields::from(connection);
-        let binding = binding(connection);
-        let resolved = self.credentials.resolve(&binding).await.map_err(|e| {
+        let resolved = resolved.map_err(|e| {
             if e.code == ErrorCode::NotFound && connection.password == SecretSource::Store {
                 AppError::new(
                     ErrorCode::PermissionDenied,
@@ -576,13 +613,23 @@ impl ConnectionService {
 fn destination(c: &DbConnection) -> String {
     match c.kind {
         DbKind::Sqlite => c.file_path.clone().unwrap_or_default(),
-        DbKind::Postgres => format!(
-            "{}:{}/{} as {}",
-            c.host.as_deref().unwrap_or_default(),
-            c.port.unwrap_or(DEFAULT_PORT),
-            c.database.as_deref().unwrap_or_default(),
-            c.user.as_deref().unwrap_or_default()
-        ),
+        DbKind::Postgres => {
+            let tls = match c.tls.unwrap_or(DbTls::Verify) {
+                DbTls::Verify => match &c.ca_file {
+                    Some(ca) => format!("TLS verified with {ca}"),
+                    None => "TLS verified".to_string(),
+                },
+                DbTls::Require => "TLS without verifying".to_string(),
+                DbTls::Off => "no TLS".to_string(),
+            };
+            format!(
+                "{}:{}/{} as {}, {tls}",
+                c.host.as_deref().unwrap_or_default(),
+                c.port.unwrap_or(DEFAULT_PORT),
+                c.database.as_deref().unwrap_or_default(),
+                c.user.as_deref().unwrap_or_default()
+            )
+        }
     }
 }
 

@@ -8,6 +8,7 @@ import {
 } from "../lib/accounts";
 import { errorMessage, type ForgeAccountSlot, ipc } from "../lib/ipc";
 import {
+  commandPreview,
   draftOf,
   pendingLabel,
   type SourceDraft,
@@ -334,6 +335,20 @@ function AccountRow({
             <span className="mono">{sourceLabel(account.token_source)}</span>{" "}
             and sends the token only to {p.name}.
           </p>
+          {account.token_source.kind === "command" && (
+            <>
+              <code className="mono selectable break-all rounded-md border bg-header px-2 py-1 text-[11.5px]">
+                {commandPreview(
+                  account.token_source.program,
+                  account.token_source.args,
+                )}
+              </code>
+              <p className="m-0 text-[12px] text-muted">
+                The program runs with your permissions, without a shell. Allow
+                it only if you recognize it and its arguments.
+              </p>
+            </>
+          )}
           <button
             type="button"
             className="btn btn-sm self-start"
