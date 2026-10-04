@@ -42,6 +42,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0006_databases",
         include_str!("../migrations/0006_databases.sql"),
     ),
+    (
+        "0007_secret_sources",
+        include_str!("../migrations/0007_secret_sources.sql"),
+    ),
 ];
 
 /// How many daily backups to keep.
@@ -354,7 +358,9 @@ fn check_compatible(conn: &Connection, path: &Path, store: &Store) -> AppResult<
     Ok(())
 }
 
-fn migrate(conn: &mut Connection, store: &Store) -> AppResult<()> {
+/// Apply the migrations `conn` does not have yet. Also used by restore, which
+/// brings an older export's database up to date before preparing it.
+pub fn migrate(conn: &mut Connection, store: &Store) -> AppResult<()> {
     let current = schema_version(conn)? as usize;
     for (index, (name, sql)) in store.migrations.iter().enumerate().skip(current) {
         let tx = conn.transaction()?;

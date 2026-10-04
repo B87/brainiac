@@ -14,6 +14,8 @@ const account: ForgeAccount = {
   read_only: false,
   missing: [],
   checked_at: "2026-10-03T09:00:00.000Z",
+  token_source: { kind: "store" },
+  credential: { needs_approval: false, pending: null, revision: 1 },
 };
 
 describe("accounts", () => {

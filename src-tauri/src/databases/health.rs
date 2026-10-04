@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 use super::connections::ConnectionService;
 use super::driver::Target;
 use super::postgres::{PgSession, PgTarget};
+use crate::credentials::LeaseHandle;
 use crate::models::{
     now_rfc3339, AppError, AppResult, DbAccess, DbKind, DockerContainer, DockerContainers,
     ErrorCode, HealthEvent, HealthPoint, HealthSample, HealthSession, HealthSnapshot,
@@ -262,16 +263,21 @@ impl HealthService {
         (self.emitter)(HealthEvent { sample, point });
     }
 
-    async fn health_target(&self, connection_id: &str) -> AppResult<(PgTarget, Option<RunsOn>)> {
+    async fn health_target(
+        &self,
+        connection_id: &str,
+    ) -> AppResult<(PgTarget, Option<RunsOn>, Option<LeaseHandle>)> {
         let connection = self.connections.get(connection_id).await?;
         let runs_on = connection.runs_on.clone();
         match self.connections.target(&connection).await? {
-            Target::Postgres(mut target) => {
+            (Target::Postgres(mut target), lease) => {
                 target.application_name = "Brainiac health".into();
                 target.statement_timeout = STATEMENT_TIMEOUT;
-                Ok((target, runs_on))
+                Ok((target, runs_on, lease))
             }
-            Target::Sqlite { .. } => Err(AppError::validation("Health is for PostgreSQL servers.")),
+            (Target::Sqlite { .. }, _) => {
+                Err(AppError::validation("Health is for PostgreSQL servers."))
+            }
         }
     }
 
@@ -279,11 +285,18 @@ impl HealthService {
         let mut state = monitor.state.lock().await;
         let mut sample = empty_sample(&monitor.connection_id);
         let runs_on = match self.health_target(&monitor.connection_id).await {
-            Ok((target, runs_on)) => {
+            Ok((target, runs_on, lease)) => {
                 if state.session.as_ref().is_none_or(PgSession::is_closed) {
                     match PgSession::connect(&target).await {
                         Ok(s) => state.session = Some(s),
-                        Err(e) => sample.problem = Some(e.message),
+                        Err(e) => {
+                            if e.code == ErrorCode::Unauthenticated {
+                                if let Some(lease) = &lease {
+                                    lease.reject();
+                                }
+                            }
+                            sample.problem = Some(e.message)
+                        }
                     }
                 }
                 runs_on
@@ -334,7 +347,7 @@ impl HealthService {
                 "Cancelling another session needs a connection whose access is read and write.",
             ));
         }
-        let (target, _) = self.health_target(connection_id).await?;
+        let (target, _, _) = self.health_target(connection_id).await?;
         let session = PgSession::connect(&target).await?;
         let function = if terminate {
             "pg_terminate_backend"

@@ -3,14 +3,17 @@
 //! cannot write is saved only as read-only. A local server stands in for
 //! GitHub and Bitbucket, and the Keychain is in memory.
 
+use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+use brainiac_lib::credentials::{CommandRunner, CredentialService, MemoryStore, SecretStore};
 use brainiac_lib::db::Db;
 use brainiac_lib::forge::http::Http;
-use brainiac_lib::forge::keychain::{Keychain, MemoryKeychain, Token};
 use brainiac_lib::forge::{AccountService, Endpoints};
 use brainiac_lib::models::{
     ErrorCode, ForgeKind, ForgeTokenKind, SaveForgeAccountOutcome, SaveForgeAccountRequest,
+    SecretSource,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -57,33 +60,82 @@ async fn serve(answers: Vec<Answer>) -> (String, Arc<Mutex<Vec<String>>>) {
 
 struct Harness {
     accounts: AccountService,
-    keychain: Arc<MemoryKeychain>,
-    _dir: tempfile::TempDir,
+    store: Arc<MemoryStore>,
+    db: Db,
+    base: String,
+    dir: tempfile::TempDir,
+}
+
+fn service(db: &Db, store: &Arc<MemoryStore>, dir: &Path, base: &str) -> AccountService {
+    let credentials = Arc::new(CredentialService::new(
+        store.clone(),
+        CommandRunner::new(dir.join("commands")),
+    ));
+    let endpoints = Endpoints {
+        github: base.to_string(),
+        bitbucket: base.to_string(),
+    };
+    AccountService::new(
+        db.clone(),
+        credentials,
+        Http::insecure_for_tests().unwrap(),
+        endpoints,
+    )
 }
 
 fn harness(base: &str) -> Harness {
     let dir = tempfile::tempdir().unwrap();
     let db = Db::open(&dir.path().join("brainiac.sqlite3")).unwrap();
-    let keychain = Arc::new(MemoryKeychain::default());
-    let endpoints = Endpoints {
-        github: base.to_string(),
-        bitbucket: base.to_string(),
-    };
+    let store = Arc::new(MemoryStore::default());
     Harness {
-        accounts: AccountService::new(
-            db,
-            keychain.clone(),
-            Http::insecure_for_tests().unwrap(),
-            endpoints,
-        ),
-        keychain,
-        _dir: dir,
+        accounts: service(&db, &store, dir.path(), base),
+        store,
+        db,
+        base: base.to_string(),
+        dir,
+    }
+}
+
+impl Harness {
+    /// Brainiac quits and starts again: the same files, nothing in memory.
+    fn restart(&mut self) {
+        self.accounts = service(&self.db, &self.store, self.dir.path(), &self.base);
+    }
+
+    /// A command that prints the token in `token.txt` and counts its runs.
+    fn token_command(&self, token: &str) -> SecretSource {
+        let script = self.dir.path().join("gh");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\necho run >> '{0}/runs'\ncat '{0}/token.txt'\n",
+                self.dir.path().display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        self.set_token(token);
+        SecretSource::Command {
+            program: script.display().to_string(),
+            args: vec!["auth".into(), "token".into()],
+        }
+    }
+
+    fn set_token(&self, token: &str) {
+        std::fs::write(self.dir.path().join("token.txt"), format!("{token}\n")).unwrap();
+    }
+
+    fn runs(&self) -> usize {
+        std::fs::read_to_string(self.dir.path().join("runs"))
+            .map(|s| s.lines().count())
+            .unwrap_or(0)
     }
 }
 
 fn request(kind: ForgeKind, token: Option<&str>, email: Option<&str>) -> SaveForgeAccountRequest {
     SaveForgeAccountRequest {
         kind,
+        source: SecretSource::Store,
         token: token.map(str::to_string),
         email: email.map(str::to_string),
         read_only: false,
@@ -113,7 +165,7 @@ async fn a_github_token_is_checked_then_kept_in_the_keychain() {
         .save(request(ForgeKind::Github, Some(" github_pat_abc \n"), None))
         .await
         .unwrap();
-    let SaveForgeAccountOutcome::Saved { account } = outcome else {
+    let SaveForgeAccountOutcome::Saved { account, .. } = outcome else {
         panic!("not saved: {outcome:?}");
     };
     assert_eq!(account.login, "octo");
@@ -125,10 +177,7 @@ async fn a_github_token_is_checked_then_kept_in_the_keychain() {
     );
     assert_eq!(account.scopes, None);
     assert!(!account.read_only);
-    assert_eq!(
-        h.keychain.get(ForgeKind::Github).unwrap(),
-        Some(Token::new("github_pat_abc").unwrap())
-    );
+    assert_eq!(h.store.text("github").as_deref(), Some("github_pat_abc"));
 
     let head = requests.lock().unwrap()[0].clone();
     assert!(head.starts_with("get /user "), "{head}");
@@ -159,13 +208,13 @@ async fn a_refused_token_is_neither_kept_nor_saved() {
         ))
         .await
         .unwrap_err();
-    assert_eq!(error.code, ErrorCode::PermissionDenied);
+    assert_eq!(error.code, ErrorCode::Unauthenticated);
     assert!(
         error.message.contains("190 characters"),
         "{}",
         error.message
     );
-    assert!(!h.keychain.contains(ForgeKind::BitbucketCloud).unwrap());
+    assert!(!h.store.contains("bitbucket").unwrap());
     assert!(h
         .accounts
         .account(ForgeKind::BitbucketCloud)
@@ -197,10 +246,10 @@ async fn a_bitbucket_token_that_cannot_write_is_saved_only_as_read_only() {
             missing: vec!["write:pullrequest:bitbucket".into()],
         }
     );
-    assert!(!h.keychain.contains(ForgeKind::BitbucketCloud).unwrap());
+    assert!(!h.store.contains("bitbucket").unwrap());
 
     req.read_only = true;
-    let SaveForgeAccountOutcome::Saved { account } = h.accounts.save(req).await.unwrap() else {
+    let SaveForgeAccountOutcome::Saved { account, .. } = h.accounts.save(req).await.unwrap() else {
         panic!("not saved");
     };
     assert!(account.read_only);
@@ -208,7 +257,7 @@ async fn a_bitbucket_token_that_cannot_write_is_saved_only_as_read_only() {
     assert_eq!(account.token_kind, ForgeTokenKind::ApiToken);
     assert_eq!(account.missing, vec!["write:pullrequest:bitbucket"]);
     assert_eq!(account.scopes.as_ref().map(Vec::len), Some(3));
-    assert!(h.keychain.contains(ForgeKind::BitbucketCloud).unwrap());
+    assert!(h.store.contains("bitbucket").unwrap());
 
     // HTTP Basic with the email: base64("jo@example.com:ATATT3x").
     let head = requests.lock().unwrap()[0].clone();
@@ -262,9 +311,7 @@ async fn a_token_already_in_the_keychain_is_found_and_used() {
     )])
     .await;
     let h = harness(&base);
-    h.keychain
-        .set(ForgeKind::BitbucketCloud, &Token::new("ATATT3x").unwrap())
-        .unwrap();
+    h.store.insert("bitbucket", "ATATT3x");
     let slots = h.accounts.list().await.unwrap();
     assert!(slots[1].keychain_token);
 
@@ -285,7 +332,7 @@ async fn a_token_already_in_the_keychain_is_found_and_used() {
         ))
         .await
         .unwrap();
-    let SaveForgeAccountOutcome::Saved { account } = outcome else {
+    let SaveForgeAccountOutcome::Saved { account, .. } = outcome else {
         panic!("not saved: {outcome:?}");
     };
     assert!(!account.read_only);
@@ -318,5 +365,128 @@ async fn an_unreachable_provider_is_a_dependency_error() {
         .unwrap_err();
     assert_eq!(error.code, ErrorCode::DependencyUnavailable);
     assert!(error.retryable);
-    assert!(!h.keychain.contains(ForgeKind::Github).unwrap());
+    assert!(!h.store.contains("github").unwrap());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_token_from_a_command_is_checked_and_never_switches_the_account() {
+    let mona = r#"{"login":"mona","id":43,"name":"Mona"}"#;
+    let (base, requests) = serve(vec![
+        (200, vec![], GITHUB_USER),
+        (200, vec![], GITHUB_USER),
+        (200, vec![], mona),
+        (401, vec![], ""),
+    ])
+    .await;
+    let h = harness(&base);
+    let source = h.token_command("gho_first");
+    let outcome = h
+        .accounts
+        .save(SaveForgeAccountRequest {
+            source: source.clone(),
+            ..request(ForgeKind::Github, None, None)
+        })
+        .await
+        .unwrap();
+    let SaveForgeAccountOutcome::Saved { account, warning } = outcome else {
+        panic!("not saved: {outcome:?}");
+    };
+    assert_eq!((account.login.as_str(), warning), ("octo", None));
+    assert_eq!(account.token_source, source);
+    assert!(
+        !h.store.contains("github").unwrap(),
+        "nothing goes to the Keychain"
+    );
+    assert!(requests.lock().unwrap()[0].contains("authorization: bearer gho_first"));
+
+    // The token checked by the save is used without another read or check.
+    let (token, _) = h.accounts.token(ForgeKind::Github).await.unwrap();
+    assert_eq!(token.expose(), "gho_first");
+    assert_eq!((h.runs(), requests.lock().unwrap().len()), (1, 1));
+
+    // Refreshed: read and checked again.
+    h.accounts.refresh(ForgeKind::Github);
+    h.accounts.token(ForgeKind::Github).await.unwrap();
+    h.accounts.token(ForgeKind::Github).await.unwrap();
+    assert_eq!((h.runs(), requests.lock().unwrap().len()), (2, 2));
+
+    // The tool switched users: refused, and the account stays octo's.
+    h.accounts.refresh(ForgeKind::Github);
+    h.set_token("gho_mona");
+    let err = h.accounts.token(ForgeKind::Github).await.unwrap_err();
+    assert_eq!(err.code, ErrorCode::PermissionDenied);
+    assert!(err.message.contains("belongs to mona"), "{}", err.message);
+    let still = h
+        .accounts
+        .account(ForgeKind::Github)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (still.login.as_str(), still.user_id.as_str()),
+        ("octo", "42")
+    );
+
+    // Revoked: the refused token is forgotten, so the next use reads again.
+    h.accounts.refresh(ForgeKind::Github);
+    h.set_token("gho_revoked");
+    let err = h.accounts.token(ForgeKind::Github).await.unwrap_err();
+    assert_eq!(err.code, ErrorCode::Unauthenticated);
+    let runs = h.runs();
+    let _ = h.accounts.token(ForgeKind::Github).await;
+    assert_eq!(h.runs(), runs + 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_move_to_a_command_deletes_the_item_and_a_restored_source_waits_for_approval() {
+    let (base, _) = serve(vec![
+        (200, vec![], GITHUB_USER),
+        (200, vec![], GITHUB_USER),
+        (200, vec![], GITHUB_USER),
+    ])
+    .await;
+    let mut h = harness(&base);
+    h.accounts
+        .save(request(ForgeKind::Github, Some("github_pat_abc"), None))
+        .await
+        .unwrap();
+    assert!(h.store.contains("github").unwrap());
+    let source = h.token_command("gho_first");
+    let outcome = h
+        .accounts
+        .save(SaveForgeAccountRequest {
+            source,
+            ..request(ForgeKind::Github, None, None)
+        })
+        .await
+        .unwrap();
+    let SaveForgeAccountOutcome::Saved { account, warning } = outcome else {
+        panic!("not saved: {outcome:?}");
+    };
+    assert_eq!(warning, None);
+    assert_eq!(account.credential.pending, None);
+    assert!(!h.store.contains("github").unwrap());
+
+    // What a restore does to every account.
+    h.db.call(|conn| Ok(conn.execute("UPDATE forge_accounts SET source_approved = 0", [])?))
+        .await
+        .unwrap();
+    h.restart();
+    let runs = h.runs();
+    let err = h.accounts.token(ForgeKind::Github).await.unwrap_err();
+    assert_eq!(err.code, ErrorCode::PermissionDenied);
+    assert_eq!(h.runs(), runs, "nothing ran before the source was allowed");
+    let entries = h.accounts.secret_entries().await.unwrap();
+    assert!(entries[0].state.needs_approval);
+    assert_eq!(
+        entries[0].destination,
+        format!("{} as octo", base.trim_start_matches("http://"))
+    );
+
+    h.accounts
+        .approve(ForgeKind::Github, entries[0].state.revision)
+        .await
+        .unwrap();
+    let (token, _) = h.accounts.token(ForgeKind::Github).await.unwrap();
+    assert_eq!(token.expose(), "gho_first");
 }

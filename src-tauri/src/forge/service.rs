@@ -206,12 +206,13 @@ impl PullRequestService {
         let Some(account) = self.accounts.account(kind).await? else {
             return Ok(None);
         };
-        let token = self.accounts.token(kind).await?;
+        let (token, credential) = self.accounts.token(kind).await?;
         Ok(Some(Session {
             token,
             email: account.email.clone(),
             user_id: account.user_id.clone(),
             account,
+            credential: Some(credential),
         }))
     }
 

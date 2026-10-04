@@ -7,6 +7,7 @@ import {
   BranchIcon,
   ChevronLeft,
   DatabaseIcon,
+  KeyIcon,
   NoteIcon,
   PersonIcon,
   SlidersIcon,
@@ -20,6 +21,7 @@ import {
   GeneralPane,
   NotesPane,
   RepositoriesPane,
+  SecretsPane,
 } from "./SettingsPanes";
 
 const ICONS: Record<SettingsSection, ReactNode> = {
@@ -28,6 +30,7 @@ const ICONS: Record<SettingsSection, ReactNode> = {
   repositories: <BranchIcon size={16} />,
   databases: <DatabaseIcon size={16} />,
   accounts: <PersonIcon size={16} />,
+  secrets: <KeyIcon size={16} />,
   agents: <TerminalIcon size={16} />,
   backup: <ArchiveIcon size={16} />,
 };
@@ -113,7 +116,7 @@ export default function SettingsPage({
     <div className="flex min-h-0 flex-1">
       <nav
         aria-label="Settings"
-        className="flex w-[232px] shrink-0 flex-col border-r bg-sidebar"
+        className="flex w-58 shrink-0 flex-col border-r bg-sidebar"
       >
         {/* Room for the window's traffic lights; dragging here moves the window. */}
         <div data-tauri-drag-region className="h-12 shrink-0" />
@@ -158,7 +161,7 @@ export default function SettingsPage({
           </h1>
         </div>
         <div className="min-h-0 flex-1 overflow-auto bg-header">
-          <div className="mx-auto flex max-w-[640px] flex-col gap-5 px-6 pt-5 pb-8">
+          <div className="mx-auto flex max-w-160 flex-col gap-5 px-6 pt-5 pb-8">
             {error && (
               <div role="alert" className="text-[12.5px] text-conflict">
                 {error}
@@ -183,6 +186,7 @@ export default function SettingsPage({
               <DatabasesPane settings={shown} save={save} />
             )}
             {section === "accounts" && <AccountsPane onChanged={onChanged} />}
+            {section === "secrets" && <SecretsPane />}
             {section === "agents" && (
               <AgentsPane settings={shown} save={save} />
             )}

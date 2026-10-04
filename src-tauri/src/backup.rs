@@ -402,7 +402,15 @@ fn stage(
     db::remove_database(&staging)?;
     std::fs::copy(export.join(DATABASE), &staging)?;
     let mut conn = Connection::open(&staging)?;
+    // An older export is brought up to date first, so what follows sees
+    // the current tables (its sources get the same defaults as an upgrade).
+    db::migrate(&mut conn, &db::CORE)?;
     let tx = conn.transaction()?;
+    // Every restored secret source waits for the user to allow it: a backup
+    // must not connect a secret on this Mac to a destination it names
+    // (SPEC.md, Secrets). Pending markers stay, for the user to act on.
+    tx.execute("UPDATE forge_accounts SET source_approved = 0", [])?;
+    tx.execute("UPDATE db_connections SET source_approved = 0", [])?;
     let vault_name = vault
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())

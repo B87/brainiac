@@ -6,6 +6,7 @@ export type SettingsSection =
   | "repositories"
   | "databases"
   | "accounts"
+  | "secrets"
   | "agents"
   | "backup";
 
@@ -15,6 +16,7 @@ export const SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "repositories", label: "Repositories" },
   { id: "databases", label: "Databases" },
   { id: "accounts", label: "Accounts" },
+  { id: "secrets", label: "Secrets" },
   { id: "agents", label: "Agent Access" },
   { id: "backup", label: "Backup" },
 ];

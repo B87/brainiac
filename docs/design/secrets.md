@@ -1,12 +1,14 @@
 # Design: where secrets come from
 
-Design notes for a secrets layer with more than one backend: the macOS Keychain as today, the platform's own store on other systems, and secrets the user already keeps elsewhere (an environment variable, a password manager, gcloud's Secret Manager, Git's credential helper, `~/.pgpass`), which Brainiac reads but never writes. This is the proposed v0.4.x follow-up on the roadmap, not the current specification. When a release takes it, the behavior moves into [`SPEC.md`](../../SPEC.md), the design into [`architecture.md`](../architecture.md), and this file keeps only the background and open questions.
+Design notes for a secrets layer with more than one backend: the macOS Keychain as today, the platform's own store on other systems, and secrets the user already keeps elsewhere (an environment variable, a password manager, gcloud's Secret Manager, Git's credential helper, `~/.pgpass`), which Brainiac reads but never writes. Phase 1 is built: its behavior is in [`SPEC.md`](../../SPEC.md), section 12, and its design in [`architecture.md`](../architecture.md), Secrets — v0.4.x, which are the reference for it from now on. Phases 2 and 3 are still proposals here; when a release takes them, they move the same way, and this file keeps only the background and open questions.
 
 They build on what Brainiac already has: account tokens (v0.3) and database passwords (v0.4) as generic passwords in the login keychain with service `brainiac` (`credentials.rs`, `forge/keychain.rs`), the `Secret` and `Token` wrappers whose `Debug` prints nothing, the `keychain`, `ask`, and `none` password choices of a database connection, gcloud's Application Default Credentials already read for Cloud SQL Health (`databases/health.rs`), and external programs always started with argument arrays, never through a shell.
 
-## Status: planned for v0.4.x (4 Oct 2026)
+## Status: phase 1 built, phases 2 and 3 planned (4 Oct 2026)
 
-Phases 1 and 2 are a v0.4.x follow-up (`roadmap.md`, v0.4.x follow-ups), before v0.5's agent runs, which need them; phase 3 waits for a Linux build (`roadmap.md`, Later). Nothing here adds a dependency or a table before that work starts. Taking it needs a new decision in `architecture.md`: today's says tokens and passwords are kept only in the Keychain, and the new one would say that a secret is kept in the platform's store or read from a source the user controls, and never in Brainiac's databases, logs, snapshots, or exports.
+Phase 1 (1a, 1b, and 1c) is on the `v0.4-databases` branch, with its decision in `architecture.md` (Decisions, 4 Oct 2026): a secret is kept in the platform's store or read from a source the user controls, and never in Brainiac's databases, logs, snapshots, or exports. Its exit gates by hand, and the GUI spikes of 1b (Open questions), have not run. Phase 2 is a v0.4.x follow-up chosen by use (`roadmap.md`, v0.4.x follow-ups); phase 3 waits for a Linux build (`roadmap.md`, Later). Neither adds a dependency or a table before its work starts.
+
+What phase 1 settled that this design left to implementation: owners keep one revision counter in the row, advanced on every account save (a save checks identity again) and on a connection's change of source, destination, or stored password; the pending marker is one column (`save`, `cleanup`, or `removal`), since a move back to the store replaces an obsolete cleanup in the same write; approval is a flag cleared by restore and set by Save or **Allow This Source** for the revision shown, because every other change to a binding goes through Save; and a refused credential has its own error code, `Unauthenticated`, so only a server's refusal of the credential rejects a lease.
 
 ## Why
 
@@ -228,7 +230,7 @@ A schema upgrade of an existing local installation preserves today's Store/Ask/N
 
 ## Agent runs
 
-[`agent-runs.md`](agent-runs.md) is a future consumer. Its planned owner names (`agent:<profile id>` and `registry:<name>`) do not add variants, storage, or dependencies in v0.4.x. When that feature starts, it defines its own validated destination context and uses the same resolution leases; starting an agent run does not by itself reset the Brainiac-process cache.
+[`agent-runs.md`](agent-runs.md) is a future consumer. Its planned owner names (`agent:<profile id>` and `registry:<id>`, using stable IDs independent of display names) do not add variants, storage, or dependencies in v0.4.x. When that feature starts, it defines its own validated destination context and uses the same resolution leases; starting an agent run does not by itself reset the Brainiac-process cache.
 
 Container delivery, remote resolution, and trace retention/redaction belong to that design, not this layer. Exact-value replacement in a trace is a mitigation, not a guarantee against an agent printing an encoded or transformed secret. Those contracts need their own review before credentials leave the Mac. This layer guarantees redacted results and scoped invalidation, not confidentiality of arbitrary agent output.
 
@@ -299,9 +301,9 @@ No new table. Pending markers are recoverable state, not a general credential jo
 
 | Unknown | How to resolve | Needed before |
 | --- | --- | --- |
-| GUI executable discovery | Verify launch `PATH`, Homebrew candidates, and the absolute-path picker on Apple silicon and Intel; keep the chosen path visible and explicit | Phase 1b |
-| Password-manager unlock and process cleanup | Spike `op read` and `bw get` from a GUI app with closed stdin, no terminal, cancellation, and a process group; verify visible unlock behavior and the 60-second deadline plus bounded cleanup | Phase 1b |
-| Save recovery in the existing rows | Prototype failure/restart at marker, item, and final commit boundaries; verify provisional rows, version checks, and cleanup retries do not require a new table or secrets on disk | Phase 1a |
+| GUI executable discovery | Built: **Find…** looks in the launch `PATH`, then `/opt/homebrew/bin` and `/usr/local/bin`, and saves the path shown. Still to verify from Finder on an Intel Mac | Phase 1b exit gate |
+| Password-manager unlock and process cleanup | Process cleanup is built and tested with scripts (hangs, floods on either stream, a child holding the output open). Still to spike: `op read` and `bw get` from the GUI app, their unlock windows, and whether 60 seconds is enough | Phase 1b exit gate |
+| Save recovery in the existing rows | Resolved: a marker column in each row; `tests/secrets.rs` fails the Keychain write and deletion and restarts the service at each boundary | — |
 | Git helper compatibility | Spike `osxkeychain` and Git Credential Manager with explicit username/path selectors, API checks, askpass disabled, and interactive sign-in disabled; test minimum Git and available expiry metadata | Phase 2 |
 | Google decoding and checksum support | Reuse current HTTP/authentication infrastructure; choose small base64/CRC32C support at phase start and verify resource/version error mapping | Phase 2 |
 | Linux store attributes and availability | Verify interoperable `service`/`account` attributes, locked/missing collections, and whether existence can be checked without reading or unlocking | Phase 3 |

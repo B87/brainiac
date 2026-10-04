@@ -21,7 +21,13 @@ export function PasswordDialog({
   const [error, setError] = useState<string | null>(null);
   const submit = async () => {
     try {
-      onUnlocked(await ipc.unlockDbConnection(connection.id, password));
+      onUnlocked(
+        await ipc.unlockDbConnection(
+          connection.id,
+          password,
+          connection.version,
+        ),
+      );
     } catch (e) {
       setError(errorMessage(e));
     }
@@ -186,7 +192,7 @@ export function SaveQueryDialog({
         <label className="flex flex-col gap-1">
           <span className="text-[12px] font-medium text-fg-2">Description</span>
           <textarea
-            className="text-input min-h-[60px] py-1.5"
+            className="text-input min-h-15 py-1.5"
             value={description}
             onChange={(e) => setDescription(e.target.value)}
           />

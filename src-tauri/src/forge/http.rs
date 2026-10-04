@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
 
-use super::keychain::Token;
+use crate::credentials::Token;
 use crate::models::{AppError, AppResult, ErrorCode};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);

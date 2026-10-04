@@ -370,6 +370,14 @@ export const LockIcon = (p: IconProps) => (
   </Svg>
 );
 
+/** A key: Settings → Secrets. */
+export const KeyIcon = (p: IconProps) => (
+  <Svg strokeWidth={1.5} {...p}>
+    <circle cx="5.5" cy="10.5" r="2.5" />
+    <path d="M7.3 8.7L13 3m-2 2l1.5 1.5M9.5 6.5L11 8" strokeLinecap="round" />
+  </Svg>
+);
+
 /** A pulse line: Health. */
 export const PulseIcon = (p: IconProps) => (
   <Svg {...p}>

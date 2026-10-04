@@ -202,7 +202,7 @@ export default function DbQueryTab(props: Props) {
     }
     if (running || !view.current) return;
     if (
-      connection.password === "ask" &&
+      connection.password.kind === "ask" &&
       !connection.password_ready &&
       !options.unlocked
     ) {
@@ -296,8 +296,9 @@ export default function DbQueryTab(props: Props) {
     } catch (e) {
       if (
         isAppError(e) &&
-        e.code === "PERMISSION_DENIED" &&
-        connection.password === "ask"
+        (e.code === "PERMISSION_DENIED" || e.code === "UNAUTHENTICATED") &&
+        connection.password.kind === "ask" &&
+        !connection.credential.needs_approval
       ) {
         props.onConnectionChanged({ ...connection, password_ready: false });
         setAskPassword({ ...options, unlocked: false });
@@ -433,11 +434,11 @@ export default function DbQueryTab(props: Props) {
             title={connection ? ENV_SHORT[connection.environment] : undefined}
           />
           {/* One line: as it narrows, the hints go, then the name truncates. */}
-          <div className="@container flex min-w-0 flex-1 items-center gap-2 px-3 py-[7px]">
+          <div className="@container flex min-w-0 flex-1 items-center gap-2 px-3 py-1.75">
             <div className="relative min-w-0">
               <button
                 type="button"
-                className="btn max-w-full gap-[7px] text-fg"
+                className="btn max-w-full gap-1.75 text-fg"
                 disabled={running}
                 aria-haspopup="listbox"
                 aria-expanded={switcher}
@@ -516,7 +517,7 @@ export default function DbQueryTab(props: Props) {
                 ))}
               </div>
             )}
-            <div className="h-[18px] w-px bg-line" />
+            <div className="h-4.5 w-px bg-line" />
             <button
               type="button"
               className="btn btn-primary"
@@ -682,7 +683,7 @@ export default function DbQueryTab(props: Props) {
                 <label key={name} className="flex items-center gap-1.5">
                   <span className="mono text-[12px] text-fg-2">:{name}</span>
                   <input
-                    className="text-input mono h-[26px] w-[180px]"
+                    className="text-input mono h-6.5 w-45"
                     data-param={name}
                     disabled={isNull}
                     value={isNull ? "NULL" : (p?.value ?? "")}
@@ -713,7 +714,7 @@ export default function DbQueryTab(props: Props) {
         )}
         <div
           ref={host}
-          className="h-[38%] min-h-[120px] shrink-0 overflow-hidden border-b"
+          className="h-[38%] min-h-30 shrink-0 overflow-hidden border-b"
         />
         <DbResults
           runs={runs}
@@ -783,7 +784,7 @@ function Switcher({
       connectionPlace(c).toLowerCase().includes(lower),
   );
   return (
-    <Popover onClose={onClose} className="w-[380px] max-h-[420px]">
+    <Popover onClose={onClose} className="w-95 max-h-105">
       <div className="mb-1 flex items-center gap-1.5 rounded-md border border-control-line px-2 py-1 text-muted">
         <SearchIcon size={12} />
         <input
@@ -805,7 +806,7 @@ function Switcher({
           role="menuitemradio"
           aria-checked={c.id === current?.id}
           aria-current={c.id === current?.id}
-          className="menu-item h-[34px]"
+          className="menu-item h-8.5"
           onClick={() => onPick(c)}
         >
           <span className="env-dot" data-env={c.environment} />

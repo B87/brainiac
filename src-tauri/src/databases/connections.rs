@@ -1,88 +1,85 @@
 //! Saved connections (SPEC.md, Databases: Connections): rows in the core
-//! database, passwords in the Keychain or asked for once per run, and Test
-//! Connection.
+//! database, each with where its password comes from (SPEC.md, Secrets), and
+//! Test Connection.
+//!
+//! A password is never stored here. The Keychain item `brainiac/db:<id>` is
+//! written only on a save, after a non-secret marker in the row says a write
+//! is under way, so a save cut off between the two leaves a row that is
+//! blocked rather than one that looks usable with an unknown password.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use rusqlite::{params, Connection, OptionalExtension, Row};
 
 use super::driver::{Session, Target};
 use super::postgres::PgTarget;
-use crate::credentials::{Secret, Secrets};
+use crate::credentials::{
+    describe, Binding, CredentialService, LeaseHandle, OwnerGate, Probe, Resolution, Secret,
+    SecretBytes,
+};
 use crate::db::Db;
 use crate::models::{
-    now_rfc3339, AppError, AppResult, DbAccess, DbConnection, DbEnvironment, DbKind, DbPassword,
-    DbTestResult, DbTls, DbUrlFields, ErrorCode, RunsOn, SaveDbConnectionRequest,
+    now_rfc3339, AppError, AppResult, CredentialOwner, CredentialPending, CredentialState,
+    CredentialTest, DbAccess, DbConnection, DbEnvironment, DbKind, DbTestResult, DbTls,
+    DbUrlFields, ErrorCode, RunsOn, SaveDbConnectionRequest, SecretEntry, SecretSource,
 };
 
 const DEFAULT_PORT: u16 = 5432;
 const MAX_TIMEOUT_SECONDS: u32 = 3600;
 
-/// The Keychain account of a connection's password.
+/// The owner key of a connection's credential, which is also its Keychain account.
 pub fn keychain_account(id: &str) -> String {
     format!("db:{id}")
 }
 
+fn binding(connection: &DbConnection) -> Binding {
+    Binding {
+        owner: keychain_account(&connection.id),
+        source: connection.password.clone(),
+        revision: connection.credential.revision,
+        approved: !connection.credential.needs_approval,
+        pending: connection.credential.pending,
+        expires_at: None,
+    }
+}
+
+fn conflict() -> AppError {
+    AppError::new(
+        ErrorCode::Conflict,
+        "This connection was changed since the form opened. Close the form and open it again.",
+    )
+}
+
+/// A save cut off after its marker: the row stays blocked until saved again.
+fn partial_save(e: AppError) -> AppError {
+    AppError::new(
+        e.code,
+        format!(
+            "{} The connection cannot be used until it is saved again.",
+            e.message
+        ),
+    )
+}
+
 pub struct ConnectionService {
     db: Db,
-    // `Arc<dyn Secrets>`: the real Keychain in the app, memory in tests,
-    // shared with the blocking threads that call it.
-    secrets: Arc<dyn Secrets>,
-    /// Passwords read from the Keychain or entered for `Ask`, by connection,
-    /// for this run only: each Keychain read may ask the user to allow it.
-    passwords: Mutex<HashMap<String, Secret>>,
+    // `Arc` because accounts and connections share one credentials layer.
+    credentials: Arc<CredentialService>,
 }
 
 impl ConnectionService {
-    pub fn new(db: Db, secrets: Arc<dyn Secrets>) -> Self {
-        ConnectionService {
-            db,
-            secrets,
-            passwords: Mutex::new(HashMap::new()),
-        }
-    }
-
-    /// Run a Keychain call on a blocking thread: it may wait for the user to
-    /// answer macOS's prompt.
-    async fn secrets<T, F>(&self, f: F) -> AppResult<T>
-    where
-        T: Send + 'static,
-        F: FnOnce(&dyn Secrets) -> AppResult<T> + Send + 'static,
-    {
-        let secrets = Arc::clone(&self.secrets);
-        tokio::task::spawn_blocking(move || f(secrets.as_ref()))
-            .await
-            .map_err(|e| {
-                AppError::io("The Keychain call did not finish.").with_details(e.to_string())
-            })?
-    }
-
-    fn remembered(&self, id: &str) -> Option<Secret> {
-        self.passwords
-            .lock()
-            .expect("passwords lock")
-            .get(id)
-            .cloned()
-    }
-
-    fn remember(&self, id: &str, secret: Secret) {
-        self.passwords
-            .lock()
-            .expect("passwords lock")
-            .insert(id.to_string(), secret);
-    }
-
-    /// Forget a password kept for this run, so it is read or asked for again.
-    pub fn forget(&self, id: &str) {
-        self.passwords.lock().expect("passwords lock").remove(id);
+    pub fn new(db: Db, credentials: Arc<CredentialService>) -> Self {
+        ConnectionService { db, credentials }
     }
 
     fn complete(&self, mut connection: DbConnection) -> DbConnection {
         connection.password_ready = match connection.password {
-            DbPassword::Ask => self.remembered(&connection.id).is_some(),
+            SecretSource::Ask => self.credentials.typed_ready(
+                &keychain_account(&connection.id),
+                connection.credential.revision,
+            ),
             _ => true,
         };
         connection.file_size = connection
@@ -93,94 +90,190 @@ impl ConnectionService {
         connection
     }
 
+    /// Every connection, except those being removed.
     pub async fn list(&self) -> AppResult<Vec<DbConnection>> {
         let rows = self.db.call(|conn| list(conn)).await?;
-        Ok(rows.into_iter().map(|c| self.complete(c)).collect())
+        Ok(rows
+            .into_iter()
+            .filter(|c| c.credential.pending != Some(CredentialPending::Removal))
+            .map(|c| self.complete(c))
+            .collect())
     }
 
     pub async fn get(&self, id: &str) -> AppResult<DbConnection> {
-        let key = id.to_string();
-        let row = self.db.call(move |conn| get(conn, &key)).await?;
-        row.map(|c| self.complete(c))
+        self.row(id)
+            .await?
             .ok_or_else(|| AppError::not_found("That connection no longer exists."))
     }
 
-    /// Create or update a connection. A typed password goes to the Keychain
-    /// (or, for `Ask`, is kept for this run); it is never stored here.
+    async fn row(&self, id: &str) -> AppResult<Option<DbConnection>> {
+        let key = id.to_string();
+        let row = self.db.call(move |conn| get(conn, &key)).await?;
+        Ok(row.map(|c| self.complete(c)))
+    }
+
+    /// Create or update a connection (docs/architecture.md, Credentials:
+    /// saving). A typed password goes to the Keychain, or for Ask is kept
+    /// for this run; it is never stored here.
     pub async fn save(&self, request: SaveDbConnectionRequest) -> AppResult<DbConnection> {
+        let fields = validate(&request)?;
+        let typed = match fields.password {
+            SecretSource::Store | SecretSource::Ask => {
+                request.password.as_deref().map(Secret::new).transpose()?
+            }
+            _ => None,
+        };
+        let id = request
+            .id
+            .clone()
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let gate = self.credentials.gate(&keychain_account(&id)).await;
         let stored = match &request.id {
             Some(id) => Some(self.get(id).await?),
             None => None,
         };
-        let fields = validate(&request)?;
-        let password = request.password.as_deref().map(Secret::new).transpose()?;
-        if fields.password == DbPassword::Keychain && password.is_none() {
-            let kept = stored
-                .as_ref()
-                .is_some_and(|s| s.password == DbPassword::Keychain);
-            if !kept {
+        if let Some(s) = &stored {
+            if request.expected_version.is_some_and(|v| v != s.version) {
+                return Err(conflict());
+            }
+            if s.credential.pending == Some(CredentialPending::Removal) {
                 return Err(AppError::validation(
-                    "Enter the password to keep in the Keychain.",
+                    "This connection is being removed. Retry the removal in Settings → Secrets.",
                 ));
             }
         }
-        let id = stored
+        let old_source = stored.as_ref().map(|s| s.password.clone());
+        let old_revision = stored.as_ref().map_or(0, |s| s.credential.revision);
+        let old_pending = stored.as_ref().and_then(|s| s.credential.pending);
+        let was_unapproved = stored.as_ref().is_some_and(|s| s.credential.needs_approval);
+        let destination_changed = stored
             .as_ref()
-            .map(|s| s.id.clone())
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        let account = keychain_account(&id);
-        match fields.password {
-            DbPassword::Keychain => {
-                if let Some(secret) = password.clone() {
-                    let account = account.clone();
-                    self.secrets(move |s| s.set(&account, &secret)).await?;
-                }
-            }
-            DbPassword::Ask | DbPassword::None => {
-                if stored
-                    .as_ref()
-                    .is_some_and(|s| s.password == DbPassword::Keychain)
-                {
-                    let account = account.clone();
-                    self.secrets(move |s| s.delete(&account)).await?;
-                }
-            }
-        }
-        match (&password, fields.password) {
-            (Some(secret), DbPassword::Keychain | DbPassword::Ask) => {
-                self.remember(&id, secret.clone())
-            }
-            (None, DbPassword::Keychain) => {}
-            _ => self.forget(&id),
-        }
-        let now = now_rfc3339();
-        let row_id = id.clone();
+            .is_none_or(|s| !same_destination(&Fields::from(s), &fields));
+        let source_changed = old_source.as_ref() != Some(&fields.password);
+        let existing = stored.is_some();
         let expected = request.expected_version;
-        let saved = self
-            .db
-            .call(move |conn| {
-                upsert(conn, &row_id, &fields, expected, &now)?;
-                get(conn, &row_id)
-            })
-            .await;
-        match saved {
-            Ok(Some(connection)) => {
-                tracing::info!(connection = %connection.id, kind = connection.kind.as_str(), "database connection saved");
-                Ok(self.complete(connection))
+
+        match (&fields.password, typed) {
+            // A new password for the Keychain: marker, item, then the row.
+            (SecretSource::Store, Some(secret)) => {
+                let marked = {
+                    let (row_id, f, now) = (id.clone(), fields.clone(), now_rfc3339());
+                    self.db
+                        .call(move |conn| {
+                            if existing {
+                                mark_pending(conn, &row_id, CredentialPending::Save, expected)
+                            } else {
+                                insert_provisional(conn, &row_id, &f, &now)
+                            }
+                        })
+                        .await
+                };
+                marked?;
+                self.credentials.begin(&gate);
+                let bytes = SecretBytes::from_text(secret.expose());
+                self.credentials
+                    .write_item(&gate, bytes)
+                    .await
+                    .map_err(partial_save)?;
+                let revision = old_revision + 1;
+                self.commit(&id, &fields, revision, None, existing)
+                    .await
+                    .map_err(partial_save)?;
+                self.credentials.commit(&gate, revision);
+                self.credentials.prime(
+                    &gate,
+                    revision,
+                    SecretBytes::from_text(secret.expose()),
+                    None,
+                );
             }
-            Ok(None) => Err(AppError::db("The connection was not saved.")),
-            Err(e) => {
-                if stored.is_none() && password.is_some() {
-                    // Do not leave a password behind for a connection that does not exist.
-                    let _ = self.secrets(move |s| s.delete(&account)).await;
+            // Keep the item already in the Keychain.
+            (SecretSource::Store, None) => {
+                if old_source != Some(SecretSource::Store)
+                    || old_pending == Some(CredentialPending::Save)
+                {
+                    return Err(AppError::validation(
+                        "Enter the password to keep in the Keychain.",
+                    ));
                 }
-                Err(e)
+                let revision = old_revision + i64::from(destination_changed);
+                self.commit(&id, &fields, revision, None, existing).await?;
+                if destination_changed || was_unapproved {
+                    self.credentials.commit(&gate, revision);
+                }
+            }
+            // Ask, None, or a source Brainiac only reads: the row first, then
+            // the old Keychain item is deleted, never used as a fallback.
+            (source, typed) => {
+                let cleanup = old_source == Some(SecretSource::Store)
+                    || matches!(
+                        old_pending,
+                        Some(CredentialPending::Save | CredentialPending::Cleanup)
+                    );
+                let interrupted = old_pending == Some(CredentialPending::Save);
+                let changed = source_changed || destination_changed || interrupted;
+                let revision = old_revision + i64::from(changed);
+                let pending = cleanup.then_some(CredentialPending::Cleanup);
+                self.commit(&id, &fields, revision, pending, existing)
+                    .await?;
+                if changed || was_unapproved {
+                    self.credentials.commit(&gate, revision);
+                }
+                if let (SecretSource::Ask, Some(secret)) = (source, typed) {
+                    let saved = self.get(&id).await?;
+                    self.credentials
+                        .supply(&binding(&saved), SecretBytes::from_text(secret.expose()))?;
+                }
+                if cleanup {
+                    self.cleanup(&gate, &id).await;
+                }
+            }
+        }
+        drop(gate);
+        let connection = self.get(&id).await?;
+        tracing::info!(connection = %connection.id, kind = connection.kind.as_str(), "database connection saved");
+        Ok(connection)
+    }
+
+    async fn commit(
+        &self,
+        id: &str,
+        fields: &Fields,
+        revision: i64,
+        pending: Option<CredentialPending>,
+        existing: bool,
+    ) -> AppResult<()> {
+        let (row_id, f, now) = (id.to_string(), fields.clone(), now_rfc3339());
+        self.db
+            .call(move |conn| upsert(conn, &row_id, &f, revision, pending, existing, &now))
+            .await
+    }
+
+    /// Delete the old Keychain item after a move to another source. A
+    /// failure leaves the cleanup pending, shown in Settings → Secrets.
+    async fn cleanup(&self, gate: &OwnerGate, id: &str) {
+        match self.credentials.delete_item(gate).await {
+            Ok(()) => {
+                let key = id.to_string();
+                let cleared = self
+                    .db
+                    .call(move |conn| clear_pending(conn, &key, CredentialPending::Cleanup))
+                    .await;
+                if let Err(e) = cleared {
+                    tracing::warn!(error = %e, "could not record a finished cleanup");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, connection = %id, "the old Keychain item could not be deleted")
             }
         }
     }
 
-    /// Delete a connection and its Keychain item.
+    /// Delete a connection: marked as being removed first, then its Keychain
+    /// item (whatever its source is now), then the row. A failed deletion
+    /// leaves the removal pending, for Settings → Secrets to retry.
     pub async fn delete(&self, id: &str, expected_version: i64) -> AppResult<()> {
+        let gate = self.credentials.gate(&keychain_account(id)).await;
         let stored = self.get(id).await?;
         if stored.version != expected_version {
             return Err(AppError::new(
@@ -189,14 +282,88 @@ impl ConnectionService {
             ));
         }
         let key = id.to_string();
-        self.db.call(move |conn| delete(conn, &key)).await?;
-        self.forget(id);
-        if stored.password == DbPassword::Keychain {
-            let account = keychain_account(id);
-            self.secrets(move |s| s.delete(&account)).await?;
-        }
+        self.db
+            .call(move |conn| {
+                mark_pending(
+                    conn,
+                    &key,
+                    CredentialPending::Removal,
+                    Some(expected_version),
+                )
+            })
+            .await?;
+        self.credentials.begin(&gate);
+        self.finish_removal(&gate, id).await?;
         tracing::info!(connection = %id, "database connection deleted");
         Ok(())
+    }
+
+    async fn finish_removal(&self, gate: &OwnerGate, id: &str) -> AppResult<()> {
+        self.credentials.delete_item(gate).await.map_err(|e| {
+            AppError::new(
+                e.code,
+                format!(
+                    "The connection is no longer used, but its Keychain item could not be deleted: {} Retry in Settings → Secrets.",
+                    e.message
+                ),
+            )
+        })?;
+        let key = id.to_string();
+        self.db.call(move |conn| delete(conn, &key)).await?;
+        self.credentials.forget(gate);
+        Ok(())
+    }
+
+    /// Whether the connection is gone or being removed: its sessions close.
+    pub async fn is_removed(&self, id: &str) -> bool {
+        match self.row(id).await {
+            Ok(Some(c)) => c.credential.pending == Some(CredentialPending::Removal),
+            Ok(None) => true,
+            Err(_) => false,
+        }
+    }
+
+    /// Settings → Secrets, **Retry**: finish a pending cleanup or removal.
+    pub async fn retry_cleanup(&self, id: &str) -> AppResult<()> {
+        let gate = self.credentials.gate(&keychain_account(id)).await;
+        let Some(stored) = self.row(id).await? else {
+            return Ok(());
+        };
+        match stored.credential.pending {
+            Some(CredentialPending::Cleanup) => {
+                // A move back to the Keychain cleared the marker in its own save.
+                if stored.password != SecretSource::Store {
+                    self.credentials.delete_item(&gate).await?;
+                }
+                let key = id.to_string();
+                self.db
+                    .call(move |conn| clear_pending(conn, &key, CredentialPending::Cleanup))
+                    .await
+            }
+            Some(CredentialPending::Removal) => self.finish_removal(&gate, id).await,
+            Some(CredentialPending::Save) => Err(AppError::validation(
+                "Edit the connection and save it again: enter the password, or choose another source.",
+            )),
+            None => Ok(()),
+        }
+    }
+
+    /// Settings → Secrets, **Allow This Source**: confirm a restored source,
+    /// for the revision the user was shown.
+    pub async fn approve(&self, id: &str, revision: i64) -> AppResult<DbConnection> {
+        let gate = self.credentials.gate(&keychain_account(id)).await;
+        let key = id.to_string();
+        self.db
+            .call(move |conn| approve(conn, &key, revision))
+            .await?;
+        self.credentials.commit(&gate, revision);
+        drop(gate);
+        self.get(id).await
+    }
+
+    /// Refresh credential: the next use reads the source, or asks, again.
+    pub fn refresh(&self, id: &str) {
+        self.credentials.invalidate(&keychain_account(id));
     }
 
     /// Link a connection to a repository, or unlink it: the repository's
@@ -214,65 +381,222 @@ impl ConnectionService {
         self.get(id).await
     }
 
-    /// Keep the password of an `Ask` connection for this run.
-    pub async fn unlock(&self, id: &str, password: &str) -> AppResult<DbConnection> {
+    /// Keep the password of an `Ask` connection for this run, for the
+    /// version of the connection it was asked for.
+    pub async fn unlock(
+        &self,
+        id: &str,
+        password: &str,
+        expected_version: i64,
+    ) -> AppResult<DbConnection> {
         let connection = self.get(id).await?;
-        self.remember(id, Secret::new(password)?);
+        if connection.version != expected_version {
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "This connection was changed since its password was asked for. Try again.",
+            ));
+        }
+        let secret = Secret::new(password)?;
+        self.credentials.supply(
+            &binding(&connection),
+            SecretBytes::from_text(secret.expose()),
+        )?;
         Ok(self.complete(connection))
     }
 
-    /// Test Connection: connect once with the form's fields and report the
-    /// server's version.
+    /// Test Connection: connect once with the form's fields, reading the
+    /// form's password source afresh, without using or changing what is
+    /// kept for this run.
     pub async fn test(&self, request: SaveDbConnectionRequest) -> AppResult<DbTestResult> {
         let fields = validate(&request)?;
-        let password = match (request.password.as_deref(), fields.password) {
-            (_, DbPassword::None) => None,
-            (Some(typed), _) => Some(Secret::new(typed)?),
-            (None, _) => match &request.id {
-                Some(id) => self.password(id, fields.password).await.ok(),
-                None => None,
-            },
+        let stored = match &request.id {
+            Some(id) => self.row(id).await?,
+            None => None,
         };
-        let target = target(&fields, password);
-        let session = Session::open(&target).await?;
-        Ok(DbTestResult {
-            server_version: session.server_version().to_string(),
-        })
+        let owner = keychain_account(request.id.as_deref().unwrap_or("draft"));
+        let typed = match fields.password {
+            SecretSource::Store | SecretSource::Ask => {
+                request.password.as_deref().map(Secret::new).transpose()?
+            }
+            _ => None,
+        };
+        // Testing exactly what is saved is a test of the saved binding.
+        let saved = stored.as_ref().filter(|s| {
+            typed.is_none()
+                && s.password == fields.password
+                && same_destination(&Fields::from(*s), &fields)
+        });
+        if let Some(s) = saved {
+            if s.credential.needs_approval {
+                return Err(AppError::new(
+                    ErrorCode::PermissionDenied,
+                    "This connection's password source came from a restored backup. Allow it in Settings → Secrets before testing it.",
+                ));
+            }
+        }
+        let result = async {
+            let password = match (&fields.password, typed) {
+                (SecretSource::None, _) => None,
+                (_, Some(typed)) => Some(typed),
+                (SecretSource::Ask, None) => {
+                    return Err(AppError::validation(
+                        "Enter the password to test the connection.",
+                    ))
+                }
+                (SecretSource::Store, None) => {
+                    let readable = stored.as_ref().is_some_and(|s| {
+                        s.password == SecretSource::Store
+                            && s.credential.pending != Some(CredentialPending::Save)
+                            && !s.credential.needs_approval
+                    });
+                    if !readable {
+                        return Err(AppError::validation(
+                            "Enter the password to keep in the Keychain.",
+                        ));
+                    }
+                    self.probe(&owner, &fields.password).await?
+                }
+                (source, None) => self.probe(&owner, source).await?,
+            };
+            let session = Session::open(&target(&fields, password)).await?;
+            Ok(DbTestResult {
+                server_version: session.server_version().to_string(),
+            })
+        }
+        .await;
+        if let Some(s) = saved {
+            self.credentials.record_test(
+                &owner,
+                s.credential.revision,
+                CredentialTest {
+                    at: now_rfc3339(),
+                    ok: result.is_ok(),
+                    message: match &result {
+                        Ok(r) => format!("Connected: {}.", r.server_version),
+                        Err(e) => e.message.clone(),
+                    },
+                },
+            );
+        }
+        result
     }
 
-    /// The password to connect with: kept for this run, else from the Keychain.
-    async fn password(&self, id: &str, storage: DbPassword) -> AppResult<Secret> {
-        if let Some(secret) = self.remembered(id) {
-            return Ok(secret);
-        }
-        match storage {
-            DbPassword::Keychain => {
-                let account = keychain_account(id);
-                let secret = self.secrets(move |s| s.get(&account)).await?.ok_or_else(|| {
-                    AppError::new(
-                        ErrorCode::PermissionDenied,
-                        "The connection's password is no longer in the Keychain. Edit the connection and enter it again.",
-                    )
-                })?;
-                self.remember(id, secret.clone());
-                Ok(secret)
-            }
-            _ => Err(AppError::new(
-                ErrorCode::PermissionDenied,
-                "Enter the connection's password to connect.",
+    async fn probe(&self, owner: &str, source: &SecretSource) -> AppResult<Option<Secret>> {
+        match self.credentials.probe(owner, source).await? {
+            Probe::Secret(bytes) => Ok(Some(Secret::from_bytes(&bytes, &describe(source, owner))?)),
+            Probe::NoCredential => Ok(None),
+            Probe::InputRequired => Err(AppError::validation(
+                "Enter the password to test the connection.",
             )),
         }
     }
 
-    /// What a session for this connection connects to.
-    pub async fn target(&self, connection: &DbConnection) -> AppResult<Target> {
+    /// What a session for this connection connects to, and the lease of the
+    /// password it uses: a server's refusal rejects exactly that lease.
+    pub async fn target(
+        &self,
+        connection: &DbConnection,
+    ) -> AppResult<(Target, Option<LeaseHandle>)> {
         let fields = Fields::from(connection);
-        let password = match connection.password {
-            DbPassword::None => None,
-            storage => Some(self.password(&connection.id, storage).await?),
+        let binding = binding(connection);
+        let resolved = self.credentials.resolve(&binding).await.map_err(|e| {
+            if e.code == ErrorCode::NotFound && connection.password == SecretSource::Store {
+                AppError::new(
+                    ErrorCode::PermissionDenied,
+                    "The connection's password is no longer in the Keychain. Edit the connection and enter it again.",
+                )
+            } else {
+                e
+            }
+        })?;
+        let (password, lease) = match resolved {
+            Resolution::NoCredential => (None, None),
+            Resolution::InputRequired => {
+                return Err(AppError::new(
+                    ErrorCode::PermissionDenied,
+                    "Enter the connection's password to connect.",
+                ))
+            }
+            Resolution::Secret(lease) => {
+                let handle = LeaseHandle::new(Arc::clone(&self.credentials), lease);
+                let source = describe(&connection.password, &binding.owner);
+                match Secret::from_bytes(handle.lease().bytes(), &source) {
+                    Ok(secret) => (Some(secret), Some(handle)),
+                    Err(e) => {
+                        handle.reject();
+                        return Err(e);
+                    }
+                }
+            }
         };
-        Ok(target(&fields, password))
+        Ok((target(&fields, password), lease))
     }
+
+    /// Open a session for this connection. A password the server refuses
+    /// is forgotten, so it is read or asked for again next time.
+    pub async fn open(&self, connection: &DbConnection) -> AppResult<Session> {
+        let (target, lease) = self.target(connection).await?;
+        match Session::open(&target).await {
+            Ok(session) => Ok(session),
+            Err(e) => {
+                if e.code == ErrorCode::Unauthenticated {
+                    if let Some(lease) = &lease {
+                        lease.reject();
+                    }
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Settings → Secrets: every connection with a password. Reads no secret.
+    pub async fn secret_entries(&self) -> AppResult<Vec<SecretEntry>> {
+        let rows = self.db.call(|conn| list(conn)).await?;
+        Ok(rows
+            .into_iter()
+            .map(|c| self.complete(c))
+            .filter(|c| c.password != SecretSource::None || c.credential.pending.is_some())
+            .map(|c| {
+                let owner = keychain_account(&c.id);
+                SecretEntry {
+                    owner: CredentialOwner::DbConnection { id: c.id.clone() },
+                    label: c.name.clone(),
+                    destination: destination(&c),
+                    input_required: c.password == SecretSource::Ask && !c.password_ready,
+                    last_test: self.credentials.last_test(&owner, c.credential.revision),
+                    source: c.password,
+                    state: c.credential,
+                }
+            })
+            .collect())
+    }
+}
+
+/// Where a connection's password is sent, in words.
+fn destination(c: &DbConnection) -> String {
+    match c.kind {
+        DbKind::Sqlite => c.file_path.clone().unwrap_or_default(),
+        DbKind::Postgres => format!(
+            "{}:{}/{} as {}",
+            c.host.as_deref().unwrap_or_default(),
+            c.port.unwrap_or(DEFAULT_PORT),
+            c.database.as_deref().unwrap_or_default(),
+            c.user.as_deref().unwrap_or_default()
+        ),
+    }
+}
+
+/// Whether two sets of fields send the password to the same place, with
+/// the same TLS policy. A name, an environment, or a time limit does not count.
+fn same_destination(a: &Fields, b: &Fields) -> bool {
+    a.kind == b.kind
+        && a.file_path == b.file_path
+        && a.host == b.host
+        && a.port == b.port
+        && a.database == b.database
+        && a.user == b.user
+        && a.tls == b.tls
+        && a.ca_file == b.ca_file
 }
 
 /// A connection's fields, checked and normalized for its kind.
@@ -289,7 +613,7 @@ struct Fields {
     user: Option<String>,
     tls: Option<DbTls>,
     ca_file: Option<String>,
-    password: DbPassword,
+    password: SecretSource,
     timeout: u32,
     runs_on: Option<RunsOn>,
 }
@@ -308,7 +632,7 @@ impl From<&DbConnection> for Fields {
             user: c.user.clone(),
             tls: c.tls,
             ca_file: c.ca_file.clone(),
-            password: c.password,
+            password: c.password.clone(),
             timeout: c.statement_timeout_seconds,
             runs_on: c.runs_on.clone(),
         }
@@ -374,11 +698,12 @@ fn validate(request: &SaveDbConnectionRequest) -> AppResult<Fields> {
         user: None,
         tls: None,
         ca_file: None,
-        password: DbPassword::None,
+        password: SecretSource::None,
         timeout: request.statement_timeout_seconds,
         runs_on: None,
     };
     match request.kind {
+        // SQLite has no password: like the server fields, a source is ignored.
         DbKind::Sqlite => {
             let path = trimmed(&request.file_path)
                 .ok_or_else(|| AppError::validation("Choose the database file."))?;
@@ -430,7 +755,7 @@ fn validate(request: &SaveDbConnectionRequest) -> AppResult<Fields> {
                 }
                 fields.ca_file = Some(ca);
             }
-            fields.password = request.password_storage;
+            fields.password = crate::credentials::check_source(&request.password_source)?;
             fields.runs_on = match &request.runs_on {
                 Some(RunsOn::CloudSql { project, instance }) => {
                     let (project, instance) = (project.trim(), instance.trim());
@@ -558,10 +883,17 @@ fn decode(s: &str) -> AppResult<String> {
 // --- Rows -------------------------------------------------------------------
 
 const COLUMNS: &str = "id, name, kind, environment, access, file_path, host, port, database, \
-    user_name, tls, ca_file, password, statement_timeout_seconds, version, runs_on";
+    user_name, tls, ca_file, secret_source, statement_timeout_seconds, version, runs_on, \
+    credential_revision, source_approved, credential_pending";
 
 fn parse<T: serde::de::DeserializeOwned>(text: String) -> rusqlite::Result<T> {
     serde_json::from_value(serde_json::Value::String(text)).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
+    })
+}
+
+fn parse_json<T: serde::de::DeserializeOwned>(text: String) -> rusqlite::Result<T> {
+    serde_json::from_str(&text).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
     })
 }
@@ -587,7 +919,7 @@ fn from_row(r: &Row<'_>) -> rusqlite::Result<DbConnection> {
         user: r.get(9)?,
         tls: r.get::<_, Option<String>>(10)?.map(parse).transpose()?,
         ca_file: r.get(11)?,
-        password: parse(r.get(12)?)?,
+        password: parse_json(r.get(12)?)?,
         password_ready: true,
         statement_timeout_seconds: r.get(13)?,
         file_size: None,
@@ -596,6 +928,11 @@ fn from_row(r: &Row<'_>) -> rusqlite::Result<DbConnection> {
         runs_on: r
             .get::<_, Option<String>>(15)?
             .and_then(|j| serde_json::from_str(&j).ok()),
+        credential: CredentialState {
+            revision: r.get(16)?,
+            needs_approval: !r.get::<_, bool>(17)?,
+            pending: r.get::<_, Option<String>>(18)?.map(parse).transpose()?,
+        },
     })
 }
 
@@ -665,85 +1002,161 @@ fn set_link(conn: &Connection, id: &str, repository_id: &str, linked: bool) -> A
     Ok(())
 }
 
+fn source_json(source: &SecretSource) -> AppResult<String> {
+    Ok(serde_json::to_string(source)?)
+}
+
+/// Mark a change under way, checking the version the user saw.
+fn mark_pending(
+    conn: &Connection,
+    id: &str,
+    pending: CredentialPending,
+    expected_version: Option<i64>,
+) -> AppResult<()> {
+    let changed = conn.execute(
+        "UPDATE db_connections SET credential_pending = ?2
+          WHERE id = ?1 AND (?3 IS NULL OR version = ?3)",
+        params![id, word(&pending), expected_version],
+    )?;
+    if changed == 0 {
+        return Err(conflict());
+    }
+    Ok(())
+}
+
+/// A new connection whose password is being written: kept, but blocked,
+/// until the save finishes.
+fn insert_provisional(conn: &Connection, id: &str, f: &Fields, now: &str) -> AppResult<()> {
+    conn.execute(
+        "INSERT INTO db_connections (id, name, kind, environment, access, file_path, host,
+            port, database, user_name, tls, ca_file, secret_source, statement_timeout_seconds,
+            version, created_at, updated_at, runs_on, credential_revision, credential_pending)
+          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 1, ?15, ?15, ?16, 0, 'save')",
+        params![
+            id,
+            f.name,
+            word(&f.kind),
+            word(&f.environment),
+            word(&f.access),
+            f.file_path,
+            f.host,
+            f.port,
+            f.database,
+            f.user,
+            f.tls.as_ref().map(word),
+            f.ca_file,
+            source_json(&f.password)?,
+            f.timeout,
+            now,
+            f.runs_on.as_ref().and_then(|r| serde_json::to_string(r).ok())
+        ],
+    )?;
+    Ok(())
+}
+
+/// Write a connection's fields with its binding: the source, its revision,
+/// approved by this save, and what is still pending. `bump` advances the
+/// version of an existing connection; a new one starts at 1.
 fn upsert(
     conn: &mut Connection,
     id: &str,
     f: &Fields,
-    expected_version: Option<i64>,
+    revision: i64,
+    pending: Option<CredentialPending>,
+    bump: bool,
     now: &str,
 ) -> AppResult<()> {
     let tx = conn.transaction()?;
-    let exists: Option<i64> = tx
-        .query_row(
-            "SELECT version FROM db_connections WHERE id = ?1",
-            [id],
-            |r| r.get(0),
-        )
-        .optional()?;
-    match exists {
-        Some(version) => {
-            if expected_version.is_some_and(|e| e != version) {
-                return Err(AppError::new(
-                    ErrorCode::Conflict,
-                    "This connection was changed since the form opened. Close the form and open it again.",
-                ));
-            }
-            tx.execute(
-                "UPDATE db_connections SET name = ?2, kind = ?3, environment = ?4, access = ?5,
-                    file_path = ?6, host = ?7, port = ?8, database = ?9, user_name = ?10, tls = ?11,
-                    ca_file = ?12, password = ?13, statement_timeout_seconds = ?14,
-                    version = version + 1, updated_at = ?15, runs_on = ?16
-                  WHERE id = ?1",
-                params![
-                    id,
-                    f.name,
-                    word(&f.kind),
-                    word(&f.environment),
-                    word(&f.access),
-                    f.file_path,
-                    f.host,
-                    f.port,
-                    f.database,
-                    f.user,
-                    f.tls.as_ref().map(word),
-                    f.ca_file,
-                    word(&f.password),
-                    f.timeout,
-                    now,
-                    f.runs_on
-                        .as_ref()
-                        .and_then(|r| serde_json::to_string(r).ok())
-                ],
-            )?;
-        }
-        None => {
-            tx.execute(
-                "INSERT INTO db_connections (id, name, kind, environment, access, file_path, host,
-                    port, database, user_name, tls, ca_file, password, statement_timeout_seconds,
-                    version, created_at, updated_at, runs_on)
-                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 1, ?15, ?15, ?16)",
-                params![
-                    id,
-                    f.name,
-                    word(&f.kind),
-                    word(&f.environment),
-                    word(&f.access),
-                    f.file_path,
-                    f.host,
-                    f.port,
-                    f.database,
-                    f.user,
-                    f.tls.as_ref().map(word),
-                    f.ca_file,
-                    word(&f.password),
-                    f.timeout,
-                    now,
-                    f.runs_on.as_ref().and_then(|r| serde_json::to_string(r).ok())
-                ],
-            )?;
-        }
+    let exists: bool = tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM db_connections WHERE id = ?1)",
+        [id],
+        |r| r.get(0),
+    )?;
+    let source = source_json(&f.password)?;
+    let pending = pending.as_ref().map(word);
+    if exists {
+        tx.execute(
+            "UPDATE db_connections SET name = ?2, kind = ?3, environment = ?4, access = ?5,
+                file_path = ?6, host = ?7, port = ?8, database = ?9, user_name = ?10, tls = ?11,
+                ca_file = ?12, secret_source = ?13, statement_timeout_seconds = ?14,
+                version = version + ?15, updated_at = ?16, runs_on = ?17,
+                credential_revision = ?18, source_approved = 1, credential_pending = ?19
+              WHERE id = ?1",
+            params![
+                id,
+                f.name,
+                word(&f.kind),
+                word(&f.environment),
+                word(&f.access),
+                f.file_path,
+                f.host,
+                f.port,
+                f.database,
+                f.user,
+                f.tls.as_ref().map(word),
+                f.ca_file,
+                source,
+                f.timeout,
+                i64::from(bump),
+                now,
+                f.runs_on
+                    .as_ref()
+                    .and_then(|r| serde_json::to_string(r).ok()),
+                revision,
+                pending,
+            ],
+        )?;
+    } else {
+        tx.execute(
+            "INSERT INTO db_connections (id, name, kind, environment, access, file_path, host,
+                port, database, user_name, tls, ca_file, secret_source, statement_timeout_seconds,
+                version, created_at, updated_at, runs_on, credential_revision, credential_pending)
+              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 1, ?15, ?15, ?16, ?17, ?18)",
+            params![
+                id,
+                f.name,
+                word(&f.kind),
+                word(&f.environment),
+                word(&f.access),
+                f.file_path,
+                f.host,
+                f.port,
+                f.database,
+                f.user,
+                f.tls.as_ref().map(word),
+                f.ca_file,
+                source,
+                f.timeout,
+                now,
+                f.runs_on.as_ref().and_then(|r| serde_json::to_string(r).ok()),
+                revision,
+                pending,
+            ],
+        )?;
     }
     tx.commit()?;
+    Ok(())
+}
+
+fn clear_pending(conn: &Connection, id: &str, which: CredentialPending) -> AppResult<()> {
+    conn.execute(
+        "UPDATE db_connections SET credential_pending = NULL WHERE id = ?1 AND credential_pending = ?2",
+        params![id, word(&which)],
+    )?;
+    Ok(())
+}
+
+fn approve(conn: &Connection, id: &str, revision: i64) -> AppResult<()> {
+    let changed = conn.execute(
+        "UPDATE db_connections SET source_approved = 1 WHERE id = ?1 AND credential_revision = ?2",
+        params![id, revision],
+    )?;
+    if changed == 0 {
+        return Err(AppError::new(
+            ErrorCode::Conflict,
+            "This connection's source changed since it was shown. Look at it again.",
+        ));
+    }
     Ok(())
 }
 

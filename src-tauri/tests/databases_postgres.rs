@@ -507,7 +507,7 @@ async fn connection_errors_say_what_went_wrong() {
     let mut wrong = server.target();
     wrong.password = Some(Secret::new("not it").unwrap());
     let e = PgSession::connect(&wrong).await.err().unwrap();
-    assert_eq!(e.code, ErrorCode::PermissionDenied, "{e:?}");
+    assert_eq!(e.code, ErrorCode::Unauthenticated, "{e:?}");
     assert!(
         e.message.contains("refused the password for user postgres"),
         "{}",

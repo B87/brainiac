@@ -272,17 +272,7 @@ impl QuerySessions {
                         reconnected = true;
                     }
                     self.make_room(tab);
-                    let target = self.connections.target(connection).await?;
-                    let session = match Session::open(&target).await {
-                        Ok(s) => s,
-                        Err(e) => {
-                            if e.code == ErrorCode::PermissionDenied {
-                                // A wrong password is asked for or read again next time.
-                                self.connections.forget(&connection.id);
-                            }
-                            return Err(e);
-                        }
-                    };
+                    let session = self.connections.open(connection).await?;
                     *tab.canceller.lock().expect("canceller lock") = Some(session.canceller());
                     *guard = Some(session);
                 }
@@ -433,8 +423,7 @@ impl QuerySessions {
         }
         if guard.as_ref().is_none_or(Session::is_closed) {
             self.make_room(&tab);
-            let target = self.connections.target(&connection).await?;
-            let session = Session::open(&target).await?;
+            let session = self.connections.open(&connection).await?;
             *tab.canceller.lock().expect("canceller lock") = Some(session.canceller());
             *guard = Some(session);
         }
@@ -543,16 +532,7 @@ impl QuerySessions {
                 }
             }
         }
-        let target = self.connections.target(&connection).await?;
-        let mut session = match Session::open(&target).await {
-            Ok(s) => s,
-            Err(e) => {
-                if e.code == ErrorCode::PermissionDenied {
-                    self.connections.forget(&connection.id);
-                }
-                return Err(e);
-            }
-        };
+        let mut session = self.connections.open(&connection).await?;
         let (schemas, default_schema) = session.schema().await?;
         let schema = DbSchema {
             connection_id: connection.id.clone(),

@@ -6,13 +6,13 @@ mod postgres_server;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use brainiac_lib::credentials::MemorySecrets;
+use brainiac_lib::credentials::{CommandRunner, CredentialService, MemoryStore};
 use brainiac_lib::databases::health::{GoogleConfig, HealthService};
 use brainiac_lib::databases::ConnectionService;
 use brainiac_lib::db::{self, Db};
 use brainiac_lib::models::{
-    DbAccess, DbEnvironment, DbKind, DbPassword, DbTls, ErrorCode, HealthEvent, RunsOn,
-    SaveDbConnectionRequest,
+    DbAccess, DbEnvironment, DbKind, DbTls, ErrorCode, HealthEvent, RunsOn,
+    SaveDbConnectionRequest, SecretSource,
 };
 use postgres_server::PgServer;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -29,7 +29,10 @@ fn harness(google: GoogleConfig) -> Harness {
     let core = Db::open(&tmp.path().join(db::CORE_FILE)).unwrap();
     let connections = Arc::new(ConnectionService::new(
         core,
-        Arc::new(MemorySecrets::default()),
+        Arc::new(CredentialService::new(
+            Arc::new(MemoryStore::default()),
+            CommandRunner::new(tmp.path().join("commands")),
+        )),
     ));
     let events = Arc::new(Mutex::new(Vec::new()));
     let seen = Arc::clone(&events);
@@ -65,7 +68,7 @@ fn connection(
         user: Some("postgres".into()),
         tls: Some(DbTls::Off),
         ca_file: None,
-        password_storage: DbPassword::Keychain,
+        password_source: SecretSource::Store,
         password: Some(postgres_server::PASSWORD.into()),
         statement_timeout_seconds: 30,
         runs_on,

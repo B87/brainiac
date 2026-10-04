@@ -3,7 +3,7 @@
 //! Identity needs no network: which hosted repository a local repository's
 //! `origin` names (a forge repository), and how a pull request is referred to
 //! (`github.com/acme/api#42`). Accounts are checked with one request and keep
-//! their token in the Keychain. The pull request service, the adapters, and
+//! their token where its source says (SPEC.md, Secrets). The pull request service, the adapters, and
 //! the cache follow (docs/architecture.md, Pull requests — v0.3).
 
 mod accounts;
@@ -14,7 +14,6 @@ mod cache;
 mod drafts;
 pub mod github;
 pub mod http;
-pub mod keychain;
 pub mod markdown;
 pub mod patch;
 mod service;

@@ -6,7 +6,6 @@ import {
   type DbConnection,
   type DbEnvironment,
   type DbKind,
-  type DbPassword,
   type DbTls,
   type DockerContainer,
   errorMessage,
@@ -14,7 +13,15 @@ import {
   type RunsOn,
   type SaveDbConnectionRequest,
 } from "../lib/ipc";
+import {
+  draftOf,
+  pendingLabel,
+  type SourceDraft,
+  type SourceKind,
+  sourceOf,
+} from "../lib/secrets";
 import Dialog from "./Dialog";
+import SecretSourceFields from "./SecretSourceFields";
 
 type Props = {
   /** The connection being edited; none for New Connection…. */
@@ -65,7 +72,12 @@ export default function DbConnectionDialog({
   const [database, setDatabase] = useState(c?.database ?? "postgres");
   const [user, setUser] = useState(c?.user ?? "");
   const [password, setPassword] = useState("");
-  const [storage, setStorage] = useState<DbPassword>(c?.password ?? "keychain");
+  const [source, setSource] = useState<SourceDraft>(() =>
+    draftOf(c?.kind === "postgres" ? c.password : null, "store"),
+  );
+  const storage = source.kind;
+  const setStorage = (kind: SourceKind) => setSource({ ...source, kind });
+  const typesPassword = storage === "store" || storage === "ask";
   const [tls, setTls] = useState<DbTls>(c?.tls ?? "verify");
   const [caFile, setCaFile] = useState(c?.ca_file ?? "");
   const [timeout, setTimeoutSeconds] = useState(
@@ -89,7 +101,11 @@ export default function DbConnectionDialog({
   const [containers, setContainers] = useState<DockerContainer[] | null>(null);
   const [url, setUrl] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [tested, setTested] = useState<string | null>(null);
+  // A test result is for the fields it ran with; editing makes it stale.
+  const [tested, setTested] = useState<{ key: string; text: string } | null>(
+    null,
+  );
+  const [refreshed, setRefreshed] = useState(false);
   const [busy, setBusy] = useState<"test" | "save" | null>(null);
 
   const runsOn = (): RunsOn | null => {
@@ -115,9 +131,9 @@ export default function DbConnectionDialog({
     user: kind === "postgres" ? user : null,
     tls: kind === "postgres" ? tls : null,
     ca_file: kind === "postgres" && tls === "verify" && caFile ? caFile : null,
-    password_storage: kind === "postgres" ? storage : "none",
+    password_source: kind === "postgres" ? sourceOf(source) : { kind: "none" },
     password:
-      kind === "postgres" && storage !== "none" && password ? password : null,
+      kind === "postgres" && typesPassword && password ? password : null,
     statement_timeout_seconds: Number(timeout) || 30,
     runs_on: runsOn(),
   });
@@ -133,7 +149,7 @@ export default function DbConnectionDialog({
       if (f.user) setUser(f.user);
       if (f.password) {
         setPassword(f.password);
-        if (storage === "none") setStorage("keychain");
+        if (!typesPassword) setStorage("store");
       }
       if (f.tls) setTls(f.tls);
       if (!name && f.database) setName(f.database);
@@ -145,13 +161,17 @@ export default function DbConnectionDialog({
     }
   };
 
+  const draftKey = JSON.stringify(request());
   const test = async () => {
     setBusy("test");
     setTested(null);
     setError(null);
     try {
       const result = await ipc.testDbConnection(request());
-      setTested(`Connected: ${result.server_version}.`);
+      setTested({
+        key: draftKey,
+        text: `Connected: ${result.server_version}.`,
+      });
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -194,8 +214,10 @@ export default function DbConnectionDialog({
       onClose={onClose}
       footer={
         <>
-          {tested && (
-            <span className="mr-auto text-[12px] text-clean">{tested}</span>
+          {tested?.key === draftKey && (
+            <span className="mr-auto text-[12px] text-clean">
+              {tested.text}
+            </span>
           )}
           <button
             type="button"
@@ -344,36 +366,72 @@ export default function DbConnectionDialog({
             <Field
               label="Password"
               hint={
-                storage === "keychain"
-                  ? c?.password === "keychain"
+                storage === "store"
+                  ? c?.password.kind === "store"
                     ? "Kept in the Keychain. Leave it empty to keep the saved one."
                     : "Kept in the Keychain, never in Brainiac's files."
                   : storage === "ask"
                     ? "Asked for once each time Brainiac runs."
-                    : "For servers that trust local users."
+                    : storage === "environment"
+                      ? "Read when first used in each run, never stored."
+                      : storage === "command"
+                        ? "The command runs when the password is first needed in each run; its output is never stored."
+                        : "For servers that trust local users."
               }
             >
               <div className="flex gap-2">
-                <input
-                  className="text-input flex-1"
-                  type="password"
-                  value={password}
-                  disabled={storage === "none"}
-                  autoComplete="off"
-                  onChange={(e) => setPassword(e.target.value)}
-                />
+                {typesPassword || storage === "none" ? (
+                  <input
+                    className="text-input flex-1"
+                    type="password"
+                    value={password}
+                    disabled={storage === "none"}
+                    autoComplete="off"
+                    onChange={(e) => setPassword(e.target.value)}
+                  />
+                ) : (
+                  <span className="flex-1" />
+                )}
                 <select
                   className="text-input"
-                  aria-label="Where the password is kept"
+                  aria-label="Where the password comes from"
                   value={storage}
-                  onChange={(e) => setStorage(e.target.value as DbPassword)}
+                  onChange={(e) => setStorage(e.target.value as SourceKind)}
                 >
-                  <option value="keychain">In the Keychain</option>
+                  <option value="store">In the Keychain</option>
                   <option value="ask">Ask each run</option>
+                  <option value="environment">Environment variable</option>
+                  <option value="command">Command</option>
                   <option value="none">No password</option>
                 </select>
               </div>
             </Field>
+            {(storage === "environment" || storage === "command") && (
+              <SecretSourceFields
+                draft={source}
+                onChange={setSource}
+                what="password"
+              />
+            )}
+            {c && c.password.kind !== "none" && (
+              <div className="flex items-center gap-2 text-[11.5px] text-muted">
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() =>
+                    void ipc
+                      .refreshCredential({ kind: "db_connection", id: c.id })
+                      .then(() => setRefreshed(true))
+                      .catch((e) => setError(errorMessage(e)))
+                  }
+                >
+                  Refresh Password
+                </button>
+                {refreshed
+                  ? "Forgotten: it is read, or asked for, again when next used."
+                  : "Forget the password kept for this run, so it is read again."}
+              </div>
+            )}
             <Field
               label="TLS"
               hint={
@@ -523,6 +581,23 @@ export default function DbConnectionDialog({
               </button>
             </div>
           </Field>
+        )}
+        {c?.credential.needs_approval && (
+          <div
+            role="note"
+            className="rounded-md border px-3 py-2 text-[12.5px]"
+          >
+            This connection was restored from a backup, so its password source
+            is not read until you allow it. Saving allows the source shown here.
+          </div>
+        )}
+        {c?.credential.pending && (
+          <div
+            role="note"
+            className="rounded-md border px-3 py-2 text-[12.5px]"
+          >
+            {pendingLabel(c.credential.pending)}
+          </div>
         )}
         {error && (
           <div

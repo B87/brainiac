@@ -10,6 +10,7 @@ import type {
   Comment,
   CommentRequest,
   Conversation,
+  CredentialOwner,
   DbConnection,
   FolderEntry,
   ForgeAccountSlot,
@@ -35,6 +36,7 @@ import type {
   SaveQueryRequest,
   SaveReviewDraftRequest,
   SearchHit,
+  SecretsOverview,
   Settings,
   StatementRun,
   SubmitReviewRequest,
@@ -429,6 +431,47 @@ export class FakeBackend {
     { kind: "github", account: null, keychain_token: false },
     { kind: "bitbucket_cloud", account: null, keychain_token: true },
   ];
+  /** Settings → Secrets, from the accounts and connections. */
+  secrets(): SecretsOverview {
+    const accounts = this.accounts.flatMap((s) =>
+      s.account
+        ? [
+            {
+              owner: { kind: "forge_account", provider: s.kind } as const,
+              label: s.kind === "github" ? "GitHub" : "Bitbucket",
+              destination: `${s.kind === "github" ? "api.github.com" : "api.bitbucket.org"} as ${s.account.login}`,
+              source: s.account.token_source,
+              state: s.account.credential,
+              input_required: false,
+              last_test: null,
+            },
+          ]
+        : [],
+    );
+    const connections = this.dbConnections
+      .filter((c) => c.password.kind !== "none")
+      .map((c) => ({
+        owner: { kind: "db_connection", id: c.id } as const,
+        label: c.name,
+        destination: `${c.host}:${c.port}/${c.database} as ${c.user}`,
+        source: c.password,
+        state: c.credential,
+        input_required: c.password.kind === "ask" && !c.password_ready,
+        last_test: null,
+      }));
+    return {
+      store: "macOS login keychain",
+      entries: [...accounts, ...connections],
+    };
+  }
+
+  credentialOf(owner: CredentialOwner) {
+    if (owner.kind === "forge_account")
+      return this.accounts.find((s) => s.kind === owner.provider)?.account
+        ?.credential;
+    return this.dbConnections.find((c) => c.id === owner.id)?.credential;
+  }
+
   vault: VaultState = {
     vault: null,
     index: {
@@ -656,8 +699,14 @@ export class FakeBackend {
       user: req.kind === "postgres" ? req.user : null,
       tls: req.kind === "postgres" ? req.tls : null,
       ca_file: req.ca_file,
-      password: req.kind === "postgres" ? req.password_storage : "none",
-      password_ready: req.password_storage !== "ask",
+      password:
+        req.kind === "postgres" ? req.password_source : { kind: "none" },
+      password_ready: req.password_source.kind !== "ask",
+      credential: {
+        needs_approval: false,
+        pending: null,
+        revision: (base?.credential.revision ?? 0) + 1,
+      },
       statement_timeout_seconds: req.statement_timeout_seconds,
       file_size: req.kind === "sqlite" ? 24576 : null,
       repository_ids: base?.repository_ids ?? [],
@@ -1386,12 +1435,41 @@ export class FakeBackend {
           read_only: missing.length > 0,
           missing,
           checked_at: NOW,
+          token_source: req.source,
+          credential: { needs_approval: false, pending: null, revision: 1 },
         } as const;
         this.accounts = this.accounts.map((s) =>
           s.kind === req.kind ? { ...s, account, keychain_token: false } : s,
         );
-        return { outcome: "saved", account };
+        return { outcome: "saved", account, warning: null };
       }
+      case "test_forge_account": {
+        const req = args.request as SaveForgeAccountRequest;
+        const bitbucket = req.kind === "bitbucket_cloud";
+        return {
+          login: bitbucket ? "jo" : "octo",
+          missing: bitbucket ? ["write:pullrequest:bitbucket"] : [],
+        };
+      }
+      case "list_secrets":
+        return this.secrets();
+      case "approve_secret_source": {
+        const owner = args.owner as CredentialOwner;
+        const credential = this.credentialOf(owner);
+        if (credential) credential.needs_approval = false;
+        return this.secrets();
+      }
+      case "refresh_credential":
+        return null;
+      case "retry_credential_cleanup": {
+        const credential = this.credentialOf(args.owner as CredentialOwner);
+        if (credential) credential.pending = null;
+        return this.secrets();
+      }
+      case "find_secret_program":
+        return String(args.name).startsWith("/")
+          ? args.name
+          : `/opt/homebrew/bin/${args.name}`;
       case "remove_forge_account":
         this.accounts = this.accounts.map((s) =>
           s.kind === args.kind

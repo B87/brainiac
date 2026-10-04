@@ -2,9 +2,9 @@
 import type { DbAccess } from "./DbAccess";
 import type { DbEnvironment } from "./DbEnvironment";
 import type { DbKind } from "./DbKind";
-import type { DbPassword } from "./DbPassword";
 import type { DbTls } from "./DbTls";
 import type { RunsOn } from "./RunsOn";
+import type { SecretSource } from "./SecretSource";
 
 /**
  * New Connection… and Edit Connection….
@@ -17,8 +17,12 @@ id: string | null,
 /**
  * The version the form was opened on; a save over a newer one is refused.
  */
-expected_version: number | null, name: string, kind: DbKind, environment: DbEnvironment, access: DbAccess, file_path: string | null, host: string | null, port: number | null, database: string | null, user: string | null, tls: DbTls | null, ca_file: string | null, password_storage: DbPassword, 
+expected_version: number | null, name: string, kind: DbKind, environment: DbEnvironment, access: DbAccess, file_path: string | null, host: string | null, port: number | null, database: string | null, user: string | null, tls: DbTls | null, ca_file: string | null, 
 /**
- * A typed password; `None` keeps the one in the Keychain.
+ * Where the password comes from. SQLite takes only `None`.
+ */
+password_source: SecretSource, 
+/**
+ * A typed password, for Store or Ask; `None` keeps the one in the Keychain.
  */
 password: string | null, statement_timeout_seconds: number, runs_on: RunsOn | null, };

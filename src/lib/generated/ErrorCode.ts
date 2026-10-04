@@ -3,4 +3,4 @@
 /**
  * Stable error codes shared with the frontend (docs/architecture.md, IPC).
  */
-export type ErrorCode = "VALIDATION" | "NOT_FOUND" | "CONFLICT" | "PERMISSION_DENIED" | "IO" | "DB" | "DEPENDENCY_UNAVAILABLE" | "TIMEOUT" | "CANCELLED";
+export type ErrorCode = "VALIDATION" | "NOT_FOUND" | "CONFLICT" | "PERMISSION_DENIED" | "UNAUTHENTICATED" | "IO" | "DB" | "DEPENDENCY_UNAVAILABLE" | "TIMEOUT" | "CANCELLED";

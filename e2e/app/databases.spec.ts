@@ -65,8 +65,9 @@ async function seed(
       user: "app",
       tls: "verify",
       ca_file: null,
-      password: "keychain",
+      password: { kind: "store" },
       password_ready: true,
+      credential: { needs_approval: false, pending: null, revision: 1 },
       statement_timeout_seconds: 30,
       file_size: null,
       repository_ids: [],
@@ -89,6 +90,57 @@ async function seed(
 }
 
 const editor = (page: Page) => page.locator(".cm-content").last();
+
+test("a password from a command is previewed exactly, and a test goes stale on edit", async ({
+  page,
+}) => {
+  await openDatabases(page);
+  await page.getByRole("button", { name: "New Connection…" }).first().click();
+  const dialog = page.getByRole("dialog", { name: "New Connection" });
+  await dialog.getByLabel("Name", { exact: true }).fill("billing");
+  await dialog.getByLabel("User", { exact: true }).fill("app");
+  await dialog
+    .getByLabel("Where the password comes from")
+    .selectOption("command");
+  await dialog.getByLabel("Program").fill("op");
+  await dialog.getByRole("button", { name: "Find…" }).click();
+  await expect(dialog.getByLabel("Program")).toHaveValue(
+    "/opt/homebrew/bin/op",
+  );
+  await dialog.getByRole("button", { name: "Add Argument" }).click();
+  await dialog.getByLabel("Argument 1", { exact: true }).fill("read");
+  await dialog.getByRole("button", { name: "Add Argument" }).click();
+  await dialog
+    .getByLabel("Argument 2", { exact: true })
+    .fill("op://Work/billing db/password");
+  await expect(
+    dialog.getByText(
+      '["/opt/homebrew/bin/op","read","op://Work/billing db/password"]',
+    ),
+  ).toBeVisible();
+  await expect(dialog.getByText(/included in backups/)).toBeVisible();
+  await shot(page, "connection-command");
+
+  await dialog.getByRole("button", { name: "Test Connection" }).click();
+  await expect(dialog.getByText("Connected: PostgreSQL 16.4.")).toBeVisible();
+  await dialog
+    .getByLabel("Argument 2", { exact: true })
+    .fill("op://Work/billing/password");
+  await expect(dialog.getByText("Connected: PostgreSQL 16.4.")).toHaveCount(0);
+
+  await dialog.getByRole("button", { name: "Add Connection" }).click();
+  const saved = await calls(page, "save_db_connection");
+  expect(saved[0]).toMatchObject({
+    request: {
+      password: null,
+      password_source: {
+        kind: "command",
+        program: "/opt/homebrew/bin/op",
+        args: ["read", "op://Work/billing/password"],
+      },
+    },
+  });
+});
 
 test("a connection is added and a query shows its rows", async ({ page }) => {
   await openDatabases(page);
@@ -113,7 +165,11 @@ test("a connection is added and a query shows its rows", async ({ page }) => {
   await dialog.getByRole("button", { name: "Add Connection" }).click();
   const saved = await calls(page, "save_db_connection");
   expect(saved[0]).toMatchObject({
-    request: { password: "s3cret", password_storage: "keychain", port: 5433 },
+    request: {
+      password: "s3cret",
+      password_source: { kind: "store" },
+      port: 5433,
+    },
   });
 
   await page.getByRole("button", { name: "New Query" }).click();

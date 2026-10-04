@@ -7,14 +7,14 @@ mod postgres_server;
 use std::sync::Arc;
 use std::time::Duration;
 
-use brainiac_lib::credentials::MemorySecrets;
+use brainiac_lib::credentials::{CommandRunner, CredentialService, MemoryStore};
 use brainiac_lib::databases::history::QueryHistory;
 use brainiac_lib::databases::{ConnectionService, QuerySessions, SavedQueryService};
 use brainiac_lib::db::{self, Db};
 use brainiac_lib::models::{
-    Cell, DbAccess, DbEnvironment, DbFailureReason, DbKind, DbPassword, DbTls, ErrorCode,
-    ExplainMode, ExportFormat, ExportRequest, ParamValue, QueryTab, RunMode, RunStatementRequest,
-    SaveDbConnectionRequest, SaveQueryRequest, StatementResult, StatementRun,
+    Cell, DbAccess, DbEnvironment, DbFailureReason, DbKind, DbTls, ErrorCode, ExplainMode,
+    ExportFormat, ExportRequest, ParamValue, QueryTab, RunMode, RunStatementRequest,
+    SaveDbConnectionRequest, SaveQueryRequest, SecretSource, StatementResult, StatementRun,
 };
 use postgres_server::PgServer;
 
@@ -30,7 +30,10 @@ fn harness() -> Harness {
     let history = Db::open_store(&tmp.path().join(db::HISTORY_FILE), &db::HISTORY).unwrap();
     let connections = Arc::new(ConnectionService::new(
         core.clone(),
-        Arc::new(MemorySecrets::default()),
+        Arc::new(CredentialService::new(
+            Arc::new(MemoryStore::default()),
+            CommandRunner::new(tmp.path().join("commands")),
+        )),
     ));
     Harness {
         tmp,
@@ -54,7 +57,7 @@ fn postgres(server: &PgServer, access: DbAccess) -> SaveDbConnectionRequest {
         user: Some("postgres".into()),
         tls: Some(DbTls::Off),
         ca_file: None,
-        password_storage: DbPassword::Keychain,
+        password_source: SecretSource::Store,
         password: Some(postgres_server::PASSWORD.into()),
         statement_timeout_seconds: 30,
         runs_on: None,
@@ -76,7 +79,7 @@ fn sqlite(path: &std::path::Path, access: DbAccess) -> SaveDbConnectionRequest {
         user: None,
         tls: None,
         ca_file: None,
-        password_storage: DbPassword::None,
+        password_source: SecretSource::None,
         password: None,
         statement_timeout_seconds: 30,
         runs_on: None,

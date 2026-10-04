@@ -624,7 +624,7 @@ function Home({
   const remove = async (c: DbConnection) => {
     const used = queries.filter((q) => q.connection_id === c.id).length;
     const sure = await ask(
-      `${c.name} is removed from Brainiac${c.password === "keychain" ? ", with its password in the Keychain" : ""}.${used ? ` ${used} saved quer${used === 1 ? "y" : "ies"} will have no connection.` : ""} The database itself is not touched.`,
+      `${c.name} is removed from Brainiac${c.password.kind === "store" ? ", with its password in the Keychain" : ""}.${used ? ` ${used} saved quer${used === 1 ? "y" : "ies"} will have no connection.` : ""} The database itself is not touched.`,
       { title: "Delete Connection", kind: "warning", okLabel: "Delete" },
     );
     if (!sure) return;
@@ -653,11 +653,11 @@ function Home({
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
-      <div className="mx-auto flex max-w-[1080px] flex-col gap-6 px-6 py-6">
+      <div className="mx-auto flex max-w-270 flex-col gap-6 px-6 py-6">
         <div className="flex items-center gap-3">
           <DatabaseIcon size={18} className="text-fg-2" />
           <h1 className="m-0 text-[18px] font-semibold">Databases</h1>
-          <div className="ml-4 flex max-w-[360px] flex-1 items-center gap-1.5 rounded-md border border-control-line bg-field px-2 py-1 text-muted">
+          <div className="ml-4 flex max-w-90 flex-1 items-center gap-1.5 rounded-md border border-control-line bg-field px-2 py-1 text-muted">
             <SearchIcon size={12} />
             <input
               className="min-w-0 flex-1 bg-transparent text-[12.5px] text-fg outline-none"
@@ -688,7 +688,7 @@ function Home({
               <span className="text-[12.5px] text-muted">
                 Add a SQLite file or a PostgreSQL server. Every connection is
                 read only unless you allow writes, and passwords stay in the
-                Keychain.
+                Keychain or wherever you already keep them.
               </span>
               <button
                 type="button"
@@ -762,9 +762,13 @@ function Home({
                       ? c.file_size !== null
                         ? ` · ${formatBytes(c.file_size)}`
                         : " · file missing"
-                      : c.password === "ask" && !c.password_ready
-                        ? " · asks for its password"
-                        : ""}
+                      : c.credential.needs_approval
+                        ? " · password source to allow in Settings → Secrets"
+                        : c.credential.pending === "save"
+                          ? " · last save did not finish"
+                          : c.password.kind === "ask" && !c.password_ready
+                            ? " · asks for its password"
+                            : ""}
                   </div>
                   <div className="mt-1 flex gap-2">
                     <button

@@ -59,7 +59,8 @@ The product can eventually include PR and CI status, calendar context, recurring
 | Pull requests | v0.3 | GitHub and Bitbucket Cloud, per workspace and off by default: the workspace's and each repository's pull requests, overview, files changed, review, and merge |
 | Pull request follow-ups | v0.3.x | A daily view of what waits on you, a task's pull request, creating a pull request, agent tools; chosen by use |
 | Databases | v0.4 | SQLite and PostgreSQL connections, read only by default; query editor and result grid, saved queries, history, and a PostgreSQL connection's health |
-| Database and credential follow-ups | v0.4.x | SSH tunnels, editing rows in the grid, saved queries as files, and secrets read from sources besides the Keychain (a command, Google Secret Manager, Git's credential helper, `.pgpass`); chosen by use |
+| Secrets | v0.4.x | An account's token or a connection's password read from the Keychain, an environment variable, or a command such as `gh auth token` or `op read`, and Settings → Secrets (section 12) |
+| Database and credential follow-ups | v0.4.x | SSH tunnels, editing rows in the grid, saved queries as files, and secrets from Google Secret Manager, Git's credential helper, and `.pgpass`; chosen by use |
 | Agent runs | v0.5 | A coding agent's command-line tool (Claude Code, Codex, Gemini CLI) run in a container on the Mac or a remote host, with guided setup, a live trace, and a review of its branch before anything is pushed |
 | External content imports | v0.6 | Paste, bookmarks, Markdown copies, articles, `.eml`, provenance and duplicate handling |
 | Global capture window and Inbox | v0.6 | System shortcut, floating capture, Inbox triage of captured and imported items, shared backend state |
@@ -458,13 +459,14 @@ Review and merge the pull requests of a workspace's repositories, on GitHub and 
 
 ### Accounts
 
-- **Settings → Accounts** lists one account per provider: its login, the kind of token, when it expires, and what it allows, with **Replace Token…** and **Remove**.
+- **Settings → Accounts** lists one account per provider: its login, the kind of token, when it expires, where the token comes from, and what it allows, with **Change Token…** and **Remove**.
 - GitHub takes a fine-grained personal access token with pull requests read and write, contents read, and checks and commit statuses read; merging and resolving threads also need contents read and write, which also lets the token push, so Accounts says so and leaves the choice to the user. Bitbucket Cloud takes an Atlassian API token, with the account's email, scoped to `read:user:bitbucket` (to know which pull requests are yours and wait on you), `read:repository:bitbucket`, `read:pullrequest:bitbucket`, and `write:pullrequest:bitbucket`; Bitbucket's app passwords no longer work.
 - Adding an account checks the token with one request. For Bitbucket that request also returns the token's scopes, so a missing one is named at once, and a token that can read but not write is offered **Save as Read-Only**. GitHub shows a fine-grained token's expiry but not its permissions, so a missing permission is found the first time GitHub refuses an action: that action is then turned off and the message names the permission to add.
 - An Atlassian API token is about 190 characters, longer than Terminal's hidden password prompt keeps (`security … -w` with nothing after it cuts the input short). Paste it into Accounts, or add it from Terminal from the clipboard with `security add-generic-password -U -s brainiac -a bitbucket -w "$(pbpaste)"`.
-- Tokens are kept in the macOS Keychain, in the item with service `brainiac` and account `github` or `bitbucket`, and sent only to the service they belong to, over HTTPS. They never appear in logs, exports, or the database.
+- A token is kept in the macOS Keychain, in the item with service `brainiac` and account `github` or `bitbucket`, or read from a command or an environment variable (**Token from**; section 12), and sent only to the service it belongs to, over HTTPS. Tokens never appear in logs, exports, or the database.
+- **Test** on the account form checks the form's token with the same request, without saving anything.
 - A token already in that item, such as one added with `security add-generic-password -s brainiac -a github -w`, is found when Accounts opens without reading it, and **Use This Token** checks it like a pasted one; Bitbucket still asks for the account's email. The first time Brainiac reads an item it did not create, macOS asks to allow it.
-- A token is stored only once its check passes. **Remove** deletes the account and its token from the Keychain.
+- A token is stored only once its check passes. **Remove** deletes the account and Brainiac's Keychain item; a command or a variable it read the token from is not changed.
 
 ### Which pull requests a repository has
 
@@ -531,7 +533,7 @@ A database client next to the repositories, notes, and tasks it relates to: save
 ### Boundaries
 
 - **Read only unless allowed.** A connection is read only unless its access is set to Read and write, and even then each tab on a Production connection starts read only. On a read-only connection a statement cannot change data (Safety, below).
-- **Passwords only in the Keychain**, or asked for once per run of Brainiac. They never appear in Brainiac's files, logs, backups, or exports.
+- **Passwords are kept only in the Keychain**, asked for once per run of Brainiac, or read from an environment variable or a command (section 12). They never appear in Brainiac's files, logs, backups, or exports.
 - **Results stay in memory** while their tab is open. Copy and Export are the only ways rows leave the app; the history keeps statements, never rows.
 - Brainiac's own databases (`brainiac.sqlite3`, `index.sqlite3`, `history.sqlite3`, `forge.sqlite3`) can be opened, always read only.
 - Agents get no database tools, and nothing writes SQL for the user.
@@ -543,11 +545,11 @@ A database client next to the repositories, notes, and tasks it relates to: save
   - **SQLite:** the database file, chosen with the macOS file dialog. Brainiac never creates a file.
   - **PostgreSQL:** host, port, database, user, password, and TLS: **Verify** (the default: the Mac's trust store plus an optional CA file, for providers whose certificates the Mac does not trust), **Require without verifying**, or **Off**. Pasting a `postgres://` or `postgresql://` URL fills the fields and moves its password into the password field.
   - **Name**, **Environment** (Local, Development, Staging, Production), **Access** (Read only, or Read and write; a new Production connection starts read only), the **time limit** of a statement (30 seconds by default), and for PostgreSQL **Runs on** (Health, below).
-  - **Password:** kept in the Keychain (item `brainiac/db:<connection id>`), asked for once each time Brainiac runs, or none. Editing a connection without typing a password keeps the saved one.
-- **Test Connection** connects once and reports the server's version, or the reason in words: a password the server refused, a database that does not exist, nothing listening at the host and port, a host not found, a certificate this Mac does not trust or that is for another host name, or a server that does not offer TLS.
+  - **Password:** kept in the Keychain (item `brainiac/db:<connection id>`), asked for once each time Brainiac runs, read from an environment variable or a command (section 12), or none. Editing a connection without typing a password keeps the saved one; **Refresh Password** forgets the one kept for this run.
+- **Test Connection** connects once with the form's fields, reading the form's password source afresh, and reports the server's version, or the reason in words: a password the server refused, a database that does not exist, nothing listening at the host and port, a host not found, a certificate this Mac does not trust or that is for another host name, or a server that does not offer TLS.
 - A connection's environment is its color everywhere it appears, and its name in words beside it: a strip along the tab's editor, a dot on its tabs, a label on Home and in the switcher. Production is red.
 - A connection can be linked to repositories. A repository's Notes tab lists its linked connections, each with **New Query**, and **Link a connection…** adds one.
-- **Delete Connection…** asks first, removes its Keychain item, and leaves the database itself untouched; saved queries that ran on it keep their SQL and lose their connection.
+- **Delete Connection…** asks first, removes its Keychain item, and leaves the database itself untouched; saved queries that ran on it keep their SQL and lose their connection. A Keychain item that cannot be deleted leaves the removal in Settings → Secrets, with **Retry**.
 
 ### The query view
 
@@ -609,3 +611,60 @@ What a PostgreSQL server is doing now and over the last hour, as a tab opened fr
   - **Not set**: Health shows the PostgreSQL panels and offers to set it. Coolify is listed as needing SSH tunnels, which come later.
 - Each value says where it came from: "Postgres", "Docker", or "Cloud Monitoring · 1 min behind".
 - **Cancel Query** and **End Session** are offered on other sessions when the connection's access is Read and write; each asks first, naming the session's user, application, and statement.
+
+## 12. Secrets — v0.4.x
+
+Where an account's token and a connection's password come from. Brainiac writes secrets only to its own items in the macOS Keychain; every other source is read, never changed. The design, the options compared, and the sources still to come are in `docs/design/secrets.md`.
+
+### Sources
+
+| Source | For | What Brainiac saves |
+| --- | --- | --- |
+| **Keychain** (the default, and every secret saved before) | Accounts and PostgreSQL connections | Nothing: the item is `brainiac/github`, `brainiac/bitbucket`, or `brainiac/db:<connection id>` |
+| **Ask each run** | PostgreSQL connections | Nothing: typed once per run of Brainiac and kept in memory |
+| **Environment variable** | Accounts and PostgreSQL connections | The variable's name |
+| **Command** | Accounts and PostgreSQL connections | The program's full path and each argument |
+| **No password** | Connections (SQLite always) | Nothing |
+
+- What is saved says where to look, never the secret, and it is exported and backed up. The command picker says so: an argument holds a reference such as `op://Work/db/password`, never a password or token.
+- **Environment variables** are Brainiac's own, as they were at launch. An app opened from Finder or the Dock does not get a shell's variables, so they suit `pnpm tauri dev` and scripts; the picker says so and suggests a command.
+
+### Commands
+
+- The program is chosen by name or path. **Find…** looks a name up in Brainiac's `PATH`, then `/opt/homebrew/bin` and `/usr/local/bin`, and the full path found is shown and saved; it is never looked up again. A program that is gone asks to be chosen again.
+- Each argument is its own field, and the picker shows the exact array the program runs with, such as `["/opt/homebrew/bin/gh","auth","token","--hostname","github.com"]`. There is no shell: no quoting, variables, `~`, or pipes.
+- The program runs without a terminal and with nothing on its input, in a folder of Brainiac's own, with Brainiac's environment and `GIT_TERMINAL_PROMPT=0`. A password manager may show its unlock window. It runs with the user's permissions; Brainiac does not sandbox it.
+- It must print only the secret. Exactly one final line break is removed; everything else, spaces included, is kept. More than 64 KiB on its output or its messages stops it, as do 60 seconds, together with anything it started.
+- Its output and messages are never shown, logged, or saved, even when it fails. An error names the program's file name and its exit status, and suggests running it in Terminal to see whether it waits for a sign-in.
+
+### When a secret is read
+
+- When it is first needed in a run of Brainiac, and then kept in memory until Brainiac quits. Uses that need it at the same time share one read, so the Keychain asks at most once.
+- **Refresh** (Settings → Secrets, and **Refresh Password** on a connection) forgets it, so it is read, or asked for, again when next used. A server that refuses it forgets exactly that secret: a newer one read meanwhile is kept. An open database session keeps the credentials it connected with.
+- An account's token read afresh is checked with the provider before it is used, once per read. It must belong to the saved account's user: a command whose tool switched accounts is refused with both names, and Brainiac never switches the account by itself. The check updates the token's kind, expiry, and scopes, but never makes a read-only account able to write.
+- **Test** reads the form's source afresh and never uses or changes what is kept for the run. Its result is for the fields it ran with and disappears when they change. A test of exactly what is saved is shown in Settings → Secrets until the source changes or Brainiac quits.
+
+### Saving and removing
+
+- A secret typed for the Keychain is written there only after the account or connection is marked as being saved, and the mark is cleared once both are saved. A save cut off in between, by a failure or a crash, leaves the account or connection unusable, with a message, until it is saved again with the secret typed again or another source. Brainiac never finishes such a save by itself.
+- Moving from the Keychain to another source uses the new source at once and then deletes the old item. An item that cannot be deleted is shown in Settings → Secrets with **Retry**, and is never used instead of the new source.
+- **Remove** (an account) and **Delete Connection…** mark it as being removed, delete Brainiac's Keychain item whatever the source is, and then remove it. When the item cannot be deleted, the removal stays in Settings → Secrets with **Retry**.
+
+### Settings → Secrets
+
+- The store in use, and each account and connection with a secret: where it comes from, where Brainiac sends it ("api.github.com as octo", "db.example.com:5432/app as app"), and its state: **not read until allowed** (restored), a save that did not finish, a cleanup or removal to retry, a password to be asked for, or the last test and when it ran ("Not tested" otherwise).
+- **Allow…**, **Retry**, and **Refresh**. A source is changed where it is entered: in Accounts, or in Edit Connection….
+- Opening it reads no secret, runs no program, and does not unlock the Keychain.
+
+### Restore
+
+- Every restored account and connection keeps where its secret comes from, and Brainiac reads none of them until the user allows each one: neither to use it nor to test it. **Allow…** shows where it reads, where it sends the secret, and, for a command, the exact program and arguments, and then **Allow This Source**. An item with the same name in this Mac's Keychain is not trusted without it. Saving the account or connection also allows what it shows.
+- A save, cleanup, or removal that had not finished when the export was made is shown as such; restoring never deletes an item by itself.
+- Upgrading keeps every existing Keychain item and what each connection did before, and reads nothing.
+
+### Boundaries
+
+- A secret never reaches the window, a log, Brainiac's databases, a snapshot, or an export. A secret the user types travels once to Brainiac's backend, and the form clears it.
+- A secret is sent only where it belongs: an account's token to its provider's API, a connection's password to its own server.
+- Agents can neither read a secret nor change where one comes from.
+- Later: Google Secret Manager, Git's credential helper, and `~/.pgpass` (v0.4.x, chosen by use), and the Secret Service if Brainiac ever builds for Linux.

@@ -11,8 +11,8 @@
 
 use std::process::Command;
 
+use brainiac_lib::credentials::Token;
 use brainiac_lib::forge::http::Http;
-use brainiac_lib::forge::keychain::Token;
 use brainiac_lib::forge::{bitbucket, github};
 
 fn keychain_token(account: &str) -> Option<Token> {
@@ -114,12 +114,19 @@ async fn live_session(kind: ForgeKind) -> Option<(Session, Client)> {
         read_only: false,
         missing: check.missing,
         checked_at: String::new(),
+        token_source: brainiac_lib::models::SecretSource::Store,
+        credential: brainiac_lib::models::CredentialState {
+            needs_approval: false,
+            pending: None,
+            revision: 1,
+        },
     };
     let session = Session {
         token,
         email,
         user_id: check.user_id,
         account,
+        credential: None,
     };
     Some((session, Client::new(kind, api.to_string(), http, budget)))
 }

@@ -18,6 +18,10 @@ import type { CommitPage } from "./generated/CommitPage";
 import type { Conversation } from "./generated/Conversation";
 import type { CreateNoteRequest } from "./generated/CreateNoteRequest";
 import type { CreateWorkspaceRequest } from "./generated/CreateWorkspaceRequest";
+import type { CredentialOwner } from "./generated/CredentialOwner";
+import type { CredentialPending } from "./generated/CredentialPending";
+import type { CredentialState } from "./generated/CredentialState";
+import type { CredentialTest } from "./generated/CredentialTest";
 import type { DbAccess } from "./generated/DbAccess";
 import type { DbColumn } from "./generated/DbColumn";
 import type { DbConnection } from "./generated/DbConnection";
@@ -28,7 +32,6 @@ import type { DbFailureReason } from "./generated/DbFailureReason";
 import type { DbForeignKey } from "./generated/DbForeignKey";
 import type { DbIndex } from "./generated/DbIndex";
 import type { DbKind } from "./generated/DbKind";
-import type { DbPassword } from "./generated/DbPassword";
 import type { DbRelation } from "./generated/DbRelation";
 import type { DbSchema } from "./generated/DbSchema";
 import type { DbSchemaGroup } from "./generated/DbSchemaGroup";
@@ -47,6 +50,7 @@ import type { ExportResult } from "./generated/ExportResult";
 import type { FetchResult } from "./generated/FetchResult";
 import type { FolderListing } from "./generated/FolderListing";
 import type { ForgeAccountSlot } from "./generated/ForgeAccountSlot";
+import type { ForgeAccountTestResult } from "./generated/ForgeAccountTestResult";
 import type { ForgeKind } from "./generated/ForgeKind";
 import type { HealthEvent } from "./generated/HealthEvent";
 import type { HealthPoint } from "./generated/HealthPoint";
@@ -116,6 +120,9 @@ import type { SaveQueryRequest } from "./generated/SaveQueryRequest";
 import type { SaveReviewDraftRequest } from "./generated/SaveReviewDraftRequest";
 import type { SearchRequest } from "./generated/SearchRequest";
 import type { SearchResults } from "./generated/SearchResults";
+import type { SecretEntry } from "./generated/SecretEntry";
+import type { SecretSource } from "./generated/SecretSource";
+import type { SecretsOverview } from "./generated/SecretsOverview";
 import type { SetRepositoryForgeRequest } from "./generated/SetRepositoryForgeRequest";
 import type { Settings } from "./generated/Settings";
 import type { StatementResult } from "./generated/StatementResult";
@@ -214,6 +221,10 @@ export type {
   Conversation,
   CreateNoteRequest,
   CreateWorkspaceRequest,
+  CredentialOwner,
+  CredentialPending,
+  CredentialState,
+  CredentialTest,
   DbAccess,
   DbColumn,
   DbConnection,
@@ -224,7 +235,6 @@ export type {
   DbForeignKey,
   DbIndex,
   DbKind,
-  DbPassword,
   DbRelation,
   DbSchema,
   DbSchemaGroup,
@@ -243,6 +253,7 @@ export type {
   FetchResult,
   FolderListing,
   ForgeAccountSlot,
+  ForgeAccountTestResult,
   ForgeKind,
   HealthEvent,
   HealthPoint,
@@ -310,6 +321,9 @@ export type {
   SaveReviewDraftRequest,
   SearchRequest,
   SearchResults,
+  SecretEntry,
+  SecretSource,
+  SecretsOverview,
   SetRepositoryForgeRequest,
   Settings,
   StatementResult,
@@ -442,6 +456,25 @@ export const ipc = {
   /** Also deletes the token from the Keychain. */
   removeForgeAccount: (kind: ForgeKind) =>
     invoke<ForgeAccountSlot[]>("remove_forge_account", { kind }),
+  /** Test on the account form: checks the form's token without saving it. */
+  testForgeAccount: (request: SaveForgeAccountRequest) =>
+    invoke<ForgeAccountTestResult>("test_forge_account", { request }),
+
+  // v0.4.x: where secrets come from
+  /** Settings → Secrets. Reads no secret and runs no program. */
+  listSecrets: () => invoke<SecretsOverview>("list_secrets"),
+  /** Allow This Source, for the revision that was shown. */
+  approveSecretSource: (owner: CredentialOwner, revision: number) =>
+    invoke<SecretsOverview>("approve_secret_source", { owner, revision }),
+  /** Forget the secret kept for this run, so it is read or asked for again. */
+  refreshCredential: (owner: CredentialOwner) =>
+    invoke<void>("refresh_credential", { owner }),
+  /** Retry deleting a Keychain item after a cleanup or removal that did not finish. */
+  retryCredentialCleanup: (owner: CredentialOwner) =>
+    invoke<SecretsOverview>("retry_credential_cleanup", { owner }),
+  /** The full path of a program, by name or path. */
+  findSecretProgram: (name: string) =>
+    invoke<string>("find_secret_program", { name }),
   /** Where a repository's pull requests come from; `forge: null` goes back to `origin`. */
   setRepositoryForge: (request: SetRepositoryForgeRequest) =>
     invoke<RepositorySummary>("set_repository_forge", { request }),
@@ -617,8 +650,12 @@ export const ipc = {
   testDbConnection: (request: SaveDbConnectionRequest) =>
     invoke<DbTestResult>("test_db_connection", { request }),
   parseDbUrl: (url: string) => invoke<DbUrlFields>("parse_db_url", { url }),
-  unlockDbConnection: (id: string, password: string) =>
-    invoke<DbConnection>("unlock_db_connection", { id, password }),
+  unlockDbConnection: (id: string, password: string, expectedVersion: number) =>
+    invoke<DbConnection>("unlock_db_connection", {
+      id,
+      password,
+      expectedVersion,
+    }),
   linkDbConnection: (
     connectionId: string,
     repositoryId: string,

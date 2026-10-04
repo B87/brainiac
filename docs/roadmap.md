@@ -114,20 +114,22 @@ Ship it in steps like v0.3: read only first, so it is safe on production from th
 
 **v0.4.x follow-ups, chosen by use:** SSH tunnels (which also bring Coolify's metrics), editing rows in the grid, saved queries as files, and secrets from more than the Keychain ([`design/secrets.md`](design/secrets.md), phases 1 and 2): one credentials layer for accounts and connections, with each secret read from the Keychain, an environment variable, a command such as `gh auth token` or `op read`, Google Secret Manager, Git's credential helper, or `~/.pgpass`. Secrets come before v0.5, which needs them for its agents' keys, and remove the Keychain prompts of unsigned builds for any secret kept elsewhere.
 
+**Secrets, phase 1 (4 October 2026):** built on the `v0.4-databases` branch, uncommitted, and moved into [`SPEC.md`](../SPEC.md) section 12 and [`architecture.md`](architecture.md), Secrets — v0.4.x: the credentials layer with the Keychain, Ask, None, environment variables, and commands; the save, cleanup, and removal markers; approval of restored sources; and Settings → Secrets. Tested with an in-memory Keychain, scripts as commands, a throwaway PostgreSQL server, and WebKit over the fake backend. Left: its exit gate by hand (a week on an unsigned `pnpm tauri dev` build with `gh auth token` and a database password from a command), the spike of `op read` and `bw get` from the GUI app, and finding programs on an Intel Mac. Phase 2 (Google Secret Manager, Git's credential helper, `.pgpass`) waits to be chosen by use.
+
 ### v0.5 — Agent runs
 
 A coding agent's command-line tool run in a container, on the Mac or a remote host, started from a repository or a task and reviewed in the diff viewer before anything is pushed. Design: [`design/agent-runs.md`](design/agent-runs.md). It needs Health's Docker client (v0.4) and the credentials layer (v0.4.x); its remote hosts wait for v0.4.x's SSH tunnels, and its Create pull request for v0.3.x's.
 
-- [ ] Spike: Claude Code's and Codex's ACP adapters over an attached stdio stream with no file system or terminal offered; reattaching after a disconnect; credentials delivered through the image's entrypoint rather than the container's environment; the archive, attach, and logs calls on Docker Desktop, OrbStack, and Colima.
-- [ ] Agent setup in Settings: a local engine, Claude Code, its credential, the image built from Brainiac's Dockerfile, and a test run.
-- [ ] Runs from a repository: a bundle of the start commit in, the live ACP trace, cancel and follow-up prompts, the result bundle out into Brainiac's own bare repository, review in the diff viewer, Save patch, Delete run.
-- [ ] Landing and more agents: Push branch from the bare repository, Create pull request, Codex and Gemini CLI, the network allowlist, permission requests that ask.
-- [ ] Remote hosts over SSH, once SSH tunnels exist, with reattaching after sleep.
+- [ ] Spike: one pinned Claude ACP adapter over non-TTY attached stdio with no Mac filesystem/terminal; arbitrary-commit export on Git 2.30; uncommitted edits, interruption, stopped-volume collection, and cleanup; stdin credential delivery with daemon/adapter logs disabled; enforced disk budgets on supported engines.
+- [ ] Agent setup in Settings: a local engine, Claude Code with an API-key source, an image pinned by digest, explicit provider/host/network disclosure, and a test run.
+- [ ] Runs from a complete local repository: immutable input bundle, bounded sanitized ACP trace, permission choices, cancel/follow-up/Finish, interrupted-run recovery, snapshot of the final tree including uncommitted edits, verified import and review, Save patch, Delete run with retryable collection/cleanup.
+- [ ] Landing and more agents: create-only HTTPS Push of the exact reviewed snapshot with uncertain-response reconciliation, Create pull request after its v0.3.x dependency, tested Codex/Gemini adapters, enforced network allowlist before adding read-only registry tokens.
+- [ ] Remote hosts after SSH tunnels and a durable engine-host controller spike: journal/request reconciliation, expiry while the Mac sleeps, no prompt replay or raw Docker logs.
 - [ ] Runs from tasks: New run from a task, the run shown on the task, and runs waiting on the user in Today.
 
-Ship it like v0.3 and v0.4: local runs with one agent first, which proves the spike's answers; landing next; remote hosts and tasks last.
+Ship local runs with one agent first, landing next, then remote hosts and tasks. Phases 1–2 interrupt on lost connection and preserve partial work; durable continuation is a phase-3 gate.
 
-**Exit gate:** for a week, hand real tasks to agents from Brainiac instead of a terminal. Set up Claude Code and Codex from nothing, ending in passing test runs; run an agent on a repository with no remote and save its patch; cancel a run halfway, and steer another with a follow-up prompt; push a run's branch and open a pull request from it, with the local repository's refs, index, and working copy unchanged; a run's container cannot reach a host off the allowlist; and no credential appears in a trace, the database, the image, or the container's configuration.
+**Exit gate:** for a week, hand real tasks to agents from Brainiac instead of a terminal. Set up Claude Code and Codex from nothing; save uncommitted/binary results from a repository with no remote; cancel, steer, and interrupt/recover runs; retry collection/cleanup without losing work; publish the exact reviewed snapshot to a new branch and reconcile a lost response, with local refs/index/config/working copy unchanged. Test allowlist bypasses, restored approvals, resource cleanup, and known injected credentials absent from configuration, journals, logs, and IPC. Exact-value redaction cannot certify arbitrary agent output or artifacts as secret-free.
 
 ### v0.6 — Content imports and global capture
 
@@ -217,10 +219,10 @@ The full design is in [`design/secrets.md`](design/secrets.md).
 
 The full design is in [`design/agent-runs.md`](design/agent-runs.md); its tables (`agent_hosts`, `agent_profiles`, `agent_runs`) are listed there.
 
-- **The Docker Engine API** over its Unix socket, local or forwarded over SSH, grown from Health's client into a shared module.
-- **ACP** between Brainiac and the agent, for the trace, cancel, follow-up prompts, and permission requests, with each agent described as data rather than parsed by its own adapter.
-- **The repository rule holds.** A Git bundle of the start commit goes in, a bundle of the run's branch comes out into a bare repository Brainiac owns, and Push branch pushes from there on the user's action; the user's working copy, index, and refs are never touched.
-- **Credentials through the v0.4.x layer,** read on the Mac at the start of a run and delivered on stdin to the image's entrypoint, not in the container's configuration. The agent never holds a forge token.
+- **One runtime boundary** owns Engine streams, resources, bounded stop, and interruption recovery, sharing Health's socket discovery. Remote continuation requires a durable controller and SSH tunnels.
+- **ACP only, with tested capabilities.** Pinned descriptors feed a versioned, sanitized Brainiac journal; raw protocol and Docker logs are never replay storage.
+- **Immutable input and reviewed output.** App-owned export refs bundle the exact start; a credential-free collector snapshots uncommitted work, verifies hostile artifacts, and imports into app-owned bare repos. Publication is create-only and tied to the exact reviewed result; source checkout/index/refs/config are untouched.
+- **Scoped credentials and recovery.** Mac-resolved leases require approved provider/image/host contexts, use stdin delivery, and never put a publication credential in the workload. Restore requires fresh confirmation. Owned volumes/resources have durable cleanup state; read-only registry tokens wait for enforced egress limits.
 
 ### Additions of v0.6 onward to storage and contracts
 

@@ -8,20 +8,20 @@ mod postgres_server;
 use std::sync::Arc;
 use std::time::Duration;
 
-use brainiac_lib::credentials::{MemorySecrets, Secrets};
+use brainiac_lib::credentials::{CommandRunner, CredentialService, MemoryStore};
 use brainiac_lib::databases::sessions::MAX_SESSIONS;
 use brainiac_lib::databases::{ConnectionService, QuerySessions};
 use brainiac_lib::db::Db;
 use brainiac_lib::models::{
-    Cell, DbAccess, DbEnvironment, DbFailureReason, DbKind, DbPassword, DbTls, ErrorCode, RunMode,
-    RunStatementRequest, SaveDbConnectionRequest, StatementResult, StatementRun,
+    Cell, DbAccess, DbEnvironment, DbFailureReason, DbKind, DbTls, ErrorCode, RunMode,
+    RunStatementRequest, SaveDbConnectionRequest, SecretSource, StatementResult, StatementRun,
 };
 use postgres_server::PgServer;
 
 struct Harness {
     _tmp: tempfile::TempDir,
     core: std::path::PathBuf,
-    secrets: Arc<MemorySecrets>,
+    store: Arc<MemoryStore>,
     sessions: QuerySessions,
 }
 
@@ -29,19 +29,23 @@ fn harness() -> Harness {
     let tmp = tempfile::tempdir().unwrap();
     let core = tmp.path().join("brainiac.sqlite3");
     let db = Db::open(&core).unwrap();
-    let secrets = Arc::new(MemorySecrets::default());
-    let connections = Arc::new(ConnectionService::new(db, secrets.clone()));
+    let store = Arc::new(MemoryStore::default());
+    let credentials = Arc::new(CredentialService::new(
+        store.clone(),
+        CommandRunner::new(tmp.path().join("commands")),
+    ));
+    let connections = Arc::new(ConnectionService::new(db, credentials));
     Harness {
         _tmp: tmp,
         core,
-        secrets,
+        store,
         sessions: QuerySessions::new(connections),
     }
 }
 
 fn postgres(
     server: &PgServer,
-    password: DbPassword,
+    password: SecretSource,
     typed: Option<&str>,
 ) -> SaveDbConnectionRequest {
     SaveDbConnectionRequest {
@@ -58,7 +62,7 @@ fn postgres(
         user: Some("postgres".into()),
         tls: Some(DbTls::Off),
         ca_file: None,
-        password_storage: password,
+        password_source: password,
         password: typed.map(str::to_string),
         statement_timeout_seconds: 30,
         runs_on: None,
@@ -80,7 +84,7 @@ fn sqlite(path: &std::path::Path) -> SaveDbConnectionRequest {
         user: None,
         tls: None,
         ca_file: None,
-        password_storage: DbPassword::Keychain,
+        password_source: SecretSource::Store,
         password: None,
         statement_timeout_seconds: 30,
         runs_on: None,
@@ -128,7 +132,7 @@ async fn sqlite_connections_are_saved_edited_and_deleted() {
     // SQLite keeps none of the server fields, and needs no password.
     assert_eq!(
         (saved.host.as_deref(), saved.password),
-        (None, DbPassword::None)
+        (None, SecretSource::None)
     );
     assert!(saved.file_size.unwrap() > 0);
     assert_eq!(saved.version, 1);
@@ -181,17 +185,14 @@ async fn passwords_go_to_the_keychain_and_never_to_the_database() {
     let saved = connections
         .save(postgres(
             &server,
-            DbPassword::Keychain,
+            SecretSource::Store,
             Some(postgres_server::PASSWORD),
         ))
         .await
         .unwrap();
     assert_eq!(saved.host.as_deref(), Some("127.0.0.1"));
     let account = format!("db:{}", saved.id);
-    assert_eq!(
-        h.secrets.get(&account).unwrap().unwrap().expose(),
-        postgres_server::PASSWORD
-    );
+    assert_eq!(h.store.text(&account).unwrap(), postgres_server::PASSWORD);
     let bytes = std::fs::read(&h.core).unwrap();
     let wal = std::fs::read(h.core.with_extension("sqlite3-wal")).unwrap_or_default();
     let needle = postgres_server::PASSWORD.as_bytes();
@@ -201,7 +202,7 @@ async fn passwords_go_to_the_keychain_and_never_to_the_database() {
     let tested = connections
         .test(postgres(
             &server,
-            DbPassword::Keychain,
+            SecretSource::Store,
             Some(postgres_server::PASSWORD),
         ))
         .await
@@ -212,7 +213,7 @@ async fn passwords_go_to_the_keychain_and_never_to_the_database() {
     );
 
     // Editing without typing a password keeps the one in the Keychain.
-    let mut edit = postgres(&server, DbPassword::Keychain, None);
+    let mut edit = postgres(&server, SecretSource::Store, None);
     edit.id = Some(saved.id.clone());
     edit.expected_version = Some(saved.version);
     connections.save(edit).await.unwrap();
@@ -224,10 +225,10 @@ async fn passwords_go_to_the_keychain_and_never_to_the_database() {
     assert_eq!(first_cell(&runs[0]), Cell::Number(1.0));
 
     // Switching to "ask" removes the Keychain item; deleting removes the row.
-    let mut ask = postgres(&server, DbPassword::Ask, None);
+    let mut ask = postgres(&server, SecretSource::Ask, None);
     ask.id = Some(saved.id.clone());
     let asked = connections.save(ask).await.unwrap();
-    assert!(h.secrets.get(&account).unwrap().is_none());
+    assert!(h.store.text(&account).is_none());
     assert!(!asked.password_ready);
     connections.delete(&saved.id, asked.version).await.unwrap();
 }
@@ -240,7 +241,7 @@ async fn a_connection_that_asks_needs_its_password_once_per_run() {
     let h = harness();
     let connections = h.sessions.connections();
     let saved = connections
-        .save(postgres(&server, DbPassword::Ask, None))
+        .save(postgres(&server, SecretSource::Ask, None))
         .await
         .unwrap();
     assert!(!saved.password_ready);
@@ -253,18 +254,21 @@ async fn a_connection_that_asks_needs_its_password_once_per_run() {
     assert_eq!(locked.code, ErrorCode::PermissionDenied);
 
     // A wrong password is refused by the server and forgotten, so it is asked for again.
-    connections.unlock(&saved.id, "wrong").await.unwrap();
+    connections
+        .unlock(&saved.id, "wrong", saved.version)
+        .await
+        .unwrap();
     let refused = h
         .sessions
         .run(run_request("tab", &saved.id, "select 1", 0, false))
         .await
         .err()
         .unwrap();
-    assert_eq!(refused.code, ErrorCode::PermissionDenied);
+    assert_eq!(refused.code, ErrorCode::Unauthenticated);
     assert!(!connections.get(&saved.id).await.unwrap().password_ready);
 
     let unlocked = connections
-        .unlock(&saved.id, postgres_server::PASSWORD)
+        .unlock(&saved.id, postgres_server::PASSWORD, saved.version)
         .await
         .unwrap();
     assert!(unlocked.password_ready);
@@ -274,11 +278,7 @@ async fn a_connection_that_asks_needs_its_password_once_per_run() {
         .await
         .unwrap();
     assert_eq!(first_cell(&runs[0]), Cell::Number(1.0));
-    assert!(h
-        .secrets
-        .get(&format!("db:{}", saved.id))
-        .unwrap()
-        .is_none());
+    assert!(h.store.text(&format!("db:{}", saved.id)).is_none());
 }
 
 #[tokio::test]
@@ -292,7 +292,7 @@ async fn runs_pick_statements_and_place_errors_in_the_text() {
         .connections()
         .save(postgres(
             &server,
-            DbPassword::Keychain,
+            SecretSource::Store,
             Some(postgres_server::PASSWORD),
         ))
         .await
@@ -360,7 +360,7 @@ async fn each_tab_has_its_own_session_and_reconnects_when_it_is_lost() {
         .connections()
         .save(postgres(
             &server,
-            DbPassword::Keychain,
+            SecretSource::Store,
             Some(postgres_server::PASSWORD),
         ))
         .await
@@ -398,7 +398,7 @@ async fn at_most_eight_sessions_are_open_and_cancel_reaches_the_server() {
         .connections()
         .save(postgres(
             &server,
-            DbPassword::Keychain,
+            SecretSource::Store,
             Some(postgres_server::PASSWORD),
         ))
         .await
@@ -466,7 +466,7 @@ async fn the_schema_is_kept_until_refreshed() {
         .connections()
         .save(postgres(
             &server,
-            DbPassword::Keychain,
+            SecretSource::Store,
             Some(postgres_server::PASSWORD),
         ))
         .await

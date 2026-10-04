@@ -13,6 +13,7 @@ pub mod index;
 pub mod mcp;
 pub mod models;
 pub mod notes;
+pub mod secrets;
 pub mod tasks;
 pub mod vault;
 pub mod watcher;
@@ -120,10 +121,18 @@ pub fn run() {
             }));
             app.manage(Arc::clone(&service));
 
+            // --- Secrets (v0.4.x) -------------------------------------------
+            // One credentials layer for account tokens and database
+            // passwords; the store is chosen here, by target.
+            let credentials = Arc::new(credentials::CredentialService::new(
+                Arc::new(credentials::MacStore),
+                credentials::CommandRunner::new(data_dir.join("secret-commands")),
+            ));
+
             // --- Pull request accounts (v0.3) -------------------------------
             let accounts = forge::AccountService::new(
                 db.clone(),
-                Arc::new(forge::keychain::MacKeychain),
+                Arc::clone(&credentials),
                 forge::http::Http::new()?,
                 forge::Endpoints::production(),
             );
@@ -145,7 +154,7 @@ pub fn run() {
             });
             let pull_requests = Arc::new(forge::PullRequestService::new(
                 Arc::clone(&service),
-                accounts,
+                Arc::clone(&accounts),
                 db.clone(),
                 forge_cache,
                 forge::http::Http::new()?,
@@ -183,8 +192,13 @@ pub fn run() {
             // --- Databases (v0.4) --------------------------------------------
             let connections = Arc::new(databases::ConnectionService::new(
                 stores.core.clone(),
-                Arc::new(credentials::MacSecrets),
+                Arc::clone(&credentials),
             ));
+            app.manage(Arc::new(secrets::SecretsService::new(
+                credentials,
+                accounts,
+                Arc::clone(&connections),
+            )));
             let health_handle = handle.clone();
             let health_emitter: databases::health::HealthEmitter = Arc::new(move |event| {
                 if let Err(e) = health_handle.emit(EVENT_DB_HEALTH_SAMPLE, &event) {
@@ -400,6 +414,12 @@ pub fn run() {
             commands::list_forge_accounts,
             commands::save_forge_account,
             commands::remove_forge_account,
+            commands::test_forge_account,
+            commands::list_secrets,
+            commands::approve_secret_source,
+            commands::refresh_credential,
+            commands::retry_credential_cleanup,
+            commands::find_secret_program,
             commands::set_repository_forge,
             commands::update_workspace_pull_requests,
             commands::list_pull_requests,

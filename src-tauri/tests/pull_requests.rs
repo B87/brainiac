@@ -8,9 +8,9 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 
+use brainiac_lib::credentials::{CommandRunner, CredentialService, MemoryStore};
 use brainiac_lib::db::Db;
 use brainiac_lib::forge::http::Http;
-use brainiac_lib::forge::keychain::MemoryKeychain;
 use brainiac_lib::forge::{AccountService, Endpoints, PullRequestService};
 use brainiac_lib::git::GitService;
 use brainiac_lib::models::*;
@@ -342,7 +342,10 @@ async fn harness(base: &str) -> Harness {
     let http = Http::insecure_for_tests().unwrap();
     let accounts = Arc::new(AccountService::new(
         db,
-        Arc::new(MemoryKeychain::default()),
+        Arc::new(CredentialService::new(
+            Arc::new(MemoryStore::default()),
+            CommandRunner::new(data.join("commands")),
+        )),
         http.clone(),
         endpoints.clone(),
     ));
@@ -379,6 +382,7 @@ impl Harness {
                 .accounts
                 .save(SaveForgeAccountRequest {
                     kind,
+                    source: brainiac_lib::models::SecretSource::Store,
                     token: Some("secret".into()),
                     email,
                     read_only: false,

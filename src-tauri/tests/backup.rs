@@ -38,6 +38,22 @@ async fn an_export_restores_on_another_mac_with_tasks_and_links() {
         .await
         .unwrap();
 
+    // A connection whose password comes from a command: the reference is
+    // exported, and approval is not (SPEC.md, Secrets).
+    h.core
+        .call(|conn| {
+            Ok(conn.execute(
+                r#"INSERT INTO db_connections (id, name, kind, environment, host, port, database,
+                    user_name, tls, secret_source, created_at, updated_at)
+                 VALUES ('c1', 'Billing', 'postgres', 'local', 'db.example.com', 5432, 'app',
+                    'app', 'verify', '{"kind":"command","program":"/opt/homebrew/bin/op","args":["read","op://Work/db"]}',
+                    '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')"#,
+                [],
+            )?)
+        })
+        .await
+        .unwrap();
+
     let exports = h.tmp.path().join("exports");
     fs::create_dir_all(&exports).unwrap();
     let result = backup::export(&h.notes, &exports).await.unwrap();
@@ -135,6 +151,22 @@ async fn an_export_restores_on_another_mac_with_tasks_and_links() {
         .await
         .unwrap();
     assert_eq!(roots, vec![clone_root.display().to_string()]);
+    // The restored connection keeps where its password comes from, and waits
+    // for the user to allow it.
+    let (source, approved): (String, bool) = core
+        .call(|conn| {
+            Ok(conn.query_row(
+                "SELECT secret_source, source_approved FROM db_connections WHERE id = 'c1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?)
+        })
+        .await
+        .unwrap();
+    assert!(
+        source.contains("op://Work/db") && !approved,
+        "{source} {approved}"
+    );
     assert_eq!(
         fs::read_to_string(restored_vault.join("Projects/Plan.md")).unwrap(),
         h.read("Projects/Plan.md")

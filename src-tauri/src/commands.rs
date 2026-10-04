@@ -703,6 +703,64 @@ pub async fn remove_forge_account(
     accounts.remove(kind).await
 }
 
+/// Test on an account's form: check the form's token without saving it.
+#[tauri::command]
+pub async fn test_forge_account(
+    request: SaveForgeAccountRequest,
+    accounts: State<'_, Accounts>,
+) -> AppResult<crate::models::ForgeAccountTestResult> {
+    accounts.test(request).await
+}
+
+// v0.4.x: where secrets come from (SPEC.md, Secrets).
+
+pub type Secrets = Arc<crate::secrets::SecretsService>;
+
+/// Settings → Secrets. Reads no secret and runs no program.
+#[tauri::command]
+pub async fn list_secrets(
+    secrets: State<'_, Secrets>,
+) -> AppResult<crate::models::SecretsOverview> {
+    secrets.overview().await
+}
+
+/// **Allow This Source**: confirm a restored source at the revision shown.
+#[tauri::command]
+pub async fn approve_secret_source(
+    owner: crate::models::CredentialOwner,
+    revision: i64,
+    secrets: State<'_, Secrets>,
+) -> AppResult<crate::models::SecretsOverview> {
+    secrets.approve(&owner, revision).await?;
+    secrets.overview().await
+}
+
+/// **Refresh**: forget the secret kept for this run, so it is read or asked for again.
+#[tauri::command]
+pub async fn refresh_credential(
+    owner: crate::models::CredentialOwner,
+    secrets: State<'_, Secrets>,
+) -> AppResult<()> {
+    secrets.refresh(&owner);
+    Ok(())
+}
+
+/// **Retry** a cleanup or removal of a Keychain item that did not finish.
+#[tauri::command]
+pub async fn retry_credential_cleanup(
+    owner: crate::models::CredentialOwner,
+    secrets: State<'_, Secrets>,
+) -> AppResult<crate::models::SecretsOverview> {
+    secrets.retry(&owner).await?;
+    secrets.overview().await
+}
+
+/// **Find…** on a command source: the full path of a program, by name.
+#[tauri::command]
+pub async fn find_secret_program(name: String) -> AppResult<String> {
+    crate::credentials::find_program(&name).map(|p| p.display().to_string())
+}
+
 /// Repository → Pull requests, **Change…**: where a repository's pull requests come from.
 #[tauri::command]
 pub async fn set_repository_forge(
@@ -915,9 +973,9 @@ pub async fn delete_db_connection(
     health: State<'_, Health>,
 ) -> AppResult<()> {
     let deleted = databases.connections().delete(&id, expected_version).await;
-    // Once the row is gone its sessions and Health go too, even when the
-    // Keychain could not remove the password.
-    if deleted.is_ok() || databases.connections().get(&id).await.is_err() {
+    // Once the connection is gone or being removed, its sessions and Health
+    // go too, even when the Keychain could not remove the password.
+    if deleted.is_ok() || databases.connections().is_removed(&id).await {
         databases.close_connection(&id);
         health.forget(&id);
     }
@@ -944,9 +1002,13 @@ pub async fn parse_db_url(url: String) -> AppResult<crate::models::DbUrlFields> 
 pub async fn unlock_db_connection(
     id: String,
     password: String,
+    expected_version: i64,
     databases: State<'_, Databases>,
 ) -> AppResult<crate::models::DbConnection> {
-    databases.connections().unlock(&id, &password).await
+    databases
+        .connections()
+        .unlock(&id, &password, expected_version)
+        .await
 }
 
 #[tauri::command]

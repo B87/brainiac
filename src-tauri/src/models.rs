@@ -21,6 +21,9 @@ pub enum ErrorCode {
     NotFound,
     Conflict,
     PermissionDenied,
+    /// A server did not accept the credential: a wrong password, or a token
+    /// revoked or expired. The next use reads or asks for it again.
+    Unauthenticated,
     Io,
     Db,
     DependencyUnavailable,
@@ -1741,6 +1744,10 @@ pub struct ForgeAccount {
     /// Scopes or permissions to add to the token for what it cannot do.
     pub missing: Vec<String>,
     pub checked_at: String,
+    /// Where the token comes from: Store (the Keychain item `brainiac/github`
+    /// or `brainiac/bitbucket`), an environment variable, or a command.
+    pub token_source: SecretSource,
+    pub credential: CredentialState,
 }
 
 /// Settings → Accounts: one entry per provider.
@@ -1760,7 +1767,9 @@ pub struct ForgeAccountSlot {
 #[ts(export)]
 pub struct SaveForgeAccountRequest {
     pub kind: ForgeKind,
-    /// A pasted token; `None` uses the one already in the Keychain item.
+    /// Where the token comes from: Store, an environment variable, or a command.
+    pub source: SecretSource,
+    /// Store: a pasted token; `None` uses the one already in the Keychain item.
     pub token: Option<String>,
     /// Bitbucket Cloud only; `None` keeps the account's email.
     pub email: Option<String>,
@@ -1773,6 +1782,7 @@ impl std::fmt::Debug for SaveForgeAccountRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SaveForgeAccountRequest")
             .field("kind", &self.kind)
+            .field("source", &self.source)
             .field("token", &self.token.as_ref().map(|_| "<redacted>"))
             .field("email", &self.email)
             .field("read_only", &self.read_only)
@@ -1785,14 +1795,15 @@ impl std::fmt::Debug for SaveForgeAccountRequest {
 #[ts(export)]
 pub enum SaveForgeAccountOutcome {
     Saved {
-        account: ForgeAccount,
+        // Boxed: an account is much larger than the other variant.
+        account: Box<ForgeAccount>,
+        /// The account was saved, but its old Keychain item could not be
+        /// deleted yet; Settings → Secrets retries.
+        warning: Option<String>,
     },
     /// The token can read but not write. Nothing was saved; repeat the
     /// request with `read_only` to save it as a read-only account.
-    ReadOnly {
-        login: String,
-        missing: Vec<String>,
-    },
+    ReadOnly { login: String, missing: Vec<String> },
 }
 
 /// A repository on GitHub or Bitbucket Cloud, named by its parts.
@@ -2500,19 +2511,6 @@ pub enum DbTls {
     Off,
 }
 
-/// Where a connection's password comes from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "snake_case")]
-#[ts(export)]
-pub enum DbPassword {
-    /// The Keychain item `brainiac/db:<id>`.
-    Keychain,
-    /// Asked for once per run of Brainiac and kept in memory.
-    Ask,
-    /// No password: SQLite, or a server that trusts local users.
-    None,
-}
-
 /// A saved connection. Its password never leaves Rust.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -2531,10 +2529,13 @@ pub struct DbConnection {
     pub tls: Option<DbTls>,
     /// A PEM file of certificate authorities to trust besides the Mac's.
     pub ca_file: Option<String>,
-    pub password: DbPassword,
+    /// Where the password comes from: Store (the Keychain item
+    /// `brainiac/db:<id>`), Ask, None, an environment variable, or a command.
+    pub password: SecretSource,
     /// Whether a statement can run without asking for the password first:
     /// false only for `Ask` before the password was entered in this run.
     pub password_ready: bool,
+    pub credential: CredentialState,
     pub statement_timeout_seconds: u32,
     /// SQLite: the file's size, or `None` when it is missing.
     #[ts(type = "number | null")]
@@ -2567,8 +2568,9 @@ pub struct SaveDbConnectionRequest {
     pub user: Option<String>,
     pub tls: Option<DbTls>,
     pub ca_file: Option<String>,
-    pub password_storage: DbPassword,
-    /// A typed password; `None` keeps the one in the Keychain.
+    /// Where the password comes from. SQLite takes only `None`.
+    pub password_source: SecretSource,
+    /// A typed password, for Store or Ask; `None` keeps the one in the Keychain.
     pub password: Option<String>,
     pub statement_timeout_seconds: u32,
     pub runs_on: Option<RunsOn>,
@@ -2583,7 +2585,7 @@ impl std::fmt::Debug for SaveDbConnectionRequest {
             .field("kind", &self.kind)
             .field("host", &self.host)
             .field("database", &self.database)
-            .field("password_storage", &self.password_storage)
+            .field("password_source", &self.password_source)
             .field("password", &self.password.as_ref().map(|_| "<redacted>"))
             .finish()
     }
@@ -3178,4 +3180,129 @@ pub struct HealthSnapshot {
 pub struct HealthEvent {
     pub sample: HealthSample,
     pub point: HealthPoint,
+}
+
+// ---------------------------------------------------------------------------
+// v0.4.x: where secrets come from (SPEC.md, Secrets)
+// ---------------------------------------------------------------------------
+
+/// Where an account's token or a connection's password comes from. Saved
+/// with the account or connection: it says where to look, never the value.
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[ts(export)]
+pub enum SecretSource {
+    /// Brainiac's own Keychain item, `brainiac/<owner>`: the one source it writes.
+    Store,
+    /// PostgreSQL: typed once per run of Brainiac and kept in memory.
+    Ask,
+    /// No secret: SQLite, or a server that trusts local users.
+    None,
+    /// A variable of Brainiac's own environment, as it was at launch.
+    Environment { name: String },
+    /// What a program prints: its full path and each argument on its own,
+    /// started without a shell.
+    Command { program: String, args: Vec<String> },
+}
+
+// Written by hand so a command's arguments, which may name where a secret
+// is, never reach a log through a derived `Debug`.
+impl std::fmt::Debug for SecretSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SecretSource::Store => f.write_str("Store"),
+            SecretSource::Ask => f.write_str("Ask"),
+            SecretSource::None => f.write_str("None"),
+            SecretSource::Environment { name } => {
+                f.debug_struct("Environment").field("name", name).finish()
+            }
+            SecretSource::Command { program, args } => f
+                .debug_struct("Command")
+                .field("program", program)
+                .field("args", &format_args!("<{} redacted>", args.len()))
+                .finish(),
+        }
+    }
+}
+
+/// A change to a credential that did not finish.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum CredentialPending {
+    /// A save that writes the Keychain item was cut off. Nothing is read
+    /// until the account or connection is saved again.
+    Save,
+    /// The old Keychain item is still to be deleted after a move to another
+    /// source; the new source is in use.
+    Cleanup,
+    /// Being removed; its Keychain item is still to be deleted.
+    Removal,
+}
+
+/// A credential's state, never its value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CredentialState {
+    /// Restored from a backup: the source is not read until the user allows it.
+    pub needs_approval: bool,
+    pub pending: Option<CredentialPending>,
+    /// Advanced when the source, where the secret goes, or the stored secret
+    /// changes; approving names the revision that was shown.
+    #[ts(type = "number")]
+    pub revision: i64,
+}
+
+/// Whose secret: an account or a connection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[ts(export)]
+pub enum CredentialOwner {
+    ForgeAccount { provider: ForgeKind },
+    DbConnection { id: String },
+}
+
+/// The outcome of the last Test of a saved source, in this run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CredentialTest {
+    pub at: String,
+    pub ok: bool,
+    /// What the test found, without any secret: "Connected: PostgreSQL 16.4."
+    pub message: String,
+}
+
+/// One row of Settings → Secrets.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SecretEntry {
+    pub owner: CredentialOwner,
+    /// "GitHub", or the connection's name.
+    pub label: String,
+    /// Where Brainiac sends the secret: "api.github.com as octo",
+    /// "db.example.com:5432/app as app".
+    pub destination: String,
+    pub source: SecretSource,
+    pub state: CredentialState,
+    /// Ask: nothing typed in this run yet.
+    pub input_required: bool,
+    pub last_test: Option<CredentialTest>,
+}
+
+/// Settings → Secrets: the store in use and every account and connection
+/// with a secret. Listing it reads no secret and runs no program.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SecretsOverview {
+    /// Such as "macOS login keychain".
+    pub store: String,
+    pub entries: Vec<SecretEntry>,
+}
+
+/// Test on an account's form: who the token belongs to and what it lacks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ForgeAccountTestResult {
+    pub login: String,
+    pub missing: Vec<String>,
 }

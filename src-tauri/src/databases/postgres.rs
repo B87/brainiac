@@ -1223,7 +1223,7 @@ fn connect_error(e: &tokio_postgres::Error, target: &PgTarget) -> AppError {
             || *code == SqlState::INVALID_AUTHORIZATION_SPECIFICATION
         {
             return AppError::new(
-                ErrorCode::PermissionDenied,
+                ErrorCode::Unauthenticated,
                 format!(
                     "{} refused the password for user {}.",
                     target.place(),
