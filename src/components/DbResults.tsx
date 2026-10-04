@@ -21,6 +21,7 @@ import type {
   ResultColumn,
   StatementRun,
 } from "../lib/ipc";
+import { usePref } from "../lib/prefs";
 import { AlertIcon, ChevronDown, PanelRightIcon } from "./icons";
 import Popover from "./Popover";
 
@@ -62,7 +63,11 @@ function summary(run: StatementRun): string {
 export default function DbResults(props: Props) {
   const { runs, running } = props;
   const [selected, setSelected] = useState(0);
-  const [inspector, setInspector] = useState(true);
+  // Hidden until asked for, then remembered: the grid keeps its width.
+  const [inspector, setInspector] = usePref<boolean>(
+    "brainiac.databases.inspector",
+    false,
+  );
   // A new run shows its last result: the first failure, or the last statement.
   useEffect(() => setSelected(Math.max(0, runs.length - 1)), [runs]);
   const run = runs[selected] ?? null;

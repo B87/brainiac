@@ -129,7 +129,11 @@ test("a connection is added and a query shows its rows", async ({ page }) => {
   await expect(
     grid.locator("td:not(.null)", { hasText: /^NULL$/ }),
   ).toHaveCount(1);
-  // The inspector pretty-prints JSON.
+  // The inspector starts hidden; shown, it pretty-prints JSON.
+  await expect(
+    page.getByRole("complementary", { name: "Inspector" }),
+  ).toHaveCount(0);
+  await page.getByRole("button", { name: "Show inspector" }).click();
   await grid.getByText('{"tier": "gold"}').click();
   await expect(
     page.getByRole("complementary", { name: "Inspector" }),
