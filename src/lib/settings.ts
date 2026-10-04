@@ -4,6 +4,7 @@ export type SettingsSection =
   | "general"
   | "notes"
   | "repositories"
+  | "databases"
   | "accounts"
   | "agents"
   | "backup";
@@ -12,6 +13,7 @@ export const SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "general", label: "General" },
   { id: "notes", label: "Notes and Search" },
   { id: "repositories", label: "Repositories" },
+  { id: "databases", label: "Databases" },
   { id: "accounts", label: "Accounts" },
   { id: "agents", label: "Agent Access" },
   { id: "backup", label: "Backup" },

@@ -485,6 +485,47 @@ export function RepositoriesPane({
   );
 }
 
+export function DatabasesPane({
+  settings,
+  save,
+}: {
+  settings: Settings;
+  save: SaveSettings;
+}) {
+  return (
+    <>
+      <Lede>
+        Connections are added and edited from Databases. Passwords stay in the
+        Keychain; results stay in memory until their tab closes.
+      </Lede>
+      <Group label="History">
+        <div className="settings-group">
+          <label className="settings-row">
+            <span className="flex min-w-[220px] flex-1 flex-col gap-0.5">
+              <span className="font-medium">
+                Keep a history of the statements run
+              </span>
+              <Hint>
+                The SQL, the connection, when, how long, and the row count or
+                error: never the rows. 90 days or 10,000 runs per connection.
+                Each connection's history can be cleared from its side panel.
+              </Hint>
+            </span>
+            <input
+              type="checkbox"
+              role="switch"
+              className="switch"
+              aria-checked={settings.query_history}
+              checked={settings.query_history}
+              onChange={(e) => void save({ query_history: e.target.checked })}
+            />
+          </label>
+        </div>
+      </Group>
+    </>
+  );
+}
+
 export function AccountsPane({ onChanged }: { onChanged: () => void }) {
   return (
     <>

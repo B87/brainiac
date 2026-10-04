@@ -17,6 +17,7 @@ import {
 import {
   ChevronDown,
   ChevronRight,
+  DatabaseIcon,
   GridIcon,
   NoteIcon,
   PanelLeftIcon,
@@ -38,6 +39,8 @@ export type View =
   | { kind: "today" }
   | { kind: "tasks"; scope?: TaskScope }
   | { kind: "notes"; noteId?: string }
+  /** Databases (v0.4): Home and the query tabs, which live in the view. */
+  | { kind: "databases" }
   /** One pull request (v0.3), and the view to go back to. */
   | { kind: "pullRequest"; reference: string; back: View }
   /** Settings, in place of the sidebar and the view, and the view to go back to. */
@@ -187,6 +190,15 @@ export default function Sidebar({
             <span className="flex-1">Set up your vault</span>
           </button>
         )}
+        <button
+          type="button"
+          className="side-row"
+          aria-current={view.kind === "databases"}
+          onClick={() => onView({ kind: "databases" })}
+        >
+          <DatabaseIcon className="shrink-0" />
+          <span className="flex-1">Databases</span>
+        </button>
 
         <div className="mx-2 my-2 h-px bg-line" />
         <button

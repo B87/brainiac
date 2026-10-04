@@ -11,6 +11,10 @@ into the release's section.
 
 ## [Unreleased]
 
+- Databases: save connections to SQLite files and PostgreSQL servers, with passwords in the Keychain, and query them in tabs with completion, a fast result grid, an inspector, Explain, Copy, and Export.
+- Connections are read only unless you allow writes; on Production, writes are turned on per tab and run in a transaction you commit or roll back.
+- Saved queries with `:name` parameters, found in ⌘K and run in one step, and a searchable history of what ran on each connection.
+- Health for a PostgreSQL server: connections, sessions, locks, the slowest queries, the largest tables, and memory and CPU from Docker or Google Cloud SQL.
 - Changes lists each untracked file inside a new folder, instead of only the folder.
 
 ## [0.3.1] - 2026-10-03

@@ -28,6 +28,14 @@ function hints(view: View): Array<[string, string]> {
       ["⌥⌘B", "context"],
       ["/", "filter"],
     ];
+  if (view.kind === "databases")
+    return [
+      ["⌘⏎", "run"],
+      ["⇧⌘⏎", "run all"],
+      ["⌘.", "cancel"],
+      ["⌘S", "save query"],
+      ["⌘T", "new tab"],
+    ];
   if (view.kind === "repository")
     return [
       ["J K", "rows"],

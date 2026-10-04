@@ -8,24 +8,58 @@ import type { ActivitySettings } from "./generated/ActivitySettings";
 import type { AgentAccessStatus } from "./generated/AgentAccessStatus";
 import type { AppError } from "./generated/AppError";
 import type { AppSnapshot } from "./generated/AppSnapshot";
+import type { Cell } from "./generated/Cell";
+import type { CellValue } from "./generated/CellValue";
 import type { ChangesResult } from "./generated/ChangesResult";
+import type { ColumnKind } from "./generated/ColumnKind";
 import type { CommentRequest } from "./generated/CommentRequest";
 import type { CommitDetail } from "./generated/CommitDetail";
 import type { CommitPage } from "./generated/CommitPage";
 import type { Conversation } from "./generated/Conversation";
 import type { CreateNoteRequest } from "./generated/CreateNoteRequest";
 import type { CreateWorkspaceRequest } from "./generated/CreateWorkspaceRequest";
+import type { DbAccess } from "./generated/DbAccess";
+import type { DbColumn } from "./generated/DbColumn";
+import type { DbConnection } from "./generated/DbConnection";
+import type { DbEnvironment } from "./generated/DbEnvironment";
+import type { DbExportResult } from "./generated/DbExportResult";
+import type { DbFailure } from "./generated/DbFailure";
+import type { DbFailureReason } from "./generated/DbFailureReason";
+import type { DbForeignKey } from "./generated/DbForeignKey";
+import type { DbIndex } from "./generated/DbIndex";
+import type { DbKind } from "./generated/DbKind";
+import type { DbPassword } from "./generated/DbPassword";
+import type { DbRelation } from "./generated/DbRelation";
+import type { DbSchema } from "./generated/DbSchema";
+import type { DbSchemaGroup } from "./generated/DbSchemaGroup";
+import type { DbTestResult } from "./generated/DbTestResult";
+import type { DbTls } from "./generated/DbTls";
+import type { DbUrlFields } from "./generated/DbUrlFields";
 import type { DiffOptions } from "./generated/DiffOptions";
 import type { DiffResult } from "./generated/DiffResult";
 import type { DiffSelector } from "./generated/DiffSelector";
+import type { DockerContainer } from "./generated/DockerContainer";
+import type { DockerContainers } from "./generated/DockerContainers";
+import type { ExplainMode } from "./generated/ExplainMode";
+import type { ExportFormat } from "./generated/ExportFormat";
+import type { ExportRequest } from "./generated/ExportRequest";
 import type { ExportResult } from "./generated/ExportResult";
 import type { FetchResult } from "./generated/FetchResult";
 import type { FolderListing } from "./generated/FolderListing";
 import type { ForgeAccountSlot } from "./generated/ForgeAccountSlot";
 import type { ForgeKind } from "./generated/ForgeKind";
+import type { HealthEvent } from "./generated/HealthEvent";
+import type { HealthPoint } from "./generated/HealthPoint";
+import type { HealthSample } from "./generated/HealthSample";
+import type { HealthSession } from "./generated/HealthSession";
+import type { HealthSnapshot } from "./generated/HealthSnapshot";
+import type { HealthStatement } from "./generated/HealthStatement";
+import type { HealthTable } from "./generated/HealthTable";
+import type { HistoryEntry } from "./generated/HistoryEntry";
 import type { IndexStatus } from "./generated/IndexStatus";
 import type { ListCommitsRequest } from "./generated/ListCommitsRequest";
 import type { ListPullRequestsRequest } from "./generated/ListPullRequestsRequest";
+import type { MachineSample } from "./generated/MachineSample";
 import type { MenuEvent } from "./generated/MenuEvent";
 import type { MergeMethod } from "./generated/MergeMethod";
 import type { MergeOptions } from "./generated/MergeOptions";
@@ -38,7 +72,9 @@ import type { NoteLists } from "./generated/NoteLists";
 import type { NoteMissingEvent } from "./generated/NoteMissingEvent";
 import type { NoteRevision } from "./generated/NoteRevision";
 import type { NoteSummary } from "./generated/NoteSummary";
+import type { ParamValue } from "./generated/ParamValue";
 import type { PinEntityType } from "./generated/PinEntityType";
+import type { PlanNode } from "./generated/PlanNode";
 import type { PullRequest } from "./generated/PullRequest";
 import type { PullRequestChangedEvent } from "./generated/PullRequestChangedEvent";
 import type { PullRequestChecks } from "./generated/PullRequestChecks";
@@ -46,7 +82,9 @@ import type { PullRequestDiff } from "./generated/PullRequestDiff";
 import type { PullRequestDiffRequest } from "./generated/PullRequestDiffRequest";
 import type { PullRequestFiles } from "./generated/PullRequestFiles";
 import type { PullRequestList } from "./generated/PullRequestList";
+import type { QueryTab } from "./generated/QueryTab";
 import type { RefsResult } from "./generated/RefsResult";
+import type { RelationKind } from "./generated/RelationKind";
 import type { RelocateRepositoryRequest } from "./generated/RelocateRepositoryRequest";
 import type { RelocationOutcome } from "./generated/RelocationOutcome";
 import type { RenameNoteRequest } from "./generated/RenameNoteRequest";
@@ -62,17 +100,26 @@ import type { ResolveThreadRequest } from "./generated/ResolveThreadRequest";
 import type { RestorePreview } from "./generated/RestorePreview";
 import type { RestoreRequest } from "./generated/RestoreRequest";
 import type { RestoreResult } from "./generated/RestoreResult";
+import type { ResultColumn } from "./generated/ResultColumn";
 import type { ReviewCount } from "./generated/ReviewCount";
 import type { ReviewDrafts } from "./generated/ReviewDrafts";
+import type { RunMode } from "./generated/RunMode";
+import type { RunStatementRequest } from "./generated/RunStatementRequest";
+import type { RunsOn } from "./generated/RunsOn";
+import type { SaveDbConnectionRequest } from "./generated/SaveDbConnectionRequest";
+import type { SavedQuery } from "./generated/SavedQuery";
 import type { SaveForgeAccountOutcome } from "./generated/SaveForgeAccountOutcome";
 import type { SaveForgeAccountRequest } from "./generated/SaveForgeAccountRequest";
 import type { SaveNoteRequest } from "./generated/SaveNoteRequest";
 import type { SaveNoteResult } from "./generated/SaveNoteResult";
+import type { SaveQueryRequest } from "./generated/SaveQueryRequest";
 import type { SaveReviewDraftRequest } from "./generated/SaveReviewDraftRequest";
 import type { SearchRequest } from "./generated/SearchRequest";
 import type { SearchResults } from "./generated/SearchResults";
 import type { SetRepositoryForgeRequest } from "./generated/SetRepositoryForgeRequest";
 import type { Settings } from "./generated/Settings";
+import type { StatementResult } from "./generated/StatementResult";
+import type { StatementRun } from "./generated/StatementRun";
 import type { SubmitReviewRequest } from "./generated/SubmitReviewRequest";
 import type { Task } from "./generated/Task";
 import type { TaskChangedEvent } from "./generated/TaskChangedEvent";
@@ -80,6 +127,7 @@ import type { TaskFields } from "./generated/TaskFields";
 import type { TaskFilter } from "./generated/TaskFilter";
 import type { TeamPulse } from "./generated/TeamPulse";
 import type { TodayView } from "./generated/TodayView";
+import type { TransactionInfo } from "./generated/TransactionInfo";
 import type { TrashedNote } from "./generated/TrashedNote";
 import type { UpdateTaskRequest } from "./generated/UpdateTaskRequest";
 import type { UpdateWorkspaceMembershipRequest } from "./generated/UpdateWorkspaceMembershipRequest";
@@ -156,24 +204,58 @@ export type {
   AgentAccessStatus,
   AppError,
   AppSnapshot,
+  Cell,
+  CellValue,
   ChangesResult,
+  ColumnKind,
   CommentRequest,
   CommitDetail,
   CommitPage,
   Conversation,
   CreateNoteRequest,
   CreateWorkspaceRequest,
+  DbAccess,
+  DbColumn,
+  DbConnection,
+  DbEnvironment,
+  DbExportResult,
+  DbFailure,
+  DbFailureReason,
+  DbForeignKey,
+  DbIndex,
+  DbKind,
+  DbPassword,
+  DbRelation,
+  DbSchema,
+  DbSchemaGroup,
+  DbTestResult,
+  DbTls,
+  DbUrlFields,
   DiffOptions,
   DiffResult,
   DiffSelector,
+  DockerContainer,
+  DockerContainers,
+  ExplainMode,
+  ExportFormat,
+  ExportRequest,
   ExportResult,
   FetchResult,
   FolderListing,
   ForgeAccountSlot,
   ForgeKind,
+  HealthEvent,
+  HealthPoint,
+  HealthSample,
+  HealthSession,
+  HealthSnapshot,
+  HealthStatement,
+  HealthTable,
+  HistoryEntry,
   IndexStatus,
   ListCommitsRequest,
   ListPullRequestsRequest,
+  MachineSample,
   MergeMethod,
   MergeOptions,
   MergeOutcome,
@@ -185,7 +267,9 @@ export type {
   NoteMissingEvent,
   NoteRevision,
   NoteSummary,
+  ParamValue,
   PinEntityType,
+  PlanNode,
   PullRequest,
   PullRequestChangedEvent,
   PullRequestChecks,
@@ -193,7 +277,9 @@ export type {
   PullRequestDiffRequest,
   PullRequestFiles,
   PullRequestList,
+  QueryTab,
   RefsResult,
+  RelationKind,
   RelocateRepositoryRequest,
   RelocationOutcome,
   RenameNoteRequest,
@@ -208,17 +294,26 @@ export type {
   RestorePreview,
   RestoreRequest,
   RestoreResult,
+  ResultColumn,
   ReviewCount,
   ReviewDrafts,
+  RunMode,
+  RunStatementRequest,
+  RunsOn,
+  SaveDbConnectionRequest,
+  SavedQuery,
   SaveForgeAccountOutcome,
   SaveForgeAccountRequest,
   SaveNoteRequest,
   SaveNoteResult,
+  SaveQueryRequest,
   SaveReviewDraftRequest,
   SearchRequest,
   SearchResults,
   SetRepositoryForgeRequest,
   Settings,
+  StatementResult,
+  StatementRun,
   SubmitReviewRequest,
   Task,
   TaskChangedEvent,
@@ -226,6 +321,7 @@ export type {
   TaskFilter,
   TeamPulse,
   TodayView,
+  TransactionInfo,
   TrashedNote,
   UpdateTaskRequest,
   UpdateWorkspaceMembershipRequest,
@@ -511,7 +607,89 @@ export const ipc = {
     invoke<RestorePreview>("preview_restore", { path }),
   restoreBackup: (request: RestoreRequest) =>
     invoke<RestoreResult>("restore_backup", { request }),
+
+  // v0.4: databases
+  listDbConnections: () => invoke<DbConnection[]>("list_db_connections"),
+  saveDbConnection: (request: SaveDbConnectionRequest) =>
+    invoke<DbConnection>("save_db_connection", { request }),
+  deleteDbConnection: (id: string, expectedVersion: number) =>
+    invoke<void>("delete_db_connection", { id, expectedVersion }),
+  testDbConnection: (request: SaveDbConnectionRequest) =>
+    invoke<DbTestResult>("test_db_connection", { request }),
+  parseDbUrl: (url: string) => invoke<DbUrlFields>("parse_db_url", { url }),
+  unlockDbConnection: (id: string, password: string) =>
+    invoke<DbConnection>("unlock_db_connection", { id, password }),
+  linkDbConnection: (
+    connectionId: string,
+    repositoryId: string,
+    linked: boolean,
+  ) =>
+    invoke<DbConnection>("link_db_connection", {
+      connectionId,
+      repositoryId,
+      linked,
+    }),
+  getDbSchema: (connectionId: string, refresh: boolean) =>
+    invoke<DbSchema>("get_db_schema", { connectionId, refresh }),
+  statementParameters: (request: RunStatementRequest) =>
+    invoke<string[]>("statement_parameters", { request }),
+  runStatement: (request: RunStatementRequest) =>
+    invoke<StatementRun[]>("run_statement", { request }),
+  cancelStatement: (tabId: string) =>
+    invoke<void>("cancel_statement", { tabId }),
+  closeDbSession: (tabId: string) =>
+    invoke<void>("close_db_session", { tabId }),
+  endTransaction: (tabId: string, commit: boolean) =>
+    invoke<void>("end_transaction", { tabId, commit }),
+  exportResult: (request: ExportRequest) =>
+    invoke<DbExportResult>("export_result", { request }),
+  quitRollingBack: () => invoke<void>("quit_rolling_back"),
+  listSavedQueries: () => invoke<SavedQuery[]>("list_saved_queries"),
+  saveQuery: (request: SaveQueryRequest) =>
+    invoke<SavedQuery>("save_query", { request }),
+  deleteQuery: (id: string, expectedVersion: number) =>
+    invoke<void>("delete_query", { id, expectedVersion }),
+  rememberQueryParameters: (id: string, values: ParamValue[]) =>
+    invoke<SavedQuery>("remember_query_parameters", { id, values }),
+  queryHistory: (
+    connectionId: string,
+    search: string,
+    offset: number,
+    limit: number,
+  ) =>
+    invoke<HistoryEntry[]>("query_history", {
+      connectionId,
+      search,
+      offset,
+      limit,
+    }),
+  clearQueryHistory: (connectionId: string) =>
+    invoke<void>("clear_query_history", { connectionId }),
+  listQueryTabs: () => invoke<QueryTab[]>("list_query_tabs"),
+  saveQueryTabs: (tabs: QueryTab[]) =>
+    invoke<void>("save_query_tabs", { tabs }),
+  startDbHealth: (connectionId: string) =>
+    invoke<HealthSnapshot>("start_db_health", { connectionId }),
+  stopDbHealth: (connectionId: string) =>
+    invoke<void>("stop_db_health", { connectionId }),
+  signalDbBackend: (connectionId: string, pid: number, terminate: boolean) =>
+    invoke<boolean>("signal_db_backend", { connectionId, pid, terminate }),
+  listDockerContainers: (socket: string | null) =>
+    invoke<DockerContainers>("list_docker_containers", { socket }),
 };
+
+export function onDbHealthSample(
+  handler: (e: HealthEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<HealthEvent>("db_health_sample", (ev) => handler(ev.payload));
+}
+
+/** Quitting waits: these query tabs have a transaction open. */
+export function onDbQuitBlocked(
+  handler: (tabIds: string[]) => void,
+): Promise<UnlistenFn> {
+  return listen<string[]>("db_quit_blocked", (ev) => handler(ev.payload));
+}
 
 export function onRepositoryChanged(
   handler: (e: RepositoryChangedEvent) => void,

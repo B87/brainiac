@@ -6,6 +6,7 @@ import {
   ArchiveIcon,
   BranchIcon,
   ChevronLeft,
+  DatabaseIcon,
   NoteIcon,
   PersonIcon,
   SlidersIcon,
@@ -15,6 +16,7 @@ import {
   AccountsPane,
   AgentsPane,
   BackupPane,
+  DatabasesPane,
   GeneralPane,
   NotesPane,
   RepositoriesPane,
@@ -24,6 +26,7 @@ const ICONS: Record<SettingsSection, ReactNode> = {
   general: <SlidersIcon size={16} />,
   notes: <NoteIcon size={16} />,
   repositories: <BranchIcon size={16} />,
+  databases: <DatabaseIcon size={16} />,
   accounts: <PersonIcon size={16} />,
   agents: <TerminalIcon size={16} />,
   backup: <ArchiveIcon size={16} />,
@@ -175,6 +178,9 @@ export default function SettingsPage({
             )}
             {section === "repositories" && (
               <RepositoriesPane settings={shown} save={save} />
+            )}
+            {section === "databases" && (
+              <DatabasesPane settings={shown} save={save} />
             )}
             {section === "accounts" && <AccountsPane onChanged={onChanged} />}
             {section === "agents" && (

@@ -1,16 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { ENV_LABEL, queryMatches } from "../lib/databases";
 import { shortPath } from "../lib/format";
 import {
   type AppSnapshot,
+  type DbConnection,
   errorMessage,
   ipc,
   type RepositorySummary,
+  type SavedQuery,
   type SearchHit,
   type SearchResults,
 } from "../lib/ipc";
 import { repoTone } from "../lib/repo";
 import { createLatest } from "../lib/stale";
 import {
+  DatabaseIcon,
   FetchIcon,
   FolderIcon,
   GridIcon,
@@ -27,6 +31,14 @@ type Props = {
   snapshot: AppSnapshot;
   onClose: () => void;
   onView: (view: View) => void;
+  /** Databases (v0.4): saved queries run at once; a connection opens a new query. */
+  dbConnections: DbConnection[];
+  dbQueries: SavedQuery[];
+  onDatabase: (
+    request:
+      | { kind: "run_query"; queryId: string }
+      | { kind: "new_query"; connectionId: string },
+  ) => void;
   onOpenRepository: () => void;
   onNewWorkspace: () => void;
   onFetch: () => void;
@@ -78,6 +90,9 @@ export default function CommandPalette({
   onOpenTask,
   onNewNote,
   onNewTask,
+  dbConnections,
+  dbQueries,
+  onDatabase,
 }: Props) {
   const [query, setQuery] = useState("");
   const [scope, setScope] = useState<Scope>("all");
@@ -193,6 +208,31 @@ export default function CommandPalette({
             : undefined,
       });
     if (scope === "all") {
+      const nameOf = (id: string | null) =>
+        dbConnections.find((c) => c.id === id)?.name ?? "no connection";
+      const saved: Item[] = dbQueries
+        .filter((query) => q && queryMatches(query, q) && query.connection_id)
+        .slice(0, FIRST)
+        .map((query) => ({
+          id: `q:${query.id}`,
+          label: query.name,
+          hint: `Run Saved Query · ${nameOf(query.connection_id)}`,
+          snippet: query.description || undefined,
+          icon: <DatabaseIcon size={13} />,
+          action: () => onDatabase({ kind: "run_query", queryId: query.id }),
+        }));
+      if (saved.length) out.push({ title: "Saved queries", items: saved });
+      const databases: Item[] = dbConnections
+        .filter((c) => q && match(c.name))
+        .slice(0, FIRST)
+        .map((c) => ({
+          id: `db:${c.id}`,
+          label: `New Query on ${c.name}`,
+          hint: ENV_LABEL[c.environment],
+          icon: <DatabaseIcon size={13} />,
+          action: () => onDatabase({ kind: "new_query", connectionId: c.id }),
+        }));
+      if (databases.length) out.push({ title: "Databases", items: databases });
       const actions: Item[] = [
         {
           id: "today",
@@ -214,6 +254,13 @@ export default function CommandPalette({
           hint: "",
           icon: <NoteIcon size={13} />,
           action: () => onView({ kind: "notes" }),
+        },
+        {
+          id: "databases",
+          label: "Databases",
+          hint: "",
+          icon: <DatabaseIcon size={13} />,
+          action: () => onView({ kind: "databases" }),
         },
         {
           id: "new-note",
@@ -287,6 +334,9 @@ export default function CommandPalette({
     onOpenTask,
     onNewNote,
     onNewTask,
+    dbConnections,
+    dbQueries,
+    onDatabase,
   ]);
 
   const flat = groups.flatMap((g) => g.items);
