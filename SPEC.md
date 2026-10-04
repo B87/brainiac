@@ -38,7 +38,7 @@ The product can eventually include PR and CI status, calendar context, recurring
 
 ## 2. Release boundaries
 
-**v0.1 — Git viewer and single/multi-repository tracker** shipped as 0.1.3. **v0.2 — knowledge, tasks, and code context** shipped as 0.2.0: one Markdown vault, tasks, Today, keyword search, and links between notes, tasks, and the repositories v0.1 tracks (sections 5–8). **v0.2.x — agent access** lets agents such as Claude Code work with Brainiac's notes, tasks, and repository links through a local MCP server (section 9). **v0.3 — pull requests** is the current release, because the Git features proved the most useful: reviewing and merging the pull requests of a workspace's repositories on GitHub and Bitbucket Cloud (section 10). Content imports, global capture, and AI follow it.
+**v0.1 — Git viewer and single/multi-repository tracker** shipped as 0.1.3. **v0.2 — knowledge, tasks, and code context** shipped as 0.2.0: one Markdown vault, tasks, Today, keyword search, and links between notes, tasks, and the repositories v0.1 tracks (sections 5–8). **v0.2.x — agent access** lets agents such as Claude Code work with Brainiac's notes, tasks, and repository links through a local MCP server (section 9). **v0.3 — pull requests** shipped as 0.3.1: reviewing and merging the pull requests of a workspace's repositories on GitHub and Bitbucket Cloud (section 10). **v0.4 — databases** is the current release: SQLite and PostgreSQL connections, a query editor and result grid, saved queries, and a PostgreSQL server's health, next to the repositories they belong to (section 11). Content imports, global capture, and AI follow it.
 
 | Capability | Release | Scope |
 | --- | --- | --- |
@@ -58,11 +58,12 @@ The product can eventually include PR and CI status, calendar context, recurring
 | Agent access | v0.2.x | Local MCP server for agents such as Claude Code: search, notes, tasks, repository links; off by default |
 | Pull requests | v0.3 | GitHub and Bitbucket Cloud, per workspace and off by default: the workspace's and each repository's pull requests, overview, files changed, review, and merge |
 | Pull request follow-ups | v0.3.x | A daily view of what waits on you, a task's pull request, creating a pull request, agent tools; chosen by use |
-| External content imports | v0.4 | Paste, bookmarks, Markdown copies, articles, `.eml`, provenance and duplicate handling |
-| Global capture window and Inbox | v0.4 | System shortcut, floating capture, Inbox triage of captured and imported items, shared backend state |
-| Authenticated import adapters | v0.4.x | Selected Jira issues/mail messages; provider choice and video transcript acquisition validated separately |
-| Semantic search | v0.5 | Optional local embeddings and hybrid retrieval |
-| Grounded AI answers | v0.6 | Citation-backed local RAG |
+| Databases | v0.4 | SQLite and PostgreSQL connections, read only by default; query editor and result grid, saved queries, history, and a PostgreSQL connection's health |
+| External content imports | v0.5 | Paste, bookmarks, Markdown copies, articles, `.eml`, provenance and duplicate handling |
+| Global capture window and Inbox | v0.5 | System shortcut, floating capture, Inbox triage of captured and imported items, shared backend state |
+| Authenticated import adapters | v0.5.x | Selected Jira issues/mail messages; provider choice and video transcript acquisition validated separately |
+| Semantic search | v0.6 | Optional local embeddings and hybrid retrieval |
+| Grounded AI answers | v0.7 | Citation-backed local RAG |
 | Other pull request providers, CI beyond pull request checks, other Git mutations, sync, plugins | Later | Separate features after the v0.3 providers are useful |
 
 v0.1 requires a usable local Git binary. Detect it on startup and provide a clear setup message when absent; do not silently install developer tools. Core Git viewing works offline and requires no Markdown vault, Ollama instance, remote-service account, or elevated macOS permissions. Ahead/behind information reflects existing local refs and may be stale relative to the remote server until someone fetches: the user, their editor, or Brainiac's Fetch now and opt-in auto-fetch (section 4, Fetching). Fetching is the only operation that writes to a repository, and it touches remote-tracking refs and objects only. From v0.3, pull requests are reviewed and merged on GitHub or Bitbucket, never in the local repository (section 10).
@@ -97,7 +98,7 @@ The sidebar switches scope and shares the window's title bar area with the traff
 
 ### Main window — v0.2
 
-The sidebar gains a section level above the repository tree: **Today**, **Tasks**, and **Notes**, then All repositories, Workspaces, and Pinned as in v0.1. The section that holds the notes is called Notes; "brain" names the whole app. There is no Inbox section before v0.4 (section 6).
+The sidebar gains a section level above the repository tree: **Today**, **Tasks**, and **Notes**, then All repositories, Workspaces, and Pinned as in v0.1. The section that holds the notes is called Notes; "brain" names the whole app. There is no Inbox section before v0.5 (section 6).
 
 - Brainiac reopens the section that was open when it quit. The first launch after upgrading to v0.2 opens Workspaces as before, and the sidebar shows one **Set up your vault** row until a vault is chosen.
 - Today, Tasks, and Notes are never shown empty: before a vault is chosen they offer the vault setup, and Today and Tasks work without a vault.
@@ -157,6 +158,13 @@ Repository name/path filtering and commit-message/hash filtering belong to the G
 | `[` / `]` | Previous / next file in a commit or the changes list |
 | `N` / `P` | Next / previous hunk in the shown diff |
 | `/` | Focus the filter of the current list |
+| `Cmd+Enter`, v0.4 | In a query tab: run the statement under the cursor, or the selection |
+| `Shift+Cmd+Enter`, v0.4 | Run every statement in the query tab |
+| `Cmd+.`, v0.4 | Cancel the running statement |
+| `Cmd+E`, v0.4 | Explain the statement under the cursor |
+| `Cmd+T`, v0.4 | New query tab |
+| `Cmd+1` … `Cmd+9`, v0.4 | In Databases: Home, then the query tabs |
+| `Cmd+S`, v0.4 | In a query tab: save the query |
 | `Cmd+,` | Settings |
 | `Escape` | Dismiss the palette, a dialog, or a menu |
 
@@ -396,7 +404,7 @@ A note is edited as its Markdown text, so a save contains exactly what the user 
 - A task has a title, a short plain-text description, a status (to do, in progress, done, cancelled), an optional planned date, an optional deadline, and links to at most one note and one repository. Work spanning several repositories links a note that covers them. Longer material belongs in the linked note.
 - Planning a task and giving it a deadline are separate actions. Dates are calendar days in the Mac's time zone, so a task due today stays due today when travelling or when the clocks change.
 - Completing a task records when; reopening it clears that. A task is drawn with a round check, never a square checkbox.
-- **To sort:** a new task without a planned date or deadline is *to sort* until it gets one or is marked **Sorted**. v0.2 has no Inbox: everything is created inside the app, and an inbox earns its place only when items arrive faster than they are sorted, which starts with v0.4's capture and imports. Quick notes go to an ordinary `Inbox/` folder in the vault.
+- **To sort:** a new task without a planned date or deadline is *to sort* until it gets one or is marked **Sorted**. v0.2 has no Inbox: everything is created inside the app, and an inbox earns its place only when items arrive faster than they are sorted, which starts with v0.5's capture and imports. Quick notes go to an ordinary `Inbox/` folder in the vault.
 - **Today** lists open tasks that are overdue, due today, or planned for today or an earlier day (unfinished work carries over), then those completed today. Tasks to sort appear as one folded **To sort · N** line above them; expanding it lists them. Each task shows its linked note and repository, the repository with its live state. A side panel lists the repositories in today's work with their state and **Fetch** and **Open**. "Today" follows the Mac's date, including across midnight and after waking.
 - **Tasks** lists all tasks, filtered by status and by **To sort**.
 - Two edits of the same task, from two places, never overwrite each other silently: the later one is refused with a conflict and shows the current task.
@@ -513,3 +521,89 @@ The fifth tab of a repository (`Cmd+5`, after Notes).
 - Bitbucket allows each user about 1,000 requests an hour and GitHub 5,000. A workspace of 30 repositories costs about 400 an hour on Bitbucket and far fewer on GitHub, where asking whether anything changed is free. Brainiac spends them in order (the pull request on screen, then lists, then everything else), asks only for what changed, and shows each account's use. When a provider is out of requests or unreachable, Brainiac shows what it had with its age, says when it will try again, and the Git views keep working.
 - Pull requests, files, and conversations are cached on the Mac so the tabs open at once. The cache is never backed up or exported, can be deleted, and forgets a pull request 14 days after it closes. Review drafts are the user's own text and are backed up with Brainiac's data.
 - An edit refused because the pull request changed since it was shown (new commits, or someone else's edit) shows the current pull request and keeps what the user wrote, like a note save conflict.
+
+## 11. Databases — v0.4
+
+A database client next to the repositories, notes, and tasks it relates to: saved connections to SQLite files and PostgreSQL servers, an editor that runs SQL, a fast result grid, saved queries for the ones used every week, and a live view of a PostgreSQL server's health. It covers what a programmer reaches for daily, not everything a full database tool does (`docs/design/databases.md`, Not in this design). The design behind it, and the options compared, are in that file.
+
+### Boundaries
+
+- **Read only unless allowed.** A connection is read only unless its access is set to Read and write, and even then each tab on a Production connection starts read only. On a read-only connection a statement cannot change data (Safety, below).
+- **Passwords only in the Keychain**, or asked for once per run of Brainiac. They never appear in Brainiac's files, logs, backups, or exports.
+- **Results stay in memory** while their tab is open. Copy and Export are the only ways rows leave the app; the history keeps statements, never rows.
+- Brainiac's own databases (`brainiac.sqlite3`, `index.sqlite3`, `history.sqlite3`, `forge.sqlite3`) can be opened, always read only.
+- Agents get no database tools, and nothing writes SQL for the user.
+
+### Connections
+
+- **Databases** is a sidebar section after Notes (also View › Databases and `Cmd+K`). It opens on **Home**: the connections as cards (kind, where it points, access, and a SQLite file's size), each with **New Query** and, for PostgreSQL, **Health**; the saved queries by folder, each with **Run**, **Open**, **Copy as Markdown**, and **Delete…**; and one field that filters both. Home is always the first tab.
+- **New Connection…** asks for a kind and its fields:
+  - **SQLite:** the database file, chosen with the macOS file dialog. Brainiac never creates a file.
+  - **PostgreSQL:** host, port, database, user, password, and TLS: **Verify** (the default: the Mac's trust store plus an optional CA file, for providers whose certificates the Mac does not trust), **Require without verifying**, or **Off**. Pasting a `postgres://` or `postgresql://` URL fills the fields and moves its password into the password field.
+  - **Name**, **Environment** (Local, Development, Staging, Production), **Access** (Read only, or Read and write; a new Production connection starts read only), the **time limit** of a statement (30 seconds by default), and for PostgreSQL **Runs on** (Health, below).
+  - **Password:** kept in the Keychain (item `brainiac/db:<connection id>`), asked for once each time Brainiac runs, or none. Editing a connection without typing a password keeps the saved one.
+- **Test Connection** connects once and reports the server's version, or the reason in words: a password the server refused, a database that does not exist, nothing listening at the host and port, a host not found, a certificate this Mac does not trust or that is for another host name, or a server that does not offer TLS.
+- A connection's environment is its color everywhere it appears, and its name in words beside it: a strip along the tab's editor, a dot on its tabs, a label on Home and in the switcher. Production is red.
+- A connection can be linked to repositories. A repository's Notes tab lists its linked connections, each with **New Query**, and **Link a connection…** adds one.
+- **Delete Connection…** asks first, removes its Keychain item, and leaves the database itself untouched; saved queries that ran on it keep their SQL and lose their connection.
+
+### The query view
+
+- **Tabs.** Each tab is one editor with its own connection and its own database session, so a setting or a transaction in one tab never reaches another. A tab shows its saved query's name or "Untitled n", a dot in its connection's environment color, and a dot while its text differs from its saved query (or, untitled, is not empty). Tabs and their text are kept across restarts. `Cmd+T` opens a tab; `Cmd+1` is Home and `Cmd+2`…`Cmd+9` the tabs after it. Closing a tab with unsaved text that is not a saved query asks first.
+- **Connection.** The toolbar's connection button names the tab's connection, its environment, and "Read only" when the tab cannot write, and opens a filterable list to switch the tab to another connection, or add one. Switching keeps the text and closes the tab's session.
+- **Editor.** SQL in the connection's dialect, with completion of keywords, tables (qualified, and bare for the default schema), and columns from the schema.
+- **Running.** `Cmd+Enter` runs the statement under the cursor, or each statement in the selection; with the cursor after a statement's `;`, that statement. `Shift+Cmd+Enter` (**Run All**) runs every statement in turn and stops at the first failure; each statement that ran gets its own result. `Cmd+.` (**Cancel**) cancels the statement on the server and stops Run All. A statement that runs longer than the connection's time limit is stopped by the server.
+- **Errors** are shown under the editor with the database's own message, detail, hint, and code, the line and column when the database reports where, and **Go to Error**, which puts the cursor there; the place is also underlined in the editor until the text changes.
+- **Explain** (`Cmd+E`, or the Explain menu) shows the plan of the statement under the cursor as an indented tree with costs and estimated rows, without running it. **Explain Analyze** runs it to measure it, adding actual rows, time, and loops; in a tab that can write it asks first. SQLite shows its query plan, and its Explain Analyze times the statement.
+- **Side panel** (shown or hidden from the toolbar) holds three things for the tab's connection only: **Schema** (schemas, tables, views, and materialized views with PostgreSQL's row estimate; expanding one lists its columns with type, nullability, and default, its indexes, and its foreign keys, and **Select Rows** opens `select * from <table> limit 100` in a new tab; **Refresh Schema** reads it again), **Saved** (the saved queries that run on this connection), and **History**.
+
+### Results
+
+- **Grid.** Only the rows on screen are drawn, so a 10,000-row result scrolls like a short one. Headers show each column's name and type; columns resize by dragging their edge; clicking a header sorts the rows on screen (ascending, descending, then as returned), with NULLs last. Numbers are right-aligned, `NULL` is drawn apart from the text "NULL", and long values are cut with an ellipsis. The arrow keys move the selected cell.
+- **Inspector.** The selected cell's whole value beside the grid: JSON pretty-printed, long text wrapped, binary as its size and hex. A value is cut at 64 KB for the window, and binary at its first 4 KB; the inspector says so, and Export writes the whole value.
+- **Values** are shown as the database prints them: exact `numeric`, intervals as `1 year 2 mons 3 days 04:05:06`, arrays as `{1,2,NULL}`. Integers beyond 2⁵³ stay exact. `timestamptz` is shown in the Mac's time zone with its offset. A few rarely selected PostgreSQL types (geometry such as `polygon`, `tsvector`, the `reg*` types) are shown as their type with "cast to ::text".
+- **How much is fetched.** A statement returns at most 1,000 rows, and says "first 1,000 rows · more available". **Fetch All** runs it again for up to 100,000; it is offered only when the statement ran read only, so fetching more never repeats a write.
+- **Copy** the rows as tab-separated text (pastes into a spreadsheet), CSV, JSON, a Markdown table (pastes into a note), or SQL `INSERT` statements; `Cmd+C` in the grid, or the inspector's **Copy**, copies the selected value.
+- **Export…** writes every row to a CSV or JSON file chosen in the save dialog by running the statement again read only, so it is offered only for statements that ran read only. The file appears only once it is complete.
+- A statement without rows shows its command tag ("UPDATE 42") and whether it committed or waits in the open transaction.
+
+### Saved queries
+
+- **Save Query** (`Cmd+S`) names the tab's text: a name, a folder (`Billing`, `Support/Weekly`), an optional description, and the connection it runs on. Saving a tab opened from a saved query updates it; **Save as New** makes another. If the saved query changed elsewhere since the tab opened it, the save is refused and the tab keeps its text.
+- **Parameters.** `:name` in a statement is a parameter; inside strings, quoted names, comments, and `::type` casts, `:` is not. Running a statement with parameters shows a form above the editor with a field per name, prefilled with the last values, and a **NULL** switch per field. Values are sent as values, never pasted into the SQL: PostgreSQL reads each with the type it expects there and says so when it cannot ("abc" for an integer); SQLite gets a number when the value is one, and text otherwise. A saved query keeps the values it last ran with.
+- Saved queries are listed on Home, in the side panel's **Saved** for their connection, and in `Cmd+K`, which finds them by name, folder, description, or SQL and runs one at once on its connection, asking for its parameters.
+- **Copy as Markdown** puts the query's name, connection, description, and a fenced `sql` block on the clipboard, for a note.
+- Saved queries are the user's own text: kept in Brainiac's data and backed up with it.
+
+### History
+
+- Every statement that runs is recorded: its SQL, the connection, when, how long it took, and the rows returned or changed or the error, never the rows themselves. The side panel's **History** lists the tab's connection's last runs, newest first, and searches their SQL; opening one puts its SQL in a new tab. **Clear History of** *connection* asks first.
+- History keeps 90 days or 10,000 runs per connection, whichever is fewer, and is turned off in Settings → Databases.
+
+### Safety
+
+- **Read only means read only.** On a read-only connection, or in a tab running read only, a statement cannot change data: every PostgreSQL statement runs alone in its own read-only transaction, so it cannot also turn the transaction to read and write, and a SQLite file is opened read only by SQLite itself; `ATTACH` and `VACUUM INTO`, which could write another file, are refused. A statement that tries to write fails with "This connection is read only"; `nextval` is refused the same way. Side effects outside the data, such as advisory locks or `dblink`, are not covered, so a read-only database role remains the real guarantee.
+- **Modes.** A tab on a read-and-write connection runs **Read only**, **Auto-commit** (each statement commits), or **Manual**. New tabs start in Auto-commit, except on Production, where they start read only and turning on writes asks first and applies to that tab only. In Auto-commit a statement still runs read only first, so the result knows whether running it again (Fetch All, Export) is safe; a statement the database refuses as a write then runs for real.
+- **Manual transactions.** The first statement opens a transaction, and a bar above the editor says "Transaction open · 3 statements · since 14:02" with **Commit** and **Roll Back**; a typed `BEGIN`, `COMMIT`, or `ROLLBACK` does the same. After a failed statement PostgreSQL refuses more until Roll Back, and the bar says "Transaction failed · Roll Back to continue". After 5 idle minutes the bar turns amber, since an open transaction holds locks others may wait on; the server ends a transaction left idle for 15 minutes. While a transaction is open the tab stays in Manual. Closing the tab, switching its connection, closing the window, or quitting with a transaction open asks first, and the answer rolls it back.
+- **Sessions.** A tab's session opens on its first run, closes after 10 idle minutes (never with a transaction open), and at most 8 are open at once, the least recently used idle one closing first. A tab whose session was closed or lost runs on a new one and says "reconnected", since settings such as `SET search_path` are gone. A read-only statement that hits a lost connection runs again once on a new session; any other says the connection was lost and that the statement may or may not have been applied, and an open transaction was rolled back by the server.
+- A SQLite file inside a repository is the user's file, like a note in a vault that is a Git repository: Brainiac writes to it only through a read-and-write connection, on a statement the user runs, and touches nothing else in the repository.
+
+### Health
+
+What a PostgreSQL server is doing now and over the last hour, as a tab opened from a connection's card on Home. It is a live view, not monitoring: it samples every 10 seconds only while the tab is visible, on a session of its own named "Brainiac health" with a 2-second time limit, keeps the hour in memory only, and sends no alerts. A SQLite connection has no Health.
+
+- **From PostgreSQL itself**, with nothing to set up:
+  - **Connections** in use against `max_connections`, split into active, idle, and idle in transaction, marked **Near the limit** (an icon and words, and a banner) from 85%.
+  - **Cache hit ratio** and **transactions per second**, with rollbacks and deadlocks, each with a one-hour line.
+  - **Longest open transaction**, and the temporary files written in the last hour (queries that ran out of `work_mem`).
+  - **Sessions**: pid, user, application, state, how long, what it waits for, and its statement; idle-in-transaction and waiting sessions first. Health's own session is not listed.
+  - **Waiting on locks**: each waiting session and the sessions blocking it.
+  - **Most time spent**: the statements that took the most total time, from `pg_stat_statements`; a row opens its statement with `explain` in a new tab. Without the extension, the panel says how to enable it.
+  - **Largest tables**: size with indexes and TOAST as of the last vacuum or analyze (read without waiting for a table someone holds locked), rows, the share of dead rows, and the last autovacuum.
+- Seeing other users' statements needs the `pg_monitor` role; without it they are shown as hidden and Health names the role to grant.
+- **From where the server runs**, because PostgreSQL does not report its machine's memory, CPU, or disk. The connection's **Runs on** names one place:
+  - **Google Cloud SQL** (project and instance): memory, CPU, and disk from Cloud Monitoring, read once a minute and about a minute behind, with the Google credentials `gcloud auth application-default login` saves on the Mac. Brainiac reads that file when needed and never copies it; the account needs the Monitoring Viewer role.
+  - **Docker container** on this Mac: memory against the container's limit (without reclaimable page cache, as `docker stats` shows it), CPU, and disk I/O, from Docker's API; **List Containers** offers the running ones. Brainiac sends Docker only read requests.
+  - **Not set**: Health shows the PostgreSQL panels and offers to set it. Coolify is listed as needing SSH tunnels, which come later.
+- Each value says where it came from: "Postgres", "Docker", or "Cloud Monitoring · 1 min behind".
+- **Cancel Query** and **End Session** are offered on other sessions when the connection's access is Read and write; each asks first, naming the session's user, application, and statement.

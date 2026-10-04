@@ -96,7 +96,25 @@ Ship it in two steps: read-only first (accounts, mapping, the tab, overview, fil
 
 **v0.3.x follow-ups, chosen by use:** the daily view of what waits on you, either a pull requests inbox in the sidebar or a group in Today (open question below); a task's linked pull request shown with its state; Create pull request from a pushed branch; MCP tools for agents to read pull requests and add review drafts the user sends.
 
-### v0.4 — Content imports and global capture
+### v0.4 — Databases
+
+A database client is open most of the working day next to the repositories it belongs to, so it comes before imports and capture. Design: `SPEC.md` section 11 and `architecture.md`, Databases — v0.4, with the options compared in [`design/databases.md`](design/databases.md); started 4 October 2026 on the `v0.4-databases` branch.
+
+- [x] Spike: decode every built-in PostgreSQL type with `tokio-postgres`, `numeric` included; a portal's row limit with `RETURNING`; the read-only wrapper against `SET TRANSACTION READ WRITE`, `CALL` with a `COMMIT`, and `COPY`; rustls against hosted providers' certificates; cancel latency; a corpus for the statement splitter.
+- [x] Read-only client: SQLite and PostgreSQL connections with passwords in the Keychain, Home, the query view with one session per tab, the connection switcher and the side panel's schema, completion, Run and Run All, cancel, timeouts, the result grid with the inspector, Copy. Every connection is read only in this step.
+- [x] Saved queries and history: names, folders, `:name` parameters, `Cmd+K`, search, history in the side panel, tabs that survive a restart, Copy as Markdown.
+- [x] Writes: read-and-write access, Auto-commit and Manual transactions, the Production rules, Explain and Explain Analyze, Export, connections linked to repositories.
+- [x] Health: the PostgreSQL metrics first, then Docker containers, then Cloud SQL through Cloud Monitoring; Coolify waits for SSH tunnels.
+
+Ship it in steps like v0.3: read only first, so it is safe on production from the first day; saved queries next; writes after; Health last.
+
+**Status, 4 October 2026:** every step above is on the `v0.4-databases` branch, uncommitted. The spike's checks are tests against a throwaway PostgreSQL server (`architecture.md`, Decisions); the services are tested the same way and against SQLite files the tests create; Docker and Cloud Monitoring against local stand-ins; the views in WebKit over the fake backend. Left: the exit gate by hand over a week of real use, which is also the first time Brainiac meets a hosted provider's TLS (RDS, Cloud SQL, Supabase, Neon), a real Docker socket, and real Cloud Monitoring credentials; then merge and release 0.4.0. Not built from the design: dropping a SQLite file on the window, copying a selection of rows (Copy takes every row, or one value), and exporting only the rows loaded.
+
+**Exit gate:** for a week, use Brainiac instead of the usual database GUI against a local SQLite file, a local PostgreSQL in Docker, and a hosted production PostgreSQL. Run the weekly saved queries from `Cmd+K` with their parameters; cancel a slow query; copy results into a note; a write on a read-only connection fails and changes nothing; a write on production needs read and write turned on for that tab and leaves a transaction to commit or roll back by hand; Health shows connections, the slowest queries, and the machine's memory for the Docker and Cloud SQL databases; and no password appears outside the Keychain.
+
+**v0.4.x follow-ups, chosen by use:** SSH tunnels (which also bring Coolify's metrics), editing rows in the grid, saved queries as files.
+
+### v0.5 — Content imports and global capture
 
 - [ ] Inbox view for captured and imported items, with triage: file or move, link to a task or repository, create a task.
 - [ ] Text/selection capture, URL bookmarks, Markdown copies, source provenance, resumable import jobs.
@@ -104,14 +122,16 @@ Ship it in two steps: read-only first (accounts, mapping, the tab, overview, fil
 - [ ] `.eml` import, safe body conversion, message identity, original retention and export/restore.
 - [ ] Duplicate/update preview, personal-annotation preservation, source filters, content-scope labels.
 - [ ] Video reference and supplied timestamped transcript support; validate richer transcript acquisition separately.
+- [ ] Note templates: a templates folder in the vault, New Note from Template and Insert Template with a preview, Obsidian's date syntax, rendered in Rust with bounded work.
+- [ ] Kindle highlights from `My Clippings.txt`: one note per book from editable templates, books in any device language, re-import that adds only new highlights after a preview and keeps the user's edits.
 - [ ] Configurable global shortcut, floating capture, menu bar entry, background lifetime preference.
 - [ ] Shared backend state, snapshot recovery, capture draft retention, macOS focus tests.
 
-**Exit gate:** import representative articles/emails/issue excerpts/video references, find their captured content offline, identify metadata-only items, preserve annotations, retry failed imports without duplicates, and capture from another app without losing drafts or main-window updates.
+**Exit gate:** import representative articles/emails/issue excerpts/video references, find their captured content offline, identify metadata-only items, preserve annotations, retry failed imports without duplicates, and capture from another app without losing drafts or main-window updates. Create notes from an Obsidian template copied unchanged; import a `My Clippings.txt` from a Kindle in another language, then import again after new and extended highlights, with the book note renamed, moved, and annotated in between, and nothing duplicated or overwritten.
 
-**v0.4.x follow-up:** add one authenticated source adapter chosen by daily use, Jira or the email provider. Validate its authentication/deployment and selected-item import before expanding providers. Native share/browser entry points and a forwarding service remain separate follow-ups.
+**v0.5.x follow-up:** add one authenticated source adapter chosen by daily use, Jira or the email provider. Validate its authentication/deployment and selected-item import before expanding providers. Native share/browser entry points and a forwarding service remain separate follow-ups.
 
-### v0.5 — Semantic retrieval
+### v0.6 — Semantic retrieval
 
 - [ ] Validate sqlite-vec/Rust/bundled-SQLite release integration.
 - [ ] Choose and document a local embedding profile using actual notes.
@@ -120,7 +140,7 @@ Ship it in two steps: read-only first (accounts, mapping, the tab, overview, fil
 
 **Exit gate:** a labeled set of roughly 30 real queries demonstrates useful retrieval beyond keyword search; deleted/stale chunks are excluded and Ollama failure leaves core search functional.
 
-### v0.6 — Grounded AI answers
+### v0.7 — Grounded AI answers
 
 - [ ] Context assembly, generation model configuration, streamed channel output.
 - [ ] Openable citations, stale-source labeling, insufficient-evidence behavior.
@@ -130,7 +150,7 @@ Ship it in two steps: read-only first (accounts, mapping, the tab, overview, fil
 
 ### Later — Life management and integrations
 
-Expand the v0.4 import adapters and consider pull requests on GitLab and Bitbucket Data Center; CI beyond the checks a pull request shows; the In flight view of each change from local branch to merged (Pull request follow-ups, below); Linear references; local calendar context; recurring tasks and reminders; daily/weekly review templates; optional graph navigation; explicit branch/dev-server actions; multiple vaults; sync; automation or plugin APIs.
+Expand the v0.5 import adapters and consider pull requests on GitLab and Bitbucket Data Center; CI beyond the checks a pull request shows; the In flight view of each change from local branch to merged (Pull request follow-ups, below); Linear references; local calendar context; recurring tasks and reminders; daily/weekly review notes built on v0.5 templates; Kindle highlights from Amazon's cloud notebook or Readwise (`design/templates-and-kindle.md`, Where highlights come from); optional graph navigation; explicit branch/dev-server actions; multiple vaults; sync; automation or plugin APIs.
 
 Remote services require their own authentication, rate-limit, cache, error, and privacy requirements. Polling with backoff is sufficient for an initial desktop integration; webhooks need an explicitly designed delivery mechanism. Do not make these dependencies of the core app.
 
@@ -141,13 +161,17 @@ Remote services require their own authentication, rate-limit, cache, error, and 
 | Syntax in vaults brought from other tools | No existing vault to sample: a fixture vault covers CommonMark, GFM, wikilinks, and common Obsidian syntax (callouts, footnotes, embeds), which is kept as text; document what Brainiac does not style | v0.2 compatibility claim |
 | macOS minimum and Intel requirement | Verify target hardware, dependencies, and packaged builds | Release distribution |
 | Real-world workspace size and Git cost | Benchmark representative workspace/repositories | v0.1 watcher tuning |
-| Quick-capture focus behavior | macOS/Spaces/fullscreen prototype | v0.4 |
+| SSH tunnels for databases from the start | Check whether the databases used at work are reachable without a bastion; a tunnel opened in Terminal or the Cloud SQL Auth Proxy is the fallback | v0.4 read-only client |
+| Hosted PostgreSQL providers to support | Choose among Cloud SQL, RDS, Supabase, and Neon; the spike verified TLS only against a local CA, so the exit gate is the first test against a hosted provider | v0.4 exit gate |
+| Health on Cloud SQL | Whether `pg_monitor` can be granted and `pg_stat_statements` is on; Google credentials from `gcloud` only, or also a service account key (`design/databases.md`, Open questions) | v0.4 Health |
+| Quick-capture focus behavior | macOS/Spaces/fullscreen prototype | v0.5 |
+| Reading `My Clippings.txt` from current Kindles | Check whether recent models mount as a USB drive or use MTP; collect files in several device languages, with notes and export-limited books (`design/templates-and-kindle.md`, Open questions) | v0.5 Kindle device detection and language table |
 | Vault size and note sizes | Generated vaults of 1,000 and 10,000 notes measured (S3; `docs/architecture.md`, Decisions); check against the real vault after a month of use, with a cold file cache | Confirming v0.2 batch sizes and revision budget |
 | Snapshot size and retention | Measure `brainiac.db` and `history.db` on a real vault after a month | v0.2 backup defaults |
 | Restore onto another Mac | Fixture: vault and snapshot restored where paths and repository locations differ | v0.2 restore |
-| Embedding model and dimensions | Local retrieval evaluation, model availability and license review | v0.5 schema/profile selection |
-| Chunking notes, code, and imports | Labelled set of about 30 real queries; compare heading-aware splits, size caps, and overlap by recall@k | v0.5 chunker version 1 |
-| SQLite-vector integration compatibility | Build and query a bundled release executable | v0.5 |
+| Embedding model and dimensions | Local retrieval evaluation, model availability and license review | v0.6 schema/profile selection |
+| Chunking notes, code, and imports | Labelled set of about 30 real queries; compare heading-aware splits, size caps, and overlap by recall@k | v0.6 chunker version 1 |
+| SQLite-vector integration compatibility | Build and query a bundled release executable | v0.6 |
 | `sqlite-vec` approximate indexes | Track whether ANN indexes reach a stable release; brute force is enough at personal scale | Only if a vault outgrows brute force |
 | Remote integrations and company data constraints | First providers chosen: GitHub and Bitbucket Cloud (v0.3). Confirm the scopes each employer allows and whether caching pull request content locally is acceptable | v0.3 accounts |
 | Where the daily view of pull requests lives | Use v0.3's workspace tab for a few weeks, then choose a pull requests inbox in the sidebar or a group in Today (Pull request follow-ups, below) | v0.3.x |
@@ -160,33 +184,35 @@ These unknowns do not prevent implementing the core domain and persistence servi
 
 ## Designs for later releases
 
-v0.2's design (views, notes, tasks, search, storage, and backups) moved to [`SPEC.md`](../SPEC.md) sections 5–8 and [`architecture.md`](architecture.md) when the release started, v0.2.x's agent access to `SPEC.md` section 9 and `architecture.md`, Agent access, and v0.3's pull requests to `SPEC.md` section 10 and `architecture.md`, Pull requests — v0.3.
+v0.2's design (views, notes, tasks, search, storage, and backups) moved to [`SPEC.md`](../SPEC.md) sections 5–8 and [`architecture.md`](architecture.md) when the release started, v0.2.x's agent access to `SPEC.md` section 9 and `architecture.md`, Agent access, v0.3's pull requests to `SPEC.md` section 10 and `architecture.md`, Pull requests — v0.3, and v0.4's databases to `SPEC.md` section 11 and `architecture.md`, Databases — v0.4.
 
-### Additions of v0.4 onward to storage and contracts
+### Additions of v0.5 onward to storage and contracts
 
 #### Data model of later releases
 
 | Entity | File | Essential fields and constraints | Release |
 | --- | --- | --- | --- |
-| `note_sources` | core | `note_id`, source type, canonical URL/provider ID, source time, import time, content scope, source hash; derived from note provenance | v0.4 |
-| `import_jobs` | core | `id`, input reference, adapter, state, staged payload reference, error, result note ID, idempotency key | v0.4 |
-| `embedding_profiles` | core | `id`, provider, model name and digest, dimensions, distance metric, normalization, chunker version, state | v0.5 |
-| `note_chunks` | index | `id`, `note_id`, profile, source hash, heading, byte/line range, text, chunk hash | v0.5 |
-| vector tables | index | One `vec0` table per embedding profile: chunk ID, embedding, filter columns | v0.5 |
+| `note_sources` | core | `note_id`, source type, canonical URL/provider ID, source time, import time, content scope, source hash; derived from note provenance | v0.5 |
+| `import_jobs` | core | `id`, input reference, adapter, state, staged payload reference, error, result note ID, idempotency key | v0.5 |
+| `import_items` | core | adapter, item ID (such as a Kindle highlight's), `note_id`, first seen, hash of the block as rendered, disposition (`added`, `superseded`, `dismissed`); the ledger that stops a deleted item from returning on re-import | v0.5 |
+| `embedding_profiles` | core | `id`, provider, model name and digest, dimensions, distance metric, normalization, chunker version, state | v0.6 |
+| `note_chunks` | index | `id`, `note_id`, profile, source hash, heading, byte/line range, text, chunk hash | v0.6 |
+| vector tables | index | One `vec0` table per embedding profile: chunk ID, embedding, filter columns | v0.6 |
 
 #### Commands of later releases
 
 | Command | Important input/output |
 | --- | --- |
 | `prepare_import` / `commit_import` / `list_import_jobs` | Source input or job ID; preview/provenance, duplicate choice, resulting note, retry state |
-| `configure_shortcut` | v0.4: validated binding and registration result |
-| `semantic_search` / `ask_brain` / `cancel_job` | v0.5+: profile/request IDs, results or response channel |
+| `configure_shortcut` | v0.5: validated binding and registration result |
+| `list_templates` / `render_template` / `create_note_from_template` | v0.5: template kind, path, title, and folder; rendered text with cursor offset and undefined names, or an error with line and column; the new note |
+| `semantic_search` / `ask_brain` / `cancel_job` | v0.6+: profile/request IDs, results or response channel |
 
 #### Shortcuts of later releases
 
 | Shortcut | Action |
 | --- | --- |
-| `Cmd+Shift+Space`, v0.4 | Configurable global quick capture |
+| `Cmd+Shift+Space`, v0.5 | Configurable global quick capture |
 
 ### Pull request follow-ups — v0.3.x and later
 
@@ -194,11 +220,12 @@ v0.3's design moved to `SPEC.md` section 10 and `architecture.md`, Pull requests
 
 - **The daily view of what waits on you, across workspaces (v0.3.x).** Two designs were compared: a Pull requests inbox in the sidebar, with Today unchanged; or a "Pull requests waiting on you" group in Today, folded like To sort, with a review you submitted listed under Completed today and `Cmd+K` finding any pull request. Choose after using v0.3's workspace tab; either is a filter over data v0.3 already has.
 - **A task's pull request (v0.3.x):** an explicit link from a task to a pull request, shown with its state in Today and Tasks.
+- **Issue keys (v0.3.x):** recognize issue-tracker keys such as `ABC-123` in branch names, commit subjects, pull request titles, and task titles, from local Git and v0.3's pull request cache, with no tracker account or API. A task whose title carries a key shows the branches and pull requests with that key and their state, and a key opens the issue in the tracker. Settings lists the project keys to recognize, so `UTF-8` or `SHA-256` never match, plus the tracker's base URL. This replaces syncing tasks with Jira for now (`design/task-connections.md`, Status).
 - **Create a pull request from a pushed branch (v0.3.x):** title from a linked task, description from the commits, reviewers suggested from local history; Brainiac does not push.
 - **Agent tools (v0.3.x):** read pull requests, diffs, and conversations, and add review drafts the user opens and sends; agents never submit, approve, merge, or close. Pull request text is written by other people, so agents are told to treat it as data.
 - **In flight (Later):** each of your changes from local branch to merged (local only, pushed without a pull request, in review, needs changes, ready, merged), with the reviews you owe beside them. It needs every local branch's commits ahead of the default branch and matching branches to pull requests across forks and reused names, which is where most of its cost lies. Store each pull request's head repository, branch, and commit from v0.3 so it needs no migration.
 
-### Capture and imports — v0.4
+### Capture and imports — v0.5
 
 Import is a core way to create knowledge, available from the same capture interface as writing a note. Sources feed a common Rust ingestion pipeline and become ordinary Markdown notes in the Inbox. Importers do not create separate knowledge silos or require AI to produce a useful result.
 
@@ -214,12 +241,13 @@ Later, the same capture action can be reached from global quick capture, a brows
 
 | Source | Captured note | Initial path | Richer integration |
 | --- | --- | --- | --- |
-| Pasted text/selection | Supplied text, optional source URL, and personal comment | v0.4 paste | Browser extension supplies selected text and page metadata |
-| Markdown file | Independent copy in the vault, preserving original source reference | v0.4 picker/drop | Batch import with preview |
-| Web page | Article title, source URL, author/date when available, extracted readable body | v0.4 URL bookmark; v0.4 extraction | Browser capture for authenticated or client-rendered pages |
-| Email | Subject, sender/recipients/date, selected message body, message identity | Paste in v0.4; `.eml` in v0.4 | Selected-message import through an authorized mailbox connector |
-| Jira issue | Issue key/title, description, status/assignee snapshot, source link | Paste text or bookmark in v0.4 | Explicit fetch through configured Jira deployment/account |
-| YouTube video | Video link/title and user's notes; timestamped transcript when supplied/available | Bookmark and pasted transcript in v0.4 | Metadata and supported transcript acquisition |
+| Pasted text/selection | Supplied text, optional source URL, and personal comment | v0.5 paste | Browser extension supplies selected text and page metadata |
+| Markdown file | Independent copy in the vault, preserving original source reference | v0.5 picker/drop | Batch import with preview |
+| Web page | Article title, source URL, author/date when available, extracted readable body | v0.5 URL bookmark; v0.5 extraction | Browser capture for authenticated or client-rendered pages |
+| Email | Subject, sender/recipients/date, selected message body, message identity | Paste in v0.5; `.eml` in v0.5 | Selected-message import through an authorized mailbox connector |
+| Jira issue | Issue key/title, description, status/assignee snapshot, source link | Paste text or bookmark in v0.5 | Explicit fetch through configured Jira deployment/account |
+| YouTube video | Video link/title and user's notes; timestamped transcript when supplied/available | Bookmark and pasted transcript in v0.5 | Metadata and supported transcript acquisition |
+| Kindle highlights | One note per book: highlights and the user's Kindle notes in book order, rendered from templates | `My Clippings.txt` picker/drop in v0.5 | Cloud notebook or Readwise, only as a separately reviewed opt-in |
 
 Saving a URL is distinct from capturing its contents. Every import has a `content_scope`: `full_text`, `excerpt`, `transcript`, or `metadata_only`. A bookmark-only note must not appear to have the full article or video available for search or RAG.
 
@@ -252,7 +280,7 @@ Job states are `queued`, `acquiring`, `extracting`, `awaiting_review`, `saving`,
 - Embed a `brainiac_source` frontmatter object containing source type, stable source ID/URL, imported time, source modified time when known, content scope, and source-content hash. Keep provider-specific metadata in a namespaced object.
 - Put personal commentary in a clearly separate section from captured source text. Summaries, when added later, are labeled generated content and never replace the source body.
 - Keep source material useful offline after import. Original web content may later change or disappear; Open original is navigation, not the storage strategy.
-- Retain raw originals such as `.eml` in a vault-local `attachments/imports/<import-id>/` folder in v0.4. Save relative references in frontmatter and include them in export/restore. Unsupported attachments stay as originals, with no implied indexing.
+- Retain raw originals such as `.eml` in a vault-local `attachments/imports/<import-id>/` folder in v0.5. Save relative references in frontmatter and include them in export/restore. Unsupported attachments stay as originals, with no implied indexing.
 - Imported Markdown copies get a new Brainiac ID; preserve any original ID as source metadata so copying does not create identity collisions. Do not modify the source file. Detect dependencies such as relative images and warn when they cannot be copied/resolved by the supported importer.
 - Source caches are reconstructible from provenance. Pending acquisition credentials and job state stay outside note files.
 
@@ -276,16 +304,27 @@ Snapshot import is the default. Live synchronization, scheduled bulk acquisition
 
 #### Import rollout
 
-1. **v0.4 core:** text/selection capture, URL bookmarks, Markdown copies, provenance, Inbox triage, duplicate/retry handling.
-2. **v0.4 source adapters:** public-page extraction and `.eml` parsing/original retention, with explicit bookmark/paste fallback.
-3. **v0.4.x:** one authenticated connector, selected by daily use—Jira or the email provider—and validated video metadata/transcript improvements.
+1. **v0.5 core:** text/selection capture, URL bookmarks, Markdown copies, provenance, Inbox triage, duplicate/retry handling.
+2. **v0.5 source adapters:** public-page extraction and `.eml` parsing/original retention, with explicit bookmark/paste fallback; Kindle highlights from `My Clippings.txt`, after note templates.
+3. **v0.5.x:** one authenticated connector, selected by daily use—Jira or the email provider—and validated video metadata/transcript improvements.
 4. **Later:** browser/share entry points, optional forwarding service, batches, and explicit synchronization.
 
-All external content-import behavior starts in v0.4. Selecting local repositories and discovering them inside a folder in v0.1 is workspace configuration, separate from importing knowledge content.
+All external content-import behavior starts in v0.5. Selecting local repositories and discovering them inside a folder in v0.1 is workspace configuration, separate from importing knowledge content.
 
 **Acceptance scenario:** capture an email, an issue excerpt, an article, and a video reference into the Inbox; add commentary, create a task from one item, find captured material offline, open each original source, retry an interrupted import without duplicates, and identify which items contain only metadata.
 
-### Global capture and window state — v0.4
+### Note templates and Kindle highlights — v0.5
+
+The full design, with the research behind it, is in [`design/templates-and-kindle.md`](design/templates-and-kindle.md).
+
+- **Templates first.** Templates are ordinary notes in a templates folder of the vault, chosen in Settings. **New Note from Template…** creates a note from one and **Insert Template…** inserts one at the cursor, both after a preview. Obsidian's `{{title}}`, `{{date}}`, `{{time}}`, and `{{date:YYYY-MM-DD}}` work unchanged, so templates can be copied from an Obsidian vault. The new note never inherits the template's `brainiac_id`, and links inside templates are not indexed as the vault's.
+- **Rendering in Rust with MiniJinja.** Its Jinja syntax is close to the Nunjucks of Obsidian's Kindle plugin. Its `fuel` feature bounds the work of a render; there is no template loader, no function that reaches files or the network, and output stops at 5 MiB. Missing values render empty and are listed in the preview.
+- **Kindle highlights from `My Clippings.txt` only.** It is the one source that covers sideloaded books and personal documents, and it needs no account. Amazon's cloud notebook covers only purchased books, needs the user's Amazon session, and is excluded by Amazon's Conditions of Use for extraction tools, so it stays out of v0.5.
+- **Parsing.** The file has no published format and follows the device's language: parse kind, location, page, and date through a keyword table per language, and fall back to the entry's structure. Drop exact duplicates, show extended or edited highlights as revisions, and label highlights cut short by publishers' export limits as truncated.
+- **One note per book from two templates,** one for the note and one for each highlight, with variable names taken from Obsidian's Kindle plugin. The note template renders once and is the user's afterwards; Brainiac owns only `brainiac_source` and the highlight blocks it adds.
+- **Re-import adds, never rewrites.** The book's note is found by its `brainiac_id` through a book key (normalized title and author), not its path. Each highlight carries an Obsidian block ID, `^kh-…`, from the book, its location, and its text. New highlights go next to their neighbours in book order after a preview; a revised highlight replaces its block only if the user has not edited it. `import_items` in `brainiac.db` remembers what was imported, so a highlight the user deleted does not return.
+
+### Global capture and window state — v0.5
 
 Use the official `tauri-plugin-global-shortcut` from Rust. Default to `Cmd+Shift+Space`, allow rebinding, and show shortcut registration conflicts. Handle pressed events once; key release must not trigger a second capture. [Tauri global shortcut plugin](https://v2.tauri.app/plugin/global-shortcut/)
 
@@ -304,7 +343,7 @@ Rust is the shared authority across windows:
 
 Events invalidate caches; they are not a durable event log. Include entity ID, version, and origin window. Frontends discard older events and unsubscribe on teardown. Dirty editors use the conflict contract even when a change originated in another app window.
 
-### Semantic search — v0.5
+### Semantic search — v0.6
 
 Keep lexical search fully functional when semantic search is disabled, indexing is incomplete, or Ollama is unavailable.
 
@@ -335,7 +374,7 @@ Use the `sqlite-vec` Rust binding with the same bundled SQLite used by `rusqlite
 - Start with notes only. Task, commit-message, and source-code embeddings are separate future scope.
 - Model installation is an explicit user action. Show download/storage requirements, indexing progress, pause, cancellation, and retry.
 
-### Ask my brain — v0.6
+### Ask my brain — v0.7
 
 RAG uses hybrid retrieval to answer questions about saved notes. It adds synthesis after retrieval is useful and measured.
 
