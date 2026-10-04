@@ -42,7 +42,7 @@ flowchart TD
     Main[Main WebView] --> IPC[Tauri commands]
     Agent[Agent through brainiac mcp, v0.2.x] --> MCP[MCP server]
     MCP --> Services
-    Capture[Quick capture WebView, v0.5] --> IPC
+    Capture[Quick capture WebView, v0.6] --> IPC
     IPC --> Services[Rust domain services]
     Services --> Files[Markdown files, v0.2]
     Services --> DB[SQLite worker]
@@ -50,8 +50,8 @@ flowchart TD
     Queue --> Services
     Services --> Git[Git subprocesses, v0.1]
     Services --> Forges[GitHub and Bitbucket Cloud, v0.3]
-    Services --> AI[Ollama, v0.6+]
-    DB --> Search[FTS5, v0.2; vectors, v0.6]
+    Services --> AI[Ollama, v0.7+]
+    DB --> Search[FTS5, v0.2; vectors, v0.7]
     Services --> Events[Committed change events]
     Events --> Main
     Events --> Capture
@@ -107,7 +107,7 @@ brainiac/
 
 The Claude Code plugin is outside the Cargo project: `.claude-plugin/marketplace.json` at the repository root lists `plugins/brainiac/`, which holds `.claude-plugin/plugin.json`, `.mcp.json`, and `skills/brainiac/SKILL.md`.
 
-Create modules as their behavior is implemented; the scaffold does not need empty placeholders for every file. Add `imports.rs` in v0.5, then AI modules at their milestones.
+Create modules as their behavior is implemented; the scaffold does not need empty placeholders for every file. Add `imports.rs` in v0.6, then AI modules at their milestones.
 
 In Rust, a **package** is described by `Cargo.toml`; a **crate** is a compilation unit, such as its library or executable; a **module** organizes code within a crate. Tauri's scaffold has a small desktop binary (`main.rs`) that delegates to the application library (`lib.rs`). This is scaffold reuse, not a separate backend service.
 
@@ -122,7 +122,7 @@ Files become modules through declarations such as `mod notes;` in `lib.rs`. A di
 - Start with two concurrent Git status jobs and one embedding job; adjust after measurement.
 - On sleep, suspend timers; on wake and application activation, reconcile stale state.
 - On quit, flush accepted saves and draft checkpoints, cancel jobs, close the database, and unregister shortcuts. If flushing fails, preserve the draft and offer retry or quit with recovery.
-- Support a single application instance. Before v0.5, closing the last window quits after flushing. In v0.5, closing the window may keep capture available in the menu bar; `Cmd+Q` still quits.
+- Support a single application instance. Before v0.6, closing the last window quits after flushing. In v0.6, closing the window may keep capture available in the menu bar; `Cmd+Q` still quits.
 
 ## Storage
 
@@ -162,7 +162,7 @@ Only two things cannot be rebuilt: the vault's Markdown files and a small core d
 | --- | --- | --- | --- |
 | Vault (`.md` files) | Note text, frontmatter including `brainiac_id`, links written in notes | Source of truth | By the user, and in Brainiac's export |
 | `brainiac.db` | Settings, repositories, workspaces, pins, activity, vaults, note identity, tasks and their search table, note-to-repository links | No | Snapshots before migrations and daily, and export |
-| `index.db` | Note bodies, the notes search table, parsed links between notes; chunks and vectors from v0.6 | Yes, from the vault | Never; rebuilt after a restore |
+| `index.db` | Note bodies, the notes search table, parsed links between notes; chunks and vectors from v0.7 | Yes, from the vault | Never; rebuilt after a restore |
 | `history.db` | Note revisions and draft checkpoints; from v0.4, query run history and open query tabs | No, but optional | Its own snapshots, less often than `brainiac.db` |
 | `forge.db`, v0.3 | Cached pull requests, files, conversations, checks, and each request's ETag | Yes, from the providers | Never |
 
@@ -173,7 +173,7 @@ Only two things cannot be rebuilt: the vault's Markdown files and a small core d
 
 ### Data model
 
-Tables of v0.5 onward are in `docs/roadmap.md` and are not created before their release; v0.3's and v0.4's are created by the code that first uses them. IDs are UUID strings and timestamps are UTC instants. The v0.1 schema is `src-tauri/migrations/0001_init.sql`; v0.2's core tables arrive in `0002`, v0.3's accounts in `0003`, its forge mapping in `0004`, and review drafts in `0005`; v0.4's databases in `0006`; `index.db` and `history.db` get their own migration lists.
+Tables of v0.5 onward are in `docs/roadmap.md` or the design it points to and are not created before their release; v0.3's and v0.4's are created by the code that first uses them. IDs are UUID strings and timestamps are UTC instants. The v0.1 schema is `src-tauri/migrations/0001_init.sql`; v0.2's core tables arrive in `0002`, v0.3's accounts in `0003`, its forge mapping in `0004`, and review drafts in `0005`; v0.4's databases in `0006`; `index.db` and `history.db` get their own migration lists.
 
 | Entity | Essential fields and constraints | Release |
 | --- | --- | --- |
@@ -259,7 +259,7 @@ An export is a new folder `Brainiac Export <date> <time>` holding `manifest.json
 - Migrations stay append-only and run at startup after a pre-migration snapshot; an app refuses a database newer than it knows (Storage, above). That is enough for one user on one machine.
 - Rows use UUIDs, notes are identified by vault ID plus relative path, and unknown frontmatter keys are preserved, so multiple vaults or sync can be added later without rewriting identity. Absolute paths stay only where they are local by nature, such as a repository's folder; its remote URL is the identity that travels.
 - Sync, if it comes, cannot migrate every device at once, because devices run different app versions: record a format version on synced records and translate on read. [Ink & Switch: Cambria](https://www.inkandswitch.com/cambria/)
-- New embedding models or chunkers (v0.6) add a profile; they never change existing vectors in place.
+- New embedding models or chunkers (v0.7) add a profile; they never change existing vectors in place.
 
 ## Git
 
@@ -354,7 +354,7 @@ How `SPEC.md`, Workspace activity, is tracked:
 
 ## IPC
 
-The app exposes repository and workspace registration, Git queries, fetching, the activity feed, settings and pins, and application snapshots; v0.2 adds the vault, notes, tasks, search, and backups; v0.3 adds accounts and pull requests; v0.4 adds database connections, query sessions, saved queries, and Health. Commands of v0.5 onward are in `docs/roadmap.md`.
+The app exposes repository and workspace registration, Git queries, fetching, the activity feed, settings and pins, and application snapshots; v0.2 adds the vault, notes, tasks, search, and backups; v0.3 adds accounts and pull requests; v0.4 adds database connections, query sessions, saved queries, and Health. Commands of v0.5 onward are in `docs/roadmap.md` or the design it points to.
 
 Commands are thin adapters over Rust services. Use `#[tauri::command]`, serializable request/response DTOs, and a typed TypeScript client. Generate DTO types from Rust or verify shared schemas in CI; do not assume Tauri automatically creates complete TypeScript bindings. [Tauri command documentation](https://v2.tauri.app/develop/calling-rust/)
 
@@ -586,7 +586,7 @@ These are initial targets to measure, not framework guarantees. Use a release bu
 | Local note edit reflected in an idle editor, v0.2 | Within 2 seconds when watcher delivery succeeds |
 | Selected text diff / first 100 history records, v0.1 | p95 under 500 ms on representative repos, with visible loading beyond that |
 | Local Git change reflected in viewer, v0.1 | Within 2 seconds after event delivery on representative repos; stale state visible otherwise |
-| Quick-capture activation, v0.5 | p95 under 250 ms with warm window |
+| Quick-capture activation, v0.6 | p95 under 250 ms with warm window |
 | Idle CPU with dashboard/AI inactive | Under 1% averaged over five minutes |
 | Core app memory, AI runtime excluded | Initial budget under 250 MiB, measured across app/WebView processes |
 
@@ -669,3 +669,4 @@ Decisions already made. Add new ones at the end with a date; do not edit an acce
 - **4 Oct 2026 — Saved queries are found by `Cmd+K`, not by the notes and tasks search, and connections are linked from a repository's Notes tab.** The palette filters saved queries by name, folder, description, and SQL itself, which is enough for the dozens a person keeps, without a search table in `index.db`, a new search kind in the search UI and the agents' search tool, or index rebuilding. The repository's Notes tab already holds what is linked to a repository; the design's side panel had no room for a list. Both can move if use asks for it.
 
 - **4 Oct 2026 — Typed transaction statements run only in Manual, and `Cmd+Q` closes the window.** An adversarial review of v0.4 found that in Auto-commit a typed `BEGIN` became a no-op inside the statement's own read-only transaction, so `BEGIN; DELETE …; ROLLBACK` committed the delete; refusing transaction statements outside Manual is simpler and safer than turning the tab into Manual behind the user's back. It also found that the standard Quit item never reaches `RunEvent::ExitRequested` on macOS, so quitting skipped the question about open transactions; a Quit item of Brainiac's own closes the window instead, which runs the same close guards as the close button (notes save, transactions ask) and leaves no windowless process behind. Quitting from the Dock is not covered: it would need `applicationShouldTerminate:` in native code.
+- **4 Oct 2026 — Agent runs become v0.5, the releases after it move one number on, and secrets from sources besides the Keychain become a v0.4.x follow-up.** Running a coding agent's command-line tool in a container, next to the repositories and tasks Brainiac already tracks, is expected to be used more often than imports, so it comes before imports and capture (now v0.6, with authenticated import adapters in v0.6.x), semantic search (now v0.7), and grounded AI answers (now v0.8). Release numbers in the entries above refer to the earlier plan: v0.5 there now means v0.6, v0.6 means v0.7, and v0.7 means v0.8. Secrets come first because agent runs and authenticated imports both need credentials, and the Keychain's prompts on unsigned builds already get in the way of v0.3 and v0.4. The designs are in `docs/design/agent-runs.md` and `docs/design/secrets.md`. Neither changes an accepted decision yet: reading secrets from other sources, sending an agent's work to the model provider the user chose, and the Git bundles and app-owned bare repository of agent runs are recorded when their releases start.

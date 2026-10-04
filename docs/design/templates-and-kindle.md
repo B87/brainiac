@@ -1,8 +1,8 @@
 # Design: note templates and Kindle highlights
 
-Design notes for two v0.5 note features: note templates, and importing Kindle books and their highlights into a note built from a template. They go deeper than the summary in [`roadmap.md`](../roadmap.md) (Note templates and Kindle highlights — v0.5). They are not the specification yet. When v0.5 starts, the behavior moves into [`SPEC.md`](../../SPEC.md) section 5, the design into [`architecture.md`](../architecture.md), and this file keeps only the background and open questions.
+Design notes for two v0.6 note features: note templates, and importing Kindle books and their highlights into a note built from a template. They go deeper than the summary in [`roadmap.md`](../roadmap.md) (Note templates and Kindle highlights — v0.6). They are not the specification yet. When v0.6 starts, the behavior moves into [`SPEC.md`](../../SPEC.md) section 5, the design into [`architecture.md`](../architecture.md), and this file keeps only the background and open questions.
 
-Both features build on what v0.2 already guarantees for notes (`SPEC.md` section 5): notes are ordinary Markdown, opening or indexing a note never rewrites it, unknown frontmatter keys are preserved, and a save never overwrites a version Brainiac has not seen. The Kindle import is one adapter of the v0.5 import pipeline (`roadmap.md`, Capture and imports — v0.5) and follows its rules for provenance, duplicates, and user edits.
+Both features build on what v0.2 already guarantees for notes (`SPEC.md` section 5): notes are ordinary Markdown, opening or indexing a note never rewrites it, unknown frontmatter keys are preserved, and a save never overwrites a version Brainiac has not seen. The Kindle import is one adapter of the v0.6 import pipeline (`roadmap.md`, Capture and imports — v0.6) and follows its rules for provenance, duplicates, and user edits.
 
 ## Why these two
 
@@ -22,7 +22,7 @@ Templates and Kindle highlights are among the reasons people keep Obsidian. Obsi
 - A templates folder in the vault, chosen in Settings (default `Templates/`). Templates are ordinary `.md` files, edited like any note; opening one shows its template text and never renders it.
 - Notes in the templates folder are still listed in the tree and found by search, labelled Template. Their links, mentions, and checkboxes are not indexed as the vault's own: they do not appear in backlinks, unresolved links, repository suggestions, or Today. A template full of `[[{{ title }}]]` must not create unresolved links.
 - A template's own `brainiac_id` (a template created in Brainiac gets one like any new note) is never copied: the new note gets a fresh ID.
-- An optional `brainiac_template` object in a template's frontmatter holds settings for that template and is removed from the rendered note. In v0.5 it has one key, `kind`: `note` (the default) or one of the Kindle kinds below. Templates of another kind are not offered in New Note from Template.
+- An optional `brainiac_template` object in a template's frontmatter holds settings for that template and is removed from the rendered note. In v0.6 it has one key, `kind`: `note` (the default) or one of the Kindle kinds below. Templates of another kind are not offered in New Note from Template.
 
 ### Variables
 
@@ -45,12 +45,12 @@ String values rendered into frontmatter go through a `yaml` filter that quotes t
 
 - **Syntax.** MiniJinja implements Jinja2, the same family as the Nunjucks that Obsidian's Kindle plugin uses, so its users' templates need few changes.
 - **Bounded work.** The optional `fuel` feature (`Environment::set_fuel`) gives each render an instruction budget and fails with `OutOfFuel` when it runs out, which stops a runaway loop in a user's template. The budget is set from tests: well above what the shipped Kindle template needs for a book with 5,000 highlights.
-- **No reach outside the template.** No template loader in v0.5, so no `include`, `import`, or `extends`; no custom functions that touch files, the network, or the clock beyond the variables above.
+- **No reach outside the template.** No template loader in v0.6, so no `include`, `import`, or `extends`; no custom functions that touch files, the network, or the clock beyond the variables above.
 - **Bounded output.** Rendering stops at 5 MiB, the largest note Brainiac edits.
 - **No HTML escaping.** Output is Markdown; autoescape is off. The `yaml` filter covers frontmatter.
 - **Missing values render empty.** A variable a source does not provide (a Kindle field only Amazon's cloud has, for example) renders as nothing instead of failing the import; the preview lists the undefined names it met, so a typo is still visible.
 
-Tera and handlebars-rust were not compared in depth; MiniJinja is chosen for its syntax match and fuel. Confirm the version and the contrib date filters when v0.5 starts.
+Tera and handlebars-rust were not compared in depth; MiniJinja is chosen for its syntax match and fuel. Confirm the version and the contrib date filters when v0.6 starts.
 
 ### Commands
 
@@ -71,7 +71,7 @@ Insert Template calls `render_template` and inserts the text in the editor, so i
 | `My Clippings.txt` on a Kindle e-reader | Every book annotated on that device, including sideloaded books and personal documents | Yes | One file per device; not written by the Kindle apps for Mac or iOS. No published format, and its wording follows the device's language. |
 | Kindle Cloud Reader notebook (read.amazon.com/notebook) | Only books bought from the Kindle Store; never sideloaded or emailed documents | No | Needs the user's logged-in Amazon session. Breaks when Amazon changes its login or pages. Amazon's Conditions of Use (updated 14 August 2026) exclude "data mining, robots, or similar data gathering and extraction tools". |
 
-v0.5 imports `My Clippings.txt` only. It covers the most books, it needs no account, and it fits the import rules: Brainiac does not borrow browser cookies, get past login walls, or run page JavaScript (`roadmap.md`, Extraction limits and search behavior). The cloud notebook stays out; if it is ever added, it is opt-in, runs in a webview session the user logs into, and accepts that Amazon may block it. Other routes (the Kindle app for Mac's local data, emailed notebook exports, the Readwise API for people who already use Readwise) were not verified and are candidates for later adapters.
+v0.6 imports `My Clippings.txt` only. It covers the most books, it needs no account, and it fits the import rules: Brainiac does not borrow browser cookies, get past login walls, or run page JavaScript (`roadmap.md`, Extraction limits and search behavior). The cloud notebook stays out; if it is ever added, it is opt-in, runs in a webview session the user logs into, and accepts that Amazon may block it. Other routes (the Kindle app for Mac's local data, emailed notebook exports, the Readwise API for people who already use Readwise) were not verified and are candidates for later adapters.
 
 ### The user's flow
 

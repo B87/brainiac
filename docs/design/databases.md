@@ -63,7 +63,7 @@ B fits "notes are ordinary Markdown" best on paper, but it makes the query view 
 - **SSH tunnels.** Production databases are often behind a bastion. Until this is designed (an `ssh -L` the app runs, or `russh`), a tunnel opened in Terminal works with a connection to `localhost`. Cloud proxies such as the Cloud SQL Auth Proxy work the same way.
 - **Other databases.** MySQL and others fit behind the same driver trait later.
 - **Agent tools.** Querying databases through MCP is attractive and risky: results are data from production, and statements are code. A later design could offer one read-only tool for connections the user marks "agents may query"; nothing in this design exposes databases to agents.
-- **AI-written SQL.** Belongs to v0.7 or later, with the schema as context.
+- **AI-written SQL.** Belongs to v0.8 or later, with the schema as context.
 - **Monitoring beyond the hour on screen.** Health keeps no history on disk, sends no alerts, and does not sample in the background. Cloud Monitoring and Coolify already do this, and a second copy would be one more thing to trust.
 - ER diagrams, schema diffs and migrations, charts of results, CSV import, IAM and Kerberos authentication, `.pgpass` and `pg_service.conf`.
 

@@ -59,11 +59,13 @@ The product can eventually include PR and CI status, calendar context, recurring
 | Pull requests | v0.3 | GitHub and Bitbucket Cloud, per workspace and off by default: the workspace's and each repository's pull requests, overview, files changed, review, and merge |
 | Pull request follow-ups | v0.3.x | A daily view of what waits on you, a task's pull request, creating a pull request, agent tools; chosen by use |
 | Databases | v0.4 | SQLite and PostgreSQL connections, read only by default; query editor and result grid, saved queries, history, and a PostgreSQL connection's health |
-| External content imports | v0.5 | Paste, bookmarks, Markdown copies, articles, `.eml`, provenance and duplicate handling |
-| Global capture window and Inbox | v0.5 | System shortcut, floating capture, Inbox triage of captured and imported items, shared backend state |
-| Authenticated import adapters | v0.5.x | Selected Jira issues/mail messages; provider choice and video transcript acquisition validated separately |
-| Semantic search | v0.6 | Optional local embeddings and hybrid retrieval |
-| Grounded AI answers | v0.7 | Citation-backed local RAG |
+| Database and credential follow-ups | v0.4.x | SSH tunnels, editing rows in the grid, saved queries as files, and secrets read from sources besides the Keychain (a command, Google Secret Manager, Git's credential helper, `.pgpass`); chosen by use |
+| Agent runs | v0.5 | A coding agent's command-line tool (Claude Code, Codex, Gemini CLI) run in a container on the Mac or a remote host, with guided setup, a live trace, and a review of its branch before anything is pushed |
+| External content imports | v0.6 | Paste, bookmarks, Markdown copies, articles, `.eml`, provenance and duplicate handling |
+| Global capture window and Inbox | v0.6 | System shortcut, floating capture, Inbox triage of captured and imported items, shared backend state |
+| Authenticated import adapters | v0.6.x | Selected Jira issues/mail messages; provider choice and video transcript acquisition validated separately |
+| Semantic search | v0.7 | Optional local embeddings and hybrid retrieval |
+| Grounded AI answers | v0.8 | Citation-backed local RAG |
 | Other pull request providers, CI beyond pull request checks, other Git mutations, sync, plugins | Later | Separate features after the v0.3 providers are useful |
 
 v0.1 requires a usable local Git binary. Detect it on startup and provide a clear setup message when absent; do not silently install developer tools. Core Git viewing works offline and requires no Markdown vault, Ollama instance, remote-service account, or elevated macOS permissions. Ahead/behind information reflects existing local refs and may be stale relative to the remote server until someone fetches: the user, their editor, or Brainiac's Fetch now and opt-in auto-fetch (section 4, Fetching). Fetching is the only operation that writes to a repository, and it touches remote-tracking refs and objects only. From v0.3, pull requests are reviewed and merged on GitHub or Bitbucket, never in the local repository (section 10).
@@ -98,7 +100,7 @@ The sidebar switches scope and shares the window's title bar area with the traff
 
 ### Main window — v0.2
 
-The sidebar gains a section level above the repository tree: **Today**, **Tasks**, and **Notes**, then All repositories, Workspaces, and Pinned as in v0.1. The section that holds the notes is called Notes; "brain" names the whole app. There is no Inbox section before v0.5 (section 6).
+The sidebar gains a section level above the repository tree: **Today**, **Tasks**, and **Notes**, then All repositories, Workspaces, and Pinned as in v0.1. The section that holds the notes is called Notes; "brain" names the whole app. There is no Inbox section before v0.6 (section 6).
 
 - Brainiac reopens the section that was open when it quit. The first launch after upgrading to v0.2 opens Workspaces as before, and the sidebar shows one **Set up your vault** row until a vault is chosen.
 - Today, Tasks, and Notes are never shown empty: before a vault is chosen they offer the vault setup, and Today and Tasks work without a vault.
@@ -404,7 +406,7 @@ A note is edited as its Markdown text, so a save contains exactly what the user 
 - A task has a title, a short plain-text description, a status (to do, in progress, done, cancelled), an optional planned date, an optional deadline, and links to at most one note and one repository. Work spanning several repositories links a note that covers them. Longer material belongs in the linked note.
 - Planning a task and giving it a deadline are separate actions. Dates are calendar days in the Mac's time zone, so a task due today stays due today when travelling or when the clocks change.
 - Completing a task records when; reopening it clears that. A task is drawn with a round check, never a square checkbox.
-- **To sort:** a new task without a planned date or deadline is *to sort* until it gets one or is marked **Sorted**. v0.2 has no Inbox: everything is created inside the app, and an inbox earns its place only when items arrive faster than they are sorted, which starts with v0.5's capture and imports. Quick notes go to an ordinary `Inbox/` folder in the vault.
+- **To sort:** a new task without a planned date or deadline is *to sort* until it gets one or is marked **Sorted**. v0.2 has no Inbox: everything is created inside the app, and an inbox earns its place only when items arrive faster than they are sorted, which starts with v0.6's capture and imports. Quick notes go to an ordinary `Inbox/` folder in the vault.
 - **Today** lists open tasks that are overdue, due today, or planned for today or an earlier day (unfinished work carries over), then those completed today. Tasks to sort appear as one folded **To sort · N** line above them; expanding it lists them. Each task shows its linked note and repository, the repository with its live state. A side panel lists the repositories in today's work with their state and **Fetch** and **Open**. "Today" follows the Mac's date, including across midnight and after waking.
 - **Tasks** lists all tasks, filtered by status and by **To sort**.
 - Two edits of the same task, from two places, never overwrite each other silently: the later one is refused with a conflict and shows the current task.

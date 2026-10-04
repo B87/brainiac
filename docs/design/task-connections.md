@@ -142,7 +142,7 @@ All of these are in `brainiac.db` because a link can't be rebuilt from the vault
 
 ## Phases
 
-1. **Jira, read and link.** Connections with a preview, linked tasks with every remote-owned field read-only, Open in Jira, completing in Brainiac when Jira reaches Done, unlink, ignore, reconciliation. This is the authenticated adapter that the roadmap's v0.5.x follow-up leaves open between Jira and email: Jira arrives as linked tasks rather than as captured snapshot notes.
+1. **Jira, read and link.** Connections with a preview, linked tasks with every remote-owned field read-only, Open in Jira, completing in Brainiac when Jira reaches Done, unlink, ignore, reconciliation. This is the authenticated adapter that the roadmap's v0.6.x follow-up leaves open between Jira and email: Jira arrives as linked tasks rather than as captured snapshot notes.
 2. **Write-through and Google Tasks.** Status moves and the deadline written to Jira, plus a Google Tasks connection with every field written through. Optional workspace on tasks.
 3. **Create remotely and follow the key.** **Create in Jira/Google Tasks** from an unlinked task. On a linked Jira task, show the branches (local Git) and pull requests (v0.3's cache) whose names or titles contain its key.
 
