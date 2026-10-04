@@ -248,7 +248,7 @@ An export is a new folder `Brainiac Export <date> <time>` holding `manifest.json
 
 ## Git
 
-Invoke the system Git binary with argument arrays and timeouts, using machine-readable output such as `git status --porcelain=v2 --branch -z`. Parse NUL-delimited paths and distinguish staged versus unstaged states. [Git status documentation](https://git-scm.com/docs/git-status)
+Invoke the system Git binary with argument arrays and timeouts, using machine-readable output such as `git status --porcelain=v2 --branch --untracked-files=all -z` (each untracked file, not just its new folder; Git still reports a nested repository as one folder). Parse NUL-delimited paths and distinguish staged versus unstaged states. [Git status documentation](https://git-scm.com/docs/git-status)
 
 Run Git without a pager, with lazy fetching disabled (`GIT_NO_LAZY_FETCH=1`, so a partial clone never downloads missing objects behind a read; Git before 2.44 ignores it), with optional locks disabled for inspection, and with external diff/textconv helpers disabled for patch/content operations. Validate revision/path inputs, separate path arguments with `--`, and never interpolate them into a shell. Do not execute repository hooks, imported tasks, or custom shell actions.
 

@@ -432,19 +432,27 @@ impl GitService {
     // Status
     // -----------------------------------------------------------------------
 
+    /// `--untracked-files=all` lists each file inside a new folder; a folder
+    /// holding its own repository is still one `folder/` entry.
     pub async fn status(&self, root: &Path) -> AppResult<StatusSnapshot> {
-        let out = self
-            .run_raw(
+        let (mut out, truncated) = self
+            .run_bounded(
                 Some(root),
                 &[
                     "status",
                     "--porcelain=v2",
                     "--branch",
-                    "--untracked-files=normal",
+                    "--untracked-files=all",
                     "-z",
                 ],
+                MAX_OUTPUT_BYTES,
             )
             .await?;
+        if truncated {
+            // The last record was cut mid-path: keep only whole records.
+            let whole = out.iter().rposition(|&b| b == 0).map_or(0, |i| i + 1);
+            out.truncate(whole);
+        }
         parse_status_v2(&out)
     }
 

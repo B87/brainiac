@@ -11,6 +11,8 @@ into the release's section.
 
 ## [Unreleased]
 
+- Changes lists each untracked file inside a new folder, instead of only the folder.
+
 ## [0.3.1] - 2026-10-03
 
 - New app icon: a white brain on Brainiac blue, with a transparent background.

@@ -39,6 +39,9 @@ const GROUPS: Array<{
 /** Characters of a folder path shown before it is shortened in the middle. */
 const FOLDER_BUDGET = 44;
 
+/** Rows drawn per group before "Show more"; a new folder can hold thousands of files. */
+const ROWS_SHOWN = 1000;
+
 export function selectorFor(entry: ChangeEntry): DiffSelector {
   switch (entry.group) {
     case "staged":
@@ -68,6 +71,8 @@ export default function ChangesTab({
   const [filter, setFilter] = useState("");
   const [folded, setFolded] = usePref<string[]>("brainiac.changes.folded", []);
   const filterRef = useRef<HTMLInputElement>(null);
+  // Extra rows drawn per group after "Show more".
+  const [more, setMore] = useState<Record<string, number>>({});
 
   const all = changes?.entries ?? [];
   const entries = useMemo(() => {
@@ -83,6 +88,15 @@ export default function ChangesTab({
       ),
     [entries, folded],
   );
+
+  // The tracked groups of each path, to mark a row that is also in another group.
+  const trackedGroups = useMemo(() => {
+    const map = new Map<string, ChangeEntry["group"][]>();
+    for (const e of all)
+      if (e.group !== "untracked")
+        map.set(e.path, [...(map.get(e.path) ?? []), e.group]);
+    return map;
+  }, [all]);
 
   const inBoth = (path: string) =>
     all.some((e) => e.path === path && e.group === "staged") &&
@@ -184,6 +198,12 @@ export default function ChangesTab({
             const open = !folded.includes(g.key);
             const adds = list.reduce((n, e) => n + (e.additions ?? 0), 0);
             const dels = list.reduce((n, e) => n + (e.deletions ?? 0), 0);
+            // Draw up to the limit, and always as far as the selected row.
+            const drawn = Math.max(
+              ROWS_SHOWN + (more[g.key] ?? 0),
+              selected?.group === g.key ? list.indexOf(selected) + 1 : 0,
+            );
+            const hidden = list.length - drawn;
             return (
               <div key={g.key}>
                 <button
@@ -209,26 +229,34 @@ export default function ChangesTab({
                   <span className="text-[11px] text-muted">{g.hint}</span>
                 </button>
                 {open &&
-                  list.map((e) => (
-                    <EntryRow
-                      key={entryKey(e)}
-                      entry={e}
-                      selected={
-                        bothPath
-                          ? e.path === bothPath && e.group !== "untracked"
-                          : selected === e
-                      }
-                      alsoIn={
-                        all.find(
-                          (o) =>
-                            o.path === e.path &&
-                            o.group !== e.group &&
-                            o.group !== "untracked",
-                        )?.group
-                      }
-                      onSelect={() => select(e)}
-                    />
-                  ))}
+                  list
+                    .slice(0, drawn)
+                    .map((e) => (
+                      <EntryRow
+                        key={entryKey(e)}
+                        entry={e}
+                        selected={
+                          bothPath
+                            ? e.path === bothPath && e.group !== "untracked"
+                            : selected === e
+                        }
+                        alsoIn={trackedGroups
+                          .get(e.path)
+                          ?.find((group) => group !== e.group)}
+                        onSelect={() => select(e)}
+                      />
+                    ))}
+                {open && hidden > 0 && (
+                  <button
+                    type="button"
+                    className="btn btn-ghost mx-3 my-1 text-[12px]"
+                    onClick={() => setMore({ ...more, [g.key]: drawn })}
+                  >
+                    {hidden > ROWS_SHOWN
+                      ? `Show ${ROWS_SHOWN.toLocaleString("en-US")} more (${hidden.toLocaleString("en-US")} not shown)`
+                      : `Show ${hidden.toLocaleString("en-US")} more`}
+                  </button>
+                )}
               </div>
             );
           })}
