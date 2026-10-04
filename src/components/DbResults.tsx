@@ -8,6 +8,7 @@ import {
   formatBytes,
   formatDuration,
   lineAndColumn,
+  partialCells,
   planRows,
   rightAligned,
   rowCount,
@@ -313,7 +314,12 @@ function CopyMenu({
   const copy = (format: CopyFormat) => {
     setOpen(false);
     void navigator.clipboard.writeText(copyRows(format, columns, rows));
-    onNotice(`Copied ${rowCount(rows.length)}`);
+    const partial = partialCells(rows);
+    onNotice(
+      partial
+        ? `Copied ${rowCount(rows.length)}; ${partial === 1 ? "1 value was" : `${partial.toLocaleString("en-US")} values were`} cut short and copied as shown. Export writes values whole.`
+        : `Copied ${rowCount(rows.length)}`,
+    );
   };
   return (
     <div className="relative">

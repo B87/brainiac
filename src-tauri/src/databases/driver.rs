@@ -166,3 +166,18 @@ pub fn plain_failure(reason: DbFailureReason, message: String) -> DbFailure {
         position: None,
     }
 }
+
+/// A typed `BEGIN`, `COMMIT`, or `ROLLBACK` outside Manual mode. Refused:
+/// each statement there runs in a transaction of its own, so a typed one
+/// would seem to work while the statements after it commit regardless.
+pub fn manual_only() -> DbFailure {
+    plain_failure(
+        DbFailureReason::Sql,
+        "BEGIN, COMMIT, and ROLLBACK run only in Manual mode, where the transaction bar shows the open transaction. Switch this tab to Manual (on a connection that allows writes)."
+            .into(),
+    )
+}
+
+/// Rows a result keeps in memory at most, counting each value as shown (cut
+/// at `CUT_AT`): past it, the result says more rows are available.
+pub const RESULT_BYTES: usize = 128 * 1024 * 1024;

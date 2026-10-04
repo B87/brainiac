@@ -248,19 +248,22 @@ pub fn transaction_control(sql: &str) -> Control {
     while let Some(token) = lexer.next() {
         match token.kind {
             Token::Space | Token::Comment => continue,
-            Token::Word if words.len() < 2 => {
+            Token::Word if words.len() < 3 => {
                 words.push(sql[token.start..token.end].to_ascii_uppercase())
             }
             _ => break,
         }
     }
-    match (
-        words.first().map(String::as_str),
-        words.get(1).map(String::as_str),
-    ) {
+    let word = |i: usize| words.get(i).map(String::as_str);
+    // `ROLLBACK [WORK | TRANSACTION] TO [SAVEPOINT] name`.
+    let to = word(1) == Some("TO")
+        || (matches!(word(1), Some("WORK" | "TRANSACTION")) && word(2) == Some("TO"));
+    match (word(0), word(1)) {
         (Some("BEGIN" | "START"), _) => Control::Begin,
-        (Some("ROLLBACK" | "ABORT"), Some("TO")) => Control::RollbackTo,
+        (Some("ROLLBACK" | "ABORT"), _) if to => Control::RollbackTo,
         (Some("COMMIT" | "END" | "ROLLBACK" | "ABORT"), _) => Control::End,
+        // The prepared transaction leaves the session, which has none open after it.
+        (Some("PREPARE"), Some("TRANSACTION")) => Control::End,
         _ => Control::None,
     }
 }
@@ -376,9 +379,13 @@ impl<'a> Lexer<'a> {
                 }
                 Token::Code
             }
-            // `:name`, but not the second colon of a `::type` cast or `:=`.
+            // `:name`, but not the second colon of a `::type` cast or `:=`,
+            // nor the bound of an array slice such as `arr[lo:hi]`, where the
+            // colon follows a name, a number, or a closing bracket.
             b':' if self.peek(1).is_some_and(|b| is_word_start(b) && b < 0x80)
-                && !(start > 0 && self.bytes[start - 1] == b':') =>
+                && !(start > 0
+                    && matches!(self.bytes[start - 1], b':' | b']' | b')')
+                        | is_word_char(self.bytes[start - 1])) =>
             {
                 self.pos += 1;
                 while self
@@ -624,6 +631,14 @@ mod tests {
             parameters("select $$ :x $$, arr[1:2]", DbKind::Postgres),
             Vec::<String>::new()
         );
+        // Slice bounds are not parameters; a parameter can still be one.
+        assert_eq!(
+            parameters(
+                "select arr[lo:hi], arr[f(x):hi], arr[:n], m[1][2:k] from t where a=:a",
+                DbKind::Postgres
+            ),
+            ["n", "a"]
+        );
         let original = "select * from t where a = :alpha and b = :b or zz";
         let rewrite = numbered(original);
         assert_eq!(rewrite.sql, "select * from t where a = $1 and b = $2 or zz");
@@ -642,6 +657,13 @@ mod tests {
             Control::RollbackTo
         );
         assert_eq!(transaction_control("ROLLBACK"), Control::End);
+        assert_eq!(
+            transaction_control("rollback transaction to savepoint a"),
+            Control::RollbackTo
+        );
+        assert_eq!(transaction_control("ROLLBACK WORK"), Control::End);
+        assert_eq!(transaction_control("prepare transaction 'x'"), Control::End);
+        assert_eq!(transaction_control("prepare q as select 1"), Control::None);
         assert_eq!(transaction_control("select 1"), Control::None);
         assert_eq!(
             parameters("select :é", DbKind::Sqlite),

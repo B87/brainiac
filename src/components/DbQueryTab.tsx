@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   completionSchema,
   connectionPlace,
+  defaultMode,
   ENV_SHORT,
   kindLabel,
   MODE_LABEL,
@@ -277,7 +278,9 @@ export default function DbQueryTab(props: Props) {
       const result = await ipc.runStatement(request);
       setRuns(result);
       const last = result[result.length - 1];
-      setTx(last?.transaction ?? (tab.mode === "manual" ? transaction : null));
+      // The last statement's report is the transaction's state, open or not:
+      // a typed COMMIT or a lost connection ends it.
+      if (last) setTx(last.transaction);
       setLastRunAt(Date.now());
       if (
         last?.result.kind === "failed" &&
@@ -336,8 +339,23 @@ export default function DbQueryTab(props: Props) {
       setRunTick((t) => t + 1);
     } catch (e) {
       setProblem(errorMessage(e));
+      // A COMMIT that fails can still end the transaction: ask what is open.
+      const open = await ipc.openDbTransactions().catch(() => null);
+      if (open && !open.includes(tab.id)) setTx(null);
     }
   };
+
+  // An edited connection: a mode it no longer allows goes back to its
+  // default, and becoming Production turns writes off until asked again.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: only when the connection's access or environment changes.
+  useEffect(() => {
+    if (!connection || transaction) return;
+    if (
+      !modesFor(connection).includes(tab.mode) ||
+      (connection.environment === "production" && tab.mode !== "read_only")
+    )
+      props.onChange({ mode: defaultMode(connection) });
+  }, [connection?.access, connection?.environment]);
 
   const setMode = async (mode: RunMode) => {
     if (!connection || mode === tab.mode) return;
@@ -370,10 +388,7 @@ export default function DbQueryTab(props: Props) {
     await ipc.closeDbSession(tab.id).catch(() => {});
     props.onChange({
       connection_id: next.id,
-      mode:
-        next.access === "read_write" && next.environment !== "production"
-          ? "auto_commit"
-          : "read_only",
+      mode: defaultMode(next),
     });
     setRuns([]);
     setProblem(null);
@@ -423,6 +438,7 @@ export default function DbQueryTab(props: Props) {
               <button
                 type="button"
                 className="btn max-w-full gap-[7px] text-fg"
+                disabled={running}
                 aria-haspopup="listbox"
                 aria-expanded={switcher}
                 title="The tab's connection"
@@ -483,7 +499,7 @@ export default function DbQueryTab(props: Props) {
                     key={m}
                     type="button"
                     aria-pressed={tab.mode === m}
-                    disabled={!!transaction && m !== "manual"}
+                    disabled={running || (!!transaction && m !== "manual")}
                     title={
                       m === "manual"
                         ? "The first change opens a transaction; Commit or Roll Back ends it"

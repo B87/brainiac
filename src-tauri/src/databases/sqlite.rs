@@ -20,10 +20,10 @@ use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 use rusqlite::types::{Value, ValueRef};
 use rusqlite::{Connection, ErrorCode as SqliteCode, OpenFlags};
 
-use super::driver::{plain_failure, Lost, Ran};
+use super::driver::{manual_only, plain_failure, Lost, Ran, RESULT_BYTES};
 use super::export::{ExportValue, FileSink, RowSink};
 use super::statements::{self, Control};
-use super::values::{bytes_cell, float_cell, integer_cell, text_cell};
+use super::values::{bytes_cell, float_cell, integer_cell, text_cell, CUT_AT};
 use crate::models::{
     now_rfc3339, AppError, AppResult, Cell, ColumnKind, DbColumn, DbFailure, DbFailureReason,
     DbForeignKey, DbIndex, DbRelation, DbSchemaGroup, ExplainMode, ParamValue, PlanNode,
@@ -233,6 +233,8 @@ impl SqliteSession {
         let params = params.to_vec();
         let partial = sink.partial_path();
         *self.deadline.lock().expect("deadline lock") = None;
+        // A Cancel of an earlier statement must not stop this export.
+        self.canceller.cancelled.store(false, Ordering::SeqCst);
         let done = self
             .call(
                 move |conn| match export_rows(conn, &sql, &params, &mut sink) {
@@ -334,6 +336,11 @@ impl RunJob {
     /// What the statement did, and whether a transaction is open after it.
     fn run(self, conn: &mut Connection) -> (Ran, bool) {
         let ran = self.run_inner(conn);
+        if self.mode != RunMode::Manual && !conn.is_autocommit() {
+            // Outside Manual nothing may stay open: a `SAVEPOINT` starts a
+            // transaction whose lock would block other programs' writers.
+            let _ = conn.execute_batch("ROLLBACK");
+        }
         (ran, !conn.is_autocommit())
     }
 
@@ -352,7 +359,20 @@ impl RunJob {
             return self.failed(e);
         }
         let control = statements::transaction_control(&self.sql);
-        if self.mode == RunMode::Manual && conn.is_autocommit() && control != Control::Begin {
+        if self.mode != RunMode::Manual && control != Control::None {
+            return Ran {
+                result: StatementResult::Failed {
+                    failure: manual_only(),
+                },
+                ran_read_only: true,
+            };
+        }
+        // A plain Explain never runs the statement, so it opens no transaction.
+        if self.mode == RunMode::Manual
+            && conn.is_autocommit()
+            && control != Control::Begin
+            && self.explain != Some(ExplainMode::Plan)
+        {
             if let Err(e) = conn.execute_batch("BEGIN") {
                 return self.failed(e);
             }
@@ -567,16 +587,22 @@ fn rows_of(
         })
         .collect();
     let mut rows: Vec<Vec<Cell>> = Vec::new();
+    let mut bytes = 0;
     let mut more = false;
     let mut raw = statement.raw_query();
     while let Some(row) = raw.next()? {
-        if rows.len() == cap {
+        if rows.len() == cap || bytes > RESULT_BYTES {
             more = true;
             break;
         }
         let mut cells = Vec::with_capacity(count);
         for (i, column) in columns.iter_mut().enumerate() {
             let value = row.get_ref(i)?;
+            bytes += 16
+                + match value {
+                    ValueRef::Text(b) | ValueRef::Blob(b) => b.len().min(CUT_AT),
+                    _ => 0,
+                };
             if column.type_name.is_empty() && column.kind == ColumnKind::Other {
                 // An expression has no declared type: the first value decides.
                 if let Some(kind) = value_kind(&value) {

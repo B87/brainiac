@@ -10,7 +10,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -103,6 +103,9 @@ struct State {
 struct Monitor {
     connection_id: String,
     watchers: AtomicUsize,
+    /// A sampling loop is running: hiding and showing Health within one
+    /// interval reuses it rather than starting a second.
+    looping: AtomicBool,
     points: Mutex<VecDeque<HealthPoint>>,
     latest: Mutex<Option<HealthSample>>,
     // Held across the sample's `await`s, so a tokio mutex.
@@ -147,6 +150,7 @@ impl HealthService {
                     Arc::new(Monitor {
                         connection_id: connection_id.to_string(),
                         watchers: AtomicUsize::new(0),
+                        looping: AtomicBool::new(false),
                         points: Mutex::new(VecDeque::with_capacity(POINTS)),
                         latest: Mutex::new(None),
                         state: tokio::sync::Mutex::new(State::default()),
@@ -165,9 +169,9 @@ impl HealthService {
             ));
         }
         let monitor = self.monitor(connection_id);
-        let first = monitor.watchers.fetch_add(1, Ordering::SeqCst) == 0;
+        monitor.watchers.fetch_add(1, Ordering::SeqCst);
         self.sample_once(&monitor).await;
-        if first {
+        if !monitor.looping.swap(true, Ordering::SeqCst) {
             let service = Arc::clone(self);
             let watched = Arc::clone(&monitor);
             tokio::spawn(async move {
@@ -176,6 +180,14 @@ impl HealthService {
                     if watched.watchers.load(Ordering::SeqCst) == 0 {
                         // Hidden: drop the session; the hour so far stays in memory.
                         watched.state.lock().await.session = None;
+                        watched.looping.store(false, Ordering::SeqCst);
+                        // A start that came as this loop ended saw it still
+                        // running and started none: this loop carries on for it.
+                        if watched.watchers.load(Ordering::SeqCst) > 0
+                            && !watched.looping.swap(true, Ordering::SeqCst)
+                        {
+                            continue;
+                        }
                         break;
                     }
                     service.sample_once(&watched).await;
@@ -218,10 +230,15 @@ impl HealthService {
 
     /// Forget a deleted connection's hour.
     pub fn forget(&self, connection_id: &str) {
-        self.monitors
+        let removed = self
+            .monitors
             .lock()
             .expect("monitors lock")
             .remove(connection_id);
+        if let Some(monitor) = removed {
+            // Its loop ends at the next interval.
+            monitor.watchers.store(0, Ordering::SeqCst);
+        }
     }
 
     async fn sample_once(&self, monitor: &Monitor) {

@@ -56,6 +56,31 @@ type Props = {
   onLists: (connections: DbConnection[], queries: SavedQuery[]) => void;
 };
 
+/** The query tabs as they are kept for the next run. */
+function savedTabs(tabs: Tab[], connections: DbConnection[]): QueryTab[] {
+  return tabs.flatMap((t) =>
+    t.kind === "query"
+      ? [
+          {
+            id: t.id,
+            connection_id: t.connection_id,
+            saved_query_id: t.saved_query_id,
+            title: t.title,
+            text: t.text,
+            saved_version: t.saved_version,
+            dirty: t.dirty,
+            // Read and write on production lasts for the tab only, not across runs.
+            mode:
+              connections.find((c) => c.id === t.connection_id)?.environment ===
+              "production"
+                ? "read_only"
+                : t.mode,
+          },
+        ]
+      : [],
+  );
+}
+
 const newId = () =>
   globalThis.crypto?.randomUUID?.() ?? `tab-${Date.now()}-${Math.random()}`;
 
@@ -75,6 +100,10 @@ export default function DatabasesView(props: Props) {
       ?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [active]);
   const [loaded, setLoaded] = useState(false);
+  // Tabs that could not be restored are not overwritten by an empty list.
+  const restoreFailed = useRef(false);
+  const latest = useRef({ tabs, connections });
+  latest.current = { tabs, connections };
   const [schemas, setSchemas] = useState<Map<string, SchemaState>>(new Map());
   const [editing, setEditing] = useState<DbConnection | "new" | null>(null);
   const [saving, setSaving] = useState<string | null>(null);
@@ -104,7 +133,10 @@ export default function DatabasesView(props: Props) {
         setTabs(saved.map((t) => ({ ...t, kind: "query" as const })));
         setLoaded(true);
       })
-      .catch(() => setLoaded(true));
+      .catch(() => {
+        restoreFailed.current = true;
+        setLoaded(true);
+      });
   }, []);
 
   useEffect(() => {
@@ -113,52 +145,40 @@ export default function DatabasesView(props: Props) {
 
   // Tabs are saved a moment after each change.
   useEffect(() => {
-    if (!loaded) return;
+    if (!loaded || restoreFailed.current) return;
     const t = setTimeout(() => {
-      const kept: QueryTab[] = tabs.flatMap((t) =>
-        t.kind === "query"
-          ? [
-              {
-                id: t.id,
-                connection_id: t.connection_id,
-                saved_query_id: t.saved_query_id,
-                title: t.title,
-                text: t.text,
-                saved_version: t.saved_version,
-                dirty: t.dirty,
-                // Read and write on production lasts for the tab only, not across runs.
-                mode:
-                  connections.find((c) => c.id === t.connection_id)
-                    ?.environment === "production"
-                    ? "read_only"
-                    : t.mode,
-              },
-            ]
-          : [],
-      );
-      void ipc.saveQueryTabs(kept).catch(() => {});
+      void ipc.saveQueryTabs(savedTabs(tabs, connections)).catch(() => {});
     }, 600);
     return () => clearTimeout(t);
   }, [tabs, loaded, connections]);
 
-  // Closing the window with a transaction open asks first; the default is Roll Back.
+  // Closing the window, which quits (also ⌘Q), asks first when a tab has a
+  // transaction open; the default is Roll Back. The backend's list counts,
+  // since it knows of a transaction a running statement just opened.
   useEffect(
     () =>
       addCloseGuard(async () => {
-        const open = [...transactions.current.keys()];
-        if (open.length === 0) return true;
-        const sure = await ask(
-          `${open.length === 1 ? "A query tab has a transaction" : `${open.length} query tabs have transactions`} open. Closing rolls ${open.length === 1 ? "it" : "them"} back.`,
-          {
-            title: "Roll Back and Close",
-            kind: "warning",
-            okLabel: "Roll Back",
-          },
-        );
-        if (!sure) return false;
-        for (const id of open)
-          await ipc.endTransaction(id, false).catch(() => {});
-        transactions.current.clear();
+        const known = await ipc.openDbTransactions().catch(() => []);
+        const open = [...new Set([...transactions.current.keys(), ...known])];
+        if (open.length > 0) {
+          const sure = await ask(
+            `${open.length === 1 ? "A query tab has a transaction" : `${open.length} query tabs have transactions`} open. Quitting rolls ${open.length === 1 ? "it" : "them"} back.`,
+            {
+              title: "Roll Back and Quit",
+              kind: "warning",
+              okLabel: "Roll Back",
+            },
+          );
+          if (!sure) return false;
+          for (const id of open)
+            await ipc.endTransaction(id, false).catch(() => {});
+          transactions.current.clear();
+        }
+        // The last edits are kept, not left to the save a moment later.
+        if (!restoreFailed.current) {
+          const { tabs, connections } = latest.current;
+          await ipc.saveQueryTabs(savedTabs(tabs, connections)).catch(() => {});
+        }
         return true;
       }),
     [],
@@ -541,6 +561,7 @@ export default function DatabasesView(props: Props) {
           existing={
             queries.find((q) => q.id === savingTab.saved_query_id) ?? null
           }
+          expectedVersion={savingTab.saved_version}
           connections={connections}
           connectionId={savingTab.connection_id}
           folders={[...new Set(queries.map((q) => q.folder).filter(Boolean))]}

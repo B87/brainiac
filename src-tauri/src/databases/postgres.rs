@@ -24,10 +24,10 @@ use tokio_postgres::types::{to_sql_checked, Format, FromSql, IsNull, ToSql, Type
 use tokio_postgres::{CancelToken, Client, NoTls, Row, Statement};
 use tokio_postgres_rustls::MakeRustlsConnect;
 
-use super::driver::{plain_failure, Lost, Ran};
+use super::driver::{manual_only, plain_failure, Lost, Ran, RESULT_BYTES};
 use super::export::{ExportValue, RowSink};
 use super::statements;
-use super::values::{pg_cell, pg_export_value, pg_kind};
+use super::values::{pg_cell, pg_export_value, pg_kind, CUT_AT};
 use crate::credentials::Secret;
 use crate::models::{
     now_rfc3339, AppError, AppResult, DbColumn, DbFailure, DbFailureReason, DbForeignKey, DbIndex,
@@ -44,6 +44,8 @@ const EXPORT_BATCH: usize = 1000;
 /// How long past the statement timeout to wait before giving up on a server
 /// that does not answer at all, such as one behind a dropped network.
 const UNRESPONSIVE_GRACE: Duration = Duration::from_secs(10);
+/// How long a cancel request may take when the server stopped answering.
+const CANCEL_WAIT: Duration = Duration::from_secs(2);
 
 /// Where and how to connect.
 #[derive(Debug, Clone)]
@@ -265,9 +267,30 @@ impl PgSession {
             mode
         };
         let control = statements::transaction_control(sql);
+        if mode != RunMode::Manual && control != statements::Control::None {
+            return Ok(Ran {
+                result: StatementResult::Failed {
+                    failure: manual_only(),
+                },
+                ran_read_only: true,
+            });
+        }
+        let writes_files = writes_server_files(sql);
+        if writes_files && mode == RunMode::ReadOnly {
+            return Ok(Ran {
+                result: StatementResult::Failed {
+                    failure: plain_failure(DbFailureReason::ReadOnly, WRITES_FILES.into()),
+                },
+                ran_read_only: true,
+            });
+        }
+        let had_transaction = self.transaction.is_some();
         let limit = self.timeout + UNRESPONSIVE_GRACE;
-        let ran =
-            tokio::time::timeout(limit, self.dispatch(&text, &values, cap, mode, control)).await;
+        let ran = tokio::time::timeout(
+            limit,
+            self.dispatch(&text, &values, cap, mode, control, writes_files),
+        )
+        .await;
         match ran {
             Ok(Ok((fetched, ran_read_only))) => Ok(Ran {
                 result: match explain {
@@ -285,15 +308,23 @@ impl PgSession {
                     let at = statements::char_position_to_byte(&text, p);
                     rewrite.original(at.saturating_sub(prefix.len())) as u32
                 };
+                let mut failure = self.failure(&e, position);
+                if control == statements::Control::End && had_transaction {
+                    // A COMMIT that fails ends the transaction all the same.
+                    failure
+                        .message
+                        .push_str(" The transaction was rolled back; nothing in it was committed.");
+                }
                 Ok(Ran {
-                    result: StatementResult::Failed {
-                        failure: self.failure(&e, position),
-                    },
+                    result: StatementResult::Failed { failure },
                     ran_read_only: mode == RunMode::ReadOnly,
                 })
             }
             Err(_) => {
-                // The server stopped answering: this connection cannot be trusted again.
+                // The server stopped answering: this connection cannot be
+                // trusted again. Ask it to stop the statement too, so a write
+                // cannot still finish after the session is given up.
+                let _ = tokio::time::timeout(CANCEL_WAIT, self.cancel.cancel()).await;
                 self.broken = true;
                 self.transaction = None;
                 Ok(Ran {
@@ -339,6 +370,7 @@ impl PgSession {
         cap: usize,
         mode: RunMode,
         control: statements::Control,
+        writes_files: bool,
     ) -> Result<(Fetched, bool), tokio_postgres::Error> {
         use statements::Control;
         match mode {
@@ -351,12 +383,19 @@ impl PgSession {
             }
             RunMode::AutoCommit => {
                 self.read_only_default(false).await?;
+                if writes_files {
+                    return Ok((fetch_plain(&self.client, text, values, cap).await?, false));
+                }
                 // Read only first: a statement that reads is then known to be
                 // safe to run again (Fetch All, Export). One that writes is
                 // refused before it changes anything, and runs again writable.
                 match fetch_read_only(&mut self.client, text, values, cap).await {
                     Ok(fetched) => Ok((fetched, true)),
-                    Err(e) if needs_writable(&e) => {
+                    // A Cancel that came while the read-only attempt failed
+                    // stops the statement before it runs writable.
+                    Err(e)
+                        if needs_writable(&e) && !self.cancel.cancelled.load(Ordering::SeqCst) =>
+                    {
                         Ok((fetch_plain(&self.client, text, values, cap).await?, false))
                     }
                     Err(e) => Err(e),
@@ -383,7 +422,9 @@ impl PgSession {
                             });
                         }
                     }
-                    (Ok(_), Control::End) => self.transaction = None,
+                    // A COMMIT that fails (a deferred constraint, a
+                    // serialization failure) ends the transaction too.
+                    (_, Control::End) => self.transaction = None,
                     (Ok(_), Control::RollbackTo) => {
                         if let Some(tx) = &mut self.transaction {
                             tx.failed = false;
@@ -432,6 +473,9 @@ impl PgSession {
         params: &[ParamValue],
         sink: &mut (dyn RowSink + Send),
     ) -> AppResult<u64> {
+        if writes_server_files(sql) {
+            return Err(AppError::validation(WRITES_FILES));
+        }
         let rewrite = statements::numbered(sql);
         let values =
             bind_values(&rewrite.names, params).map_err(|f| AppError::validation(f.message))?;
@@ -498,6 +542,11 @@ impl PgSession {
             return plain_failure(DbFailureReason::Sql, e.to_string());
         };
         let reason = match db.code() {
+            c if *c == SqlState::READ_ONLY_SQL_TRANSACTION
+                && self.cancel.cancelled.load(Ordering::SeqCst) =>
+            {
+                DbFailureReason::Cancelled
+            }
             c if *c == SqlState::READ_ONLY_SQL_TRANSACTION => DbFailureReason::ReadOnly,
             c if *c == SqlState::QUERY_CANCELED => {
                 if self.cancel.cancelled.load(Ordering::SeqCst) {
@@ -677,6 +726,30 @@ fn refs(values: &[TextParam]) -> Vec<&(dyn ToSql + Sync)> {
     values.iter().map(|v| v as &(dyn ToSql + Sync)).collect()
 }
 
+/// `COPY` and `LOAD` reach the server's files and programs, which a
+/// read-only transaction does not stop: they run only where writes are on.
+fn writes_server_files(sql: &str) -> bool {
+    matches!(statements::first_keyword(sql).as_str(), "COPY" | "LOAD")
+}
+
+const WRITES_FILES: &str = "COPY and LOAD can write files or run programs on the server, so they run only in a mode that allows writes.";
+
+/// Rows asked of a portal at a time.
+const PORTAL_BATCH: usize = 1_000;
+
+/// A row's size as the grid holds it: each value counts up to `CUT_AT`.
+fn row_bytes(row: &Row) -> usize {
+    (0..row.len())
+        .map(|i| {
+            row.try_get::<_, Raw>(i)
+                .ok()
+                .and_then(|raw| raw.0)
+                .map_or(0, |b| b.len().min(CUT_AT))
+                + 16
+        })
+        .sum()
+}
+
 /// One statement alone in a read-only transaction, its rows through a
 /// portal with a row limit, so a large result stops at the cap and the
 /// transaction ends before the result is shown.
@@ -698,11 +771,30 @@ async fn fetch_read_only(
         return Ok(Fetched::Command { count });
     }
     let portal = tx.bind(&statement, &params).await?;
-    let limit = i32::try_from(cap.saturating_add(1)).unwrap_or(i32::MAX);
-    let rows = tx.query_portal(&portal, limit).await?;
+    // In batches, so a result of large values stops at `RESULT_BYTES`.
+    let mut rows = Vec::new();
+    let mut bytes = 0;
+    let mut more = false;
+    loop {
+        let want = (cap + 1 - rows.len()).min(PORTAL_BATCH);
+        let batch = tx
+            .query_portal(&portal, i32::try_from(want).unwrap_or(i32::MAX))
+            .await?;
+        let done = batch.len() < want;
+        for row in batch {
+            if rows.len() == cap || bytes > RESULT_BYTES {
+                more = true;
+                break;
+            }
+            bytes += row_bytes(&row);
+            rows.push(row);
+        }
+        if more || done {
+            break;
+        }
+    }
     drop(portal);
     tx.commit().await?;
-    let more = rows.len() > cap;
     Ok(Fetched::Rows {
         statement,
         rows,
@@ -731,13 +823,15 @@ async fn fetch_plain(
     let stream = client.query_raw(&statement, refs(values)).await?;
     let mut stream = std::pin::pin!(stream);
     let mut rows = Vec::new();
+    let mut bytes = 0;
     let mut more = false;
     while let Some(row) = stream.next().await {
         let row = row?;
-        if rows.len() == cap {
+        if rows.len() == cap || bytes > RESULT_BYTES {
             more = true;
             continue;
         }
+        bytes += row_bytes(&row);
         rows.push(row);
     }
     Ok(Fetched::Rows {

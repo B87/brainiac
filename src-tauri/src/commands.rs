@@ -914,13 +914,14 @@ pub async fn delete_db_connection(
     databases: State<'_, Databases>,
     health: State<'_, Health>,
 ) -> AppResult<()> {
-    databases
-        .connections()
-        .delete(&id, expected_version)
-        .await?;
-    databases.close_connection(&id);
-    health.forget(&id);
-    Ok(())
+    let deleted = databases.connections().delete(&id, expected_version).await;
+    // Once the row is gone its sessions and Health go too, even when the
+    // Keychain could not remove the password.
+    if deleted.is_ok() || databases.connections().get(&id).await.is_err() {
+        databases.close_connection(&id);
+        health.forget(&id);
+    }
+    deleted
 }
 
 /// Test Connection: connect once with the form's fields.
@@ -1022,19 +1023,11 @@ pub async fn export_result(
     databases.export(request).await
 }
 
-/// Roll back every open transaction and quit, after the window asked.
+/// The query tabs with a transaction open, which the window asks about
+/// before it closes (SPEC.md, Databases: Safety).
 #[tauri::command]
-pub async fn quit_rolling_back(
-    app: tauri::AppHandle,
-    databases: State<'_, Databases>,
-) -> AppResult<()> {
-    for tab in databases.open_transactions() {
-        if let Err(e) = databases.end_transaction(&tab, false).await {
-            tracing::warn!(error = %e, "could not roll back a transaction before quitting");
-        }
-    }
-    app.exit(0);
-    Ok(())
+pub fn open_db_transactions(databases: State<'_, Databases>) -> Vec<String> {
+    databases.open_transactions()
 }
 
 pub type SavedQueries = Arc<crate::databases::SavedQueryService>;

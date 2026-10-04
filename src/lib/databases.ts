@@ -104,6 +104,25 @@ export function cellDisplay(cell: Cell): string {
   return text.length > 500 ? `${text.slice(0, 500)}…` : text;
 }
 
+/**
+ * Values the result holds only in part (long text cut, binary shown in
+ * part, a type shown by name): copying copies them as shown.
+ */
+export function partialCells(rows: Cell[][]): number {
+  let count = 0;
+  for (const row of rows)
+    for (const cell of row) {
+      if (cell === null || typeof cell !== "object") continue;
+      if (
+        cell.kind === "cut" ||
+        cell.kind === "other" ||
+        (cell.kind === "bytes" && cell.hex.length / 2 < cell.size)
+      )
+        count += 1;
+    }
+  return count;
+}
+
 export function rightAligned(kind: ColumnKind): boolean {
   return kind === "number" || kind === "numeric";
 }

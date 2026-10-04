@@ -1610,6 +1610,8 @@ export class FakeBackend {
       case "end_transaction":
         this.openTransactions.delete(String(args.tabId));
         return null;
+      case "open_db_transactions":
+        return [...this.openTransactions.keys()];
       case "cancel_statement":
       case "close_db_session":
       case "stop_db_health":

@@ -643,7 +643,7 @@ export const ipc = {
     invoke<void>("end_transaction", { tabId, commit }),
   exportResult: (request: ExportRequest) =>
     invoke<DbExportResult>("export_result", { request }),
-  quitRollingBack: () => invoke<void>("quit_rolling_back"),
+  openDbTransactions: () => invoke<string[]>("open_db_transactions"),
   listSavedQueries: () => invoke<SavedQuery[]>("list_saved_queries"),
   saveQuery: (request: SaveQueryRequest) =>
     invoke<SavedQuery>("save_query", { request }),
@@ -682,13 +682,6 @@ export function onDbHealthSample(
   handler: (e: HealthEvent) => void,
 ): Promise<UnlistenFn> {
   return listen<HealthEvent>("db_health_sample", (ev) => handler(ev.payload));
-}
-
-/** Quitting waits: these query tabs have a transaction open. */
-export function onDbQuitBlocked(
-  handler: (tabIds: string[]) => void,
-): Promise<UnlistenFn> {
-  return listen<string[]>("db_quit_blocked", (ev) => handler(ev.payload));
 }
 
 export function onRepositoryChanged(

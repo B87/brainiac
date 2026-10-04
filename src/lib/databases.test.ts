@@ -10,6 +10,7 @@ import {
   formatBytes,
   formatDuration,
   lineAndColumn,
+  partialCells,
   queryMarkdown,
   selectRows,
   sortRows,
@@ -206,5 +207,25 @@ describe("databases", () => {
     expect(selectRows("billing", "Invoices", false)).toBe(
       'select * from billing."Invoices" limit 100;',
     );
+  });
+});
+
+describe("partialCells", () => {
+  it("counts values held only in part", () => {
+    expect(
+      partialCells([
+        [
+          "whole",
+          null,
+          1,
+          { kind: "cut", text: "abc", length: 99_000 },
+          { kind: "bytes", size: 2, hex: "abcd" },
+        ],
+        [
+          { kind: "bytes", size: 9_000, hex: "ab".repeat(4096) },
+          { kind: "other", type_name: "polygon", size: 40 },
+        ],
+      ]),
+    ).toBe(3);
   });
 });

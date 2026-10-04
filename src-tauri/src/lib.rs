@@ -37,8 +37,6 @@ pub const EVENT_NOTE_MISSING: &str = "note_missing";
 pub const EVENT_TASK_CHANGED: &str = "task_changed";
 pub const EVENT_INDEX_STATUS_CHANGED: &str = "index_status_changed";
 pub const EVENT_PR_CHANGED: &str = "pr_changed";
-/// Quitting waits: a query tab has a transaction open (SPEC.md, Databases: Safety).
-pub const EVENT_DB_QUIT_BLOCKED: &str = "db_quit_blocked";
 pub const EVENT_DB_HEALTH_SAMPLE: &str = "db_health_sample";
 
 /// Minimum age of a vault scan before focus or wake triggers another.
@@ -300,7 +298,11 @@ pub fn run() {
             // --- Native menu -------------------------------------------------
             build_menu(app)?;
             let menu_handle = handle.clone();
-            app.on_menu_event(move |_app, event| {
+            app.on_menu_event(move |app, event| {
+                if event.id().0 == "quit" {
+                    quit(app);
+                    return;
+                }
                 let _ = menu_handle.emit(EVENT_MENU, MenuEvent { id: event.id().0.clone() });
             });
 
@@ -432,7 +434,7 @@ pub fn run() {
             commands::statement_parameters,
             commands::end_transaction,
             commands::export_result,
-            commands::quit_rolling_back,
+            commands::open_db_transactions,
             commands::list_saved_queries,
             commands::save_query,
             commands::delete_query,
@@ -449,12 +451,6 @@ pub fn run() {
         .build(context)
         .expect("error while running Brainiac")
         .run(|app, event| {
-            if let tauri::RunEvent::ExitRequested { api, code, .. } = &event {
-                // `code` is set when the app asked to exit itself, after the window asked.
-                if code.is_none() && open_transactions(app) {
-                    api.prevent_exit();
-                }
-            }
             if let tauri::RunEvent::Exit = event {
                 if let Some(agent) = app.try_state::<commands::Agent>() {
                     agent.close();
@@ -463,19 +459,21 @@ pub fn run() {
         });
 }
 
-/// Whether a query tab has a transaction open; if so, the window is asked
-/// to confirm rolling it back before Brainiac quits (⌘Q). Closing the window
-/// asks from the window itself, before it closes.
-fn open_transactions(app: &tauri::AppHandle) -> bool {
-    let Some(databases) = app.try_state::<commands::Databases>() else {
-        return false;
-    };
-    let open = databases.open_transactions();
-    if open.is_empty() {
-        return false;
+/// Quit (⌘Q) closes the window, whose close guards save unsaved notes and
+/// ask before rolling back open transactions (SPEC.md, Databases: Safety);
+/// closing the last window quits. The standard Quit item would end the app
+/// without asking, so the menu has its own.
+fn quit(app: &tauri::AppHandle) {
+    match app.webview_windows().into_values().next() {
+        Some(window) => {
+            if let Err(e) = window.close() {
+                tracing::warn!(error = %e, "could not close the window to quit");
+                app.exit(0);
+            }
+        }
+        // Startup failed and only its error dialog showed.
+        None => app.exit(0),
     }
-    let _ = app.emit(EVENT_DB_QUIT_BLOCKED, open);
-    true
 }
 
 /// Image types Live Preview shows from the vault.
@@ -655,7 +653,7 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
             &PredefinedMenuItem::hide_others(app, None)?,
             &PredefinedMenuItem::show_all(app, None)?,
             &PredefinedMenuItem::separator(app)?,
-            &PredefinedMenuItem::quit(app, None)?,
+            &MenuItem::with_id(app, "quit", "Quit Brainiac", true, Some("CmdOrCtrl+Q"))?,
         ],
     )?;
     let file = Submenu::with_items(

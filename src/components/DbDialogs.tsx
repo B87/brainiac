@@ -77,6 +77,7 @@ export function PasswordDialog({
 export function SaveQueryDialog({
   sql,
   existing,
+  expectedVersion,
   connections,
   connectionId,
   folders,
@@ -86,6 +87,8 @@ export function SaveQueryDialog({
   sql: string;
   /** The saved query the tab came from; Save updates it, Save as New does not. */
   existing: SavedQuery | null;
+  /** The version the tab's text was based on, so an edit made elsewhere since is not overwritten. */
+  expectedVersion: number | null;
   connections: DbConnection[];
   connectionId: string | null;
   folders: string[];
@@ -104,7 +107,9 @@ export function SaveQueryDialog({
       onSaved(
         await ipc.saveQuery({
           id: asNew ? null : (existing?.id ?? null),
-          expected_version: asNew ? null : (existing?.version ?? null),
+          expected_version: asNew
+            ? null
+            : (expectedVersion ?? existing?.version ?? null),
           name,
           folder,
           description,

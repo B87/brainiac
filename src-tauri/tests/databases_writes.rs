@@ -663,3 +663,161 @@ async fn history_records_runs_without_rows_and_tabs_survive() {
     history.save_tabs(tabs.clone()).await.unwrap();
     assert_eq!(history.tabs().await.unwrap(), tabs);
 }
+
+#[tokio::test]
+async fn transactions_are_typed_only_in_manual_and_a_failed_commit_ends_one() {
+    let Some(server) = PgServer::start() else {
+        return;
+    };
+    server.psql(
+        "CREATE TABLE t (id int); INSERT INTO t VALUES (1);
+         CREATE TABLE p (id int PRIMARY KEY);
+         CREATE TABLE c (pid int REFERENCES p DEFERRABLE INITIALLY DEFERRED);",
+    );
+    let h = harness();
+    let c = h
+        .sessions
+        .connections()
+        .save(postgres(&server, DbAccess::ReadWrite))
+        .await
+        .unwrap();
+    // In Auto-commit each statement commits, so a typed BEGIN would only
+    // seem to hold the DELETE back: it is refused before anything runs.
+    let runs = run(
+        &h,
+        "a",
+        &c.id,
+        "begin; delete from t; rollback",
+        RunMode::AutoCommit,
+    )
+    .await;
+    assert_eq!(runs.len(), 1, "{runs:?}");
+    assert!(failed(&runs[0]).1.contains("Manual"));
+    assert_eq!(count(&h, &c.id).await, Cell::Number(1.0));
+    let runs = run(&h, "r", &c.id, "commit", RunMode::ReadOnly).await;
+    assert!(failed(&runs[0]).1.contains("Manual"));
+    let runs = run(
+        &h,
+        "r",
+        &c.id,
+        "copy (select 1) to program 'true'",
+        RunMode::ReadOnly,
+    )
+    .await;
+    let (reason, message) = failed(&runs[0]);
+    assert_eq!(reason, DbFailureReason::ReadOnly);
+    assert!(message.contains("COPY"), "{message}");
+
+    // A COMMIT the server refuses ends the transaction all the same; the
+    // next statement opens a new one rather than committing on its own.
+    let runs = run(&h, "m", &c.id, "insert into c values (1)", RunMode::Manual).await;
+    assert!(runs[0].transaction.is_some());
+    let runs = run(&h, "m", &c.id, "commit", RunMode::Manual).await;
+    assert!(failed(&runs[0]).1.contains("rolled back"), "{runs:?}");
+    assert!(runs[0].transaction.is_none());
+    assert!(h.sessions.open_transactions().is_empty());
+    let runs = run(&h, "m", &c.id, "insert into p values (1)", RunMode::Manual).await;
+    assert_eq!(runs[0].transaction.as_ref().unwrap().statements, 1);
+    h.sessions.end_transaction("m", false).await.unwrap();
+    let p = run(
+        &h,
+        "counter",
+        &c.id,
+        "select count(*) from p",
+        RunMode::ReadOnly,
+    )
+    .await;
+    assert_eq!(cell(&p[0]), Cell::Number(0.0));
+}
+
+#[tokio::test]
+async fn editing_a_connection_keeps_a_tabs_open_transaction() {
+    let Some(server) = PgServer::start() else {
+        return;
+    };
+    server.psql("CREATE TABLE t (id int)");
+    let h = harness();
+    let c = h
+        .sessions
+        .connections()
+        .save(postgres(&server, DbAccess::ReadWrite))
+        .await
+        .unwrap();
+    run(&h, "m", &c.id, "insert into t values (1)", RunMode::Manual).await;
+    let edited = h
+        .sessions
+        .connections()
+        .save(SaveDbConnectionRequest {
+            id: Some(c.id.clone()),
+            expected_version: Some(c.version),
+            name: "Renamed".into(),
+            ..postgres(&server, DbAccess::ReadWrite)
+        })
+        .await
+        .unwrap();
+    assert_ne!(edited.version, c.version);
+    // The transaction is still there to commit, on the session that holds it.
+    let runs = run(&h, "m", &c.id, "insert into t values (2)", RunMode::Manual).await;
+    assert!(!runs[0].reconnected);
+    assert_eq!(runs[0].transaction.as_ref().unwrap().statements, 2);
+    h.sessions.end_transaction("m", true).await.unwrap();
+    assert_eq!(count(&h, &c.id).await, Cell::Number(2.0));
+    // With it ended, the next run takes up the edited connection.
+    let runs = run(&h, "m", &c.id, "select 1", RunMode::ReadOnly).await;
+    assert!(runs[0].transaction.is_none());
+}
+
+#[tokio::test]
+async fn sqlite_keeps_no_transaction_outside_manual_and_exports_after_a_cancel() {
+    let h = harness();
+    let file = h.tmp.path().join("shop.db");
+    rusqlite::Connection::open(&file)
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY);
+             WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 5000)
+             INSERT INTO t SELECT i FROM n;",
+        )
+        .unwrap();
+    let c = h
+        .sessions
+        .connections()
+        .save(sqlite(&file, DbAccess::ReadOnly))
+        .await
+        .unwrap();
+    let runs = run(
+        &h,
+        "s",
+        &c.id,
+        "begin; select count(*) from t",
+        RunMode::ReadOnly,
+    )
+    .await;
+    assert_eq!(runs.len(), 1);
+    assert!(failed(&runs[0]).1.contains("Manual"));
+    // A SAVEPOINT would open a transaction; outside Manual it ends at once,
+    // so another program can still write.
+    let runs = run(&h, "s", &c.id, "savepoint a", RunMode::ReadOnly).await;
+    assert!(runs[0].transaction.is_none(), "{runs:?}");
+    rusqlite::Connection::open(&file)
+        .unwrap()
+        .execute("INSERT INTO t VALUES (5001)", [])
+        .unwrap();
+
+    // A Cancel of an earlier statement does not stop the next export.
+    h.sessions.cancel("s").await;
+    let path = h.tmp.path().join("t.csv");
+    let exported = h
+        .sessions
+        .export(ExportRequest {
+            tab_id: "s".into(),
+            connection_id: c.id.clone(),
+            sql: "select id from t".into(),
+            parameters: Vec::new(),
+            format: ExportFormat::Csv,
+            path: path.display().to_string(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(exported.rows, 5001);
+}

@@ -190,11 +190,11 @@ impl ConnectionService {
         }
         let key = id.to_string();
         self.db.call(move |conn| delete(conn, &key)).await?;
+        self.forget(id);
         if stored.password == DbPassword::Keychain {
             let account = keychain_account(id);
             self.secrets(move |s| s.delete(&account)).await?;
         }
-        self.forget(id);
         tracing::info!(connection = %id, "database connection deleted");
         Ok(())
     }
@@ -471,17 +471,19 @@ pub fn parse_url(url: &str) -> AppResult<DbUrlFields> {
         .ok_or_else(|| {
             AppError::validation("Paste a URL that starts with postgres:// or postgresql://.")
         })?;
+    // The user and password first, up to the last `@`: a password pasted
+    // without encoding can hold `/`, `?`, or `:`.
+    let (userinfo, rest) = match rest.rsplit_once('@') {
+        Some((u, r)) => (Some(u), r),
+        None => (None, rest),
+    };
     let (rest, query) = match rest.split_once('?') {
         Some((r, q)) => (r, Some(q)),
         None => (rest, None),
     };
-    let (authority, database) = match rest.split_once('/') {
+    let (hostport, database) = match rest.split_once('/') {
         Some((a, d)) => (a, Some(d)),
         None => (rest, None),
-    };
-    let (userinfo, hostport) = match authority.rsplit_once('@') {
-        Some((u, h)) => (Some(u), h),
-        None => (None, authority),
     };
     let (user, password) = match userinfo {
         Some(u) => match u.split_once(':') {
@@ -504,7 +506,7 @@ pub fn parse_url(url: &str) -> AppResult<DbUrlFields> {
     let port = match port.filter(|p| !p.is_empty()) {
         Some(p) => Some(
             p.parse::<u16>()
-                .map_err(|_| AppError::validation(format!("{p} is not a port number.")))?,
+                .map_err(|_| AppError::validation("The URL's port is not a number."))?,
         ),
         None => None,
     };
@@ -773,5 +775,12 @@ mod tests {
 
         assert!(parse_url("mysql://x").is_err());
         assert!(parse_url("postgres://h:notaport/db").is_err());
+        // A password with an unencoded `/` or `?` is read whole, never shown in an error.
+        let odd = parse_url("postgres://app:s3cr3t/x?y@db.example.com/billing").unwrap();
+        assert_eq!(odd.password.as_deref(), Some("s3cr3t/x?y"));
+        assert_eq!(odd.host.as_deref(), Some("db.example.com"));
+        assert_eq!(odd.database.as_deref(), Some("billing"));
+        let err = parse_url("postgres://app:s3cr3t@db.example.com:x/billing").unwrap_err();
+        assert!(!err.message.contains("s3cr3t"));
     }
 }

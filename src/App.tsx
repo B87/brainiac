@@ -29,7 +29,6 @@ import {
   type ExportResult,
   errorMessage,
   ipc,
-  onDbQuitBlocked,
   onIndexStatusChanged,
   onMenu,
   onPullRequestChanged,
@@ -683,14 +682,6 @@ export default function App() {
       if (e.id === "show_notes") actions.current.showView({ kind: "notes" });
       if (e.id === "show_databases")
         actions.current.showView({ kind: "databases" });
-    }).then((u) => (disposed ? u() : unlisteners.push(u)));
-    // ⌘Q with a transaction open in a query tab asks first; the default is Roll Back.
-    void onDbQuitBlocked(async (tabs) => {
-      const sure = await ask(
-        `${tabs.length === 1 ? "A query tab has a transaction" : `${tabs.length} query tabs have transactions`} open. Quitting rolls ${tabs.length === 1 ? "it" : "them"} back.`,
-        { title: "Roll Back and Quit", kind: "warning", okLabel: "Roll Back" },
-      );
-      if (sure) void ipc.quitRollingBack();
     }).then((u) => (disposed ? u() : unlisteners.push(u)));
     return () => {
       disposed = true;

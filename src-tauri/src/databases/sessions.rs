@@ -16,7 +16,7 @@ use super::history::{QueryHistory, Recorded};
 use super::statements::{self, byte_to_utf16, utf16_to_byte};
 use crate::models::{
     now_rfc3339, AppError, AppResult, DbAccess, DbConnection, DbExportResult, DbFailureReason,
-    DbSchema, ErrorCode, ExportRequest, RunMode, RunStatementRequest, StatementResult,
+    DbSchema, ErrorCode, ExplainMode, ExportRequest, RunMode, RunStatementRequest, StatementResult,
     StatementRun,
 };
 
@@ -43,6 +43,10 @@ struct TabSession {
     had_session: AtomicBool,
     /// Set by Cancel, so Run All stops before its next statement.
     stop: AtomicBool,
+    /// Whether the session has a transaction open, readable while a statement
+    /// holds the session's lock: quitting asks about it, and an edited
+    /// connection keeps the session until it ends.
+    in_transaction: AtomicBool,
     last_used: Mutex<Instant>,
 }
 
@@ -100,7 +104,12 @@ impl QuerySessions {
     fn tab(&self, tab_id: &str, connection: &DbConnection) -> Arc<TabSession> {
         let mut tabs = self.tabs.lock().expect("tabs lock");
         if let Some(tab) = tabs.get(tab_id) {
-            if tab.connection_id == connection.id && tab.connection_version == connection.version {
+            if tab.connection_id == connection.id
+                && (tab.connection_version == connection.version
+                    // Replacing the session would roll the transaction back
+                    // unseen; the edit applies once it is committed or rolled back.
+                    || tab.in_transaction.load(Ordering::SeqCst))
+            {
                 return Arc::clone(tab);
             }
         }
@@ -111,6 +120,7 @@ impl QuerySessions {
             canceller: Mutex::new(None),
             had_session: AtomicBool::new(false),
             stop: AtomicBool::new(false),
+            in_transaction: AtomicBool::new(false),
             last_used: Mutex::new(Instant::now()),
         });
         tabs.insert(tab_id.to_string(), Arc::clone(&tab));
@@ -178,7 +188,6 @@ impl QuerySessions {
                 "This connection is read only. Its access can be changed in Edit Connection.",
             ));
         }
-        let text = request.text.as_str();
         let ranges = chosen(&request, connection.kind);
         if ranges.is_empty() {
             return Err(AppError::validation("There is no statement to run here."));
@@ -204,6 +213,31 @@ impl QuerySessions {
                 "This tab has a transaction open. Commit or roll it back first.",
             ));
         }
+        // The first Manual statement opens a transaction while it runs.
+        if request.mode == RunMode::Manual {
+            tab.in_transaction.store(true, Ordering::SeqCst);
+        }
+        let runs = self
+            .run_statements(&request, &connection, ranges, cap, &tab, &mut guard)
+            .await;
+        tab.in_transaction.store(
+            guard.as_ref().is_some_and(|s| s.transaction().is_some()),
+            Ordering::SeqCst,
+        );
+        runs
+    }
+
+    /// The statements of a run, on the tab's locked session.
+    async fn run_statements(
+        &self,
+        request: &RunStatementRequest,
+        connection: &DbConnection,
+        ranges: Vec<Range<usize>>,
+        cap: usize,
+        tab: &Arc<TabSession>,
+        guard: &mut Option<Session>,
+    ) -> AppResult<Vec<StatementRun>> {
+        let text = request.text.as_str();
         let mut runs = Vec::new();
         for range in ranges {
             if tab.stop.load(Ordering::SeqCst) {
@@ -237,8 +271,8 @@ impl QuerySessions {
                     if guard.take().is_some() || tab.had_session.swap(false, Ordering::SeqCst) {
                         reconnected = true;
                     }
-                    self.make_room(&tab);
-                    let target = self.connections.target(&connection).await?;
+                    self.make_room(tab);
+                    let target = self.connections.target(connection).await?;
                     let session = match Session::open(&target).await {
                         Ok(s) => s,
                         Err(e) => {
@@ -306,7 +340,9 @@ impl QuerySessions {
             let elapsed = started.elapsed();
             let elapsed_ms = u32::try_from(elapsed.as_millis()).unwrap_or(u32::MAX);
             tracing::debug!(connection = %connection.id, elapsed_ms, "statement ran");
-            if request.explain.is_none() && self.history_on.load(Ordering::SeqCst) {
+            // Explain Analyze runs the statement, so it is recorded; a plain Explain is not.
+            if request.explain != Some(ExplainMode::Plan) && self.history_on.load(Ordering::SeqCst)
+            {
                 if let Some(history) = &self.history {
                     let recorded = Recorded {
                         connection_id: connection.id.clone(),
@@ -355,6 +391,8 @@ impl QuerySessions {
         match guard.as_mut() {
             Some(session) => {
                 let ended = session.end_transaction(commit).await;
+                tab.in_transaction
+                    .store(session.transaction().is_some(), Ordering::SeqCst);
                 *tab.last_used.lock().expect("last used lock") = Instant::now();
                 ended
             }
@@ -368,13 +406,7 @@ impl QuerySessions {
             .lock()
             .expect("tabs lock")
             .iter()
-            .filter(|(_, t)| {
-                t.session
-                    .try_lock()
-                    .map(|s| s.as_ref().is_some_and(|s| s.transaction().is_some()))
-                    // A running statement in a Manual tab counts as open.
-                    .unwrap_or(true)
-            })
+            .filter(|(_, t)| t.in_transaction.load(Ordering::SeqCst))
             .map(|(id, _)| id.clone())
             .collect()
     }
