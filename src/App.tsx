@@ -11,9 +11,11 @@ import Dashboard, { type Discovered } from "./components/Dashboard";
 import DatabasesView, {
   type DatabasesRequest,
 } from "./components/DatabasesView";
+import NewRunDialog from "./components/NewRunDialog";
 import NotesView from "./components/NotesView";
 import PullRequestView from "./components/PullRequestView";
 import RepositoryView from "./components/RepositoryView";
+import RunsView from "./components/RunsView";
 import SettingsPage from "./components/SettingsPage";
 import Sidebar, { type View } from "./components/Sidebar";
 import StatusBar from "./components/StatusBar";
@@ -21,14 +23,17 @@ import TaskEditor from "./components/TaskEditor";
 import TasksView from "./components/TasksView";
 import TodayView from "./components/TodayView";
 import UpdateBanner from "./components/UpdateBanner";
+import { needsYou } from "./lib/agentRuns";
 import { listenForClose } from "./lib/closeGuard";
 import { shortPath } from "./lib/format";
 import {
+  type AgentRun,
   type AppSnapshot,
   type DbConnection,
   type ExportResult,
   errorMessage,
   ipc,
+  onAgentRunChanged,
   onIndexStatusChanged,
   onMenu,
   onPullRequestChanged,
@@ -97,6 +102,17 @@ export default function App() {
   const [banner, setBanner] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [addMode, setAddMode] = useState<AddMode | null>(null);
+  /** Runs (v0.5), for the sidebar badge and the Runs view. */
+  const [runs, setRuns] = useState<AgentRun[] | null>(null);
+  const [newRun, setNewRun] = useState<{ repositoryId?: string } | null>(null);
+  const reloadRuns = useCallback(async () => {
+    try {
+      setRuns((await ipc.listAgentRuns()).runs);
+    } catch (e) {
+      setRuns((r) => r ?? []);
+      setBanner(errorMessage(e));
+    }
+  }, []);
   const [discovered, setDiscovered] = useState<Discovered | null>(null);
   /** Bumped when the selected repository changes on disk; views re-fetch on it. */
   const [changeTick, setChangeTick] = useState(0);
@@ -635,6 +651,21 @@ export default function App() {
   }, [reloadSnapshot]);
 
   useEffect(() => {
+    void reloadRuns();
+    let pending = false;
+    return subscribe(
+      onAgentRunChanged(() => {
+        if (pending) return;
+        pending = true;
+        setTimeout(() => {
+          pending = false;
+          void reloadRuns();
+        }, 150);
+      }),
+    );
+  }, [reloadRuns]);
+
+  useEffect(() => {
     let disposed = false;
     const unlisteners: Array<() => void> = [];
     let pending = false;
@@ -682,6 +713,8 @@ export default function App() {
       if (e.id === "show_notes") actions.current.showView({ kind: "notes" });
       if (e.id === "show_databases")
         actions.current.showView({ kind: "databases" });
+      if (e.id === "show_runs") actions.current.showView({ kind: "runs" });
+      if (e.id === "new_run") setNewRun({});
     }).then((u) => (disposed ? u() : unlisteners.push(u)));
     return () => {
       disposed = true;
@@ -740,6 +773,7 @@ export default function App() {
             <Sidebar
               snapshot={snapshot}
               reviewCounts={reviewCounts}
+              runsNeedingYou={(runs ?? []).filter(needsYou).length}
               vault={vault}
               view={view}
               open={sidebarOpen}
@@ -802,8 +836,20 @@ export default function App() {
                   onAddRepository={() => void openRepositoryPicker()}
                   onLocate={(id) => void locate(id)}
                 />
-              ) : view.kind === "databases" ? null : view.kind ===
-                "pullRequest" ? (
+              ) : view.kind === "databases" ? null : view.kind === "runs" ? (
+                <RunsView
+                  snapshot={snapshot}
+                  runs={runs}
+                  selectedId={view.runId ?? null}
+                  onSelect={(runId) =>
+                    setView({ kind: "runs", runId: runId ?? undefined })
+                  }
+                  onNewRun={() => setNewRun({})}
+                  onOpenRepo={openRepo}
+                  onError={setBanner}
+                  onNotice={setNotice}
+                />
+              ) : view.kind === "pullRequest" ? (
                 <PullRequestView
                   key={view.reference}
                   reference={view.reference}
@@ -991,6 +1037,10 @@ export default function App() {
               setPaletteOpen(false);
               void newTask();
             }}
+            onNewRun={() => {
+              setPaletteOpen(false);
+              setNewRun({});
+            }}
             dbConnections={dbLists.connections}
             dbQueries={dbLists.queries}
             onDatabase={(request) => {
@@ -1015,6 +1065,22 @@ export default function App() {
         )}
         {dialog === "restore" && (
           <RestoreDialog onClose={() => setDialog(null)} />
+        )}
+        {newRun && snapshot && (
+          <NewRunDialog
+            snapshot={snapshot}
+            repositoryId={newRun.repositoryId}
+            onClose={() => setNewRun(null)}
+            onStarted={(run) => {
+              setNewRun(null);
+              void reloadRuns();
+              showView({ kind: "runs", runId: run.id });
+            }}
+            onOpenSettings={() => {
+              setNewRun(null);
+              openSettings("agents");
+            }}
+          />
         )}
         {exportProblems && (
           <ExportProblems

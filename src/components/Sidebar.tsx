@@ -21,6 +21,7 @@ import {
   GridIcon,
   NoteIcon,
   PanelLeftIcon,
+  PlayIcon,
   PlusIcon,
   TaskIcon,
   TodayIcon,
@@ -41,6 +42,8 @@ export type View =
   | { kind: "notes"; noteId?: string }
   /** Databases (v0.4): Home and the query tabs, which live in the view. */
   | { kind: "databases" }
+  /** Runs (v0.5): the list, or one run. */
+  | { kind: "runs"; runId?: string }
   /** One pull request (v0.3), and the view to go back to. */
   | { kind: "pullRequest"; reference: string; back: View }
   /** Settings, in place of the sidebar and the view, and the view to go back to. */
@@ -50,6 +53,8 @@ type Props = {
   snapshot: AppSnapshot | null;
   /** Pull requests waiting on your review, by workspace (SPEC.md, Workspace → Pull requests). */
   reviewCounts: ReadonlyMap<string, number>;
+  /** Runs that need you (SPEC.md, The run). */
+  runsNeedingYou?: number;
   vault: VaultState | null;
   view: View;
   onView: (view: View) => void;
@@ -76,6 +81,7 @@ function readCollapsed(): Set<string> {
 export default function Sidebar({
   snapshot,
   reviewCounts,
+  runsNeedingYou = 0,
   vault,
   view,
   onView,
@@ -198,6 +204,20 @@ export default function Sidebar({
         >
           <DatabaseIcon className="shrink-0" />
           <span className="flex-1">Databases</span>
+        </button>
+        <button
+          type="button"
+          className="side-row"
+          aria-current={view.kind === "runs"}
+          onClick={() => onView({ kind: "runs" })}
+        >
+          <PlayIcon className="shrink-0" />
+          <span className="flex-1">Runs</span>
+          {runsNeedingYou > 0 && (
+            <span className="badge" title="Runs that need you">
+              {runsNeedingYou}
+            </span>
+          )}
         </button>
 
         <div className="mx-2 my-2 h-px bg-line" />

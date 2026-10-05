@@ -12,6 +12,10 @@ into the release's section.
 ## [Unreleased]
 
 - Settings → Agents, for runs of Claude Code in a container: choose the Docker engine, add an API key from the Keychain, a command, or a variable, and build the run image from a Dockerfile you can read.
+- Runs: hand a repository's commit to Claude Code in a container on this Mac (New run…, ⌥⌘N), follow the conversation live, answer its permission requests or let it act, send follow-up prompts, and cancel or finish; a run keeps going while Brainiac is closed.
+- A finished run's working tree, uncommitted edits included, comes back as Changes to review in the diff viewer, with Copy patch and Save patch…; new files the repository's ignore rules leave out are listed and can be added.
+- Settings → Agents has a Test that starts a short run, sends a prompt, cancels, and collects; runs can start once it passes.
+- Ended runs are removed after 30 days unless their work still waits on you; Delete run… removes one now.
 
 ## [0.4.0] - 2026-10-05
 

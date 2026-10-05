@@ -19,6 +19,7 @@ import {
   FolderIcon,
   GridIcon,
   NoteIcon,
+  PlayIcon,
   PlusIcon,
   SearchIcon,
   TaskIcon,
@@ -49,6 +50,7 @@ type Props = {
   onOpenTask: (taskId: string) => void;
   onNewNote: () => void;
   onNewTask: () => void;
+  onNewRun: () => void;
 };
 
 /** The palette's scope buttons (SPEC.md, Search). */
@@ -90,6 +92,7 @@ export default function CommandPalette({
   onOpenTask,
   onNewNote,
   onNewTask,
+  onNewRun,
   dbConnections,
   dbQueries,
   onDatabase,
@@ -263,6 +266,20 @@ export default function CommandPalette({
           action: () => onView({ kind: "databases" }),
         },
         {
+          id: "runs",
+          label: "Runs",
+          hint: "",
+          icon: <PlayIcon size={13} />,
+          action: () => onView({ kind: "runs" }),
+        },
+        {
+          id: "new-run",
+          label: "New Run…",
+          hint: "⌥⌘N",
+          icon: <PlusIcon size={13} />,
+          action: onNewRun,
+        },
+        {
           id: "new-note",
           label: "New Note",
           hint: "⌘N",
@@ -334,6 +351,7 @@ export default function CommandPalette({
     onOpenTask,
     onNewNote,
     onNewTask,
+    onNewRun,
     dbConnections,
     dbQueries,
     onDatabase,

@@ -7,7 +7,11 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { ActivitySettings } from "./generated/ActivitySettings";
 import type { AgentAccessStatus } from "./generated/AgentAccessStatus";
 import type { AgentEngine } from "./generated/AgentEngine";
+import type { AgentRun } from "./generated/AgentRun";
+import type { AgentRunChangedEvent } from "./generated/AgentRunChangedEvent";
+import type { AgentRunList } from "./generated/AgentRunList";
 import type { AgentSettings } from "./generated/AgentSettings";
+import type { AgentTestResult } from "./generated/AgentTestResult";
 import type { AppError } from "./generated/AppError";
 import type { AppSnapshot } from "./generated/AppSnapshot";
 import type { Cell } from "./generated/Cell";
@@ -109,6 +113,10 @@ import type { RestoreResult } from "./generated/RestoreResult";
 import type { ResultColumn } from "./generated/ResultColumn";
 import type { ReviewCount } from "./generated/ReviewCount";
 import type { ReviewDrafts } from "./generated/ReviewDrafts";
+import type { RunChanges } from "./generated/RunChanges";
+import type { RunControllerStatus } from "./generated/RunControllerStatus";
+import type { RunDiffRequest } from "./generated/RunDiffRequest";
+import type { RunEventPage } from "./generated/RunEventPage";
 import type { RunMode } from "./generated/RunMode";
 import type { RunStartPreview } from "./generated/RunStartPreview";
 import type { RunStatementRequest } from "./generated/RunStatementRequest";
@@ -130,6 +138,7 @@ import type { SecretSource } from "./generated/SecretSource";
 import type { SecretsOverview } from "./generated/SecretsOverview";
 import type { SetRepositoryForgeRequest } from "./generated/SetRepositoryForgeRequest";
 import type { Settings } from "./generated/Settings";
+import type { StartRunRequest } from "./generated/StartRunRequest";
 import type { StatementResult } from "./generated/StatementResult";
 import type { StatementRun } from "./generated/StatementRun";
 import type { SubmitReviewRequest } from "./generated/SubmitReviewRequest";
@@ -159,7 +168,12 @@ export type { AgentEngine } from "./generated/AgentEngine";
 export type { AgentImage } from "./generated/AgentImage";
 export type { AgentPayment } from "./generated/AgentPayment";
 export type { AgentProfile } from "./generated/AgentProfile";
+export type { AgentRun } from "./generated/AgentRun";
+export type { AgentRunChangedEvent } from "./generated/AgentRunChangedEvent";
+export type { AgentRunList } from "./generated/AgentRunList";
 export type { AgentSettings } from "./generated/AgentSettings";
+export type { AgentTestResult } from "./generated/AgentTestResult";
+export type { AgentTestStep } from "./generated/AgentTestStep";
 export type { Backlink } from "./generated/Backlink";
 export type { ChangedFile } from "./generated/ChangedFile";
 export type { ChangedFileStatus } from "./generated/ChangedFileStatus";
@@ -183,6 +197,7 @@ export type { ForgeTokenKind } from "./generated/ForgeTokenKind";
 export type { ForgeUser } from "./generated/ForgeUser";
 export type { Hunk } from "./generated/Hunk";
 export type { IndexState } from "./generated/IndexState";
+export type { LeftOutFile } from "./generated/LeftOutFile";
 export type { LinkedRepository } from "./generated/LinkedRepository";
 export type { MemberOrigin } from "./generated/MemberOrigin";
 export type { MemberStatus } from "./generated/MemberStatus";
@@ -203,9 +218,24 @@ export type { ReviewDraft } from "./generated/ReviewDraft";
 export type { Reviewer } from "./generated/Reviewer";
 export type { ReviewState } from "./generated/ReviewState";
 export type { ReviewVerdict } from "./generated/ReviewVerdict";
+export type { RunActivity } from "./generated/RunActivity";
+export type { RunChanges } from "./generated/RunChanges";
+export type { RunCollection } from "./generated/RunCollection";
+export type { RunControllerStatus } from "./generated/RunControllerStatus";
+export type { RunDiffRequest } from "./generated/RunDiffRequest";
+export type { RunEvent } from "./generated/RunEvent";
+export type { RunEventBody } from "./generated/RunEventBody";
+export type { RunEventPage } from "./generated/RunEventPage";
+export type { RunOutcome } from "./generated/RunOutcome";
+export type { RunPermissionRequest } from "./generated/RunPermissionRequest";
+export type { RunPermissions } from "./generated/RunPermissions";
+export type { RunPhase } from "./generated/RunPhase";
+export type { RunPlanEntry } from "./generated/RunPlanEntry";
+export type { RunStartPreview } from "./generated/RunStartPreview";
 export type { SearchGroup } from "./generated/SearchGroup";
 export type { SearchHit } from "./generated/SearchHit";
 export type { SearchKind } from "./generated/SearchKind";
+export type { StartRunRequest } from "./generated/StartRunRequest";
 export type { SuggestedMove } from "./generated/SuggestedMove";
 export type { TaskNote } from "./generated/TaskNote";
 export type { TaskStatus } from "./generated/TaskStatus";
@@ -510,6 +540,42 @@ export const ipc = {
   /** New run, Start from: the commit a run would get. */
   previewRunStart: (repositoryId: string, start: string) =>
     invoke<RunStartPreview>("preview_run_start", { repositoryId, start }),
+  /** Runs, newest first, and whether the run controller is running. */
+  listAgentRuns: () => invoke<AgentRunList>("list_agent_runs"),
+  getAgentRun: (id: string) => invoke<AgentRun>("get_agent_run", { id }),
+  /** New run, Start run. */
+  startAgentRun: (request: StartRunRequest) =>
+    invoke<AgentRun>("start_agent_run", { request }),
+  /** The conversation after a sequence, from the mirrored journal. */
+  listRunEvents: (id: string, after: number) =>
+    invoke<RunEventPage>("list_run_events", { id, after }),
+  sendRunPrompt: (id: string, text: string) =>
+    invoke<AgentRun>("send_run_prompt", { id, text }),
+  answerRunPermission: (id: string, permissionId: string, allow: boolean) =>
+    invoke<AgentRun>("answer_run_permission", { id, permissionId, allow }),
+  cancelAgentRun: (id: string) => invoke<AgentRun>("cancel_agent_run", { id }),
+  finishAgentRun: (id: string) => invoke<AgentRun>("finish_agent_run", { id }),
+  /** Collect work, Retry collection, or Choose files to add… with `include`. */
+  collectAgentRun: (id: string, include: string[]) =>
+    invoke<AgentRun>("collect_agent_run", { id, include }),
+  acceptRunSnapshot: (id: string) =>
+    invoke<AgentRun>("accept_run_snapshot", { id }),
+  discardAgentRun: (id: string) =>
+    invoke<AgentRun>("discard_agent_run", { id }),
+  retryRunCleanup: (id: string) =>
+    invoke<AgentRun>("retry_run_cleanup", { id }),
+  deleteAgentRun: (id: string) => invoke<void>("delete_agent_run", { id }),
+  getRunChanges: (id: string) => invoke<RunChanges>("get_run_changes", { id }),
+  getRunDiff: (request: RunDiffRequest) =>
+    invoke<DiffResult>("get_run_diff", { request }),
+  /** The whole snapshot as a patch text. */
+  copyRunPatch: (id: string) => invoke<string>("copy_run_patch", { id }),
+  saveRunPatch: (id: string, path: string) =>
+    invoke<void>("save_run_patch", { id, path }),
+  /** Settings → Agents, Test: a short run, a prompt, a cancel, a collection. */
+  testAgentSetup: () => invoke<AgentTestResult>("test_agent_setup"),
+  getRunControllerStatus: () =>
+    invoke<RunControllerStatus>("get_run_controller_status"),
 
   /** Where a repository's pull requests come from; `forge: null` goes back to `origin`. */
   setRepositoryForge: (request: SetRepositoryForgeRequest) =>
@@ -791,6 +857,14 @@ export function onPullRequestChanged(
   handler: (e: PullRequestChangedEvent) => void,
 ): Promise<UnlistenFn> {
   return listen<PullRequestChangedEvent>("pr_changed", (ev) =>
+    handler(ev.payload),
+  );
+}
+
+export function onAgentRunChanged(
+  handler: (e: AgentRunChangedEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<AgentRunChangedEvent>("agent_run_changed", (ev) =>
     handler(ev.payload),
   );
 }

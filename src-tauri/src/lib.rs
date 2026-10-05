@@ -718,6 +718,7 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?;
     let new_note = MenuItem::with_id(app, "new_note", "New Note", true, Some("CmdOrCtrl+N"))?;
     let new_task = MenuItem::with_id(app, "new_task", "New Task", true, Some("CmdOrCtrl+Shift+N"))?;
+    let new_run = MenuItem::with_id(app, "new_run", "New Run…", true, Some("Alt+CmdOrCtrl+N"))?;
     let save = MenuItem::with_id(app, "save", "Save", true, Some("CmdOrCtrl+S"))?;
     let export = MenuItem::with_id(app, "export", "Export…", true, None::<&str>)?;
     let restore = MenuItem::with_id(app, "restore", "Restore from Export…", true, None::<&str>)?;
@@ -746,6 +747,7 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
     let show_tasks = MenuItem::with_id(app, "show_tasks", "Tasks", true, None::<&str>)?;
     let show_notes = MenuItem::with_id(app, "show_notes", "Notes", true, None::<&str>)?;
     let show_databases = MenuItem::with_id(app, "show_databases", "Databases", true, None::<&str>)?;
+    let show_runs = MenuItem::with_id(app, "show_runs", "Runs", true, None::<&str>)?;
     let check_updates = MenuItem::with_id(
         app,
         "check_updates",
@@ -780,6 +782,7 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
         &[
             &new_note,
             &new_task,
+            &new_run,
             &open,
             &PredefinedMenuItem::separator(app)?,
             &save,
@@ -813,6 +816,7 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
             &show_tasks,
             &show_notes,
             &show_databases,
+            &show_runs,
             &PredefinedMenuItem::separator(app)?,
             &refresh,
             &fetch,

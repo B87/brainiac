@@ -14,8 +14,10 @@ import {
   type AgentEngine,
   type AgentPayment,
   type AgentSettings,
+  type AgentTestResult,
   errorMessage,
   ipc,
+  type RunControllerStatus,
 } from "../lib/ipc";
 import {
   commandPreview,
@@ -44,6 +46,41 @@ export default function AgentRunsPane() {
   const [busy, setBusy] = useState(false);
   const [building, setBuilding] = useState(false);
   const [dockerfile, setDockerfile] = useState<string | null>(null);
+  const [controller, setController] = useState<RunControllerStatus | null>(
+    null,
+  );
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<AgentTestResult | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    const load = () =>
+      ipc
+        .getRunControllerStatus()
+        .then((c) => alive && setController(c))
+        .catch(() => {});
+    void load();
+    const timer = setInterval(load, 10_000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, []);
+
+  /** Test: minutes when a wrong token is retried; the pane stays usable. */
+  const runTest = async () => {
+    setTesting(true);
+    setError(null);
+    setTestResult(null);
+    try {
+      setTestResult(await ipc.testAgentSetup());
+      setSettings(await ipc.getAgentSettings());
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setTesting(false);
+    }
+  };
 
   const loadEngines = useCallback(() => {
     setEngines(null);
@@ -223,7 +260,14 @@ export default function AgentRunsPane() {
             Brainiac starts and stops its own containers on this engine. Runs
             pause while this Mac sleeps; when it wakes, a run past its time
             limit is stopped. Choosing another engine means building the image
-            there.
+            there.{" "}
+            {controller?.running
+              ? `The run controller is running (process ${controller.pid}${
+                  controller.live_runs
+                    ? `, ${controller.live_runs} live ${controller.live_runs === 1 ? "run" : "runs"}`
+                    : ""
+                }).`
+              : "The run controller is not running; it starts with the next run."}
           </Hint>
           <button
             type="button"
@@ -433,18 +477,52 @@ export default function AgentRunsPane() {
         <div className="settings-group">
           <div className="settings-row">
             <span className="flex min-w-55 flex-1 flex-col gap-0.5">
-              <span className="font-medium">Not tested</span>
+              <span className="font-medium">
+                {profile.test_passed_at && profile.test_current
+                  ? `Passed on ${dayLabel(profile.test_passed_at)}`
+                  : profile.test_passed_at
+                    ? `Passed on ${dayLabel(profile.test_passed_at)}, before the token or key, the image, or the engine changed`
+                    : "Not tested"}
+              </span>
               <Hint>
                 A test starts a short run, sends a prompt, cancels, and
                 collects. A run cannot start until one passes for this token or
                 key, image, and engine: a wrong token can come back looking like
-                an ordinary reply. Tests come with runs, in a later build.
+                an ordinary reply. A wrong token or key can take a few minutes
+                to be refused: Claude Code retries it first.
               </Hint>
             </span>
-            <button type="button" className="btn btn-sm" disabled>
-              Test
+            <button
+              type="button"
+              className="btn btn-sm"
+              disabled={busy || testing}
+              onClick={() => void runTest()}
+            >
+              {testing ? "Testing…" : "Test"}
             </button>
           </div>
+          {testResult && (
+            <div className="settings-row flex-col items-stretch gap-1">
+              {testResult.steps.map((step) => (
+                <div key={step.name} className="flex gap-2 text-[12.5px]">
+                  <span
+                    className={step.passed ? "text-added" : "text-conflict"}
+                  >
+                    {step.passed ? "✓" : "✕"}
+                  </span>
+                  <span>{step.name}</span>
+                  {step.detail && (
+                    <span className="truncate text-muted">{step.detail}</span>
+                  )}
+                </div>
+              ))}
+              <Hint>
+                {testResult.passed
+                  ? `Passed at ${dayLabel(testResult.tested_at)}.`
+                  : "The test did not pass; runs cannot start yet."}
+              </Hint>
+            </div>
+          )}
         </div>
       </Group>
 

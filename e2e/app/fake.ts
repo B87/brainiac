@@ -442,6 +442,8 @@ export class FakeBackend {
       credential: { needs_approval: false, pending: null, revision: 1 },
       credential_saved_at: null,
       credential_ageing: false,
+      test_passed_at: null,
+      test_current: false,
       sends_code_agreed: false,
       permissions: "ask",
       time_limit_minutes: 60,
@@ -1231,6 +1233,16 @@ export class FakeBackend {
       }
       case "agent_dockerfile":
         return "FROM node:22-bookworm-slim\n";
+      case "list_agent_runs":
+        return { runs: [], controller_running: false };
+      case "get_run_controller_status":
+        return { running: false, pid: null, live_runs: 0 };
+      case "test_agent_setup":
+        return {
+          steps: [{ name: "Start a run", passed: false, detail: "No engine" }],
+          passed: false,
+          tested_at: NOW,
+        };
       case "list_forge_accounts":
         return this.accounts;
       case "update_workspace_pull_requests":
