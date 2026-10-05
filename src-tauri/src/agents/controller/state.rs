@@ -374,7 +374,16 @@ mod tests {
         // flock is per open file, so a second open in this process is refused too.
         assert!(state.lock().unwrap().is_none());
         drop(held);
-        assert!(state.lock().unwrap().is_some());
+        // Another test may be forking a child at this moment, which holds a
+        // copy of the lock's descriptor until it execs: allow it a moment.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while state.lock().unwrap().is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the lock stayed held after its holder dropped it"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     #[test]

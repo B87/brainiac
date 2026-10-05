@@ -781,7 +781,7 @@ function CredentialSection({
             />
             <Hint>
               {editing === "claude_plan"
-                ? "Run claude setup-token in Terminal and paste the token it prints, even if Terminal wrapped it over two lines: Brainiac joins the lines and refuses anything that is not one token. Brainiac never signs in to claude.ai for you. "
+                ? "Run claude setup-token in Terminal and paste the token it prints, even if Terminal wrapped it over two lines: Brainiac joins the pieces, drops the spaces the wrap adds, and refuses anything that does not look like one token. Brainiac never signs in to claude.ai for you. "
                 : ""}
               Read when a run starts and handed to the agent in memory; never
               put in the container's settings, the image, logs, or Brainiac's

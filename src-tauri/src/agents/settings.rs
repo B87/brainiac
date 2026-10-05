@@ -48,11 +48,16 @@ pub fn credential_owner(id: &str) -> String {
 }
 
 /// A token or key as pasted or read from its source. Terminal wraps the
-/// token `claude setup-token` prints, so line breaks are removed and the
-/// pieces joined; anything that is still not one token is refused. The
-/// error never repeats the text.
+/// token `claude setup-token` prints, and copying the wrap brings line
+/// breaks and the spaces that pad them, so every whitespace and invisible
+/// character is removed and the pieces joined; two tokens, or anything that
+/// still does not look like one, are refused. The error never repeats the
+/// text.
 pub fn normalize_credential(payment: AgentPayment, text: &str) -> AppResult<String> {
-    let joined: String = text.split(['\r', '\n']).map(str::trim).collect();
+    let invisible = |c: char| {
+        c.is_whitespace() || c.is_control() || matches!(c, '\u{200b}'..='\u{200d}' | '\u{feff}')
+    };
+    let joined: String = text.chars().filter(|c| !invisible(*c)).collect();
     let what = match payment {
         AgentPayment::ClaudePlan => "token",
         AgentPayment::ApiKey => "API key",
@@ -60,9 +65,9 @@ pub fn normalize_credential(payment: AgentPayment, text: &str) -> AppResult<Stri
     if joined.is_empty() {
         return Err(AppError::validation(format!("Paste the {what}.")));
     }
-    if joined.chars().any(char::is_whitespace) {
+    if joined.matches("sk-ant-").count() > 1 {
         return Err(AppError::validation(format!(
-            "That is more than one {what}: it has spaces in it. Paste only the {what} itself."
+            "That is more than one {what}. Paste only the {what} itself."
         )));
     }
     if !joined
@@ -785,10 +790,20 @@ mod tests {
             normalize_credential(AgentPayment::ClaudePlan, &wrapped).unwrap(),
             PLAN
         );
-        let sentence = format!("{PLAN}\nStore this token securely");
-        let err = normalize_credential(AgentPayment::ClaudePlan, &sentence).unwrap_err();
+        // Terminal pads a wrapped line with spaces before the break, and a
+        // copy can carry a non-breaking or zero-width character.
+        let padded = format!("{}   \n   {}\u{a0}\u{200b}", &PLAN[..30], &PLAN[30..]);
+        assert_eq!(
+            normalize_credential(AgentPayment::ClaudePlan, &padded).unwrap(),
+            PLAN
+        );
+        let two = format!("{PLAN}\n{PLAN}");
+        let err = normalize_credential(AgentPayment::ClaudePlan, &two).unwrap_err();
         assert!(err.message.contains("more than one"), "{err:?}");
         assert!(!err.message.contains("sk-ant"), "{err:?}");
+        let sentence = format!("{PLAN} Store this token securely!");
+        let err = normalize_credential(AgentPayment::ClaudePlan, &sentence).unwrap_err();
+        assert!(err.message.contains("does not look like"), "{err:?}");
         assert!(normalize_credential(AgentPayment::ClaudePlan, "").is_err());
         assert!(normalize_credential(AgentPayment::ClaudePlan, "sk-ant-oat01-short").is_err());
     }
