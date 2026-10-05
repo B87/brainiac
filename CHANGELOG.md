@@ -11,6 +11,8 @@ into the release's section.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-05
+
 - Databases: save connections to SQLite files and PostgreSQL servers, with passwords in the Keychain, and query them in tabs with completion, a fast result grid, an inspector, Explain, Copy, and Export.
 - Connections are read only unless you allow writes; on Production, writes are turned on per tab and run in a transaction you commit or roll back.
 - Saved queries with `:name` parameters, found in ⌘K and run in one step, and a searchable history of what ran on each connection.
@@ -138,7 +140,8 @@ First public build: a read-only Git viewer and multi-repository tracker for macO
 - The Branches tab is a placeholder.
 - Not signed with an Apple Developer certificate; the first launch needs right-click > Open (see the README).
 
-[Unreleased]: https://github.com/B87/brainiac/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/B87/brainiac/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/B87/brainiac/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/B87/brainiac/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/B87/brainiac/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/B87/brainiac/compare/v0.1.3...v0.2.0
