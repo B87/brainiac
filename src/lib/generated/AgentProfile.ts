@@ -30,4 +30,13 @@ credential_ageing: boolean,
  * The user agreed that runs send code and prompts to the provider under
  * this payment.
  */
-sends_code_agreed: boolean, permissions: RunPermissions, time_limit_minutes: number, cpus: number, memory_mib: number, workspace_gib: number, image: AgentImage | null, version: number, };
+sends_code_agreed: boolean, permissions: RunPermissions, time_limit_minutes: number, cpus: number, memory_mib: number, workspace_gib: number, image: AgentImage | null, 
+/**
+ * When the last test passed.
+ */
+test_passed_at: string | null, 
+/**
+ * That test ran with the current token or key, image, and engine, so
+ * runs may start.
+ */
+test_current: boolean, version: number, };

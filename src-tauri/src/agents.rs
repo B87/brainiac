@@ -21,14 +21,20 @@
 //!   containers if it dies.
 //! - **`RunRuntime`** (`runtime.rs`) is how the app reaches the controller,
 //!   starting it when none answers.
+//! - **`AgentRunService`** (`runs.rs`) is runs as the app sees them: the
+//!   start, following the controller and mirroring its journal, the user's
+//!   actions, collection and review, Delete and retention, and Settings'
+//!   Test.
 
 pub mod controller;
 pub mod engine;
 pub mod image;
 pub mod repository;
+pub mod runs;
 pub mod runtime;
-mod settings;
+pub mod settings;
 
 pub use repository::{ExportedStart, RunArtifacts};
+pub use runs::{AgentRunService, RepositoryLookup, RunEmitter};
 pub use runtime::RunRuntime;
 pub use settings::{credential_owner, normalize_credential, AgentSettingsService, PLAN_OFFERED};

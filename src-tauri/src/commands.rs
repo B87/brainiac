@@ -846,6 +846,167 @@ pub async fn preview_run_start(
     artifacts.preview(&repository_id, &root, &start).await
 }
 
+pub type Runs = Arc<crate::agents::AgentRunService>;
+
+/// Runs: every run, newest first, and whether the controller is running.
+#[tauri::command]
+pub async fn list_agent_runs(runs: State<'_, Runs>) -> AppResult<crate::models::AgentRunList> {
+    runs.list().await
+}
+
+#[tauri::command]
+pub async fn get_agent_run(
+    id: String,
+    runs: State<'_, Runs>,
+) -> AppResult<crate::models::AgentRun> {
+    runs.get(&id).await
+}
+
+/// New run, **Start run**.
+#[tauri::command]
+pub async fn start_agent_run(
+    request: crate::models::StartRunRequest,
+    runs: State<'_, Runs>,
+) -> AppResult<crate::models::AgentRun> {
+    runs.start(request).await
+}
+
+/// The conversation after a sequence, from the mirrored journal.
+#[tauri::command]
+pub async fn list_run_events(
+    id: String,
+    after: u64,
+    runs: State<'_, Runs>,
+) -> AppResult<crate::models::RunEventPage> {
+    runs.events(&id, after).await
+}
+
+/// **Next prompt**, **Send**.
+#[tauri::command]
+pub async fn send_run_prompt(
+    id: String,
+    text: String,
+    runs: State<'_, Runs>,
+) -> AppResult<crate::models::AgentRun> {
+    runs.prompt(&id, &text).await
+}
+
+/// **Allow once** or **Reject** a permission request.
+#[tauri::command]
+pub async fn answer_run_permission(
+    id: String,
+    permission_id: String,
+    allow: bool,
+    runs: State<'_, Runs>,
+) -> AppResult<crate::models::AgentRun> {
+    runs.permit(&id, &permission_id, allow).await
+}
+
+/// **Cancel run…**
+#[tauri::command]
+pub async fn cancel_agent_run(
+    id: String,
+    runs: State<'_, Runs>,
+) -> AppResult<crate::models::AgentRun> {
+    runs.cancel(&id).await
+}
+
+/// **Finish and collect**
+#[tauri::command]
+pub async fn finish_agent_run(
+    id: String,
+    runs: State<'_, Runs>,
+) -> AppResult<crate::models::AgentRun> {
+    runs.finish(&id).await
+}
+
+/// **Collect work**, **Retry collection**, or **Choose files to add…** with `include`.
+#[tauri::command]
+pub async fn collect_agent_run(
+    id: String,
+    include: Vec<String>,
+    runs: State<'_, Runs>,
+) -> AppResult<crate::models::AgentRun> {
+    runs.collect(&id, include).await
+}
+
+/// **Keep this snapshot**
+#[tauri::command]
+pub async fn accept_run_snapshot(
+    id: String,
+    runs: State<'_, Runs>,
+) -> AppResult<crate::models::AgentRun> {
+    runs.accept_snapshot(&id).await
+}
+
+/// **Discard work…**
+#[tauri::command]
+pub async fn discard_agent_run(
+    id: String,
+    runs: State<'_, Runs>,
+) -> AppResult<crate::models::AgentRun> {
+    runs.discard(&id).await
+}
+
+/// **Retry cleanup**
+#[tauri::command]
+pub async fn retry_run_cleanup(
+    id: String,
+    runs: State<'_, Runs>,
+) -> AppResult<crate::models::AgentRun> {
+    runs.retry_cleanup(&id).await
+}
+
+/// **Delete run…**
+#[tauri::command]
+pub async fn delete_agent_run(id: String, runs: State<'_, Runs>) -> AppResult<()> {
+    runs.delete(&id).await
+}
+
+/// **Changes**: the collected snapshot's files.
+#[tauri::command]
+pub async fn get_run_changes(
+    id: String,
+    runs: State<'_, Runs>,
+) -> AppResult<crate::models::RunChanges> {
+    runs.changes(&id).await
+}
+
+#[tauri::command]
+pub async fn get_run_diff(
+    request: crate::models::RunDiffRequest,
+    runs: State<'_, Runs>,
+) -> AppResult<crate::models::DiffResult> {
+    runs.diff(request).await
+}
+
+/// **Copy patch**: the whole snapshot as a patch.
+#[tauri::command]
+pub async fn copy_run_patch(id: String, runs: State<'_, Runs>) -> AppResult<String> {
+    runs.patch(&id, None).await
+}
+
+/// **Save patch…**: the patch to the chosen file.
+#[tauri::command]
+pub async fn save_run_patch(id: String, path: String, runs: State<'_, Runs>) -> AppResult<()> {
+    runs.patch(&id, Some(std::path::Path::new(&path))).await?;
+    Ok(())
+}
+
+/// Settings → Agents, **Test**.
+#[tauri::command]
+pub async fn test_agent_setup(runs: State<'_, Runs>) -> AppResult<crate::models::AgentTestResult> {
+    runs.test().await
+}
+
+/// Settings → Agents: whether the run controller is running.
+#[tauri::command]
+pub async fn get_run_controller_status(
+    runs: State<'_, Runs>,
+) -> AppResult<crate::models::RunControllerStatus> {
+    Ok(runs.controller_status().await)
+}
+
 /// Repository → Pull requests, **Change…**: where a repository's pull requests come from.
 #[tauri::command]
 pub async fn set_repository_forge(

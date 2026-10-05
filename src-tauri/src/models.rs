@@ -3399,6 +3399,11 @@ pub struct AgentProfile {
     pub memory_mib: u32,
     pub workspace_gib: u32,
     pub image: Option<AgentImage>,
+    /// When the last test passed.
+    pub test_passed_at: Option<String>,
+    /// That test ran with the current token or key, image, and engine, so
+    /// runs may start.
+    pub test_current: bool,
     #[ts(type = "number")]
     pub version: i64,
 }

@@ -36,11 +36,11 @@ pub const PLAN_OFFERED: bool = cfg!(debug_assertions);
 const AGEING_DAYS: i64 = 335;
 
 /// New run's time limit, in minutes: 30 minutes to 8 hours (SPEC.md, New run).
-const TIME_LIMIT_MINUTES: (u32, u32) = (30, 480);
-const CPUS: (u32, u32) = (1, 64);
+pub const TIME_LIMIT_MINUTES: (u32, u32) = (30, 480);
+pub const CPUS: (u32, u32) = (1, 64);
 /// Claude Code needs a few GiB to run at all.
-const MEMORY_MIB: (u32, u32) = (2048, 256 * 1024);
-const WORKSPACE_GIB: (u32, u32) = (1, 500);
+pub const MEMORY_MIB: (u32, u32) = (2048, 256 * 1024);
+pub const WORKSPACE_GIB: (u32, u32) = (1, 500);
 
 /// The credential owner key of a profile, which is also its Keychain account.
 pub fn credential_owner(id: &str) -> String {
@@ -111,7 +111,7 @@ fn partial_save(e: AppError) -> AppError {
     )
 }
 
-fn in_range(name: &str, value: u32, (min, max): (u32, u32)) -> AppResult<u32> {
+pub fn in_range(name: &str, value: u32, (min, max): (u32, u32)) -> AppResult<u32> {
     if (min..=max).contains(&value) {
         Ok(value)
     } else {
@@ -156,7 +156,7 @@ impl AgentSettingsService {
         }
     }
 
-    async fn profile(&self) -> AppResult<AgentProfile> {
+    pub async fn profile(&self) -> AppResult<AgentProfile> {
         self.db
             .call(|conn| get(conn, PROFILE_ID))
             .await?
@@ -500,6 +500,29 @@ impl AgentSettingsService {
         self.get().await
     }
 
+    /// **Test** passed with this token or key, image, and engine: runs may
+    /// start until one of them changes.
+    pub async fn record_test(&self, profile: &AgentProfile) -> AppResult<AgentSettings> {
+        let (revision, image, socket, now) = (
+            profile.credential.revision,
+            profile.image.as_ref().map(|i| i.id.clone()),
+            profile.engine_socket.clone(),
+            now_rfc3339(),
+        );
+        self.db
+            .call(move |conn| {
+                conn.execute(
+                    "UPDATE agent_profiles SET test_passed_at = ?2, test_credential_revision = ?3,
+                       test_image_id = ?4, test_engine_socket = ?5, version = version + 1
+                     WHERE id = ?1",
+                    params![PROFILE_ID, now, revision, image, socket],
+                )?;
+                Ok(())
+            })
+            .await?;
+        self.get().await
+    }
+
     /// Settings → Secrets: the profile when it has a token or key, or a
     /// cleanup still to do. Reads no secret.
     pub async fn secret_entries(&self) -> AppResult<Vec<SecretEntry>> {
@@ -589,14 +612,22 @@ fn missing(p: &AgentProfile) -> Vec<String> {
         }
         Some(_) => {}
     }
-    missing.push("Pass a test run. Tests come with runs, in a later build.".to_string());
+    if !p.test_current {
+        missing.push(if p.test_passed_at.is_some() {
+            "Test again: the token or key, the image, or the engine changed since the last test."
+                .to_string()
+        } else {
+            "Pass a test run.".to_string()
+        });
+    }
     missing
 }
 
 const COLUMNS: &str = "p.id, h.socket, p.payment, p.secret_source, p.credential_revision,
     p.source_approved, p.credential_pending, p.credential_saved_at, p.sends_code_agreed,
     p.permissions, p.time_limit_minutes, p.cpus, p.memory_mib, p.workspace_gib, p.image_id,
-    p.image_recipe, p.image_built_at, p.version";
+    p.image_recipe, p.image_built_at, p.version, p.test_passed_at, p.test_credential_revision,
+    p.test_image_id, p.test_engine_socket";
 
 fn parse<T: serde::de::DeserializeOwned>(text: String) -> rusqlite::Result<T> {
     serde_json::from_value(serde_json::Value::String(text)).map_err(|e| {
@@ -637,13 +668,26 @@ fn from_row(r: &Row<'_>) -> rusqlite::Result<AgentProfile> {
         }),
         _ => None,
     };
+    let engine_socket: Option<String> = r.get(1)?;
+    let revision: i64 = r.get(4)?;
+    let test_passed_at: Option<String> = r.get(18)?;
+    let test_revision: Option<i64> = r.get(19)?;
+    let test_image: Option<String> = r.get(20)?;
+    let test_socket: Option<String> = r.get(21)?;
+    // The test counts while nothing it ran with changed.
+    let test_current = test_passed_at.is_some()
+        && test_revision == Some(revision)
+        && test_image.is_some()
+        && test_image == image.as_ref().map(|i| i.id.clone())
+        && test_socket.is_some()
+        && test_socket == engine_socket;
     Ok(AgentProfile {
         id: r.get(0)?,
-        engine_socket: r.get(1)?,
+        engine_socket,
         payment,
         credential_source: parse_json(r.get(3)?)?,
         credential: CredentialState {
-            revision: r.get(4)?,
+            revision,
             needs_approval: !r.get::<_, bool>(5)?,
             pending: r.get::<_, Option<String>>(6)?.map(parse).transpose()?,
         },
@@ -656,6 +700,8 @@ fn from_row(r: &Row<'_>) -> rusqlite::Result<AgentProfile> {
         memory_mib: r.get(12)?,
         workspace_gib: r.get(13)?,
         image,
+        test_passed_at,
+        test_current,
         version: r.get(17)?,
     })
 }

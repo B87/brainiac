@@ -145,6 +145,11 @@ async fn get<T: serde::de::DeserializeOwned>(client: &reqwest::Client, url: &str
     })
 }
 
+/// The engine's name for a run's record, from where its socket is.
+pub fn name_of(socket: &str) -> String {
+    guess_name(Path::new(socket))
+}
+
 /// A name from where the socket is, until the engine says what it is.
 fn guess_name(socket: &Path) -> String {
     let text = socket.display().to_string();

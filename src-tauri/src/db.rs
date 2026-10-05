@@ -50,6 +50,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0008_agent_runs",
         include_str!("../migrations/0008_agent_runs.sql"),
     ),
+    (
+        "0009_agent_test",
+        include_str!("../migrations/0009_agent_test.sql"),
+    ),
 ];
 
 /// How many daily backups to keep.

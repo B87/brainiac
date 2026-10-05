@@ -40,6 +40,7 @@ pub const EVENT_TASK_CHANGED: &str = "task_changed";
 pub const EVENT_INDEX_STATUS_CHANGED: &str = "index_status_changed";
 pub const EVENT_PR_CHANGED: &str = "pr_changed";
 pub const EVENT_DB_HEALTH_SAMPLE: &str = "db_health_sample";
+pub const EVENT_AGENT_RUN_CHANGED: &str = "agent_run_changed";
 
 /// Minimum age of a vault scan before focus or wake triggers another.
 const VAULT_ACTIVATION_MIN_AGE: Duration = Duration::from_secs(30);
@@ -207,10 +208,41 @@ pub fn run() {
                 Arc::clone(&credentials),
             ));
             app.manage(Arc::clone(&agent_settings));
-            app.manage(Arc::new(agents::RunArtifacts::new(
+            let artifacts = Arc::new(agents::RunArtifacts::new(
                 service.git_service().cloned(),
                 &data_dir,
-            )));
+            ));
+            app.manage(Arc::clone(&artifacts));
+            // The run controller is a separate process; the runtime reaches
+            // it and starts it when a run needs one.
+            let runtime = Arc::new(agents::RunRuntime::new(&data_dir, &app.config().identifier));
+            let run_handle = handle.clone();
+            let run_emitter: agents::RunEmitter = Arc::new(move |event| {
+                if let Err(e) = run_handle.emit(EVENT_AGENT_RUN_CHANGED, &event) {
+                    tracing::warn!(error = %e, "failed to emit agent_run_changed");
+                }
+            });
+            let runs = agents::AgentRunService::new(
+                stores.history.clone(),
+                Arc::clone(&agent_settings),
+                Arc::clone(&credentials),
+                artifacts,
+                runtime,
+                Arc::clone(&service) as Arc<dyn agents::RepositoryLookup>,
+                run_emitter,
+            );
+            app.manage(Arc::clone(&runs));
+            // Reconnect to runs left live or uncollected, and apply retention
+            // once an hour (SPEC.md, Leaving and coming back; Deleting and keeping).
+            let reconnecting = Arc::clone(&runs);
+            tauri::async_runtime::spawn(async move {
+                reconnecting.reconnect().await;
+                let mut ticker = tokio::time::interval(Duration::from_secs(60 * 60));
+                loop {
+                    ticker.tick().await;
+                    reconnecting.retention_tick().await;
+                }
+            });
             app.manage(Arc::new(secrets::SecretsService::new(
                 credentials,
                 accounts,
@@ -447,6 +479,25 @@ pub fn run() {
             commands::agent_dockerfile,
             commands::build_agent_image,
             commands::preview_run_start,
+            commands::list_agent_runs,
+            commands::get_agent_run,
+            commands::start_agent_run,
+            commands::list_run_events,
+            commands::send_run_prompt,
+            commands::answer_run_permission,
+            commands::cancel_agent_run,
+            commands::finish_agent_run,
+            commands::collect_agent_run,
+            commands::accept_run_snapshot,
+            commands::discard_agent_run,
+            commands::retry_run_cleanup,
+            commands::delete_agent_run,
+            commands::get_run_changes,
+            commands::get_run_diff,
+            commands::copy_run_patch,
+            commands::save_run_patch,
+            commands::test_agent_setup,
+            commands::get_run_controller_status,
             commands::set_repository_forge,
             commands::update_workspace_pull_requests,
             commands::list_pull_requests,

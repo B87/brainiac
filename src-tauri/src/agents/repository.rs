@@ -744,6 +744,44 @@ impl RunArtifacts {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 
+    /// Settings → Agents, **Test**: a tiny repository made at `source`, its
+    /// one commit exported for the test's run. Returns the bundle and the commit.
+    pub async fn test_bundle(&self, source: &Path, run_id: &str) -> AppResult<(PathBuf, String)> {
+        let io = |e: std::io::Error| {
+            AppError::io("The test's repository could not be made.").with_details(e.to_string())
+        };
+        if source.exists() {
+            std::fs::remove_dir_all(source).map_err(io)?;
+        }
+        std::fs::create_dir_all(source).map_err(io)?;
+        std::fs::write(
+            source.join("README.md"),
+            "# Brainiac test run\n\nA repository made for Settings → Agents, Test.\n",
+        )
+        .map_err(io)?;
+        let identity = [
+            "-c",
+            "user.name=Brainiac",
+            "-c",
+            "user.email=runs@brainiac.invalid",
+        ];
+        let mut init = identity.to_vec();
+        init.extend(["-c", "init.defaultBranch=main", "init", "--quiet"]);
+        self.git_ok(source, &init, CHECK_TIMEOUT).await?;
+        self.git_ok(source, &["add", "README.md"], CHECK_TIMEOUT)
+            .await?;
+        let mut commit = identity.to_vec();
+        commit.extend(["commit", "--quiet", "-m", "Test"]);
+        self.git_ok(source, &commit, CHECK_TIMEOUT).await?;
+        let head = self
+            .git_ok(source, &["rev-parse", "HEAD"], CHECK_TIMEOUT)
+            .await?
+            .trim()
+            .to_string();
+        let exported = self.export("test", source, &head, run_id).await?;
+        Ok((exported.bundle, head))
+    }
+
     /// Delete a run's files and its refs in Brainiac's repository. Objects
     /// other runs share stay; unreachable ones go with Git's own upkeep.
     pub async fn remove_run(&self, repository_id: &str, run_id: &str) -> AppResult<()> {
