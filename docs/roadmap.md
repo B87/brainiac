@@ -98,7 +98,7 @@ A database client is open most of the working day next to the repositories it be
 - [x] Writes: read-and-write access, Auto-commit and Manual transactions, the Production rules, Explain and Explain Analyze, Export, connections linked to repositories.
 - [x] Health: the PostgreSQL metrics first, then Docker containers, then Cloud SQL through Cloud Monitoring; Coolify waits for SSH tunnels.
 
-**Status, 4 October 2026:** every step above is committed on the `v0.4-databases` branch, not yet merged. The spike's checks are tests against a throwaway PostgreSQL server (`architecture.md`, Decisions); the services are tested the same way and against SQLite files the tests create; Docker and Cloud Monitoring against local stand-ins; the views in WebKit over the fake backend. Left: the exit gate by hand over a week of real use, which is also the first time Brainiac meets a hosted provider's TLS (RDS, Cloud SQL, Supabase, Neon), a real Docker socket, and real Cloud Monitoring credentials; then merge and release 0.4.0. Not built from the design: dropping a SQLite file on the window, copying a selection of rows (Copy takes every row, or one value), and exporting only the rows loaded.
+**Status, 5 October 2026:** released as 0.4.0, before its exit gate was checked by hand; problems found in that week of use become 0.4.x fixes. As of 4 October, every step above was committed on the `v0.4-databases` branch. The spike's checks are tests against a throwaway PostgreSQL server (`architecture.md`, Decisions); the services are tested the same way and against SQLite files the tests create; Docker and Cloud Monitoring against local stand-ins; the views in WebKit over the fake backend. Left: the exit gate by hand over a week of real use, which is also the first time Brainiac meets a hosted provider's TLS (RDS, Cloud SQL, Supabase, Neon), a real Docker socket, and real Cloud Monitoring credentials. Not built from the design: dropping a SQLite file on the window, copying a selection of rows (Copy takes every row, or one value), and exporting only the rows loaded.
 
 **Exit gate:** for a week, use Brainiac instead of the usual database GUI against a local SQLite file, a local PostgreSQL in Docker, and a hosted production PostgreSQL. Run the weekly saved queries from `Cmd+K` with their parameters; cancel a slow query; copy results into a note; a write on a read-only connection fails and changes nothing; a write on production needs read and write turned on for that tab and leaves a transaction to commit or roll back by hand; Health shows connections, the slowest queries, and the machine's memory for the Docker and Cloud SQL databases; and a password never reaches the window, a log, or Brainiac's files.
 
@@ -116,6 +116,8 @@ A coding agent's command-line tool run in a container, on the Mac or a remote ho
 - [ ] Landing and more agents: create-only HTTPS Push of the exact reviewed snapshot with uncertain-response reconciliation, Create pull request after its v0.3.x dependency, tested Codex/Gemini adapters, enforced network allowlist before adding read-only registry tokens.
 - [ ] Remote hosts after production SSH integration: approved-host Settings, verified controller deployment/upgrade/removal, and per-host isolation. Repeat the early proof with the packaged product: a turn continues while the Mac sleeps, session remains available idle or waiting for permission, reconnect retrieves missed events and permits follow-up, deadlines and partial collection run offline, and uncertain requests are never repeated. Continuation is a required gate for shipping remote hosts.
 - [ ] Runs from tasks: New run from a task, the run shown on the task, and runs waiting on the user in Today.
+
+**Status, 5 October 2026:** the blocking spike passed on a remote Linux host and on Docker Desktop and OrbStack on the Mac (`architecture.md`, Decisions, 5 Oct 2026), and phase 1 has started on the `v0.5-agent-runs` branch: its behavior is [`SPEC.md`](../SPEC.md) section 13 and its design [`architecture.md`](architecture.md), Agent runs — v0.5. Open before phase 1 can ship: keeping the local controller alive across logout and restart, a fixed-size workspace on the Mac's engines, and Anthropic's answer on the subscription token (the API key does not wait for it).
 
 Prove the remote controller architecture before production runtime implementation. Then local runs with one agent may ship first, landing next, followed by production remote hosts and tasks. Local and remote use the same controller/session contract; client disconnect or app restart does not interrupt a healthy controller. Mac sleep suspends local execution, while remote execution remains independent of the Mac. The remote proof is repeated as a phase-3 product release gate.
 
@@ -194,20 +196,15 @@ These unknowns do not prevent implementing the core domain and persistence servi
 
 ## Designs for later releases
 
-v0.2's design (views, notes, tasks, search, storage, and backups) moved to [`SPEC.md`](../SPEC.md) sections 5–8 and [`architecture.md`](architecture.md) when the release started, v0.2.x's agent access to `SPEC.md` section 9 and `architecture.md`, Agent access, v0.3's pull requests to `SPEC.md` section 10 and `architecture.md`, Pull requests — v0.3, v0.4's databases to `SPEC.md` section 11 and `architecture.md`, Databases — v0.4, and v0.4.x secrets phase 1 to `SPEC.md` section 12 and `architecture.md`, Secrets — v0.4.x.
+v0.2's design (views, notes, tasks, search, storage, and backups) moved to [`SPEC.md`](../SPEC.md) sections 5–8 and [`architecture.md`](architecture.md) when the release started, v0.2.x's agent access to `SPEC.md` section 9 and `architecture.md`, Agent access, v0.3's pull requests to `SPEC.md` section 10 and `architecture.md`, Pull requests — v0.3, v0.4's databases to `SPEC.md` section 11 and `architecture.md`, Databases — v0.4, v0.4.x secrets phase 1 to `SPEC.md` section 12 and `architecture.md`, Secrets — v0.4.x, and v0.5's agent runs, phase 1, to `SPEC.md` section 13 and `architecture.md`, Agent runs — v0.5.
 
 ### Secrets — v0.4.x
 
-Phase 1 is committed on the `v0.4-databases` branch. Its behavior is [`SPEC.md`](../SPEC.md) section 12 and its design is [`architecture.md`](architecture.md), Secrets — v0.4.x. Phases 2 and 3 remain in [`design/secrets.md`](design/secrets.md).
+Phase 1 shipped in 0.4.0. Its behavior is [`SPEC.md`](../SPEC.md) section 12 and its design is [`architecture.md`](architecture.md), Secrets — v0.4.x. Phases 2 and 3 remain in [`design/secrets.md`](design/secrets.md).
 
 ### Agent runs — v0.5
 
-The full design is in [`design/agent-runs.md`](design/agent-runs.md); its tables (`agent_hosts`, `agent_profiles`, `agent_runs`) are listed there.
-
-- **One controller/session contract for local and remote.** The engine-host controller owns ACP streams, resources, deadlines, bounded journal, and recovery; Brainiac is a reconnecting client. Prove remote execution through Mac sleep before building the runtime, then allow local-first shipping. Production remote support requires SSH integration and the packaged continuation tests.
-- **ACP only, with tested capabilities.** Pinned descriptors feed a versioned, sanitized Brainiac journal; raw protocol and Docker logs are never replay storage.
-- **Immutable input and reviewed output.** App-owned export refs bundle the exact start; a credential-free collector snapshots uncommitted work, verifies hostile artifacts, and imports into app-owned bare repos. Publication is create-only and tied to the exact reviewed result; source checkout/index/refs/config are untouched.
-- **Scoped credentials and recovery.** Mac-resolved leases require approved provider/image/host contexts, use stdin delivery, and never put a publication credential in the workload. Restore requires fresh confirmation. Owned volumes/resources have durable cleanup state; read-only registry tokens wait for enforced egress limits.
+Phase 1 (local runs and review) is in [`SPEC.md`](../SPEC.md) section 13 and [`architecture.md`](architecture.md), Agent runs — v0.5. Phases 2 to 4 (landing and more agents, remote hosts, tasks), the background, the spike records, and the open questions remain in [`design/agent-runs.md`](design/agent-runs.md).
 
 ### Additions of v0.6 onward to storage and contracts
 

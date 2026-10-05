@@ -38,7 +38,7 @@ The product can eventually include PR and CI status, calendar context, recurring
 
 ## 2. Release boundaries
 
-**v0.1 — Git viewer and single/multi-repository tracker** shipped as 0.1.3. **v0.2 — knowledge, tasks, and code context** shipped as 0.2.0: one Markdown vault, tasks, Today, keyword search, and links between notes, tasks, and the repositories v0.1 tracks (sections 5–8). **v0.2.x — agent access** lets agents such as Claude Code work with Brainiac's notes, tasks, and repository links through a local MCP server (section 9). **v0.3 — pull requests** shipped as 0.3.1: reviewing and merging the pull requests of a workspace's repositories on GitHub and Bitbucket Cloud (section 10). **v0.4 — databases** is the current release: SQLite and PostgreSQL connections, a query editor and result grid, saved queries, and a PostgreSQL server's health, next to the repositories they belong to (section 11). Content imports, global capture, and AI follow it.
+**v0.1 — Git viewer and single/multi-repository tracker** shipped as 0.1.3. **v0.2 — knowledge, tasks, and code context** shipped as 0.2.0: one Markdown vault, tasks, Today, keyword search, and links between notes, tasks, and the repositories v0.1 tracks (sections 5–8). **v0.2.x — agent access** lets agents such as Claude Code work with Brainiac's notes, tasks, and repository links through a local MCP server (section 9). **v0.3 — pull requests** shipped as 0.3.1: reviewing and merging the pull requests of a workspace's repositories on GitHub and Bitbucket Cloud (section 10). **v0.4 — databases** shipped as 0.4.0: SQLite and PostgreSQL connections, a query editor and result grid, saved queries, and a PostgreSQL server's health, next to the repositories they belong to (section 11), with phase 1 of secrets (section 12). **v0.5 — agent runs** is the current release: a coding agent run in a container, followed live, and reviewed before anything leaves the Mac (section 13). Its first phase runs on this Mac's Docker engine and ends with a patch; pushing a branch, more agents, remote hosts, and runs from tasks follow within v0.5. Content imports, global capture, and AI follow it.
 
 | Capability | Release | Scope |
 | --- | --- | --- |
@@ -61,7 +61,8 @@ The product can eventually include PR and CI status, calendar context, recurring
 | Databases | v0.4 | SQLite and PostgreSQL connections, read only by default; query editor and result grid, saved queries, history, and a PostgreSQL connection's health |
 | Secrets | v0.4.x | An account's token or a connection's password read from the Keychain, an environment variable, or a command such as `gh auth token` or `op read`, and Settings → Secrets (section 12) |
 | Database and credential follow-ups | v0.4.x | SSH tunnels, editing rows in the grid, saved queries as files, and secrets from Google Secret Manager, Git's credential helper, and `.pgpass`; chosen by use |
-| Agent runs | v0.5 | A coding agent's command-line tool (Claude Code, Codex, Gemini CLI) run in a container on the Mac or a remote host, with guided setup, a live trace, and a review of its branch before anything is pushed |
+| Agent runs | v0.5 | Claude Code run in a container on this Mac's Docker engine, with guided setup, a live conversation, follow-up prompts, and a review of the collected work saved as a patch (section 13) |
+| Agent run follow-ups | v0.5 | Pushing the reviewed result to a new branch, Codex and Gemini CLI, remote hosts that keep working while the Mac sleeps, and runs from tasks (`docs/design/agent-runs.md`) |
 | External content imports | v0.6 | Paste, bookmarks, Markdown copies, articles, `.eml`, provenance and duplicate handling |
 | Global capture window and Inbox | v0.6 | System shortcut, floating capture, Inbox triage of captured and imported items, shared backend state |
 | Authenticated import adapters | v0.6.x | Selected Jira issues/mail messages; provider choice and video transcript acquisition validated separately |
@@ -156,6 +157,7 @@ Repository name/path filtering and commit-message/hash filtering belong to the G
 | `Cmd+B` | Show or hide the sidebar |
 | `Option+Cmd+B` | Show or hide the side panel |
 | `Option+Cmd+0`, v0.2 | Show or hide the context panel in Notes (the same panel as `Option+Cmd+B`) |
+| `Option+Cmd+N`, v0.5 | New run |
 | `Space`, v0.2 | Mark the selected task done or not done |
 | `J` / `K` (or arrow keys) | Next / previous row in the focused list, without clicking it first |
 | `[` / `]` | Previous / next file in a commit or the changes list |
@@ -670,3 +672,89 @@ Where an account's token and a connection's password come from. Brainiac writes 
 - A secret is sent only where it belongs: an account's token to its provider's API, a connection's password to its own server.
 - Agents can neither read a secret nor change where one comes from.
 - Later: Google Secret Manager, Git's credential helper, and `~/.pgpass` (v0.4.x, chosen by use), and the Secret Service if Brainiac ever builds for Linux.
+
+## 13. Agent runs — v0.5
+
+A coding agent run in a container, started from a repository, followed live, steered with follow-up prompts, and reviewed in the diff viewer before its work leaves Brainiac. This section is phase 1: Claude Code on this Mac's Docker engine, ending in a patch. Pushing a branch, Codex and Gemini CLI, remote hosts, and runs from tasks follow within v0.5; their design, the options compared, the spike records, and the UX canvas are in `docs/design/agent-runs.md`.
+
+### Boundaries
+
+- **The user's repository is only read.** Its checkout is never mounted into a container, and its working tree, index, refs, configuration, and hooks are never changed. A run gets one commit and its history, copied into Brainiac's own repository in its data folder (`docs/architecture.md`, Agent runs — v0.5). Fetching stays the only write to a user's repository (section 2).
+- **Code and prompts go to the model provider during the run.** Reviewing decides what is published, not what is sent. New run says so before it starts.
+- **The agent can read the credential it is given, and so can whoever controls the Docker engine.** Phase 1's network access is unrestricted: the agent can reach any site, including services on the user's network.
+- **Nothing is pushed in phase 1.** The result leaves Brainiac only as a patch the user copies or saves.
+- **One tested agent:** Claude Code through its ACP adapter, at versions pinned in an image Brainiac builds. A request from the agent for a file or terminal on the Mac is refused. Brainiac's MCP server is not offered inside a run.
+- **Agents (section 9) cannot start runs or change Settings → Agents.**
+
+### Settings → Agents
+
+- **Where runs execute:** this Mac's Docker engine, chosen by its socket (OrbStack or Docker Desktop; others when tested), with its state and whether the run controller is running. It says that runs pause while the Mac sleeps, and that a run past its time limit is stopped on wake. An engine on which Brainiac cannot enforce the workspace size, or that fails the test, is not offered.
+- **Claude Code**, paid with one of:
+  - **Claude plan:** a token the user creates with `claude setup-token` in Terminal and pastes. A token Terminal wrapped over two lines is joined; anything that is not one token is refused. Brainiac never signs in to claude.ai, never reads Claude Code's own Keychain item or `~/.claude`, and never copies login files into a container. It records when the token was saved and warns from eleven months on. Runs use the plan's usage limits, shared with the user's other Claude use, and show "Uses your Claude plan" instead of a cost. This option is off by default and ships in a release only once Anthropic's answer on its terms is recorded (`docs/design/agent-runs.md`, Subscription token).
+  - **API key:** an Anthropic API key.
+  
+  The token or key comes through the credentials layer (section 12): its source is saved, never the secret. Exactly one of them reaches a run.
+- **Sends code to:** the provider and plan, with a checkbox the user ticks to agree that runs send the repository's history up to the start commit, prompts, and anything the agent reads.
+- **Image:** a readable Dockerfile that Brainiac builds, with the base image, Claude Code, its ACP adapter, and the collector each at a pinned version; its digest and build date; **View Dockerfile** and **Rebuild…**.
+- **New runs:** default permissions (Ask before actions, or Act without asking), time limit, and CPU, memory, and workspace size.
+- **Test:** starts a short run, sends a prompt, cancels, and collects, and shows what passed and when. A run cannot start until a test has passed for the current credential, image, and engine; a changed token or key needs a new test, because a wrong token can come back looking like an ordinary reply.
+
+### New run
+
+- **New run…** from Runs (`Option+Cmd+N`), the command palette, or a repository. The repository must be a complete local Git repository: a shallow or partial clone, missing objects, Git LFS pointers, or submodules in the chosen tree are refused with a remedy, before any container starts or credential is read.
+- **Start from** a branch or a commit, resolved once to a commit. The dialog shows that commit, says that uncommitted changes are not part of the run, and says what the container gets: this commit and its history (with the count); other branches, stashes, hooks, remotes, and Git settings stay on the Mac.
+- **Prompt**, **Time limit** (30 minutes to 8 hours) with the time it ends, which counts waiting for the user and idle time too, and resource limits with **Change…**.
+- **Permissions:** **Ask before actions** waits for the user before the agent runs a command or edits a file; **Act without asking** lets it do anything inside its container, and never push, get new credentials, or change where it runs.
+- **Before you start** names the provider and plan or key, the unrestricted network, and who can read the token or key. **Start run** says nothing is pushed until the result is reviewed.
+
+### The run
+
+- **Runs** is a sidebar section after Databases (also View › Runs and `Cmd+K`), with a badge counting runs that need the user. Its list groups runs as Needs you, Ready to review, Active, and Ended, filtered by repository, each with what it is doing, what it produced, and when.
+- A run's header shows its title, repository, start commit, agent and engine, and permissions, then separate badges for what the agent is doing and what the run produced, the time it ends and the time left, "Uses your Claude plan" (or the cost when the provider reports one, "Unavailable" when not), **Cancel run…**, and **Finish and collect**.
+- **Conversation:** the prompts, the agent's messages and plan, and its tool activity, with each finished turn folded to a summary ("14 steps · read 6 files, ran 3 commands"). A side panel lists the start, where it runs, the provider and credential source, the network, limits with workspace use, the image, and the files the agent says it changed, marked as reported by the agent. **Changes** is available once the work is collected.
+- **Next prompt** is enabled only while the run is idle and connected; **Send** starts the next turn on the same session.
+- **Permission requests** (in Ask before actions) show the command or edit, that it runs inside the container, when it was asked, and that the run still ends at its time limit; **Allow once** or **Reject**. In Act without asking, Brainiac chooses allow once. A request that arrives after Cancel has no effect.
+- **States**, each in words:
+
+  | Fact | States |
+  | --- | --- |
+  | What the agent is doing | Preparing · Working, turn n · Waiting for you, permission · Ready for your prompt · Plan limit reached · Workspace full · Stopping · Finished, Cancelled, or Expired · Failed or Interrupted |
+  | What the run produced | Collecting · Ready to review, n files · No changes · Collection failed |
+  | Whether Brainiac can see it (no badge when connected) | Last reported: … · Cancel requested · Stop not confirmed |
+  | Cleanup | Cleanup pending |
+
+- **Plan limit reached:** the plan's usage limit stopped the turn. The session stays open and its work is kept, the time limit keeps running, and the user can send again later or finish and collect. Brainiac does not claim to know when the limit resets.
+- **Workspace full:** the agent's writes fail for lack of space. The run is not stopped.
+- **A rejected token or key** fails the run with its work kept for collection. A run never asks for a new credential: the user updates it in Settings and starts another run.
+
+### Leaving and coming back
+
+- Quitting Brainiac does not stop a run. Reopening reconnects to the same session, shows the updates missed while it was closed once each, and allows the next prompt without sending the credential again.
+- A run on this Mac does not work while the Mac sleeps. On wake, a run past its time limit is stopped and shown as "Expired while this Mac slept"; it may have worked for a few seconds after wake.
+- When Brainiac cannot reach the run (the engine is not answering), the run shows its last report and when it was made, retries, and never claims the run stopped. **Cancel** meanwhile is shown as requested and is sent when Brainiac reconnects.
+
+### Ending and collecting
+
+- **Finish and collect** (only while idle), **Cancel**, the time limit, a failure, or an interruption all stop every process in the container and confirm it stopped before anything is collected.
+- **Collecting** snapshots the agent's working tree, including edits it never committed: staged and unstaged changes, new files, binary files, symbolic links (as links), executable bits, and deletions. It is compared with the start commit as one new commit on top of it; the agent's own commits are not kept as history.
+- **Left out:** new files that the start commit's ignore rules or Brainiac's fixed rules exclude (generated output, caches, Git's own data, home folders). Review lists them with the reason; **Choose files to add…** collects again with the chosen regular files, and **Keep this snapshot** accepts the list. Until one of them, or a patch export that confirms the same list, the stopped container is kept.
+- **Interrupted** (the engine, the container, or the run controller stopped unexpectedly): the container is stopped and kept with its files; only Discard removes them. The conversation cannot continue; **Collect work** collects it for review. Updates after the last one recorded may be missing.
+- **Collection failed:** the stopped container and its files are kept, with the reason ("over the 200 MB limit for one file"), **Retry collection**, **Export files…**, and **Discard work…**.
+
+### Review
+
+- **Changes** shows the collected snapshot against the start commit in the diff viewer, with the files, additions, and deletions, and says it includes edits the agent did not commit.
+- **Copy patch** and **Save patch…** export that comparison, binary changes included within the artifact limits.
+- What the agent said it changed is never taken as the result; the collected snapshot is.
+
+### Deleting and keeping
+
+- **Delete run…** removes the conversation, the review, and the stopped container with its files, and names any work that would be lost (left-out files never added or accepted). It is refused while Brainiac cannot confirm the run stopped.
+- Ended runs are removed 30 days after they end, with their prompts, conversation, and results. Work waiting for a decision (uncollected, left-out files not yet accepted, a failed collection) stays until the user decides.
+- **Cleanup pending:** a container, volume, or file that could not be removed stays listed with **Retry cleanup**; it never blocks reviewing a result.
+- Runs, their conversations, and their results are not part of a vault export. Settings → Agents are exported as where the credential comes from, never the credential, and a restored setup must be confirmed before Brainiac reads its credential, builds an image, or starts a run.
+
+### Credentials and what reaches the container
+
+- The credential is read on the Mac when a run starts and handed to the agent in memory. It never goes into the container's settings, its environment as Docker shows it, the image, labels, arguments, logs, the conversation as saved, or Brainiac's files.
+- Known injected values are removed from the conversation before it is saved or shown. That is best effort for values Brainiac knows; the agent can write a secret into its files, and a review cannot certify that a result holds none.
