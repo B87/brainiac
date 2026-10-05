@@ -27,7 +27,7 @@ serde_json = "1"
 thiserror = "2"
 ts-rs = { version = "11", features = ["serde-compat"] }
 rusqlite = { version = "0.40", features = ["bundled", "backup", "hooks", "column_decltype"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time", "sync", "io-util", "io-std", "net"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time", "sync", "io-util", "io-std", "net", "fs", "signal"] }
 notify = "8"
 uuid = { version = "1", features = ["v4"] }
 chrono = "0.4"
@@ -52,6 +52,10 @@ rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", 
 rustls-platform-verifier = "0.7"
 bytes = "1"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+# Agent runs (v0.5): the run controller drives containers through the Docker
+# Engine API on the chosen engine's socket, including the attach stream
+# (an upgraded connection) that carries the agent's protocol.
+bollard = { version = "0.19", default-features = false, features = ["pipe"] }
 
 [dev-dependencies]
 tempfile = "3"

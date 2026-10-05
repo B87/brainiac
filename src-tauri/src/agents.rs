@@ -15,11 +15,20 @@
 //!   it refuses what a run cannot copy completely, resolves the start once,
 //!   and copies that commit and its history into Brainiac's own bare
 //!   repository and a bundle, without writing to the user's repository.
+//! - **`RunController`** (`controller.rs`) is `brainiac runner`, the process
+//!   that owns each run's container, agent session, deadline, and journal,
+//!   and outlives the app; **`RunGuard`** (`controller/guard.rs`) stops its
+//!   containers if it dies.
+//! - **`RunRuntime`** (`runtime.rs`) is how the app reaches the controller,
+//!   starting it when none answers.
 
+pub mod controller;
 pub mod engine;
 pub mod image;
 pub mod repository;
+pub mod runtime;
 mod settings;
 
 pub use repository::{ExportedStart, RunArtifacts};
+pub use runtime::RunRuntime;
 pub use settings::{credential_owner, normalize_credential, AgentSettingsService, PLAN_OFFERED};

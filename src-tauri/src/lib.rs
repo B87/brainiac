@@ -57,6 +57,12 @@ pub fn run() {
     if std::env::args().nth(1).as_deref() == Some("mcp") {
         std::process::exit(mcp::helper::run(&context.config().identifier));
     }
+    // `brainiac runner` is the agent run controller (and its guard), started
+    // by the app as its own process (docs/architecture.md, Agent runs — v0.5).
+    if std::env::args().nth(1).as_deref() == Some("runner") {
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        std::process::exit(agents::controller::main(&args));
+    }
     init_tracing();
 
     tauri::Builder::default()

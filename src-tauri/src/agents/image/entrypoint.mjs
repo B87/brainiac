@@ -1,6 +1,7 @@
 // The run's entrypoint (docs/architecture.md, Agent runs — v0.5,
-// Credentials). It reads one credential frame from stdin, then starts the
-// Claude ACP adapter with that one value in its environment.
+// Credentials). It reads one credential frame from stdin, clones the run's
+// start into the workspace, then starts the Claude ACP adapter with that one
+// value in its environment.
 //
 // The frame is "BRB1", a 4-byte big-endian length, then JSON with exactly
 // one key: CLAUDE_CODE_OAUTH_TOKEN (a Claude plan token) or
@@ -8,12 +9,16 @@
 // the pipe for the adapter. Node strings cannot be wiped; the frame buffer
 // is zeroed and the value is never written to a file.
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 
 const ADAPTER =
   "/opt/claude/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js";
 const MAX_FRAME = 8192;
+// The run's start, copied in by the run controller before this container
+// started: one commit and its history, advertising refs/heads/start.
+const INPUT = "/opt/brainiac/input/input.bundle";
+const WORKSPACE = "/workspace";
 const KEYS = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"];
 // Every variable that could carry another credential to Claude Code.
 const CLEARED = [
@@ -74,6 +79,25 @@ try {
   }
 } catch {
   fail("frame");
+}
+
+// The workspace volume is new and empty; the clone is the run's start. Git's
+// output goes to stderr, which is drained and never stored: stdout carries
+// the protocol. The credential is not in Git's environment. A run without
+// its start is refused rather than given an empty workspace.
+if (!fs.existsSync(INPUT)) {
+  fail("clone");
+}
+if (fs.readdirSync(WORKSPACE).length > 0) {
+  fail("workspace");
+}
+const git = (args) =>
+  spawnSync("git", args, { stdio: ["ignore", 2, "inherit"] }).status === 0;
+if (
+  !git(["clone", "--quiet", "--branch", "start", INPUT, WORKSPACE]) ||
+  !git(["-C", WORKSPACE, "remote", "remove", "origin"])
+) {
+  fail("clone");
 }
 
 // Claude Code ignores CLAUDE_CODE_OAUTH_TOKEN on a fresh home until this

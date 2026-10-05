@@ -698,7 +698,7 @@ A coding agent run in a container, started from a repository, followed live, ste
 - **Image:** a readable Dockerfile that Brainiac builds, with the base image, Claude Code, its ACP adapter, and the collector each at a pinned version; its digest and build date; **View Dockerfile** and **Rebuild…**.
 - **New runs:** default permissions (Ask before actions, or Act without asking), time limit, and CPU, memory, and workspace size; at first Ask before actions, 1 hour, 4 CPUs, 8 GB of memory, and a 20 GB workspace.
 - **Before the first run** lists what is still missing, in the order to do it: an engine, the token or key, the agreement, the image, a passed test. Choosing another engine forgets the image built on the old one.
-- **Test:** starts a short run, sends a prompt, cancels, and collects, and shows what passed and when. A run cannot start until a test has passed for the current credential, image, and engine; a changed token or key needs a new test, because a wrong token can come back looking like an ordinary reply.
+- **Test:** starts a short run, sends a prompt, cancels, and collects, and shows what passed and when. A wrong token or key can take a few minutes to be refused: Claude Code retries it first. A run cannot start until a test has passed for the current credential, image, and engine; a changed token or key needs a new test, because a wrong token can come back looking like an ordinary reply.
 
 ### New run
 
@@ -731,6 +731,7 @@ A coding agent run in a container, started from a repository, followed live, ste
 ### Leaving and coming back
 
 - Quitting Brainiac does not stop a run. Reopening reconnects to the same session, shows the updates missed while it was closed once each, and allows the next prompt without sending the credential again.
+- Logging out or restarting the Mac interrupts a run: it is stopped and its work kept, as for any interruption.
 - A run on this Mac does not work while the Mac sleeps. On wake, a run past its time limit is stopped and shown as "Expired while this Mac slept"; it may have worked for a few seconds after wake.
 - When Brainiac cannot reach the run (the engine is not answering), the run shows its last report and when it was made, retries, and never claims the run stopped. **Cancel** meanwhile is shown as requested and is sent when Brainiac reconnects.
 

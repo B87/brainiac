@@ -27,7 +27,7 @@ pub const SOCKET_NAME: &str = "mcp.sock";
 /// Overrides the socket path, for tests and development.
 pub const SOCKET_ENV: &str = "BRAINIAC_MCP_SOCKET";
 /// macOS limits a Unix socket path to 104 bytes, including the final NUL.
-const MAX_SOCKET_PATH: usize = 103;
+pub(crate) const MAX_SOCKET_PATH: usize = 103;
 
 /// The user ID this process runs as.
 pub fn current_uid() -> u32 {
@@ -57,13 +57,13 @@ pub fn socket_path(data_dir: &Path, identifier: &str) -> PathBuf {
     }
 }
 
-fn fallback_dir() -> PathBuf {
+pub(crate) fn fallback_dir() -> PathBuf {
     PathBuf::from(format!("/tmp/brainiac-{}", current_uid()))
 }
 
 /// Create the socket's folder when it is the `/tmp` fallback, and refuse a
 /// folder another user owns or, in `/tmp`, one others can open.
-fn prepare_socket_dir(socket: &Path) -> AppResult<()> {
+pub(crate) fn prepare_socket_dir(socket: &Path) -> AppResult<()> {
     let dir = socket
         .parent()
         .ok_or_else(|| AppError::validation("The agent socket needs a folder."))?;
@@ -91,7 +91,7 @@ fn prepare_socket_dir(socket: &Path) -> AppResult<()> {
 }
 
 /// The socket is ours to replace: a socket file this user owns.
-fn owned_socket(path: &Path) -> bool {
+pub(crate) fn owned_socket(path: &Path) -> bool {
     std::fs::symlink_metadata(path)
         .map(|m| m.file_type().is_socket() && m.uid() == current_uid())
         .unwrap_or(false)

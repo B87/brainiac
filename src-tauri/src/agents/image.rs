@@ -256,7 +256,7 @@ fn context() -> Vec<u8> {
 }
 
 /// A ustar header for a regular file readable by everyone.
-fn header(name: &str, size: usize) -> [u8; 512] {
+pub(crate) fn header(name: &str, size: usize) -> [u8; 512] {
     let mut h = [0u8; 512];
     let mut field = |offset: usize, value: &[u8]| {
         h[offset..offset + value.len()].copy_from_slice(value);

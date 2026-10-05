@@ -378,6 +378,18 @@ Claude Code 2.1.286 also runs commands named by `apiKeyHelper`, `awsAuthRefresh`
 
 Decision (`architecture.md`, Decisions, 5 Oct 2026): runs keep the default sources. Leaving the settings out would close only the path that needs no action, while the scripts the agent runs are the repository's code too; it would also lose the repository's CLAUDE.md. New run discloses that the repository's code and settings can read the token or key. Not checked here: a Bash tool command's environment (assumed the same as a hook's, both being Claude Code's child processes).
 
+## Record: the phase 1 controller on a real engine
+
+Checked on 5 October 2026 with the phase 1 controller (`brainiac runner`'s code, run inside a test) on OrbStack, the phase 1 image, and a fake API key (`tests/agent_controller.rs`, `a_run_on_a_real_engine`, opt-in).
+
+- The controller copied a one-commit bundle into the created container through the archive API; the entrypoint cloned it into the empty workspace volume and the adapter's session opened.
+- The engine's record of the container showed no TTY, log driver `none`, no bind mounts, and nothing of the key anywhere in its configuration.
+- Anthropic refused the fake key, but Claude Code retried for about three minutes before the turn ended. The reply was "Failed to authenticate. API Error: 401 API key is invalid." and the turn's ACP error was "Authentication required". The controller failed the run on it. A wrong key in Settings' Test takes as long.
+- Before the session opened, the adapter sent the extension `_auth/status_update`: which account it uses, not whether the key works. Runs skip it without a notice.
+- Cancel stopped the container and kept it and its volume; Discard removed both.
+
+Not covered: a real model reply (the key was fake), a real sleep, or a guard process outside the test.
+
 ## Sources
 
 Primary documentation checked during review; container/adapter compatibility still requires the spikes above.

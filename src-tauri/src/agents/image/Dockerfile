@@ -38,7 +38,10 @@ LABEL org.brainiac.adapter=0.85.1 \
       org.brainiac.claude-code=2.1.286 \
       org.brainiac.sdk=0.3.286
 
-RUN mkdir -p /workspace && chown node:node /workspace
+# The run controller copies the run's start (input.bundle) into
+# /opt/brainiac/input before the container starts; the entrypoint clones it
+# into the empty /workspace volume.
+RUN mkdir -p /workspace /opt/brainiac/input && chown node:node /workspace
 USER node
 WORKDIR /workspace
 ENTRYPOINT ["node", "/opt/claude/entrypoint.mjs"]
