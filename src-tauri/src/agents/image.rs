@@ -21,6 +21,7 @@ use crate::models::{AppError, AppResult};
 const FILES: &[(&str, &str)] = &[
     ("Dockerfile", include_str!("image/Dockerfile")),
     ("entrypoint.mjs", include_str!("image/entrypoint.mjs")),
+    ("collector.mjs", include_str!("image/collector.mjs")),
     ("package.json", include_str!("image/package.json")),
     ("package-lock.json", include_str!("image/package-lock.json")),
     (

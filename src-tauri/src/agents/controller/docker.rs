@@ -19,9 +19,10 @@ use bollard::models::{
     RestartPolicyNameEnum, VolumeCreateOptions,
 };
 use bollard::query_parameters::{
-    AttachContainerOptionsBuilder, CreateContainerOptionsBuilder, InspectContainerOptions,
-    ListContainersOptionsBuilder, RemoveContainerOptionsBuilder, RemoveVolumeOptionsBuilder,
-    StartContainerOptions, StopContainerOptionsBuilder, UploadToContainerOptionsBuilder,
+    AttachContainerOptionsBuilder, CreateContainerOptionsBuilder, DownloadFromContainerOptions,
+    InspectContainerOptions, ListContainersOptionsBuilder, RemoveContainerOptionsBuilder,
+    RemoveVolumeOptionsBuilder, StartContainerOptions, StopContainerOptionsBuilder,
+    UploadToContainerOptionsBuilder, WaitContainerOptions,
 };
 use bollard::Docker;
 use bytes::Bytes;
@@ -29,6 +30,8 @@ use futures_util::StreamExt;
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 
+use super::archive::{Expected, Sink, TarReader};
+use super::protocol::CollectManifest;
 use crate::models::{AppError, AppResult};
 
 pub const LABEL_INSTALLATION: &str = "org.brainiac.installation";
@@ -48,6 +51,11 @@ const REQUEST_TIMEOUT_SECS: u64 = 60;
 const UPLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// ustar sizes are 11 octal digits.
 const MAX_BUNDLE_BYTES: u64 = (1 << 33) - 1;
+/// The collector hashes every file of the workspace and writes the bundle.
+const COLLECT_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// The result bundle holds only what the start does not: new objects.
+const MAX_RESULT_BYTES: u64 = 2 << 30;
+const MAX_MANIFEST_BYTES: u64 = 16 << 20;
 
 /// What a run's container is made from.
 #[derive(Debug, Clone)]
@@ -65,6 +73,26 @@ pub struct LaunchSpec {
     /// Becomes `true` when the run is stopped while its container is being
     /// made: the container is then not started.
     pub cancel: tokio::sync::watch::Receiver<bool>,
+}
+
+/// What the collector's container is made from.
+#[derive(Debug, Clone)]
+pub struct CollectSpec {
+    pub engine_socket: String,
+    pub image: String,
+    pub installation: String,
+    pub run_id: String,
+    pub attempt: u32,
+    /// The run's workspace, mounted read only.
+    pub volume: String,
+    pub memory_mib: u32,
+    /// The run's input bundle: the start, cloned again by the collector.
+    pub bundle: PathBuf,
+    pub start_commit: String,
+    /// Left-out paths to collect this time.
+    pub include: Vec<String>,
+    /// Where `result.bundle` is written, on the Mac.
+    pub out_dir: PathBuf,
 }
 
 /// What the agent's stdout gave, a line at a time.
@@ -127,6 +155,10 @@ pub trait Workloads: Send + Sync + 'static {
         installation: &str,
         run_id: &str,
     ) -> impl Future<Output = AppResult<Running>> + Send;
+    /// Run the collector against the run's stopped volume and bring its
+    /// result to `out_dir`.
+    fn collect(&self, spec: CollectSpec)
+        -> impl Future<Output = AppResult<CollectManifest>> + Send;
     /// Remove the run's stopped containers and its volume.
     fn discard(
         &self,
@@ -284,9 +316,238 @@ impl DockerEngine {
                 "The engine changed the run's container settings (terminal or logging), so the run was not started.",
             ));
         }
-        upload_bundle(docker, &id, &spec.bundle).await?;
+        upload_input(docker, &id, &spec.bundle, None).await?;
         Ok(id)
     }
+}
+
+impl DockerEngine {
+    /// The collector's container: the run's volume read only, no network,
+    /// no credential, the same image with its collector as the entrypoint.
+    async fn create_collector(&self, docker: &Docker, spec: &CollectSpec) -> AppResult<String> {
+        let labels = HashMap::from([
+            (LABEL_INSTALLATION.to_string(), spec.installation.clone()),
+            (LABEL_RUN.to_string(), spec.run_id.clone()),
+            (LABEL_ATTEMPT.to_string(), spec.attempt.to_string()),
+            (LABEL_ROLE.to_string(), "collector".to_string()),
+        ]);
+        let host = HostConfig {
+            log_config: Some(HostConfigLogConfig {
+                typ: Some("none".to_string()),
+                ..Default::default()
+            }),
+            network_mode: Some("none".to_string()),
+            cap_drop: Some(vec!["ALL".to_string()]),
+            security_opt: Some(vec!["no-new-privileges:true".to_string()]),
+            privileged: Some(false),
+            memory: Some(i64::from(spec.memory_mib) << 20),
+            pids_limit: Some(256),
+            mounts: Some(vec![Mount {
+                target: Some("/work".to_string()),
+                source: Some(spec.volume.clone()),
+                typ: Some(MountTypeEnum::VOLUME),
+                read_only: Some(true),
+                ..Default::default()
+            }]),
+            restart_policy: Some(RestartPolicy {
+                name: Some(RestartPolicyNameEnum::NO),
+                maximum_retry_count: None,
+            }),
+            ..Default::default()
+        };
+        let body = ContainerCreateBody {
+            image: Some(spec.image.clone()),
+            entrypoint: Some(vec![
+                "node".to_string(),
+                "/opt/claude/collector.mjs".to_string(),
+            ]),
+            cmd: Some(Vec::new()),
+            tty: Some(false),
+            open_stdin: Some(false),
+            user: Some("node".to_string()),
+            working_dir: Some("/scratch".to_string()),
+            labels: Some(labels),
+            host_config: Some(host),
+            ..Default::default()
+        };
+        let name = format!("brainiac-collect-{}-{}", spec.run_id, now_suffix());
+        let created = docker
+            .create_container(
+                Some(CreateContainerOptionsBuilder::new().name(&name).build()),
+                body,
+            )
+            .await
+            .map_err(|e| {
+                engine_error(
+                    "The collector's container could not be created. Is the image built?",
+                    e,
+                )
+            })?;
+        let id = created.id;
+        // What the engine made: the volume must be read only and the
+        // container off the network, or the collection is not trusted.
+        let inspected = docker
+            .inspect_container(&id, None::<InspectContainerOptions>)
+            .await
+            .map_err(|e| engine_error("The collector's container could not be inspected.", e))?;
+        let host = inspected.host_config.unwrap_or_default();
+        let read_only = inspected
+            .mounts
+            .unwrap_or_default()
+            .iter()
+            .any(|m| m.destination.as_deref() == Some("/work") && m.rw == Some(false));
+        if host.network_mode.as_deref() != Some("none") || !read_only {
+            return Err(AppError::dependency(
+                "The engine changed the collector's container settings (network or mount), so the work was not collected.",
+            ));
+        }
+        let params = serde_json::json!({
+            "start": spec.start_commit,
+            "include": spec.include,
+        });
+        upload_input(
+            docker,
+            &id,
+            &spec.bundle,
+            Some(("collect.json", params.to_string().into_bytes())),
+        )
+        .await?;
+        Ok(id)
+    }
+
+    async fn run_collector(
+        &self,
+        docker: &Docker,
+        id: &str,
+        spec: &CollectSpec,
+    ) -> AppResult<CollectManifest> {
+        docker
+            .start_container(id, None::<StartContainerOptions>)
+            .await
+            .map_err(|e| engine_error("The collector's container did not start.", e))?;
+        let mut waiting = docker.clone().with_timeout(COLLECT_TIMEOUT).wait_container(
+            id,
+            Some(WaitContainerOptions {
+                condition: "not-running".to_string(),
+            }),
+        );
+        let exit = match tokio::time::timeout(COLLECT_TIMEOUT, waiting.next()).await {
+            Ok(Some(Ok(response))) => response.status_code,
+            // bollard reports a non-zero exit as an error carrying the code.
+            Ok(Some(Err(bollard::errors::Error::DockerContainerWaitError { code, .. }))) => code,
+            Ok(Some(Err(e))) => {
+                return Err(engine_error(
+                    "The engine did not say how the collector ended.",
+                    e,
+                ))
+            }
+            Ok(None) => return Err(AppError::dependency("The collector's container vanished.")),
+            Err(_) => {
+                let _ = docker
+                    .stop_container(id, Some(StopContainerOptionsBuilder::new().t(5).build()))
+                    .await;
+                return Err(AppError::timeout(
+                    "Collecting the work took over 30 minutes and was stopped.",
+                ));
+            }
+        };
+        let bundle = spec.out_dir.join("result.bundle");
+        let partial = spec.out_dir.join("result.bundle.part");
+        let _ = std::fs::remove_file(&bundle);
+        let mut reader = TarReader::new(vec![
+            Expected {
+                name: "out/manifest.json",
+                max_bytes: MAX_MANIFEST_BYTES,
+                sink: Sink::Memory(Vec::new()),
+                found: false,
+            },
+            Expected {
+                name: "out/result.bundle",
+                max_bytes: MAX_RESULT_BYTES,
+                sink: Sink::File(partial.clone(), None),
+                found: false,
+            },
+        ]);
+        let mut download = docker
+            .clone()
+            .with_timeout(COLLECT_TIMEOUT)
+            .download_from_container(
+                id,
+                Some(DownloadFromContainerOptions {
+                    path: "/out".to_string(),
+                }),
+            );
+        let read = async {
+            while let Some(chunk) = download.next().await {
+                let chunk = chunk
+                    .map_err(|e| engine_error("The collector's result could not be read.", e))?;
+                reader.feed(&chunk).await.map_err(|e| {
+                    AppError::io("The collector's result is not what was expected.")
+                        .with_details(e.to_string())
+                })?;
+            }
+            reader.finish().map_err(|e| {
+                AppError::io("The collector's result was cut short.").with_details(e.to_string())
+            })
+        };
+        let entries = match read.await {
+            Ok(entries) => entries,
+            Err(e) => {
+                let _ = std::fs::remove_file(&partial);
+                return Err(e);
+            }
+        };
+        let manifest_bytes = match &entries[0].sink {
+            Sink::Memory(bytes) if entries[0].found => bytes.clone(),
+            _ => {
+                let _ = std::fs::remove_file(&partial);
+                return Err(AppError::io(format!(
+                    "The collector wrote no manifest (exit status {exit})."
+                )));
+            }
+        };
+        let raw: RawManifest = serde_json::from_slice(&manifest_bytes).map_err(|e| {
+            AppError::io("The collector's manifest could not be read.").with_details(e.to_string())
+        })?;
+        if let Some(error) = raw.error.filter(|e| !e.is_empty()) {
+            let _ = std::fs::remove_file(&partial);
+            return Err(AppError::io(error));
+        }
+        if exit != 0 {
+            let _ = std::fs::remove_file(&partial);
+            return Err(AppError::io(format!(
+                "The collector failed (exit status {exit})."
+            )));
+        }
+        let manifest = raw.manifest;
+        if manifest.result != manifest.start {
+            if !entries[1].found {
+                return Err(AppError::io("The collector wrote no result bundle."));
+            }
+            std::fs::rename(&partial, &bundle)?;
+        } else {
+            let _ = std::fs::remove_file(&partial);
+        }
+        Ok(manifest)
+    }
+}
+
+/// The collector's manifest as written: the result, or an error.
+#[derive(serde::Deserialize)]
+struct RawManifest {
+    error: Option<String>,
+    #[serde(flatten)]
+    manifest: CollectManifest,
+}
+
+fn now_suffix() -> String {
+    format!(
+        "{:x}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    )
 }
 
 impl Workloads for DockerEngine {
@@ -373,6 +634,31 @@ impl Workloads for DockerEngine {
         } else {
             Running::Yes
         })
+    }
+
+    async fn collect(&self, spec: CollectSpec) -> AppResult<CollectManifest> {
+        let docker = self.client(&spec.engine_socket)?;
+        if !self
+            .run_containers(&docker, &spec.installation, &spec.run_id, false)
+            .await?
+            .is_empty()
+        {
+            return Err(super::conflict("The run is still running; stop it first."));
+        }
+        let id = self.create_collector(&docker, &spec).await?;
+        let collected = self.run_collector(&docker, &id, &spec).await;
+        // The collector's container is the collection's own; it goes
+        // whatever happened. The run's container and volume stay.
+        let removed = docker
+            .remove_container(
+                &id,
+                Some(RemoveContainerOptionsBuilder::new().force(true).build()),
+            )
+            .await;
+        if let Err(e) = removed {
+            tracing::warn!(error = %e, "the collector's container was not removed");
+        }
+        collected
     }
 
     async fn discard(
@@ -466,9 +752,15 @@ fn engine_error(message: &str, error: bollard::errors::Error) -> AppError {
     AppError::dependency(message).with_details(error.to_string())
 }
 
-/// Copy the bundle into the created container as a one-file tar, read from
-/// disk a piece at a time.
-async fn upload_bundle(docker: &Docker, id: &str, bundle: &std::path::Path) -> AppResult<()> {
+/// Copy the bundle (and, for the collector, its parameters) into the created
+/// container's `/opt/brainiac/input` as a tar, the bundle read from disk a
+/// piece at a time.
+async fn upload_input(
+    docker: &Docker,
+    id: &str,
+    bundle: &std::path::Path,
+    extra: Option<(&str, Vec<u8>)>,
+) -> AppResult<()> {
     let file = tokio::fs::File::open(bundle)
         .await
         .map_err(|e| AppError::from(e).with_details(bundle.display().to_string()))?;
@@ -480,7 +772,15 @@ async fn upload_bundle(docker: &Docker, id: &str, bundle: &std::path::Path) -> A
     }
     let header =
         Bytes::copy_from_slice(&crate::agents::image::header("input.bundle", size as usize));
-    let padding = (512 - (size % 512) as usize) % 512 + 1024;
+    let padding = (512 - (size % 512) as usize) % 512;
+    let mut trailer = vec![0u8; padding];
+    if let Some((name, bytes)) = extra {
+        trailer.extend_from_slice(&crate::agents::image::header(name, bytes.len()));
+        let pad = (512 - bytes.len() % 512) % 512;
+        trailer.extend_from_slice(&bytes);
+        trailer.extend(std::iter::repeat_n(0u8, pad));
+    }
+    trailer.extend(std::iter::repeat_n(0u8, 1024));
     // `unfold` turns the file into a stream of pieces: the header, the
     // file's bytes, then the padding and the two empty blocks that end a
     // tar. A read error, or a file shorter than it was, fails the upload
@@ -507,7 +807,7 @@ async fn upload_bundle(docker: &Docker, id: &str, bundle: &std::path::Path) -> A
     let body = futures_util::stream::once(async move { Ok(header) })
         .chain(pieces)
         .chain(futures_util::stream::once(async move {
-            Ok(Bytes::from(vec![0u8; padding]))
+            Ok(Bytes::from(trailer))
         }));
     let options = UploadToContainerOptionsBuilder::new()
         .path("/opt/brainiac/input")

@@ -14,8 +14,8 @@ use tokio::io::BufReader;
 use tokio::net::UnixStream;
 
 use super::controller::protocol::{
-    Delivery, EventPage, Request, Response, RunStatus, StartRun, StopReason, MAX_LINE_BYTES,
-    PROTOCOL,
+    CollectManifest, Delivery, EventPage, Request, Response, RunStatus, StartRun, StopReason,
+    MAX_LINE_BYTES, PROTOCOL,
 };
 use super::controller::state::StateDir;
 use super::controller::{read_line, write_line};
@@ -27,6 +27,8 @@ const START_WAIT: Duration = Duration::from_secs(10);
 const RETRY_EVERY: Duration = Duration::from_millis(100);
 /// Requests answer at once; only a long poll for events waits.
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
+/// A collection hashes the whole working tree and copies the result out.
+const COLLECT_TIMEOUT: Duration = Duration::from_secs(40 * 60);
 
 /// What the controller said when the app connected.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -277,6 +279,24 @@ impl RunRuntime {
         };
         match self.call(request, CALL_TIMEOUT).await? {
             Response::Run { run } => Ok(run),
+            _ => Err(unexpected()),
+        }
+    }
+
+    /// Collect a stopped run's working tree into `out_dir/result.bundle`.
+    pub async fn collect(
+        &self,
+        run_id: &str,
+        include: Vec<String>,
+        out_dir: &Path,
+    ) -> AppResult<CollectManifest> {
+        let request = Request::Collect {
+            run_id: run_id.to_string(),
+            include,
+            out_dir: out_dir.to_path_buf(),
+        };
+        match self.call(request, COLLECT_TIMEOUT).await? {
+            Response::Collected { manifest } => Ok(manifest),
             _ => Err(unexpected()),
         }
     }

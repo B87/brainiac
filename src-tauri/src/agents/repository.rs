@@ -24,7 +24,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::git::{validate_revision, GitService, Output};
-use crate::models::{AppError, AppResult, ErrorCode, RunStartPreview};
+use crate::models::{
+    AppError, AppResult, CommitFile, DiffContent, DiffLimits, DiffOptions, DiffResult,
+    DiffSelector, ErrorCode, RunStartPreview,
+};
 
 /// Reading a repository for New run.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
@@ -32,6 +35,10 @@ const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 const COPY_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// The ref the bundle advertises, the only one.
 pub const BUNDLE_REF: &str = "refs/heads/start";
+/// The ref a result bundle advertises, the only one.
+pub const RESULT_REF: &str = "refs/heads/result";
+/// A result bundle holds only the snapshot's new objects.
+const MAX_RESULT_BYTES: u64 = 2 << 30;
 /// Git LFS pointer files are small text files starting with this line.
 const LFS_POINTER: &str = "^version https://git-lfs\\.github\\.com/spec/v1$";
 const LFS_POINTER_MAX_BYTES: u64 = 1024;
@@ -516,6 +523,247 @@ impl RunArtifacts {
             .await?;
         if found.trim() != commit {
             return Err(AppError::io("The run's start was not kept as copied."));
+        }
+        Ok(())
+    }
+}
+
+impl RunArtifacts {
+    /// `agent-runs/<run-id>/`: the run's bundle, mirrored journal, and result.
+    pub fn run_dir(&self, run_id: &str) -> PathBuf {
+        self.root.join(run_id)
+    }
+
+    /// A run's ref in Brainiac's bare repository.
+    pub fn run_ref(run_id: &str, name: &str) -> String {
+        format!("refs/brainiac/runs/{run_id}/{name}")
+    }
+
+    /// Import a collected `result.bundle` (docs/architecture.md, Agent runs —
+    /// v0.5, Artifacts): one regular file of bounded size, one advertised
+    /// ref at exactly `result`, whose only parent is `start`, fetched with
+    /// Git's own object checks into the repository's bare repository under
+    /// the run's result ref. Returns the result commit.
+    pub async fn import_result(
+        &self,
+        repository_id: &str,
+        run_id: &str,
+        bundle: &Path,
+        start: &str,
+        result: &str,
+    ) -> AppResult<String> {
+        check_id("repository", repository_id)?;
+        check_id("run", run_id)?;
+        for id in [start, result] {
+            if id.len() != 40 || !id.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Err(AppError::validation("Invalid commit ID."));
+            }
+        }
+        let meta = std::fs::symlink_metadata(bundle).map_err(|e| {
+            AppError::io("The collected result is missing.").with_details(e.to_string())
+        })?;
+        if !meta.is_file() {
+            return Err(AppError::io("The collected result is not a regular file."));
+        }
+        if meta.len() > MAX_RESULT_BYTES {
+            return Err(AppError::validation(
+                "The collected result is over the 2 GB limit.",
+            ));
+        }
+        let repo = self.repository_dir(repository_id);
+        let start_ref = Self::run_ref(run_id, "start");
+        let result_ref = Self::run_ref(run_id, "result");
+        let lock = Arc::clone(
+            self.imports
+                .lock()
+                .expect("imports lock")
+                .entry(repository_id.to_string())
+                .or_default(),
+        );
+        let _held = lock.lock().await;
+        let known = self
+            .git_ok(
+                &repo,
+                &["rev-parse", "--verify", "--quiet", &start_ref],
+                CHECK_TIMEOUT,
+            )
+            .await?;
+        if known.trim() != start {
+            return Err(AppError::io(
+                "The run's start is no longer in Brainiac's repository.",
+            ));
+        }
+        let path = bundle.display().to_string();
+        let heads = self
+            .git_ok(&repo, &["bundle", "list-heads", &path], CHECK_TIMEOUT)
+            .await
+            .map_err(|e| {
+                AppError::io("The collected result is not a Git bundle.")
+                    .with_details(e.details.unwrap_or_default())
+            })?;
+        if heads.lines().collect::<Vec<_>>() != [format!("{result} {RESULT_REF}").as_str()] {
+            return Err(AppError::io(
+                "The collected result does not advertise the snapshot it says it holds.",
+            )
+            .with_details(heads));
+        }
+        // `verify` checks that every prerequisite (the start) is here.
+        self.git_ok(
+            &repo,
+            &["bundle", "verify", "--quiet", &path],
+            CHECK_TIMEOUT,
+        )
+        .await
+        .map_err(|e| {
+            AppError::io("The collected result does not fit the run's start.")
+                .with_details(e.details.unwrap_or_default())
+        })?;
+        let refspec = format!("+{RESULT_REF}:{result_ref}");
+        self.git_ok(
+            &repo,
+            &[
+                "-c",
+                "fetch.fsckObjects=true",
+                "-c",
+                "transfer.fsckObjects=true",
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                "--no-write-fetch-head",
+                "--no-recurse-submodules",
+                &path,
+                &refspec,
+            ],
+            COPY_TIMEOUT,
+        )
+        .await?;
+        let parents = self
+            .git_ok(
+                &repo,
+                &["rev-list", "--parents", "-n", "1", &result_ref, "--"],
+                CHECK_TIMEOUT,
+            )
+            .await?;
+        let ids: Vec<&str> = parents.split_whitespace().collect();
+        if ids != [result, start] {
+            // Not what was promised: the ref is not left pointing at it.
+            let _ = self
+                .git(&repo, &["update-ref", "-d", &result_ref], CHECK_TIMEOUT)
+                .await;
+            return Err(AppError::io(
+                "The collected snapshot is not one commit on top of the run's start.",
+            ));
+        }
+        Ok(result.to_string())
+    }
+
+    /// Changes: the files the snapshot changed against the start.
+    pub async fn changes(
+        &self,
+        repository_id: &str,
+        start: &str,
+        result: &str,
+    ) -> AppResult<Vec<CommitFile>> {
+        let git = self.git.as_ref().ok_or_else(|| {
+            AppError::dependency("Git was not found, so Brainiac cannot read the result.")
+        })?;
+        git.range_files(&self.repository_dir(repository_id), start, result)
+            .await
+    }
+
+    /// One file of the snapshot against the start, as the diff viewer shows it.
+    pub async fn diff(
+        &self,
+        repository_id: &str,
+        start: &str,
+        result: &str,
+        path: &str,
+        old_path: Option<&str>,
+        options: DiffOptions,
+    ) -> AppResult<DiffResult> {
+        let git = self.git.as_ref().ok_or_else(|| {
+            AppError::dependency("Git was not found, so Brainiac cannot read the result.")
+        })?;
+        let selector = DiffSelector::Range {
+            base: start.to_string(),
+            head: result.to_string(),
+            path: path.to_string(),
+            old_path: old_path.map(str::to_string),
+        };
+        let limits = DiffLimits {
+            max_bytes: 4 * 1024 * 1024,
+            max_lines: 20_000,
+        };
+        let content: DiffContent = git
+            .diff(
+                &self.repository_dir(repository_id),
+                &selector,
+                &limits,
+                options,
+            )
+            .await?;
+        Ok(DiffResult {
+            repository_id: repository_id.to_string(),
+            selector,
+            content,
+        })
+    }
+
+    /// The whole snapshot as a patch, binary changes included: to the
+    /// clipboard when it fits in `MAX_OUTPUT_BYTES`, or straight to a file.
+    pub async fn patch(
+        &self,
+        repository_id: &str,
+        start: &str,
+        result: &str,
+        to_file: Option<&Path>,
+    ) -> AppResult<String> {
+        let repo = self.repository_dir(repository_id);
+        let output = to_file.map(|p| format!("--output={}", p.display()));
+        let mut args = vec![
+            "diff",
+            "--binary",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--find-renames",
+        ];
+        if let Some(output) = &output {
+            args.push(output);
+        }
+        args.extend(["--end-of-options", start, result, "--"]);
+        let out = self.git(&repo, &args, COPY_TIMEOUT).await?;
+        if !out.success() {
+            return Err(AppError::io("The patch could not be made.").with_details(out.stderr));
+        }
+        if out.truncated {
+            return Err(AppError::validation(
+                "The patch is over 16 MB, too large to copy. Save it to a file instead.",
+            ));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    /// Delete a run's files and its refs in Brainiac's repository. Objects
+    /// other runs share stay; unreachable ones go with Git's own upkeep.
+    pub async fn remove_run(&self, repository_id: &str, run_id: &str) -> AppResult<()> {
+        check_id("run", run_id)?;
+        let dir = self.run_dir(run_id);
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir).map_err(|e| {
+                AppError::io("The run's files could not be removed.").with_details(e.to_string())
+            })?;
+        }
+        if check_id("repository", repository_id).is_ok() {
+            let repo = self.repository_dir(repository_id);
+            if repo.join("HEAD").exists() {
+                for name in ["start", "result"] {
+                    let r = Self::run_ref(run_id, name);
+                    let _ = self
+                        .git(&repo, &["update-ref", "-d", &r], CHECK_TIMEOUT)
+                        .await;
+                }
+            }
         }
         Ok(())
     }

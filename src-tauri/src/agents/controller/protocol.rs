@@ -56,6 +56,14 @@ pub enum Request {
     /// Stop the run and keep its container and volume. Repeating it is
     /// harmless: a run stops once.
     Stop { run_id: String, reason: StopReason },
+    /// Build the snapshot of a stopped run's working tree: the collector
+    /// runs against its volume and `result.bundle` is written into
+    /// `out_dir`. `include` names left-out files to collect this time.
+    Collect {
+        run_id: String,
+        include: Vec<String>,
+        out_dir: PathBuf,
+    },
     /// Remove a stopped run's container, volume, and records here.
     Discard { run_id: String },
     /// Exit, only when no run is live: a newer Brainiac replaces it.
@@ -118,6 +126,8 @@ pub struct StartRun {
     pub memory_mib: u32,
     pub time_limit_secs: u64,
     pub permissions: RunPermissions,
+    /// The commit the run starts from: the snapshot's parent at collection.
+    pub start_commit: String,
     /// `agent-runs/<run-id>/input.bundle` in the data folder.
     pub bundle: PathBuf,
     pub prompt_id: String,
@@ -154,10 +164,34 @@ pub enum Response {
         command_id: String,
         outcome: Delivery,
     },
+    Collected {
+        manifest: CollectManifest,
+    },
     Done,
     Error {
         error: AppError,
     },
+}
+
+/// What the collector found (docs/architecture.md, Agent runs — v0.5,
+/// Artifacts). `result` equals `start` when nothing changed, and then no
+/// bundle was written.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CollectManifest {
+    pub start: String,
+    pub result: String,
+    pub changed_files: u32,
+    pub left_out: Vec<LeftOut>,
+    /// Left-out files beyond the ones listed.
+    #[serde(default)]
+    pub left_out_more: u32,
+}
+
+/// A new file the snapshot does not include, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeftOut {
+    pub path: String,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

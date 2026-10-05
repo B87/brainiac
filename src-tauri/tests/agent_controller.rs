@@ -9,10 +9,12 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use brainiac_lib::agents::controller::docker::{Attached, LaunchSpec, Output, Running, Workloads};
+use brainiac_lib::agents::controller::docker::{
+    Attached, CollectSpec, LaunchSpec, Output, Running, Workloads,
+};
 use brainiac_lib::agents::controller::protocol::{
-    Activity, Credential, CredentialKey, Delivery, Event, EventBody, Outcome, Phase, RunStatus,
-    StartRun, StopReason,
+    Activity, CollectManifest, Credential, CredentialKey, Delivery, Event, EventBody, Outcome,
+    Phase, RunStatus, StartRun, StopReason,
 };
 use brainiac_lib::agents::controller::state::StateDir;
 use brainiac_lib::agents::controller::{guard, serve, Config};
@@ -33,6 +35,9 @@ struct Container {
 #[derive(Default)]
 struct Engine {
     containers: HashMap<String, Container>,
+    /// Where each run's "volume" is: a clone of its bundle on disk, which
+    /// the fake agent edits and the real collector script reads.
+    volumes: PathBuf,
     /// Each credential frame the agents read, as JSON.
     frames: Vec<Value>,
     /// Each prompt the agents were sent.
@@ -65,9 +70,20 @@ impl Workloads for FakeEngine {
                 return Err(brainiac_lib::models::AppError::new(ErrorCode::Cancelled, "stopped"));
             }
         }
+        // The volume: the bundle cloned, as the entrypoint does it.
+        let work = self.get().volumes.join(&spec.run_id);
+        let _ = std::fs::remove_dir_all(&work);
+        let cloned = std::process::Command::new("git")
+            .args(["clone", "--quiet", "--branch", "start"])
+            .arg(&spec.bundle)
+            .arg(&work)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .status()
+            .unwrap();
+        assert!(cloned.success(), "the fake engine clones the bundle");
         let (stdin, stdin_rx) = mpsc::unbounded_channel();
         let (output_tx, output) = mpsc::channel(64);
-        let agent = tokio::spawn(fake_agent(self.clone(), stdin_rx, output_tx.clone()));
+        let agent = tokio::spawn(fake_agent(self.clone(), work, stdin_rx, output_tx.clone()));
         let mut engine = self.get();
         engine.launches += 1;
         engine.containers.insert(
@@ -121,6 +137,49 @@ impl Workloads for FakeEngine {
         })
     }
 
+    /// The real collector script, run on this Mac against the run's folder
+    /// instead of in a container.
+    async fn collect(&self, spec: CollectSpec) -> AppResult<CollectManifest> {
+        let work = self.get().volumes.join(&spec.run_id);
+        let scratch = self.get().volumes.join(format!("{}-collect", spec.run_id));
+        let _ = std::fs::remove_dir_all(&scratch);
+        let input = scratch.join("input");
+        let out = scratch.join("out");
+        std::fs::create_dir_all(&input).unwrap();
+        std::fs::copy(&spec.bundle, input.join("input.bundle")).unwrap();
+        std::fs::write(
+            input.join("collect.json"),
+            json!({ "start": spec.start_commit, "include": spec.include }).to_string(),
+        )
+        .unwrap();
+        let script =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/agents/image/collector.mjs");
+        let status = tokio::process::Command::new("node")
+            .arg(script)
+            .env("BRAINIAC_WORK", &work)
+            .env("BRAINIAC_INPUT", &input)
+            .env("BRAINIAC_OUT", &out)
+            .env("BRAINIAC_SCRATCH", scratch.join("scratch"))
+            .status()
+            .await
+            .unwrap();
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(out.join("manifest.json")).unwrap()).unwrap();
+        if let Some(error) = manifest["error"].as_str() {
+            return Err(brainiac_lib::models::AppError::io(error));
+        }
+        assert!(status.success());
+        let manifest: CollectManifest = serde_json::from_value(manifest).unwrap();
+        if manifest.result != manifest.start {
+            std::fs::rename(
+                out.join("result.bundle"),
+                spec.out_dir.join("result.bundle"),
+            )
+            .unwrap();
+        }
+        Ok(manifest)
+    }
+
     async fn discard(&self, _: &str, _: &str, run_id: &str, _: &str) -> AppResult<()> {
         let mut engine = self.get();
         engine.containers.remove(run_id);
@@ -131,9 +190,11 @@ impl Workloads for FakeEngine {
 
 /// A stand-in for the entrypoint and the Claude ACP adapter. Prompts steer it:
 /// "ask" asks a permission, "hang" works until cancelled, "die" exits,
-/// "fail-auth" is refused, "echo-secret" repeats the key in two pieces.
+/// "fail-auth" is refused, "echo-secret" repeats the key in two pieces,
+/// "edit" changes files in the workspace.
 async fn fake_agent(
     engine: FakeEngine,
+    work: PathBuf,
     mut stdin: mpsc::UnboundedReceiver<Vec<u8>>,
     out: mpsc::Sender<Output>,
 ) {
@@ -226,6 +287,16 @@ async fn fake_agent(
                     } else if text.contains("fail-auth") {
                         say(json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32000, "message": "Authentication required" } }))
                             .await;
+                    } else if text.contains("edit") {
+                        // Edits the agent never committed, a new file, a
+                        // deletion, and a file its ignore rules would hide.
+                        std::fs::write(work.join("readme.txt"), "edited by the agent\n").unwrap();
+                        std::fs::write(work.join("agent.txt"), "new\n").unwrap();
+                        std::fs::remove_file(work.join("old.txt")).unwrap();
+                        std::fs::write(work.join("notes.tmp"), "scratch\n").unwrap();
+                        std::fs::write(work.join(".gitignore"), "*\n").unwrap();
+                        say(update("edited")).await;
+                        say(json!({ "jsonrpc": "2.0", "id": id, "result": { "stopReason": "end_turn" } })).await;
                     } else if text.contains("echo-secret") {
                         let (a, b) = key.split_at(10);
                         say(update(&format!("the key is {a}"))).await;
@@ -272,20 +343,72 @@ struct Harness {
     runtime: RunRuntime,
     server: tokio::task::JoinHandle<()>,
     bundle: PathBuf,
+    /// The repository the bundle came from, and its start commit.
+    repo: PathBuf,
+    start: String,
+}
+
+/// Git in a test's own folder, with nothing of the user's configuration.
+fn git(dir: &std::path::Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .args([
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "init.defaultBranch=main",
+        ])
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("HOME", dir)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
 impl Harness {
     async fn new() -> Harness {
         let tmp = tempfile::tempdir().unwrap();
+        // A real repository and bundle: the fake engine clones it, and the
+        // collector reads it back.
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-q"]);
+        std::fs::write(repo.join("readme.txt"), "start\n").unwrap();
+        std::fs::write(repo.join("old.txt"), "old\n").unwrap();
+        std::fs::write(repo.join(".gitignore"), "*.tmp\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-q", "-m", "Start"]);
+        git(&repo, &["branch", "start"]);
+        let start = git(&repo, &["rev-parse", "start"]);
         let bundle = tmp.path().join("input.bundle");
-        std::fs::write(&bundle, b"# v2 git bundle\n").unwrap();
+        git(
+            &repo,
+            &[
+                "bundle",
+                "create",
+                "-q",
+                bundle.to_str().unwrap(),
+                "refs/heads/start",
+            ],
+        );
         let engine = FakeEngine::default();
+        engine.get().volumes = tmp.path().join("volumes");
         let mut harness = Harness {
             server: tokio::spawn(async {}),
             runtime: RunRuntime::attach(StateDir::new(tmp.path()), PathBuf::new()),
             tmp,
             engine,
             bundle,
+            repo,
+            start,
         };
         harness.restart().await;
         harness
@@ -333,6 +456,7 @@ impl Harness {
             memory_mib: 2048,
             time_limit_secs: 3600,
             permissions,
+            start_commit: self.start.clone(),
             bundle: self.bundle.clone(),
             prompt_id: format!("{run_id}-prompt"),
             prompt: prompt.into(),
@@ -780,6 +904,16 @@ async fn a_run_on_a_real_engine() {
     git(&["-C", repo_arg, "add", "README.md"]);
     git(&["-C", repo_arg, "commit", "-q", "-m", "Start"]);
     git(&["-C", repo_arg, "branch", "start"]);
+    let start_commit = String::from_utf8(
+        std::process::Command::new("git")
+            .args(["-C", repo_arg, "rev-parse", "start"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
     let bundle = tmp.path().join("input.bundle");
     git(&[
         "-C",
@@ -817,6 +951,7 @@ async fn a_run_on_a_real_engine() {
         memory_mib: 3072,
         time_limit_secs: 600,
         permissions: RunPermissions::Ask,
+        start_commit: start_commit.clone(),
         bundle,
         prompt_id: "p1".into(),
         prompt: "Reply with the word ready.".into(),
@@ -967,6 +1102,16 @@ async fn a_run_on_a_real_engine() {
         .await
         .expect("the workspace is kept");
 
+    // The collector runs against the kept volume, offline and read only:
+    // the agent changed nothing, so the result is the start itself.
+    let out = tmp.path().join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    let manifest = runtime.collect(&run_id, Vec::new(), &out).await.unwrap();
+    eprintln!("collected: {manifest:?}");
+    assert_eq!(manifest.result, start_commit);
+    assert_eq!(manifest.changed_files, 0);
+    assert!(!out.join("result.bundle").exists());
+
     runtime.discard(&run_id).await.unwrap();
     assert!(docker
         .inspect_container(&id, None::<InspectContainerOptions>)
@@ -1041,4 +1186,81 @@ async fn the_guard_leaves_a_newer_controllers_runs_alone() {
     .expect("the guard exits");
     assert!(h.engine.get().containers["run-1"].running);
     assert!(idle(&h.status("run-1").await));
+}
+
+#[tokio::test]
+async fn a_finished_run_is_collected_as_one_snapshot_on_the_start() {
+    let h = Harness::new().await;
+    h.start("run-1", "edit", RunPermissions::Act).await;
+    h.wait("run-1", "the turn ends", idle).await;
+    // Too early: the run is live.
+    let out = h.tmp.path().join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    let err = h
+        .runtime
+        .collect("run-1", Vec::new(), &out)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::Conflict);
+
+    h.runtime.stop("run-1", StopReason::Finish).await.unwrap();
+    let status = h
+        .wait("run-1", "the stop is confirmed", |s| {
+            ended(s) && s.stop_confirmed
+        })
+        .await;
+    assert_eq!(status.outcome, Some(Outcome::Finished));
+
+    let manifest = h.runtime.collect("run-1", Vec::new(), &out).await.unwrap();
+    assert_eq!(manifest.start, h.start);
+    assert_ne!(manifest.result, h.start);
+    // readme.txt edited, agent.txt new, old.txt deleted, .gitignore edited;
+    // notes.tmp left out by the start's rules, not hidden by the agent's "*".
+    assert_eq!(manifest.changed_files, 4);
+    assert_eq!(
+        manifest
+            .left_out
+            .iter()
+            .map(|l| l.path.as_str())
+            .collect::<Vec<_>>(),
+        ["notes.tmp"]
+    );
+    assert!(manifest.left_out[0].reason.contains("*.tmp"));
+    let bundle = out.join("result.bundle");
+    assert!(bundle.is_file());
+    assert!(h
+        .runtime
+        .collect("run-1", vec!["../x".into()], &out)
+        .await
+        .is_err());
+
+    // The bundle's one commit sits on the start, and is what the agent left.
+    git(
+        &h.repo,
+        &[
+            "fetch",
+            "-q",
+            bundle.to_str().unwrap(),
+            "refs/heads/result:refs/heads/result",
+        ],
+    );
+    assert_eq!(git(&h.repo, &["rev-parse", "result"]), manifest.result);
+    assert_eq!(git(&h.repo, &["rev-parse", "result^"]), h.start);
+    assert_eq!(
+        git(&h.repo, &["show", "result:readme.txt"]),
+        "edited by the agent"
+    );
+    assert_eq!(git(&h.repo, &["show", "result:agent.txt"]), "new");
+    assert!(git(&h.repo, &["ls-tree", "--name-only", "result"])
+        .lines()
+        .all(|l| l != "old.txt" && l != "notes.tmp"));
+
+    // Choosing the left-out file collects it too; the volume is unchanged.
+    let manifest = h
+        .runtime
+        .collect("run-1", vec!["notes.tmp".into()], &out)
+        .await
+        .unwrap();
+    assert_eq!(manifest.changed_files, 5);
+    assert!(manifest.left_out.is_empty());
 }

@@ -181,6 +181,12 @@ pub struct RunRecord {
     pub engine_socket: String,
     pub image: String,
     pub permissions: RunPermissions,
+    /// The commit the run started from, for the snapshot's parent.
+    #[serde(default)]
+    pub start_commit: String,
+    /// The run's input bundle, given to the collector again.
+    #[serde(default)]
+    pub bundle: PathBuf,
     pub phase: Phase,
     pub outcome: Option<Outcome>,
     pub stop_confirmed: bool,

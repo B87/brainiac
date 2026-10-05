@@ -11,6 +11,7 @@
 //! stops them rather than resuming what it no longer knows.
 
 pub mod acp;
+pub mod archive;
 pub mod docker;
 pub mod guard;
 pub mod journal;
@@ -29,12 +30,12 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, oneshot, watch, Notify};
 
 use self::acp::{Command, RunSink, Session};
-use self::docker::{LaunchSpec, Running, Workloads};
+use self::docker::{CollectSpec, LaunchSpec, Running, Workloads};
 use self::journal::{journal_path, Append, Redactor, TraceJournal};
 use self::protocol::{
-    valid_id, Activity, Credential, Delivery, EventBody, EventPage, Outcome, PendingPermission,
-    Phase, Request, Response, RunStatus, StartRun, StopReason, MAX_LINE_BYTES, MAX_PROMPT_BYTES,
-    PROTOCOL,
+    valid_id, Activity, CollectManifest, Credential, Delivery, EventBody, EventPage, Outcome,
+    PendingPermission, Phase, Request, Response, RunStatus, StartRun, StopReason, MAX_LINE_BYTES,
+    MAX_PROMPT_BYTES, PROTOCOL,
 };
 use self::state::{Ledger, RunRecord, StateDir};
 use crate::models::{AppError, AppResult, ErrorCode};
@@ -49,6 +50,10 @@ const STOP_RETRY: Duration = Duration::from_secs(10);
 /// sleep of this Mac (docs/design/agent-runs.md, Spike record: collection,
 /// quota, and local wake).
 const SUSPEND_GAP: Duration = Duration::from_secs(15);
+/// Files a collection may be asked to add.
+const MAX_INCLUDE: usize = 1000;
+/// Memory for the collector's container, which hashes files one at a time.
+const COLLECTOR_MEMORY_MIB: u32 = 2048;
 /// The shortest and longest time limits a run may have.
 const MIN_TIME_LIMIT: u64 = 1;
 const MAX_TIME_LIMIT: u64 = 8 * 60 * 60;
@@ -166,6 +171,8 @@ struct RunInner {
     inflight: HashSet<String>,
     last_stop_try: Option<Instant>,
     journal_failed: bool,
+    /// The collector is running against the run's volume.
+    collecting: bool,
 }
 
 pub struct Run {
@@ -400,6 +407,7 @@ impl<W: Workloads> Controller<W> {
                     inflight: HashSet::new(),
                     last_stop_try: None,
                     journal_failed: false,
+                    collecting: false,
                 }),
                 cursor: watch::Sender::new(cursor),
                 stopping: AtomicBool::new(false),
@@ -501,6 +509,14 @@ impl<W: Workloads> Controller<W> {
             Request::Stop { run_id, reason } => self
                 .request_stop(&run_id, reason)
                 .map(|run| Response::Run { run }),
+            Request::Collect {
+                run_id,
+                include,
+                out_dir,
+            } => self
+                .collect(&run_id, include, out_dir)
+                .await
+                .map(|manifest| Response::Collected { manifest }),
             Request::Discard { run_id } => self.discard(&run_id).await.map(|()| Response::Done),
             Request::Shutdown => {
                 if self.close_if_idle() {
@@ -539,6 +555,8 @@ impl<W: Workloads> Controller<W> {
             engine_socket: start.engine_socket.clone(),
             image: start.image.clone(),
             permissions: start.permissions,
+            start_commit: start.start_commit.clone(),
+            bundle: start.bundle.clone(),
             phase: Phase::Preparing,
             outcome: None,
             stop_confirmed: false,
@@ -578,6 +596,7 @@ impl<W: Workloads> Controller<W> {
                 inflight: HashSet::from([start.prompt_id.clone()]),
                 last_stop_try: None,
                 journal_failed: false,
+                collecting: false,
             }),
             cursor: watch::Sender::new(0),
             stopping: AtomicBool::new(false),
@@ -1021,6 +1040,62 @@ impl<W: Workloads> Controller<W> {
         }
     }
 
+    /// Collect a stopped run's working tree: the collector container runs
+    /// against the run's volume, read only, and its bundle lands in
+    /// `out_dir`. The volume is unchanged, so it can be repeated.
+    async fn collect(
+        &self,
+        run_id: &str,
+        include: Vec<String>,
+        out_dir: PathBuf,
+    ) -> AppResult<CollectManifest> {
+        let run = self.run(run_id)?;
+        if include.len() > MAX_INCLUDE || include.iter().any(|p| !safe_relative(p)) {
+            return Err(AppError::validation(
+                "The files to add must be paths inside the workspace, at most 1,000 of them.",
+            ));
+        }
+        if !out_dir.is_absolute() || !out_dir.is_dir() {
+            return Err(AppError::validation(
+                "The collection needs an existing folder to write into.",
+            ));
+        }
+        let spec = {
+            let mut inner = run.lock();
+            if inner.record.phase != Phase::Ended || !inner.record.stop_confirmed {
+                return Err(conflict(
+                    "The run has not stopped; its work can be collected once it has.",
+                ));
+            }
+            if !inner.record.kept {
+                return Err(conflict("The run's work was discarded."));
+            }
+            if inner.record.start_commit.is_empty() {
+                return Err(conflict("This run's start commit is not known."));
+            }
+            if inner.collecting {
+                return Err(conflict("The run's work is already being collected."));
+            }
+            inner.collecting = true;
+            CollectSpec {
+                engine_socket: inner.record.engine_socket.clone(),
+                image: inner.record.image.clone(),
+                installation: self.installation.clone(),
+                run_id: run_id.to_string(),
+                attempt: inner.record.attempt,
+                volume: inner.record.volume.clone(),
+                memory_mib: COLLECTOR_MEMORY_MIB,
+                bundle: inner.record.bundle.clone(),
+                start_commit: inner.record.start_commit.clone(),
+                include,
+                out_dir,
+            }
+        };
+        let result = self.workloads.collect(spec).await;
+        run.lock().collecting = false;
+        result
+    }
+
     async fn discard(&self, run_id: &str) -> AppResult<()> {
         let run = self.run(run_id)?;
         let (socket, volume) = {
@@ -1175,6 +1250,18 @@ fn check_prompt(text: &str) -> AppResult<()> {
 /// The credential frame (docs/architecture.md, Agent runs — v0.5,
 /// Credentials): `BRB1`, a 4-byte big-endian length, then JSON with exactly
 /// the credential's key. The caller's copy of the value is overwritten.
+/// A path inside the workspace: relative, no `..`, no empty part.
+fn safe_relative(path: &str) -> bool {
+    !path.is_empty()
+        && path.len() <= 4096
+        && !path.starts_with('/')
+        && !path.contains('\0')
+        && !path.contains('\n')
+        && path
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
+}
+
 pub fn frame(credential: Credential) -> Vec<u8> {
     let Credential { key, value } = credential;
     let mut payload =

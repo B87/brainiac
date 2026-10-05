@@ -130,6 +130,10 @@ pub const HISTORY: Store = Store {
             "0003_queries",
             include_str!("../migrations/history/0003_queries.sql"),
         ),
+        (
+            "0004_agent_runs",
+            include_str!("../migrations/history/0004_agent_runs.sql"),
+        ),
     ],
     backups: Backups::Every { days: 7, keep: 2 },
     adopt_unmarked: false,

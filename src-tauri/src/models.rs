@@ -3490,3 +3490,332 @@ pub struct RunStartPreview {
     /// Commits the container gets: this one and its history.
     pub history_commits: u32,
 }
+
+/// What the agent is doing (SPEC.md, The run: States).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum RunActivity {
+    Preparing,
+    Working,
+    /// Waiting for you: a permission.
+    Permission,
+    /// Ready for your prompt.
+    Idle,
+    /// Plan limit reached; the session is still open.
+    PlanLimit,
+    Stopping,
+    Ended,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum RunPhase {
+    Preparing,
+    Running,
+    Stopping,
+    Ended,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum RunOutcome {
+    Finished,
+    Cancelled,
+    Expired,
+    Failed,
+    /// The engine, the container, or the run controller stopped unexpectedly.
+    Interrupted,
+}
+
+/// What the run produced (SPEC.md, The run: States).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum RunCollection {
+    /// Not collected: the run is live, or it was interrupted and waits for Collect work.
+    None,
+    Collecting,
+    /// Ready to review: a snapshot commit on top of the start.
+    Ready,
+    NoChanges,
+    Failed,
+}
+
+impl RunCollection {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RunCollection::None => "none",
+            RunCollection::Collecting => "collecting",
+            RunCollection::Ready => "ready",
+            RunCollection::NoChanges => "no_changes",
+            RunCollection::Failed => "failed",
+        }
+    }
+}
+
+/// A new file the snapshot left out, and why (SPEC.md, Ending and collecting: Left out).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct LeftOutFile {
+    pub path: String,
+    pub reason: String,
+}
+
+/// A permission the agent waits for (SPEC.md, The run: Permission requests).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RunPermissionRequest {
+    pub permission_id: String,
+    pub turn: u32,
+    pub title: String,
+    pub kind: Option<String>,
+    /// The command or the file, when the agent said which.
+    pub detail: Option<String>,
+    pub asked_at: String,
+}
+
+/// One agent run (SPEC.md, section 13): its start, what it runs with, the
+/// run controller's last confirmed state, and what was collected. Never the
+/// token or key, only where it came from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AgentRun {
+    pub id: String,
+    pub repository_id: String,
+    pub repository_name: String,
+    /// The first prompt's first line, cut short.
+    pub title: String,
+    pub start_commit: String,
+    pub start_subject: String,
+    pub payment: AgentPayment,
+    /// Where the credential came from, in words ("the Keychain").
+    pub credential_source: String,
+    pub engine_name: String,
+    pub image_name: String,
+    pub permissions: RunPermissions,
+    pub time_limit_minutes: u32,
+    pub cpus: u32,
+    pub memory_mib: u32,
+    pub workspace_gib: u32,
+    pub phase: RunPhase,
+    pub activity: RunActivity,
+    pub turn: u32,
+    pub outcome: Option<RunOutcome>,
+    /// The engine confirmed that nothing of the run runs.
+    pub stop_confirmed: bool,
+    /// The stopped container and its files are still on the engine.
+    pub kept: bool,
+    pub accepted_at: Option<String>,
+    /// When the time limit ends the run.
+    pub deadline_at: Option<String>,
+    pub ended_at: Option<String>,
+    /// The deadline passed while this Mac slept.
+    pub expired_asleep: bool,
+    /// Why the run failed or could not stop, in words safe to show.
+    pub error: Option<String>,
+    pub pending_permissions: Vec<RunPermissionRequest>,
+    /// Brainiac reaches the run controller now; otherwise `reported_at`
+    /// says when it last did.
+    pub connected: bool,
+    pub reported_at: Option<String>,
+    /// Cancel was asked for while the run could not be reached; it is sent on reconnect.
+    pub cancel_requested: bool,
+    pub collection: RunCollection,
+    pub collection_error: Option<String>,
+    /// The snapshot commit in Brainiac's repository; the start when nothing changed.
+    pub result_commit: Option<String>,
+    pub changed_files: Option<u32>,
+    pub left_out: Vec<LeftOutFile>,
+    pub left_out_more: u32,
+    /// Keep this snapshot, or a patch export, confirmed the left-out list.
+    pub snapshot_accepted: bool,
+    /// A container, volume, or file that could not be removed.
+    pub cleanup_pending: Option<String>,
+    /// The journal sequence mirrored so far.
+    #[ts(type = "number")]
+    pub cursor: u64,
+    pub created_at: String,
+    pub updated_at: String,
+    #[ts(type = "number")]
+    pub version: i64,
+}
+
+/// Runs, and whether the run controller is running.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AgentRunList {
+    pub runs: Vec<AgentRun>,
+    pub controller_running: bool,
+}
+
+/// New run, **Start run** (SPEC.md, New run).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct StartRunRequest {
+    pub repository_id: String,
+    /// From the preview: the commit the start resolved to.
+    pub start_commit: String,
+    pub prompt: String,
+    pub permissions: RunPermissions,
+    pub time_limit_minutes: u32,
+    pub cpus: u32,
+    pub memory_mib: u32,
+    pub workspace_gib: u32,
+}
+
+/// One entry of a run's conversation, as the journal recorded it:
+/// normalized and filtered, never the agent's raw protocol.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RunEvent {
+    #[ts(type = "number")]
+    pub seq: u64,
+    pub at: String,
+    #[serde(flatten)]
+    pub body: RunEventBody,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RunPlanEntry {
+    pub content: String,
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[ts(export)]
+pub enum RunEventBody {
+    Accepted {
+        deadline_at: String,
+        permissions: RunPermissions,
+    },
+    Ready {
+        session_id: String,
+        agent: String,
+        version: String,
+    },
+    Prompt {
+        turn: u32,
+        command_id: String,
+        text: String,
+    },
+    /// A piece of the agent's reply; consecutive pieces of one turn join.
+    Message {
+        turn: u32,
+        text: String,
+    },
+    Thought {
+        turn: u32,
+        text: String,
+    },
+    Plan {
+        turn: u32,
+        entries: Vec<RunPlanEntry>,
+    },
+    /// A tool call, or a change to one: fields the update did not carry are absent.
+    Tool {
+        turn: u32,
+        tool_id: String,
+        title: Option<String>,
+        kind: Option<String>,
+        status: Option<String>,
+        locations: Vec<String>,
+        output: Option<String>,
+    },
+    Permission(RunPermissionRequest),
+    PermissionAnswered {
+        permission_id: String,
+        /// `allowed`, `rejected`, or `cancelled`.
+        outcome: String,
+        /// `user`, `auto` (Act without asking), or `run` (the run ended).
+        by: String,
+    },
+    TurnEnded {
+        turn: u32,
+        reason: String,
+        message: Option<String>,
+    },
+    Notice {
+        text: String,
+    },
+    Stopping {
+        outcome: RunOutcome,
+    },
+    Ended {
+        outcome: RunOutcome,
+        message: Option<String>,
+    },
+}
+
+/// A page of a run's conversation after a sequence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RunEventPage {
+    pub run_id: String,
+    pub events: Vec<RunEvent>,
+    /// The last sequence mirrored; more follow while `events` stops before it.
+    #[ts(type = "number")]
+    pub cursor: u64,
+}
+
+/// Changes: the collected snapshot against the start (SPEC.md, Review).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RunChanges {
+    pub run_id: String,
+    pub start_commit: String,
+    pub result_commit: String,
+    pub files: Vec<CommitFile>,
+}
+
+/// One file's diff of a run's snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RunDiffRequest {
+    pub run_id: String,
+    pub path: String,
+    pub old_path: Option<String>,
+    #[serde(default)]
+    pub options: DiffOptions,
+}
+
+/// Settings → Agents, **Test**: what passed, and when (SPEC.md, Settings → Agents).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AgentTestResult {
+    /// Each step in order, with whether it passed.
+    pub steps: Vec<AgentTestStep>,
+    pub passed: bool,
+    pub tested_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AgentTestStep {
+    pub name: String,
+    pub passed: bool,
+    pub detail: Option<String>,
+}
+
+/// Settings → Agents: whether the run controller is running (SPEC.md, Settings → Agents).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RunControllerStatus {
+    pub running: bool,
+    pub pid: Option<u32>,
+    pub live_runs: u32,
+}
+
+/// An event telling the window that a run changed: its state, its
+/// conversation, or its collection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AgentRunChangedEvent {
+    pub run_id: String,
+    /// The run was deleted.
+    pub deleted: bool,
+}

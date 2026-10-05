@@ -6,7 +6,8 @@
 # as of 23 Sep 2026), and the packages by package-lock.json. The Claude ACP
 # adapter 0.85.1 depends on @anthropic-ai/claude-agent-sdk 0.3.286, which
 # declares Claude Code 2.1.286, installed at that version too; the entrypoint
-# selects the Claude Code binary. The collector is added with collection.
+# selects the Claude Code binary. The collector (collector.mjs) runs in a
+# container of its own after a run stops, with no network and no credential.
 FROM node:22-bookworm-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c
 
 RUN apt-get update \
@@ -21,7 +22,7 @@ RUN npm ci --omit=dev --no-audit --no-fund \
     && rm -rf node_modules/@anthropic-ai/*-musl \
     && npm cache clean --force
 
-COPY entrypoint.mjs /opt/claude/entrypoint.mjs
+COPY entrypoint.mjs collector.mjs /opt/claude/
 
 # Claude Code's managed settings win over a repository's own .claude
 # settings, which runs otherwise use (CLAUDE.md, hooks, permissions). They
@@ -41,7 +42,9 @@ LABEL org.brainiac.adapter=0.85.1 \
 # The run controller copies the run's start (input.bundle) into
 # /opt/brainiac/input before the container starts; the entrypoint clones it
 # into the empty /workspace volume.
-RUN mkdir -p /workspace /opt/brainiac/input && chown node:node /workspace
+# /scratch and /out are the collector's own working and output folders.
+RUN mkdir -p /workspace /opt/brainiac/input /scratch /out \
+    && chown node:node /workspace /scratch /out
 USER node
 WORKDIR /workspace
 ENTRYPOINT ["node", "/opt/claude/entrypoint.mjs"]
