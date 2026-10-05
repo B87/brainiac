@@ -1,0 +1,16 @@
+[Unit]
+Description=Brainiac agent-controller spike
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=@USER@
+Group=@GROUP@
+SupplementaryGroups=docker
+ExecStart=@BIN@ controller --state /var/lib/brainiac-spike
+Restart=no
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

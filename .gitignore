@@ -2,6 +2,7 @@
 node_modules/
 dist/
 src-tauri/target/
+spikes/agent-controller/target/
 src-tauri/gen/schemas/
 
 # Editor test output (pnpm test:editor)

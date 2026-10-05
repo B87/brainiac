@@ -1,0 +1,20 @@
+[package]
+name = "brainiac-spike"
+version = "0.0.0"
+description = "Throwaway proof of a host-owned agent controller. Not part of the app."
+edition = "2021"
+rust-version = "1.88"
+publish = false
+
+[[bin]]
+name = "brainiac-spike"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+bollard = "0.19"
+bytes = "1"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }

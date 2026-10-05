@@ -4,13 +4,15 @@ Design notes for running a coding agent inside a container and following its wor
 
 This builds on v0.4's Docker socket discovery and Health requests, v0.4.x's [`secrets.md`](secrets.md), the Git CLI with argument arrays, the diff viewer, tasks linked to repositories, and the provider-neutral pull request service. Health's short HTTP requests provide discovery/client setup; bidirectional attach streams, archives, and lifecycle recovery need their own implementation and spike. Nothing here adds a dependency, table, or accepted architecture decision before v0.5 starts. Remote hosts also depend on v0.4.x's SSH tunnels; Create pull request depends on the v0.3.x follow-up.
 
+UX Design Artifact: https://claude.ai/artifact/LKPGQiv9qZdrN14znnpusG
+
 ## Why
 
 A container gives each run its own working copy and isolates it from the user's checkout and mounted Mac files. The user's checkout is never mounted or modified. Delivered credentials remain available to the agent and engine operator; unrestricted network access is not credential isolation. Several runs can work independently, including on repositories with no remote.
 
 **Remote execution through Mac sleep must be designed and proven before committing to the production runtime, even if local runs ship first.** An acknowledged turn continues on the approved remote host when the Mac sleeps, Brainiac quits, or SSH disconnects. Brainiac reconnects to the same live session, retrieves missed events, and can send another prompt. The remote controller owns execution and limits independently of the Mac. An early remote prototype must demonstrate this contract; the later remote release must pass it again with the packaged product. Shipping order does not defer or weaken the architectural requirement.
 
-Brainiac knows the repositories, linked tasks, and credential sources. It can turn the manual sequence of creating an image, delivering credentials, watching an agent, and extracting changes into one workflow. The first release supports one tested ACP agent, API-key authentication, a local Docker-compatible engine, and complete source Git repositories on the Mac. Unsupported cases fail before credentials are delivered. Remote product support follows SSH tunnels and controller deployment integration; its session architecture is validated in the initial spike.
+Brainiac knows the repositories, linked tasks, and credential sources. It can turn the manual sequence of creating an image, delivering credentials, watching an agent, and extracting changes into one workflow. The first release supports one tested ACP agent, authentication with an API key or a Claude subscription token (Subscription token, below), a local Docker-compatible engine, and complete source Git repositories on the Mac. Unsupported cases fail before credentials are delivered. Remote product support follows SSH tunnels and controller deployment integration; its session architecture is validated in the initial spike.
 
 ## What the user gets
 
@@ -35,7 +37,7 @@ Phase 1 supports complete local SHA-1 repositories. Shallow/partial repositories
 
 ### Output: collect the final working tree
 
-For Finish, Cancel, expiry, process failure, or interruption, first stop all agent processes and confirm the workload container is stopped. A separate collector container mounts its volume read-only, has no network/injected credentials, and uses an approved image digest, its own writable scratch area, and the original input bundle. It does not execute the agent's entrypoint or trust its Git configuration, index, refs, hooks, or commits.
+For Finish, Cancel, expiry, process failure, or interruption, first stop all agent processes and confirm the workload container is stopped. The workspace is a run-owned volume, not the container's own filesystem, so it outlives the workload. Interruption, controller restart, the termination guard, and emergency stop only stop containers; the stopped container stays attached to its volume, so engine cleanup commands such as volume prune cannot treat it as unused. A run's container and volume are removed only by cleanup after a verified collection, or by an explicit Discard. A separate collector container mounts its volume read-only, has no network/injected credentials, and uses an approved image digest, its own writable scratch area, and the original input bundle. It does not execute the agent's entrypoint or trust its Git configuration, index, refs, hooks, or commits.
 
 The collector constructs a final tree and one snapshot commit whose sole parent is the recorded starting commit. Existing tracked paths are included even when newly ignored. Added untracked files follow an exclusion policy captured from the starting tree plus Brainiac's fixed exclusions; edited ignore files cannot hide previously eligible output. New ignored/generated files, Git metadata, credential/home/cache directories, and special devices are excluded. Review lists excluded additions and offers bounded recovery selection of eligible regular files; it does not treat all files on the volume as safe output. Symlinks are recorded as link text and never followed outside the workspace. Executable bits/deletions are preserved. Unsupported path encodings, unreadable files, or exceeded limits fail explicitly rather than produce an incomplete snapshot labelled complete.
 
@@ -139,9 +141,10 @@ The controller records an absolute deadline at workload start and enforces it in
 | Credential | Scope/delivery |
 | --- | --- |
 | Model API key | Supported provider/agent; bootstrap stdin, then agent-process environment |
+| Claude subscription token | Claude Code only; the user's own `claude setup-token` token, delivered like the API key as `CLAUDE_CODE_OAUTH_TOKEN`; a profile delivers this or the API key, never both |
 | Registry token, after phase 1 | Stable `registry:<id>` owner, approved repository/registry context, read-only private-package access |
 | Git publication credential | Mac only, approved HTTPS destination; never workload/collector |
-| Subscription/login files | Deferred pending provider terms, renewal/format, and sanitization verification |
+| Subscription login files | Deferred: browser sign-in inside the container, refreshing credential files, and their sanitization stay unsupported |
 
 Sources use `CredentialService` leases; starting a run does not clear its process cache. Model owner is `agent:<profile id>`; registry IDs survive renaming. Validate key format and reserved delivery names without echoing bytes. Registry configuration cannot override executable-loading variables, provider URLs, agent startup options, or forge credentials. Refuse publish/admin scope where inspectable; otherwise require explicit user attestation to read-only scope and state that limitation. Phase 1 injects no registry tokens.
 
@@ -150,6 +153,16 @@ Approval includes source binding, provider endpoint, descriptor/version, image d
 Resolve on the Mac before any execution starts. An authenticated control channel delivers approved values to controller memory, encrypted over remote transport; it must never log or persist secret frames. The controller owns one bounded bootstrap/ACP handoff contract with the entrypoint: the entrypoint accepts descriptor-approved keys only, exports to its child, clears its buffer, and confirms the boundary before ACP traffic begins. Secrets never go into Docker `Env`, image/build args, volumes, labels, argv, or settings. No inspect-visible environment fallback; incompatible agents are unsupported. Put home/auth/cache on tmpfs where supported. Bootstrap failure reports a generic error. Verify buffering cannot consume subsequent ACP bytes and keys cannot enter the journal during handoff.
 
 An acknowledged session uses its already delivered credentials without the Mac, including follow-up turns after reconnection. The controller retains only the in-memory known-value filtering material needed for that session; it cannot resolve Mac credential sources or renew credentials while the Mac is away. Provider rejection/expiry becomes a visible waiting/failure outcome under the tested adapter contract, never a repeated credential request or automatic reinjection. The first supported authentication mode must demonstrate independent operation for the configured run duration; subscription renewal and Mac-dependent authentication callbacks are unsupported.
+
+### Subscription token
+
+A Claude Pro, Max, Team, or Enterprise subscriber can run Claude Code on their plan instead of paying for API usage. Claude Code's `claude setup-token` creates a one-year OAuth token for that plan which can only make model requests, and Claude Code reads it from `CLAUDE_CODE_OAUTH_TOKEN` in places without a browser such as containers and CI ([authentication](https://code.claude.com/docs/en/authentication#generate-a-long-lived-token)). It fits the delivery above: one value, resolved on the Mac, handed over once, with nothing to refresh during a run.
+
+- **Brainiac never signs in to claude.ai.** The user runs `claude setup-token` in Terminal, on their own account, and saves the printed token through a `CredentialService` source (Keychain, Ask, environment variable, or command), owner `agent:<profile id>`. Brainiac does not run the browser flow, read Claude Code's own Keychain item or `~/.claude`, or copy login files into the container.
+- **One credential per profile.** Setup chooses **Claude plan** or **API key**. The descriptor delivers exactly one of `CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_API_KEY`, because Claude Code prefers the API key when both are set. The token is registered for trace filtering like the key.
+- **Usage, not cost.** Runs draw from the plan's usage limits, shared with the user's interactive Claude use. As of October 2026 Anthropic has paused its separate monthly Agent SDK credit, so programmatic use counts against the same limits ([Agent SDK with a Claude plan](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan)). The run view says "Uses your Claude plan" instead of a dollar amount computed at API prices. Setup and New run name the plan rather than a key.
+- **Limits and expiry.** A turn stopped by the plan's usage limit returns the run to waiting for the user with the reset time when the adapter reports it, and the run's time limit keeps running; a tested adapter that reports it only as an error fails the turn under the existing contract. A rejected token (expired, revoked, or the plan ended) becomes a visible failure; the run keeps its work for collection and never asks for a new token mid-session. The token's expiry cannot be read from it, so setup records when it was saved and warns from eleven months onward.
+- **Terms.** Anthropic's Agent SDK documentation says that unless previously approved, third-party developers may not offer claude.ai login or rate limits for their products, including agents built on the Agent SDK, which the Claude ACP adapter is ([Agent SDK overview](https://code.claude.com/docs/en/agent-sdk/overview)). Brainiac offers no login: the user brings a token Anthropic's own CLI issued for this use, and runs Anthropic's own Claude Code binary with it. Whether a public app may present this option is still open (Open questions). Until it is answered the option stays off by default, says that use is governed by the user's plan terms, and does not ship in a release without a recorded answer.
 
 The agent and engine operator can read delivered credentials. An agent may copy a key into its workspace/output; Brainiac cannot guarantee all agent-produced files are secret-free. Fixed endpoints and limited scopes reduce reach. Before Start, display model-provider/code/prompt transfer, engine-host trust, network policy, and credential scope.
 
@@ -231,7 +244,7 @@ Cleanup includes workload/collector containers, named/anonymous volumes, run net
 ## Phases and exit gates
 
 1. **Blocking architecture spike before implementation.** Prove one approved remote host with a trusted independently running controller, a verified SSH prototype, and one pinned Claude adapter using API-key auth. Demonstrate actual Mac sleep/wake, app quit/reopen, SSH loss, same-session follow-up, offline permissions/expiry, cursor replay, lost acknowledgements without duplicate turns, controller-crash termination, and authenticated emergency stop. Also prove arbitrary-commit export on Git 2.30, stopped-volume collection, bootstrap/no raw logs, and enforceable disk budgets. Choose host service/guard, deployment approach, toolchains/default limits from measurement. Failed compatibility gates narrow supported hosts/agents; failure of the sleep/reconnect contract requires revising the architecture before building the production runtime. The spike need not deliver production remote Settings/SSH integration.
-2. **Phase 1 — local runs and review.** Packaged local controller and Setup/Test, complete source repositories, ACP turns/permissions, reconnect after app quit, Cancel/Finish/expiry, interrupted-runtime recovery, snapshot/patch review, bounded controller journal/local replay, Delete. API keys only, no registry tokens/push. Gate: controller survives app quit and reconnect permits a new prompt without credential delivery/replay; idle sessions and pending permissions persist; deadline/collection works without the UI while the engine host is running; local host sleep/resume reconciles expiry and confirms stop under the disclosed limitation; uncommitted/staged/new/binary edits, partial collection/retry, source checkout/refs/index/config unchanged, owned resources cleaned up. This local release may ship after the remote architecture spike, without production remote-host support.
+2. **Phase 1 — local runs and review.** Packaged local controller and Setup/Test, complete source repositories, ACP turns/permissions, reconnect after app quit, Cancel/Finish/expiry, interrupted-runtime recovery, snapshot/patch review, bounded controller journal/local replay, Delete. An API key or a Claude subscription token (the token only once its terms question is answered), no registry tokens/push. Gate: controller survives app quit and reconnect permits a new prompt without credential delivery/replay; idle sessions and pending permissions persist; deadline/collection works without the UI while the engine host is running; local host sleep/resume reconciles expiry and confirms stop under the disclosed limitation; uncommitted/staged/new/binary edits, partial collection/retry, source checkout/refs/index/config unchanged, owned resources cleaned up. This local release may ship after the remote architecture spike, without production remote-host support.
 3. **Phase 2 — landing and agents.** Tested Codex/Gemini descriptors; create-only HTTPS push and Create pull request after its dependency; enforced allowlist before read-only registry tokens. Gate: safe bad credentials, existing-branch refusal, lost-push reconciliation, exact reviewed publication, adversarial bypass/private-host rejection, real setup/work for each supported pair.
 4. **Phase 3 — remote product integration.** Complete production SSH integration, approved-host Settings, verified controller deployment/upgrade/removal, and supported remote engines using the architecture proven before phase 1. Repeat the remote acceptance suite with the packaged product: actual Mac sleep/app quit/SSH loss, same-session follow-up and complete journal replay, offline permissions/deadline/collection, lost acknowledgements, controller-crash termination, host-key changes, and emergency stop. A stuck host cannot stall another; upgrades/removal respect active sessions and cleanup obligations. Remote hosts cannot ship with continuation disabled or deferred.
 5. **Phase 4 — tasks.** Task launch/linkage and Today waiting indicator. Inputs are snapshotted/editable; later task changes cannot steer a run. Task removal/relocation does not delete runs/artifacts.
@@ -246,6 +259,7 @@ Cleanup includes workload/collector containers, named/anonymous volumes, run net
 - Offline state/failure tests: idle session retained; exact pending permission waits without escalation and can be answered after return; deadline expires during active/idle/permission states with confirmed host-side stop and partial collection before Mac return; journal/storage exhaustion is bounded. Kill the controller between forwarding and recording, reboot/lose the engine, rotate the host key, exhaust provider credentials, and exercise independent emergency stop. Assert interrupted/recovery/uncertain outcomes rather than fabricated continuation or confirmed cancellation.
 - Controller authority/cleanup tests: unauthenticated/other-installation clients and workloads cannot issue run commands or access the journal/engine; protocol upgrades refuse incompatible live ownership; replay/transfer retries preserve identities; unavailable hosts keep cleanup tombstones; deleting one run does not stop another host/session/controller.
 - Publication with temporary remotes/provider stand-ins: create-only collisions, stale destination/artifact, missing/incompatible credentials, one-ref/no-tag, uncertain success/retry, pull request reconciliation. Network bypass tests independent of agent cooperation.
+- Subscription token with an adapter stand-in: only one of token and API key delivered, rejected/expired token, usage limit with and without a reset time, expiry warning from the saved date, no login files written to the container.
 - Leak fixtures: known injected values absent from Docker configuration/labels/argv, image/build cache, persistent daemon/adapter logs, journals/IPC/errors/snapshots. Separately demonstrate documented encoded/artifact leakage limitations; export never claims confidentiality certification.
 - Retention/recovery: volume removal, expired prompts/results, shared objects/GC, disk exhaustion/tombstones, unreachable engine, restore with running/cleanup state. WebKit fake backend: setup/disclosure, idle/permissions, Finish/Cancel, uncertainty, partial review/discard confirmation.
 
@@ -253,7 +267,7 @@ Cleanup includes workload/collector containers, named/anonymous volumes, run net
 
 - Scheduled runs, agents sharing a branch, continuation from a prior result, or preservation of intermediate agent commit history.
 - Arbitrary ACP commands, native fallback, repository images/dev-container hooks, hosted services, other runtimes.
-- Subscription auth/renewal, remote sources, SSH/custom-remote push, automatic force updates.
+- Subscription sign-in or credential renewal (a `claude setup-token` token is supported; login files are not), remote sources, SSH/custom-remote push, automatic force updates.
 - Brainiac MCP/Mac filesystem/terminal inside runs, or a proxy hiding the model key. Each needs another authority/destination design.
 
 ## Open questions and spikes
@@ -267,10 +281,78 @@ Behavior above is decided; these are feasibility/default gates, not unspecified 
 | Export arbitrary commit | App-owned ref/object transfer, minimum Git, source refs/index/config unchanged, missing objects fail locally | Phase 1 |
 | Collector policy | Direct-byte trees, eligibility policy, hostile tar/Git expansion, retention after failure | Phase 1 |
 | Bootstrap | Authenticated secret transfer to controller memory, one bootstrap/ACP framing contract, inspect/log/build leakage, split-secret filtering, tmpfs home | Blocking spike; each shipped host/agent pair |
+| Subscription token | The pinned adapter authenticates with `CLAUDE_CODE_OAUTH_TOKEN` alone and writes no login files; how it reports a usage limit (reset time or plain error) and a rejected token; the token lasts the run without the Mac. Ask Anthropic whether a public app may offer a user-supplied subscription token for Claude Code runs, and record the answer | Blocking spike for the adapter checks; the terms answer before a release offers the option |
 | Engines/budgets | Prototype remote engine plus Docker Desktop/OrbStack/Colima framing/archive/stop/quotas, local sleep/resume expiry reconciliation, controller journal/artifact budgets and toolchains | Blocking spike and phase 1 defaults; phase 3 remote support |
 | HTTPS credentials | Git formats/scopes, private bridge, no URL/argv/config leaks, empty-ref lease on minimum Git | Phase 2 |
 | Egress | Route/proxy bypass tests, package managers, private exceptions, proxy lifecycle | Phase 2 before registry tokens |
 | Controller | Host service/deployment alternatives, endpoint authentication, command reconciliation, filtered journal/replay, deadline timer, termination guard, independent emergency stop; packaged upgrades/removal per host | Architecture proof before phase 1; production remote integration before phase 3 |
+
+## Spike record: Claude subscription adapter
+
+Probed on 5 October 2026 with one browser login on the Mac (`claude setup-token`) and no browser inside the container. The plan token was delivered once, as `CLAUDE_CODE_OAUTH_TOKEN`, in a length-prefixed stdin frame. `ANTHROPIC_API_KEY` was not set. The adapter was not started with `--bare`.
+
+Pinned image `brainiac-spike-claude:local`, digest `sha256:14408fbbefd91124616fc3fd95c83982234f7a5294c593ba6cbac09bf5c68621`:
+
+- `@agentclientprotocol/claude-agent-acp` 0.85.1
+- `@anthropic-ai/claude-agent-sdk` 0.3.286
+- `@anthropic-ai/claude-code` 2.1.286, on `node:22-bookworm-slim`
+
+The running container was non-TTY, log driver `none`, user `node`, with no bind mounts. Home and `/tmp` were tmpfs. The adapter reported itself as `@agentclientprotocol/claude-agent-acp` 0.85.1. It advertised no client filesystem or terminal. Two prompts on one ACP session both finished `end_turn` after the Mac client dropped the connection between them. The credential frame was written once; reconnect did not send it again.
+
+The entrypoint writes `{"hasCompletedOnboarding":true}` before the adapter starts. This run did not compare a container without that flag. After the turns, Claude had kept the flag and added non-secret metadata: first-start time, Claude Code version, migration flags, local machine and user ids, and `cachedExtraUsageDisabledReason`. The token was not in that file. No Claude login file (`credentials.json`, `.credentials.json`, or `auth.json`) was written. The token was absent from `docker inspect` env, labels, and argv, from the controller journal, and from the daemon journal and the empty raw container log.
+
+A usage-limit reset time was not reported. The onboarding file's extra-usage reason was `out_of_credits` while both turns still completed. A deliberately rejected token failed the turn with ACP error `Authentication required`. An earlier malformed token produced the assistant text `Failed to authenticate. API Error: 401 OAuth access token is invalid.` The terminal print of `claude setup-token` can wrap the token across a carriage return; the value is still one line and includes whatever follows that wrap up to the "Store this token" sentence.
+
+## Spike record: permission and deadline
+
+Probed on 5 October 2026 with the stub agent, not the Claude adapter. The Claude path still cancels adapter permission requests. The stub asks, keeps beating, and grants nothing until the controller writes an allow or a cancel.
+
+A permission stayed pending across a dropped SSH connection: same run, same permission id, and no grant in the journal. After reconnect, one allow was delivered. A second allow for that id was acknowledged and not sent again. A later permission was cancelled; an allow after that cancel did not grant it, and the session kept beating.
+
+The deadline is a monotonic sleep armed when the controller accepts the start. It is not a wall-clock timestamp, and this run did not step the host clock. Dropping the client does not cancel the sleep. On an 8 second limit, the client left while a permission was pending and stayed away for 10 seconds. On return the permission was cancelled, the run was marked expired rather than interrupted, and the container was gone. A later allow had no effect. On a 15 second limit the client was gone for part of the interval, reconnected while the same run was still idle, and the deadline was marked about 6 seconds later rather than 15 seconds from the reconnect. A controller restart still does not adopt the old run or arm a fresh timer for it; startup marks that run interrupted and stops its container. As first probed, startup also removed the container; it now keeps it (Spike record: interrupted runs keep their work).
+
+## Spike record: Claude tool through Mac sleep
+
+Probed on 5 October 2026. The Mac slept for about 393 seconds after the tool was already running. This probe allows one tool permission, choosing the allow-once option. The ordinary Claude probe still cancels permission requests.
+
+The turn was a shell loop that appends one line a second. Sleep was requested when that file had 1 line and the journal had already recorded the tool call, the allow-once permission, and `in_progress`. After wake the file had 91 lines: `tick-1` through `tick-90` and `spike-awake`. The Mac was awake for about 30 seconds of that interval, and the loop cannot write faster than one line a second, so the rest was written while the Mac was suspended. The journal shows the tool reaching `completed` and the turn stopping with `end_turn` without a new prompt. The same run was still live. The credential frame was still the one `bootstrap:ready` from that start. A follow-up on that session, with no new credential, answered `gamma-spike`.
+
+## Spike record: collection, quota, and local wake
+
+Probed on 5 October 2026.
+
+**Stopped volume.** A workload container made one commit, then left a staged edit, a new file, a binary, and a symlink, and did not commit again. After it exited, a second container mounted that volume read-only, with no network, and did not run the workload entrypoint or Git. It recorded the edited bytes rather than the committed base, the new file, the binary, and the symlink as link text. It skipped `.git`. Removing the volume left the controller service running.
+
+**Disk budget.** On this engine `docker run --storage-opt size=4m` did not enforce the cap: a 64 MiB write completed. An 8 MiB ext4 filesystem on a loop file, mounted into the container, stopped the write with errno 28 (no space). The enforceable workspace bound is a fixed-size filesystem. The Claude container's 3 GiB memory cap and 512 process cap are launch limits so the adapter can run, not measured minima.
+
+**Local wake.** The deadline timer is monotonic, so a wall-clock step does not move it. A Mac sleep does not move it either: during the tool-turn sleep the wall clock jumped by about 393 seconds while monotonic time advanced only for the seconds the machine was awake. After wake, a one-second tick treats a gap of at least 15 seconds as a suspend and stops the run if that wall interval has passed the deadline. The tick does not run during the suspend, so work between kernel resume and the tick is the disclosed gap. A gap under 15 seconds stays on the monotonic timer. A suspend that has not reached the deadline does not expire the run.
+
+## Spike record: interrupted runs keep their work
+
+Probed on 5 October 2026 with the stub agent. The first spike removed every run container on controller startup, on controller death through the guard, and on emergency stop. The agent's files were in the container's own filesystem, so an interrupted run lost its work. The spike now gives each run a workspace volume and only stops containers on those paths. The stub appends each heartbeat and follow-up to a file in the workspace before printing it, so every journaled beat should also be in the collected work.
+
+The run was interrupted twice: once by `kill -9` of the controller, so the guard stopped the workload, and once by restarting the controller service. Both times, after the controller came back:
+
+- The same run was reported interrupted, not running, with its work kept. Its stopped container and its volume were still on the engine.
+- A new start was refused until that work was collected or discarded.
+- The read-only collector, with no network, read the volume twice with the same result. Every journaled beat was in the collected file: 9 of 11 lines after `kill -9`, since the workload kept writing until the guard stopped it, and 10 of 10 after the restart. The follow-up was there too.
+- Discard removed the container and the volume; collection then reported no kept work.
+
+Emergency stop also stopped without removing. The rest of `prove` and `prove claude` passed again with the workspace on a volume. Not covered: a host reboot, and a forced kill in the middle of a file write. A half-written file is collected as it was.
+
+## Spike record: local engines
+
+Probed on 5 October 2026 with the controller process on the Mac. Each check was given that engine's socket. The default Docker socket is whichever engine last claimed it, so it is not how a local controller selects an engine.
+
+**Docker Desktop**, storage driver overlay2. `docker run --storage-opt size=4m` was rejected: this engine supports that option only for overlay on XFS with project quotas. An 8 MiB ext4 filesystem on a Docker volume, loop-mounted inside the VM, stopped the write because the filesystem was full. Dropping the client left the controller and the session running. Two heartbeats were journaled while the client was gone, and the run id did not change.
+
+**OrbStack**, storage driver overlayfs. The same `size=4m` option was accepted and did not enforce the cap: a 64 MiB write completed. The same 8 MiB loop filesystem stopped the write. Dropping the client left that session running as well, with three heartbeats journaled while the client was gone.
+
+The loop filesystem is created inside the VM, on a Docker volume, by a privileged probe container. The mount does not outlive that container. It shows the VM kernel can enforce a fixed-size filesystem. It is not a cap `--storage-opt` applies to the workload. Colima was not installed and was not probed.
+
+**Claude permission, Docker Desktop.** A Bash loop was left unanswered when the adapter asked. The client then disconnected. The same permission was still pending, and the journal had no grant. After reconnect, one allow was delivered, the tool completed, and the turn ended `end_turn`. An earlier one-line `echo` in the same probe was run without an ask; the loop is what parked.
+
+**Lid close.** The Mac suspended for about 27 seconds. The controller session on Docker Desktop was still the same run afterward. It journaled 25 heartbeats across 26 seconds awake, not across the suspend. A tick container on Docker Desktop and one on OrbStack each wrote 26 lines in those 26 awake seconds and did not keep writing while the lid was closed. An earlier attempt waited about 55 minutes with a 10-minute deadline, so the controller expired that run before the suspend; this measurement used a 60-minute deadline.
 
 ## Sources
 
