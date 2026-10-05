@@ -282,6 +282,30 @@ test("Settings shows the vault and turns note IDs off", async ({ page }) => {
   await expect(sections).toBeHidden();
 });
 
+test("Settings → Agents chooses the engine and saves a pasted key, never showing it again", async ({
+  page,
+}) => {
+  await openSettings(page, "Agents");
+  await expect(page.getByText("Choose where runs execute.")).toBeVisible();
+  await page.getByRole("radio", { name: /OrbStack/ }).check();
+  expect((await calls(page, "save_agent_settings")).at(-1)).toMatchObject({
+    request: { engine_socket: "/Users/someone/.orbstack/run/docker.sock" },
+  });
+  await expect(page.getByText("Choose where runs execute.")).toBeHidden();
+
+  await page.getByRole("button", { name: "Add…" }).click();
+  const key = "sk-ant-api03-test-key-for-the-fake-backend-only";
+  await page
+    .getByLabel("Anthropic API key")
+    .fill(`${key.slice(0, 20)}\n${key.slice(20)}`);
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  expect((await calls(page, "save_agent_credential")).at(-1)).toMatchObject({
+    request: { payment: "api_key", source: { kind: "store" } },
+  });
+  await expect(page.getByText("API key · Keychain")).toBeVisible();
+  await expect(page.getByText(key)).toBeHidden();
+});
+
 test("Settings checks a value before saving it, and saves it when the field is left", async ({
   page,
 }) => {

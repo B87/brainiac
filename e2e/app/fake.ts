@@ -5,6 +5,7 @@
  * backend's own behavior is tested by `cargo test`.
  */
 import type {
+  AgentSettings,
   AppSnapshot,
   Cell,
   Comment,
@@ -431,6 +432,28 @@ export class FakeBackend {
     { kind: "github", account: null, keychain_token: false },
     { kind: "bitbucket_cloud", account: null, keychain_token: true },
   ];
+  /** Settings → Agents: nothing set up yet, OrbStack running. */
+  agentSettings: AgentSettings = {
+    profile: {
+      id: "claude-code",
+      engine_socket: null,
+      payment: "api_key",
+      credential_source: { kind: "none" },
+      credential: { needs_approval: false, pending: null, revision: 1 },
+      credential_saved_at: null,
+      credential_ageing: false,
+      sends_code_agreed: false,
+      permissions: "ask",
+      time_limit_minutes: 60,
+      cpus: 4,
+      memory_mib: 8192,
+      workspace_gib: 20,
+      image: null,
+      version: 1,
+    },
+    plan_offered: true,
+    missing: ["Choose where runs execute.", "Add an API key."],
+  };
   /** Settings → Secrets, from the accounts and connections. */
   secrets(): SecretsOverview {
     const accounts = this.accounts.flatMap((s) =>
@@ -1163,6 +1186,51 @@ export class FakeBackend {
           executable: "/Applications/Brainiac.app/Contents/MacOS/brainiac",
           problem: null,
         };
+      case "get_agent_settings":
+        return this.agentSettings;
+      case "list_agent_engines":
+        return [
+          {
+            socket: "/Users/someone/.orbstack/run/docker.sock",
+            name: "OrbStack",
+            reachable: true,
+            supported: true,
+            problem: null,
+            server_version: "28.3.2",
+            api_version: "1.51",
+            cpus: 8,
+            memory_bytes: 16 * 1024 ** 3,
+          },
+        ];
+      case "save_agent_settings": {
+        const { expected_version: _, ...fields } = args.request as Record<
+          string,
+          unknown
+        >;
+        const profile = this.agentSettings.profile;
+        Object.assign(profile, fields, { version: profile.version + 1 });
+        this.agentSettings.missing = profile.engine_socket
+          ? ["Add an API key."]
+          : this.agentSettings.missing;
+        return this.agentSettings;
+      }
+      case "save_agent_credential": {
+        const request = args.request as {
+          payment: "claude_plan" | "api_key";
+          source: AgentSettings["profile"]["credential_source"];
+        };
+        const profile = this.agentSettings.profile;
+        Object.assign(profile, {
+          payment: request.payment,
+          credential_source: request.source,
+          credential_saved_at: "2026-10-05T12:00:00Z",
+          version: profile.version + 1,
+        });
+        this.agentSettings.missing = [];
+        return this.agentSettings;
+      }
+      case "agent_dockerfile":
+        return "FROM node:22-bookworm-slim\n";
       case "list_forge_accounts":
         return this.accounts;
       case "update_workspace_pull_requests":

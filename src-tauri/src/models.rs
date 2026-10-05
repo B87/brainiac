@@ -3258,8 +3258,16 @@ pub struct CredentialState {
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[ts(export)]
 pub enum CredentialOwner {
-    ForgeAccount { provider: ForgeKind },
-    DbConnection { id: String },
+    ForgeAccount {
+        provider: ForgeKind,
+    },
+    DbConnection {
+        id: String,
+    },
+    /// Settings → Agents: the token or key a profile's runs are paid with.
+    AgentProfile {
+        id: String,
+    },
 }
 
 /// The outcome of the last Test of a saved source, in this run.
@@ -3305,4 +3313,180 @@ pub struct SecretsOverview {
 pub struct ForgeAccountTestResult {
     pub login: String,
     pub missing: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Agent runs — v0.5 (SPEC.md, section 13)
+// ---------------------------------------------------------------------------
+
+/// How a profile's runs are paid for: exactly one of them reaches a run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum AgentPayment {
+    /// A token the user made with `claude setup-token`, on their Claude plan.
+    ClaudePlan,
+    /// An Anthropic API key.
+    ApiKey,
+}
+
+impl AgentPayment {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AgentPayment::ClaudePlan => "claude_plan",
+            AgentPayment::ApiKey => "api_key",
+        }
+    }
+}
+
+/// A new run's default permissions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum RunPermissions {
+    /// Ask before actions: the agent waits for the user before it runs a
+    /// command or edits a file.
+    Ask,
+    /// Act without asking: anything inside its container.
+    Act,
+}
+
+impl RunPermissions {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RunPermissions::Ask => "ask",
+            RunPermissions::Act => "act",
+        }
+    }
+}
+
+/// The image built for a profile on its engine.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AgentImage {
+    /// Such as `brainiac-claude:3f9c41e1a2b0`.
+    pub name: String,
+    /// The engine's image ID, `sha256:…`.
+    pub id: String,
+    pub built_at: String,
+    /// Built from this version of Brainiac's Dockerfile and its files; false
+    /// after an update changed them, until it is rebuilt.
+    pub current: bool,
+}
+
+/// Settings → Agents for one agent (phase 1: Claude Code). Never holds the
+/// token or key, only where it is read from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AgentProfile {
+    pub id: String,
+    /// The Docker socket of this Mac's engine; `None` until chosen.
+    pub engine_socket: Option<String>,
+    pub payment: AgentPayment,
+    /// Where the token or key is read from; `None` when there is none yet.
+    pub credential_source: SecretSource,
+    pub credential: CredentialState,
+    /// When the token or key was last saved.
+    pub credential_saved_at: Option<String>,
+    /// A Claude plan token saved eleven months ago or more: tokens last a year.
+    pub credential_ageing: bool,
+    /// The user agreed that runs send code and prompts to the provider under
+    /// this payment.
+    pub sends_code_agreed: bool,
+    pub permissions: RunPermissions,
+    pub time_limit_minutes: u32,
+    pub cpus: u32,
+    pub memory_mib: u32,
+    pub workspace_gib: u32,
+    pub image: Option<AgentImage>,
+    #[ts(type = "number")]
+    pub version: i64,
+}
+
+/// Settings → Agents.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AgentSettings {
+    pub profile: AgentProfile,
+    /// Whether this build offers paying with a Claude plan (SPEC.md,
+    /// Settings → Agents: it ships only once Anthropic's answer is recorded).
+    pub plan_offered: bool,
+    /// What still stops a run from starting, in the order to do it.
+    pub missing: Vec<String>,
+}
+
+/// Settings → Agents, everything but the token or key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SaveAgentSettingsRequest {
+    /// The version the pane shows; a save over a newer one is refused.
+    #[ts(type = "number")]
+    pub expected_version: i64,
+    pub engine_socket: Option<String>,
+    pub sends_code_agreed: bool,
+    pub permissions: RunPermissions,
+    pub time_limit_minutes: u32,
+    pub cpus: u32,
+    pub memory_mib: u32,
+    pub workspace_gib: u32,
+}
+
+/// Settings → Agents, **Pay with**: the token or key and where it comes from.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SaveAgentCredentialRequest {
+    #[ts(type = "number")]
+    pub expected_version: i64,
+    pub payment: AgentPayment,
+    /// The Keychain, an environment variable, or a command.
+    pub source: SecretSource,
+    /// The Keychain: the pasted token or key; `None` keeps the one saved.
+    pub secret: Option<String>,
+}
+
+// Written by hand instead of derived so a pasted token never reaches a log.
+impl std::fmt::Debug for SaveAgentCredentialRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SaveAgentCredentialRequest")
+            .field("expected_version", &self.expected_version)
+            .field("payment", &self.payment)
+            .field("source", &self.source)
+            .field("secret", &self.secret.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
+/// A Docker engine found on this Mac, by its socket.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AgentEngine {
+    pub socket: String,
+    /// "OrbStack", "Docker Desktop", or what the engine calls itself.
+    pub name: String,
+    /// Answered on this socket.
+    pub reachable: bool,
+    /// Runs can use it: a tested engine that answered.
+    pub supported: bool,
+    /// Why it cannot be used, when it cannot.
+    pub problem: Option<String>,
+    pub server_version: Option<String>,
+    pub api_version: Option<String>,
+    pub cpus: Option<u32>,
+    #[ts(type = "number | null")]
+    pub memory_bytes: Option<u64>,
+}
+
+/// New run, **Start from**: the commit a run would get, read from the
+/// repository without changing it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RunStartPreview {
+    pub repository_id: String,
+    /// The full commit ID the start resolved to, once.
+    pub commit: String,
+    pub subject: String,
+    pub author: String,
+    pub committed_at: String,
+    /// Commits the container gets: this one and its history.
+    pub history_commits: u32,
 }

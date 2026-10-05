@@ -9,7 +9,11 @@ import {
 import { commandPreview, sourceLabel, stateLabel } from "../lib/secrets";
 
 const ownerKey = (o: CredentialOwner) =>
-  o.kind === "forge_account" ? `forge:${o.provider}` : `db:${o.id}`;
+  o.kind === "forge_account"
+    ? `forge:${o.provider}`
+    : o.kind === "db_connection"
+      ? `db:${o.id}`
+      : `agent:${o.id}`;
 
 /**
  * Settings → Secrets (SPEC.md, Secrets): the store in use, and where each

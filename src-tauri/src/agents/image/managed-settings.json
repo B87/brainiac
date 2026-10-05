@@ -1,0 +1,7 @@
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
+    "NODE_EXTRA_CA_CERTS": "",
+    "NODE_TLS_REJECT_UNAUTHORIZED": "1"
+  }
+}

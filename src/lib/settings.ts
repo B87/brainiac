@@ -8,6 +8,7 @@ export type SettingsSection =
   | "accounts"
   | "secrets"
   | "agents"
+  | "runs"
   | "backup";
 
 export const SECTIONS: { id: SettingsSection; label: string }[] = [
@@ -18,6 +19,7 @@ export const SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "accounts", label: "Accounts" },
   { id: "secrets", label: "Secrets" },
   { id: "agents", label: "Agent Access" },
+  { id: "runs", label: "Agents" },
   { id: "backup", label: "Backup" },
 ];
 

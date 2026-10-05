@@ -560,7 +560,11 @@ async fn settings_secrets_reads_no_secret_and_runs_nothing() {
         brainiac_lib::forge::http::Http::insecure_for_tests().unwrap(),
         brainiac_lib::forge::Endpoints::production(),
     ));
-    let secrets = SecretsService::new(credentials, accounts, Arc::clone(&h.connections));
+    let agents = Arc::new(brainiac_lib::agents::AgentSettingsService::new(
+        h.core.clone(),
+        Arc::clone(&credentials),
+    ));
+    let secrets = SecretsService::new(credentials, accounts, Arc::clone(&h.connections), agents);
     let overview = secrets.overview().await.unwrap();
     assert_eq!(overview.store, "Memory (tests)");
     assert_eq!(overview.entries.len(), 2);

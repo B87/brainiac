@@ -282,6 +282,7 @@ Behavior above is decided; these are feasibility/default gates, not unspecified 
 | Collector policy | Direct-byte trees, eligibility policy, hostile tar/Git expansion, retention after failure | Phase 1 |
 | Bootstrap | Authenticated secret transfer to controller memory, one bootstrap/ACP framing contract, inspect/log/build leakage, split-secret filtering, tmpfs home | Blocking spike; each shipped host/agent pair |
 | Subscription token | The pinned adapter authenticates with `CLAUDE_CODE_OAUTH_TOKEN` alone and writes no login files; how it reports a usage limit (reset time or plain error) and a rejected token; the token lasts the run without the Mac. Ask Anthropic whether a public app may offer a user-supplied subscription token for Claude Code runs, and record the answer | Blocking spike for the adapter checks; the terms answer before a release offers the option |
+| Key out of the agent's processes | Repository hooks and the commands the agent runs inherit the token or key (Spike record: repository settings). Try `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` with bubblewrap in the image, and what that needs from the container's seccomp, capabilities, and user namespaces; otherwise design a proxy outside the container that holds the key. Confirm a Bash tool command sees the value as a hook does | Before runs are offered for repositories the user does not trust; not a phase 1 gate |
 | Engines/budgets | Prototype remote engine plus Docker Desktop/OrbStack/Colima framing/archive/stop/quotas, local sleep/resume expiry reconciliation, controller journal/artifact budgets and toolchains | Blocking spike and phase 1 defaults; phase 3 remote support |
 | HTTPS credentials | Git formats/scopes, private bridge, no URL/argv/config leaks, empty-ref lease on minimum Git | Phase 2 |
 | Egress | Route/proxy bypass tests, package managers, private exceptions, proxy lifecycle | Phase 2 before registry tokens |
@@ -353,6 +354,29 @@ The loop filesystem is created inside the VM, on a Docker volume, by a privilege
 **Claude permission, Docker Desktop.** A Bash loop was left unanswered when the adapter asked. The client then disconnected. The same permission was still pending, and the journal had no grant. After reconnect, one allow was delivered, the tool completed, and the turn ended `end_turn`. An earlier one-line `echo` in the same probe was run without an ask; the loop is what parked.
 
 **Lid close.** The Mac suspended for about 27 seconds. The controller session on Docker Desktop was still the same run afterward. It journaled 25 heartbeats across 26 seconds awake, not across the suspend. A tick container on Docker Desktop and one on OrbStack each wrote 26 lines in those 26 awake seconds and did not keep writing while the lid was closed. An earlier attempt waited about 55 minutes with a 10-minute deadline, so the controller expired that run before the suspend; this measurement used a 60-minute deadline.
+
+## Spike record: repository settings
+
+Probed on 5 October 2026 with the phase 1 image (Claude Code 2.1.286, adapter 0.85.1) on OrbStack, a fake API key delivered in the credential frame, and a stand-in API endpoint on a private Docker network that logged each request's path, whether it carried the key, and whether the body held a marker from the workspace's CLAUDE.md. No model answered; each probe sent one prompt.
+
+The adapter starts Claude Code with `settingSources: ["user", "project", "local"]` unless the client passes its own in `session/new` (`_meta.claudeCode.options.settingSources`).
+
+| Workspace and settings | Result |
+| --- | --- |
+| `.claude/settings.json` with `env.ANTHROPIC_BASE_URL` at the stand-in | Every request, with the key, went to the stand-in |
+| The same, with `/etc/claude-code/managed-settings.json` pinning `ANTHROPIC_BASE_URL` to Anthropic | Nothing reached the stand-in |
+| The same, with `settingSources: ["user"]` | Nothing reached the stand-in |
+| `.claude/settings.json` with `SessionStart` and `UserPromptSubmit` hooks that fetch the stand-in with `$ANTHROPIC_API_KEY` | The key reached the stand-in at session start, before the prompt and without any permission request |
+| The same hooks, with managed `allowManagedHooksOnly` | Nothing reached the stand-in |
+| The same hooks, with `settingSources: []` | Nothing reached the stand-in |
+| `settingSources: []` and a managed file setting `ANTHROPIC_BASE_URL` | The managed value applied: managed settings do not depend on the sources |
+| CLAUDE.md in the workspace, default sources / `["user"]` | Its text was in the requests / was not |
+
+Claude Code 2.1.286 also runs commands named by `apiKeyHelper`, `awsAuthRefresh`, `awsCredentialExport`, `gcpAuthRefresh`, `otelHeadersHelper`, `statusLine`, and `fileSuggestion`, so pinning keys one at a time in managed settings cannot close this; leaving the repository's settings out does. The image's managed settings pin only the endpoint and TLS trust variables: `allowManagedHooksOnly` was not added, because the adapter registers its own SDK hooks (`PostToolUse`) and this probe could not show they still run.
+
+`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`, which removes credentials from the environment of what Claude Code starts, stopped Claude Code at session start in this image: it requires bubblewrap.
+
+Decision (`architecture.md`, Decisions, 5 Oct 2026): runs keep the default sources. Leaving the settings out would close only the path that needs no action, while the scripts the agent runs are the repository's code too; it would also lose the repository's CLAUDE.md. New run discloses that the repository's code and settings can read the token or key. Not checked here: a Bash tool command's environment (assumed the same as a hook's, both being Claude Code's child processes).
 
 ## Sources
 

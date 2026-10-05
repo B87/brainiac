@@ -11,6 +11,8 @@ into the release's section.
 
 ## [Unreleased]
 
+- Settings → Agents, for runs of Claude Code in a container: choose the Docker engine, add an API key from the Keychain, a command, or a variable, and build the run image from a Dockerfile you can read.
+
 ## [0.4.0] - 2026-10-05
 
 - Databases: save connections to SQLite files and PostgreSQL servers, with passwords in the Keychain, and query them in tabs with completion, a fast result grid, an inspector, Explain, Copy, and Export.

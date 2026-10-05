@@ -1,6 +1,7 @@
 //! Tauri setup: shared state, native menu, background loops, command registration.
 
 pub mod activity;
+pub mod agents;
 pub mod backup;
 pub mod commands;
 pub mod credentials;
@@ -194,10 +195,21 @@ pub fn run() {
                 stores.core.clone(),
                 Arc::clone(&credentials),
             ));
+            // --- Agent runs (v0.5) -----------------------------------------
+            let agent_settings = Arc::new(agents::AgentSettingsService::new(
+                stores.core.clone(),
+                Arc::clone(&credentials),
+            ));
+            app.manage(Arc::clone(&agent_settings));
+            app.manage(Arc::new(agents::RunArtifacts::new(
+                service.git_service().cloned(),
+                &data_dir,
+            )));
             app.manage(Arc::new(secrets::SecretsService::new(
                 credentials,
                 accounts,
                 Arc::clone(&connections),
+                agent_settings,
             )));
             let health_handle = handle.clone();
             let health_emitter: databases::health::HealthEmitter = Arc::new(move |event| {
@@ -420,6 +432,15 @@ pub fn run() {
             commands::refresh_credential,
             commands::retry_credential_cleanup,
             commands::find_secret_program,
+            commands::get_agent_settings,
+            commands::save_agent_settings,
+            commands::save_agent_credential,
+            commands::remove_agent_credential,
+            commands::approve_agent_settings,
+            commands::list_agent_engines,
+            commands::agent_dockerfile,
+            commands::build_agent_image,
+            commands::preview_run_start,
             commands::set_repository_forge,
             commands::update_workspace_pull_requests,
             commands::list_pull_requests,

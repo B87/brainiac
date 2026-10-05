@@ -81,17 +81,61 @@ const LOCK_FILES: &[&str] = &[
 /// How long a Git process gets to clean up its lock files after SIGTERM.
 const TERMINATE_GRACE: Duration = Duration::from_secs(3);
 
+/// Configuration of every `run_isolated` call, before its arguments.
+const ISOLATED_CONFIG: &[&str] = &[
+    "-c",
+    "core.hooksPath=/dev/null",
+    // Git before 2.36 reads this as a hook named `false`, which does
+    // nothing; none of these commands read the index anyway.
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "gc.auto=0",
+    "-c",
+    "maintenance.auto=false",
+    "-c",
+    "fetch.writeCommitGraph=false",
+    "-c",
+    "protocol.allow=never",
+    "-c",
+    "protocol.file.allow=always",
+];
+
+/// Variables that would make Git read or write somewhere else than the
+/// repository it runs in, or take configuration from the environment.
+const OVERRIDE_VARIABLES: &[&str] = &[
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_INDEX_FILE",
+    "GIT_NAMESPACE",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+    "GIT_CONFIG",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_SYSTEM",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_GRAFT_FILE",
+    "GIT_SHALLOW_FILE",
+    "GIT_EXTERNAL_DIFF",
+    "GIT_SSH",
+    "GIT_SSH_COMMAND",
+    "GIT_PROXY_COMMAND",
+    "GIT_ASKPASS",
+];
+
 /// What one finished Git process produced.
-struct Output {
-    stdout: Vec<u8>,
-    truncated: bool,
-    stderr: String,
+pub struct Output {
+    pub stdout: Vec<u8>,
+    pub truncated: bool,
+    pub stderr: String,
     /// Exit code; `None` when a signal ended the process.
-    code: Option<i32>,
+    pub code: Option<i32>,
 }
 
 impl Output {
-    fn success(&self) -> bool {
+    pub fn success(&self) -> bool {
         self.code == Some(0)
     }
 }
@@ -303,6 +347,64 @@ impl GitService {
         for (key, value) in envs {
             cmd.env(key, value);
         }
+        self.collect(cmd, args, max_bytes, timeout).await
+    }
+
+    /// Run Git for agent runs (docs/architecture.md, Agent runs — v0.5)
+    /// with only the repository's own configuration: no system or global
+    /// files (`home` stands in for the home folder, so Git before 2.32,
+    /// which has no `GIT_CONFIG_GLOBAL`, finds none either), no replace
+    /// refs, no hooks, no automatic maintenance, and none of the variables
+    /// that point Git at other objects, indexes, or configuration. Only
+    /// spawn, read, and timeout failures are errors.
+    pub async fn run_isolated(
+        &self,
+        cwd: &Path,
+        args: &[&str],
+        home: &Path,
+        timeout: Duration,
+    ) -> AppResult<Output> {
+        let mut cmd = self.command(Some(cwd));
+        cmd.args(ISOLATED_CONFIG).args(args);
+        for name in OVERRIDE_VARIABLES {
+            cmd.env_remove(name);
+        }
+        cmd.env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_ATTR_NOSYSTEM", "1")
+            .env("GIT_NO_REPLACE_OBJECTS", "1")
+            .env("HOME", home)
+            .env("XDG_CONFIG_HOME", home);
+        self.collect(cmd, args, MAX_OUTPUT_BYTES, timeout).await
+    }
+
+    /// A key's values in the user's own Git configuration, the system and
+    /// global files, never a repository's. Empty when it has none.
+    pub async fn user_config_values(&self, key: &str) -> Vec<String> {
+        let mut values = Vec::new();
+        for scope in ["--system", "--global"] {
+            let args = ["config", scope, "--get-all", key];
+            if let Ok(out) = self.exec(None, &args, 64 * 1024, &[], self.timeout).await {
+                if out.success() {
+                    values.extend(
+                        String::from_utf8_lossy(&out.stdout)
+                            .lines()
+                            .map(str::to_string),
+                    );
+                }
+            }
+        }
+        values
+    }
+
+    /// Spawn a prepared Git command and read what it prints, within `timeout`.
+    async fn collect(
+        &self,
+        mut cmd: Command,
+        args: &[&str],
+        max_bytes: usize,
+        timeout: Duration,
+    ) -> AppResult<Output> {
         let mut child = cmd.spawn().map_err(|e| {
             AppError::dependency("Could not start Git.")
                 .with_details(format!("{}: {e}", self.binary.display()))

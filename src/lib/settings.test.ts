@@ -41,6 +41,7 @@ describe("parseInRange", () => {
 
 it("labels sections", () => {
   expect(sectionLabel("agents")).toBe("Agent Access");
+  expect(sectionLabel("runs")).toBe("Agents");
 });
 
 describe("editorPreset", () => {

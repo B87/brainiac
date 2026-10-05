@@ -6,6 +6,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { ActivitySettings } from "./generated/ActivitySettings";
 import type { AgentAccessStatus } from "./generated/AgentAccessStatus";
+import type { AgentEngine } from "./generated/AgentEngine";
+import type { AgentSettings } from "./generated/AgentSettings";
 import type { AppError } from "./generated/AppError";
 import type { AppSnapshot } from "./generated/AppSnapshot";
 import type { Cell } from "./generated/Cell";
@@ -108,8 +110,11 @@ import type { ResultColumn } from "./generated/ResultColumn";
 import type { ReviewCount } from "./generated/ReviewCount";
 import type { ReviewDrafts } from "./generated/ReviewDrafts";
 import type { RunMode } from "./generated/RunMode";
+import type { RunStartPreview } from "./generated/RunStartPreview";
 import type { RunStatementRequest } from "./generated/RunStatementRequest";
 import type { RunsOn } from "./generated/RunsOn";
+import type { SaveAgentCredentialRequest } from "./generated/SaveAgentCredentialRequest";
+import type { SaveAgentSettingsRequest } from "./generated/SaveAgentSettingsRequest";
 import type { SaveDbConnectionRequest } from "./generated/SaveDbConnectionRequest";
 import type { SavedQuery } from "./generated/SavedQuery";
 import type { SaveForgeAccountOutcome } from "./generated/SaveForgeAccountOutcome";
@@ -150,6 +155,11 @@ export type { ActivityCommit } from "./generated/ActivityCommit";
 export type { ActivityItem } from "./generated/ActivityItem";
 export type { ActivityKind } from "./generated/ActivityKind";
 export type { AgentAccess } from "./generated/AgentAccess";
+export type { AgentEngine } from "./generated/AgentEngine";
+export type { AgentImage } from "./generated/AgentImage";
+export type { AgentPayment } from "./generated/AgentPayment";
+export type { AgentProfile } from "./generated/AgentProfile";
+export type { AgentSettings } from "./generated/AgentSettings";
 export type { Backlink } from "./generated/Backlink";
 export type { ChangedFile } from "./generated/ChangedFile";
 export type { ChangedFileStatus } from "./generated/ChangedFileStatus";
@@ -475,6 +485,32 @@ export const ipc = {
   /** The full path of a program, by name or path. */
   findSecretProgram: (name: string) =>
     invoke<string>("find_secret_program", { name }),
+
+  // v0.5: agent runs
+  /** Settings → Agents. */
+  getAgentSettings: () => invoke<AgentSettings>("get_agent_settings"),
+  /** Everything but the token or key; another engine forgets the image. */
+  saveAgentSettings: (request: SaveAgentSettingsRequest) =>
+    invoke<AgentSettings>("save_agent_settings", { request }),
+  /** Pay with: the token or key and where it comes from. */
+  saveAgentCredential: (request: SaveAgentCredentialRequest) =>
+    invoke<AgentSettings>("save_agent_credential", { request }),
+  /** Also deletes a token or key kept in the Keychain. */
+  removeAgentCredential: (expectedVersion: number) =>
+    invoke<AgentSettings>("remove_agent_credential", { expectedVersion }),
+  /** Confirm a setup restored from a backup, at the revision shown. */
+  approveAgentSettings: (id: string, revision: number) =>
+    invoke<AgentSettings>("approve_agent_settings", { id, revision }),
+  /** This Mac's Docker engines, each asked what it is. */
+  listAgentEngines: () => invoke<AgentEngine[]>("list_agent_engines"),
+  /** The Dockerfile Brainiac builds. */
+  agentDockerfile: () => invoke<string>("agent_dockerfile"),
+  /** Builds the image on the chosen engine; takes minutes. */
+  buildAgentImage: () => invoke<AgentSettings>("build_agent_image"),
+  /** New run, Start from: the commit a run would get. */
+  previewRunStart: (repositoryId: string, start: string) =>
+    invoke<RunStartPreview>("preview_run_start", { repositoryId, start }),
+
   /** Where a repository's pull requests come from; `forge: null` goes back to `origin`. */
   setRepositoryForge: (request: SetRepositoryForgeRequest) =>
     invoke<RepositorySummary>("set_repository_forge", { request }),

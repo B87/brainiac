@@ -681,9 +681,9 @@ A coding agent run in a container, started from a repository, followed live, ste
 
 - **The user's repository is only read.** Its checkout is never mounted into a container, and its working tree, index, refs, configuration, and hooks are never changed. A run gets one commit and its history, copied into Brainiac's own repository in its data folder (`docs/architecture.md`, Agent runs — v0.5). Fetching stays the only write to a user's repository (section 2).
 - **Code and prompts go to the model provider during the run.** Reviewing decides what is published, not what is sent. New run says so before it starts.
-- **The agent can read the credential it is given, and so can whoever controls the Docker engine.** Phase 1's network access is unrestricted: the agent can reach any site, including services on the user's network.
+- **The agent can read the credential it is given, and so can the repository's own code and whoever controls the Docker engine.** Scripts the agent runs (tests, builds, installs) and the repository's Claude Code hooks see it in their environment, a hook even before the first prompt, so a run is for a repository you would trust with the token or key. Phase 1's network access is unrestricted: the agent can reach any site, including services on the user's network.
 - **Nothing is pushed in phase 1.** The result leaves Brainiac only as a patch the user copies or saves.
-- **One tested agent:** Claude Code through its ACP adapter, at versions pinned in an image Brainiac builds. A request from the agent for a file or terminal on the Mac is refused. Brainiac's MCP server is not offered inside a run.
+- **One tested agent:** Claude Code through its ACP adapter, at versions pinned in an image Brainiac builds. A request from the agent for a file or terminal on the Mac is refused. Brainiac's MCP server is not offered inside a run. The repository's own Claude Code setup applies, as on the Mac: its CLAUDE.md, and its `.claude` settings (hooks, permission rules, environment), except that the token or key always goes to Anthropic over verified TLS.
 - **Agents (section 9) cannot start runs or change Settings → Agents.**
 
 ### Settings → Agents
@@ -696,7 +696,8 @@ A coding agent run in a container, started from a repository, followed live, ste
   The token or key comes through the credentials layer (section 12): its source is saved, never the secret. Exactly one of them reaches a run.
 - **Sends code to:** the provider and plan, with a checkbox the user ticks to agree that runs send the repository's history up to the start commit, prompts, and anything the agent reads.
 - **Image:** a readable Dockerfile that Brainiac builds, with the base image, Claude Code, its ACP adapter, and the collector each at a pinned version; its digest and build date; **View Dockerfile** and **Rebuild…**.
-- **New runs:** default permissions (Ask before actions, or Act without asking), time limit, and CPU, memory, and workspace size.
+- **New runs:** default permissions (Ask before actions, or Act without asking), time limit, and CPU, memory, and workspace size; at first Ask before actions, 1 hour, 4 CPUs, 8 GB of memory, and a 20 GB workspace.
+- **Before the first run** lists what is still missing, in the order to do it: an engine, the token or key, the agreement, the image, a passed test. Choosing another engine forgets the image built on the old one.
 - **Test:** starts a short run, sends a prompt, cancels, and collects, and shows what passed and when. A run cannot start until a test has passed for the current credential, image, and engine; a changed token or key needs a new test, because a wrong token can come back looking like an ordinary reply.
 
 ### New run
@@ -705,7 +706,7 @@ A coding agent run in a container, started from a repository, followed live, ste
 - **Start from** a branch or a commit, resolved once to a commit. The dialog shows that commit, says that uncommitted changes are not part of the run, and says what the container gets: this commit and its history (with the count); other branches, stashes, hooks, remotes, and Git settings stay on the Mac.
 - **Prompt**, **Time limit** (30 minutes to 8 hours) with the time it ends, which counts waiting for the user and idle time too, and resource limits with **Change…**.
 - **Permissions:** **Ask before actions** waits for the user before the agent runs a command or edits a file; **Act without asking** lets it do anything inside its container, and never push, get new credentials, or change where it runs.
-- **Before you start** names the provider and plan or key, the unrestricted network, and who can read the token or key. **Start run** says nothing is pushed until the result is reviewed.
+- **Before you start** names the provider and plan or key, the unrestricted network, and who can read the token or key: the agent, the repository's code and Claude Code settings, and whoever controls the engine. **Start run** says nothing is pushed until the result is reviewed.
 
 ### The run
 

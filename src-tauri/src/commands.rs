@@ -761,6 +761,91 @@ pub async fn find_secret_program(name: String) -> AppResult<String> {
     crate::credentials::find_program(&name).map(|p| p.display().to_string())
 }
 
+// v0.5: agent runs (SPEC.md, section 13).
+
+pub type AgentSettingsState = Arc<crate::agents::AgentSettingsService>;
+pub type Artifacts = Arc<crate::agents::RunArtifacts>;
+
+/// Settings → Agents.
+#[tauri::command]
+pub async fn get_agent_settings(
+    agents: State<'_, AgentSettingsState>,
+) -> AppResult<crate::models::AgentSettings> {
+    agents.get().await
+}
+
+/// Settings → Agents: everything but the token or key.
+#[tauri::command]
+pub async fn save_agent_settings(
+    request: crate::models::SaveAgentSettingsRequest,
+    agents: State<'_, AgentSettingsState>,
+) -> AppResult<crate::models::AgentSettings> {
+    agents.save(request).await
+}
+
+/// Settings → Agents, **Pay with**: the token or key and where it comes from.
+#[tauri::command]
+pub async fn save_agent_credential(
+    request: crate::models::SaveAgentCredentialRequest,
+    agents: State<'_, AgentSettingsState>,
+) -> AppResult<crate::models::AgentSettings> {
+    agents.save_credential(request).await
+}
+
+/// Settings → Agents, **Remove** the token or key.
+#[tauri::command]
+pub async fn remove_agent_credential(
+    expected_version: i64,
+    agents: State<'_, AgentSettingsState>,
+) -> AppResult<crate::models::AgentSettings> {
+    agents.remove_credential(expected_version).await
+}
+
+/// Settings → Agents, **Confirm** a setup restored from a backup.
+#[tauri::command]
+pub async fn approve_agent_settings(
+    id: String,
+    revision: i64,
+    agents: State<'_, AgentSettingsState>,
+) -> AppResult<crate::models::AgentSettings> {
+    agents.approve(&id, revision).await
+}
+
+/// Settings → Agents, **Where runs execute**: this Mac's Docker engines.
+#[tauri::command]
+pub async fn list_agent_engines(
+    agents: State<'_, AgentSettingsState>,
+) -> AppResult<Vec<crate::models::AgentEngine>> {
+    let chosen = agents.get().await?.profile.engine_socket;
+    Ok(crate::agents::engine::list(chosen.as_deref()).await)
+}
+
+/// Settings → Agents, **View Dockerfile**.
+#[tauri::command]
+pub async fn agent_dockerfile() -> AppResult<String> {
+    Ok(crate::agents::image::dockerfile().to_string())
+}
+
+/// Settings → Agents, **Build image** or **Rebuild…**.
+#[tauri::command]
+pub async fn build_agent_image(
+    agents: State<'_, AgentSettingsState>,
+) -> AppResult<crate::models::AgentSettings> {
+    agents.build_image().await
+}
+
+/// New run, **Start from**: the commit a run would get, read without changing the repository.
+#[tauri::command]
+pub async fn preview_run_start(
+    repository_id: String,
+    start: String,
+    service: State<'_, Service>,
+    artifacts: State<'_, Artifacts>,
+) -> AppResult<crate::models::RunStartPreview> {
+    let root = service.repository_root(&repository_id).await?;
+    artifacts.preview(&repository_id, &root, &start).await
+}
+
 /// Repository → Pull requests, **Change…**: where a repository's pull requests come from.
 #[tauri::command]
 pub async fn set_repository_forge(

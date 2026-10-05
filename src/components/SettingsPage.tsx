@@ -2,6 +2,7 @@ import { type ReactNode, useCallback, useRef, useState } from "react";
 import { ACCESS_CHOICES } from "../lib/agent";
 import { errorMessage, ipc, type Settings, type VaultState } from "../lib/ipc";
 import { SECTIONS, type SettingsSection, sectionLabel } from "../lib/settings";
+import AgentRunsPane from "./AgentRunsPane";
 import {
   ArchiveIcon,
   BranchIcon,
@@ -10,6 +11,7 @@ import {
   KeyIcon,
   NoteIcon,
   PersonIcon,
+  PlayIcon,
   SlidersIcon,
   TerminalIcon,
 } from "./icons";
@@ -32,6 +34,7 @@ const ICONS: Record<SettingsSection, ReactNode> = {
   accounts: <PersonIcon size={16} />,
   secrets: <KeyIcon size={16} />,
   agents: <TerminalIcon size={16} />,
+  runs: <PlayIcon size={16} />,
   backup: <ArchiveIcon size={16} />,
 };
 
@@ -190,6 +193,7 @@ export default function SettingsPage({
             {section === "agents" && (
               <AgentsPane settings={shown} save={save} />
             )}
+            {section === "runs" && <AgentRunsPane />}
             {section === "backup" && (
               <BackupPane onExport={onExport} onRestore={onRestore} />
             )}

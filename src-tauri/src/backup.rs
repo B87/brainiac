@@ -411,6 +411,14 @@ fn stage(
     // (SPEC.md, Secrets). Pending markers stay, for the user to act on.
     tx.execute("UPDATE forge_accounts SET source_approved = 0", [])?;
     tx.execute("UPDATE db_connections SET source_approved = 0", [])?;
+    // Settings → Agents too, and an image ID names an image on an engine
+    // the backup's Mac used: confirmation and a build on this one come
+    // first (SPEC.md, Deleting and keeping).
+    tx.execute("UPDATE agent_profiles SET source_approved = 0", [])?;
+    tx.execute(
+        "UPDATE agent_profiles SET image_id = NULL, image_recipe = NULL, image_built_at = NULL",
+        [],
+    )?;
     let vault_name = vault
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())

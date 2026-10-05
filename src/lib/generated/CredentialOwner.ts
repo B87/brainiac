@@ -4,4 +4,4 @@ import type { ForgeKind } from "./ForgeKind";
 /**
  * Whose secret: an account or a connection.
  */
-export type CredentialOwner = { "kind": "forge_account", provider: ForgeKind, } | { "kind": "db_connection", id: string, };
+export type CredentialOwner = { "kind": "forge_account", provider: ForgeKind, } | { "kind": "db_connection", id: string, } | { "kind": "agent_profile", id: string, };

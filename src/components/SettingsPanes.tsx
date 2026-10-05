@@ -32,11 +32,17 @@ import VaultSetup from "./VaultSetup";
 const AGENT_POLL_MS = 2000;
 
 /** What the section is for; the page's header names it. */
-function Lede({ children }: { children: ReactNode }) {
+export function Lede({ children }: { children: ReactNode }) {
   return <p className="m-0 text-[12.5px] text-fg-2">{children}</p>;
 }
 
-function Group({ label, children }: { label?: string; children: ReactNode }) {
+export function Group({
+  label,
+  children,
+}: {
+  label?: string;
+  children: ReactNode;
+}) {
   return (
     <section className="flex flex-col gap-1.5">
       {label && <h2 className="section-label m-0">{label}</h2>}
@@ -45,7 +51,7 @@ function Group({ label, children }: { label?: string; children: ReactNode }) {
   );
 }
 
-function Hint({ children, id }: { children: ReactNode; id?: string }) {
+export function Hint({ children, id }: { children: ReactNode; id?: string }) {
   return (
     <span id={id} className="text-[12px] text-muted">
       {children}
@@ -57,7 +63,7 @@ function Hint({ children, id }: { children: ReactNode; id?: string }) {
  * A field saved when it is left or with Return; Escape puts back the saved
  * value. `parse` says why a value cannot be saved, shown under the field.
  */
-function CommitField<T>({
+export function CommitField<T>({
   label,
   hint,
   value,
@@ -551,7 +557,7 @@ export function SecretsPane() {
       <Lede>
         Where each account's token and each connection's password comes from,
         and what needs your attention. Change a source where it is entered: in
-        Accounts, or in the connection's Edit Connection….
+        Accounts, in the connection's Edit Connection…, or in Agents.
       </Lede>
       <SecretsSection />
       <Hint>
