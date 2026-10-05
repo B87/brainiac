@@ -81,21 +81,27 @@ try {
   fail("frame");
 }
 
-// The workspace volume is new and empty; the clone is the run's start. Git's
-// output goes to stderr, which is drained and never stored: stdout carries
-// the protocol. The credential is not in Git's environment. A run without
-// its start is refused rather than given an empty workspace.
+// The workspace volume is new and empty (a fresh ext4 filesystem has only
+// lost+found); the run's start is fetched into it, with no remote left
+// behind. Git's output goes to stderr, which is drained and never stored:
+// stdout carries the protocol. The credential is not in Git's environment.
+// A run without its start is refused rather than given an empty workspace.
 if (!fs.existsSync(INPUT)) {
   fail("clone");
 }
-if (fs.readdirSync(WORKSPACE).length > 0) {
+if (fs.readdirSync(WORKSPACE).some((name) => name !== "lost+found")) {
   fail("workspace");
 }
 const git = (args) =>
-  spawnSync("git", args, { stdio: ["ignore", 2, "inherit"] }).status === 0;
+  spawnSync("git", ["-C", WORKSPACE, ...args], {
+    stdio: ["ignore", 2, "inherit"],
+  }).status === 0;
+// Git refuses to fetch into the branch HEAD names, even an unborn one, so
+// the repository starts on a throwaway branch that the checkout leaves.
 if (
-  !git(["clone", "--quiet", "--branch", "start", INPUT, WORKSPACE]) ||
-  !git(["-C", WORKSPACE, "remote", "remove", "origin"])
+  !git(["init", "--quiet", "--initial-branch=brainiac-setup"]) ||
+  !git(["fetch", "--quiet", INPUT, "refs/heads/start:refs/heads/start"]) ||
+  !git(["checkout", "--quiet", "start"])
 ) {
   fail("clone");
 }

@@ -344,6 +344,7 @@ impl AgentRunService {
             image: image.name,
             cpus,
             memory_mib: memory,
+            workspace_gib: workspace,
             time_limit_secs: u64::from(time_limit) * 60,
             permissions: request.permissions,
             start_commit: preview.commit,
@@ -358,13 +359,28 @@ impl AgentRunService {
                     .store(true, std::sync::atomic::Ordering::SeqCst);
                 self.apply_status(&run_id, &status).await?;
             }
-            Err(e) => {
+            // A refusal means nothing was made. Any other failure (a timeout,
+            // the socket) may have come after the controller accepted the
+            // run, so the run stays live and is followed: the controller
+            // answers a start it never saw with "unknown run", which ends it.
+            Err(e)
+                if matches!(
+                    e.code,
+                    ErrorCode::Validation | ErrorCode::Conflict | ErrorCode::Unauthenticated
+                ) =>
+            {
                 tracing::warn!(error = %e, details = ?e.details, "the run controller refused a run");
                 let (id, message) = (run_id.clone(), e.message.clone());
                 self.history
                     .call(move |conn| store::mark_refused(conn, &id, &message))
                     .await?;
                 self.emit(&run_id, false);
+                return Err(e);
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, details = ?e.details, "a start was not answered");
+                self.mark_unreachable();
+                self.spawn_sync(&run_id);
                 return Err(e);
             }
         }
@@ -410,9 +426,40 @@ impl AgentRunService {
                 return;
             }
         };
-        for row in rows {
+        for row in &rows {
+            // A collection Brainiac quit in the middle of is not resumed: it
+            // failed, and Retry collection runs it again.
+            if row.collection == RunCollection::Collecting {
+                let _ = self
+                    .set_collection(
+                        &row.id,
+                        RunCollection::Failed,
+                        Some(
+                            "Brainiac quit while the work was collected. Retry the collection."
+                                .into(),
+                        ),
+                    )
+                    .await;
+            }
             if row.needs_sync() {
                 self.spawn_sync(&row.id);
+            }
+        }
+        // A Settings test Brainiac quit in the middle of has no row: its run
+        // is discarded if the controller is still up (never started for it).
+        if self.runtime.running().await.is_some() {
+            if let Ok(runs) = self.runtime.runs().await {
+                for run in runs {
+                    let orphan =
+                        run.run_id.starts_with("test-") && !rows.iter().any(|r| r.id == run.run_id);
+                    if orphan {
+                        if run.phase != super::controller::protocol::Phase::Ended {
+                            let _ = self.runtime.stop(&run.run_id, StopReason::Cancel).await;
+                        }
+                        let _ = self.runtime.discard(&run.run_id).await;
+                        let _ = self.artifacts.remove_run("test", &run.run_id).await;
+                    }
+                }
             }
         }
     }
@@ -449,6 +496,23 @@ impl AgentRunService {
                             .call(move |conn| store::set_cancel_requested(conn, &id, false))
                             .await;
                         let _ = self.apply_status(run_id, &status).await;
+                    }
+                    Err(e) if e.code == ErrorCode::NotFound => {
+                        let id = run_id.to_string();
+                        let _ = self
+                            .history
+                            .call(move |conn| store::mark_lost(conn, &id))
+                            .await;
+                        self.emit(run_id, false);
+                        return;
+                    }
+                    Err(e) if e.code == ErrorCode::Conflict => {
+                        // Already ended or stopping: nothing to cancel.
+                        let id = run_id.to_string();
+                        let _ = self
+                            .history
+                            .call(move |conn| store::set_cancel_requested(conn, &id, false))
+                            .await;
                     }
                     Err(_) => {
                         self.mark_unreachable();
@@ -537,9 +601,19 @@ impl AgentRunService {
         run_id: &str,
         events: Vec<super::controller::protocol::Event>,
     ) -> AppResult<()> {
+        // An event this build cannot read is kept as a notice, so the
+        // cursor still moves past it.
         let converted: Vec<RunEvent> = events
             .into_iter()
-            .filter_map(|e| convert(&e).ok())
+            .map(|e| {
+                convert(&e).unwrap_or(RunEvent {
+                    seq: e.seq,
+                    at: e.at.clone(),
+                    body: crate::models::RunEventBody::Notice {
+                        text: "An update Brainiac could not read was skipped.".into(),
+                    },
+                })
+            })
             .collect();
         let Some(last) = converted.last().map(|e| e.seq) else {
             return Ok(());
@@ -579,6 +653,9 @@ impl AgentRunService {
         self.history
             .call(move |conn| store::set_cursor(conn, &id, last))
             .await?;
+        // The window reads the mirror on this: a turn streams without any
+        // change in the run's state.
+        self.emit(run_id, false);
         Ok(())
     }
 
@@ -964,6 +1041,11 @@ impl AgentRunService {
                 "The run has not stopped, so it cannot be deleted yet. Cancel it first.",
             ));
         }
+        if row.collection == RunCollection::Collecting {
+            return Err(conflict(
+                "The run's work is being collected; delete it afterwards.",
+            ));
+        }
         if row.kept {
             if let Err(e) = self.runtime.discard(run_id).await {
                 let id = run_id.to_string();
@@ -1111,6 +1193,7 @@ impl AgentRunService {
             image: image.to_string(),
             cpus: profile.cpus.min(2),
             memory_mib: profile.memory_mib.min(4096).max(settings::MEMORY_MIB.0),
+            workspace_gib: 1,
             time_limit_secs: u64::from(TEST_TIME_LIMIT_MINUTES) * 60,
             permissions: RunPermissions::Act,
             start_commit: commit,

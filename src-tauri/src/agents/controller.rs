@@ -557,6 +557,7 @@ impl<W: Workloads> Controller<W> {
             permissions: start.permissions,
             start_commit: start.start_commit.clone(),
             bundle: start.bundle.clone(),
+            workspace_gib: start.workspace_gib,
             phase: Phase::Preparing,
             outcome: None,
             stop_confirmed: false,
@@ -644,6 +645,7 @@ impl<W: Workloads> Controller<W> {
             volume: run.lock().record.volume.clone(),
             cpus: start.cpus,
             memory_mib: start.memory_mib,
+            workspace_gib: start.workspace_gib,
             bundle: start.bundle.clone(),
             cancel: cancelled,
         };
@@ -1098,7 +1100,7 @@ impl<W: Workloads> Controller<W> {
 
     async fn discard(&self, run_id: &str) -> AppResult<()> {
         let run = self.run(run_id)?;
-        let (socket, volume) = {
+        let (socket, volume, image) = {
             let inner = run.lock();
             if inner.record.phase != Phase::Ended || !inner.record.stop_confirmed {
                 return Err(conflict(
@@ -1108,10 +1110,11 @@ impl<W: Workloads> Controller<W> {
             (
                 inner.record.engine_socket.clone(),
                 inner.record.volume.clone(),
+                inner.record.image.clone(),
             )
         };
         self.workloads
-            .discard(&socket, &self.installation, run_id, &volume)
+            .discard(&socket, &self.installation, run_id, &volume, &image)
             .await?;
         {
             let mut inner = run.lock();
@@ -1215,9 +1218,12 @@ fn check_start(start: &StartRun) -> AppResult<()> {
             "A run's time limit is at most 8 hours.",
         ));
     }
-    if !(1..=64).contains(&start.cpus) || !(512..=262_144).contains(&start.memory_mib) {
+    if !(1..=64).contains(&start.cpus)
+        || !(512..=262_144).contains(&start.memory_mib)
+        || !(1..=500).contains(&start.workspace_gib)
+    {
         return Err(AppError::validation(
-            "The run's CPU or memory limit is out of range.",
+            "The run's CPU, memory, or workspace limit is out of range.",
         ));
     }
     if start.engine_socket.is_empty() || start.image.is_empty() {

@@ -38,6 +38,14 @@ pub const LABEL_INSTALLATION: &str = "org.brainiac.installation";
 pub const LABEL_RUN: &str = "org.brainiac.run";
 pub const LABEL_ATTEMPT: &str = "org.brainiac.attempt";
 pub const LABEL_ROLE: &str = "org.brainiac.role";
+/// On a workspace volume: the loop device it was created on.
+pub const LABEL_DEVICE: &str = "org.brainiac.device";
+/// One volume per engine holds the workspaces' image files, so a run's
+/// workspace is a filesystem of exactly its size (docs/architecture.md,
+/// Agent runs — v0.5, Workspace size).
+pub const STORE_VOLUME: &str = "brainiac-workspaces";
+/// What a helper may print.
+const MAX_HELPER_OUTPUT: usize = 64 << 10;
 
 /// The longest line the agent may write; a longer one fails the run.
 pub const MAX_FRAME_BYTES: usize = 16 << 20;
@@ -68,6 +76,8 @@ pub struct LaunchSpec {
     pub volume: String,
     pub cpus: u32,
     pub memory_mib: u32,
+    /// The workspace's filesystem is made at exactly this size.
+    pub workspace_gib: u32,
     /// Copied to `/opt/brainiac/input/input.bundle` before the container starts.
     pub bundle: PathBuf,
     /// Becomes `true` when the run is stopped while its container is being
@@ -159,13 +169,14 @@ pub trait Workloads: Send + Sync + 'static {
     /// result to `out_dir`.
     fn collect(&self, spec: CollectSpec)
         -> impl Future<Output = AppResult<CollectManifest>> + Send;
-    /// Remove the run's stopped containers and its volume.
+    /// Remove the run's stopped containers, its volume, and its workspace file.
     fn discard(
         &self,
         socket: &str,
         installation: &str,
         run_id: &str,
         volume: &str,
+        image: &str,
     ) -> impl Future<Output = AppResult<()>> + Send;
 }
 
@@ -220,14 +231,7 @@ impl DockerEngine {
 
     async fn create_and_start(&self, docker: &Docker, spec: &LaunchSpec) -> AppResult<String> {
         let labels = labels(spec);
-        docker
-            .create_volume(VolumeCreateOptions {
-                name: Some(spec.volume.clone()),
-                labels: Some(labels.clone()),
-                ..Default::default()
-            })
-            .await
-            .map_err(|e| engine_error("The run's workspace could not be created.", e))?;
+        self.make_workspace(docker, spec, &labels).await?;
         let mut tmpfs = HashMap::new();
         // Home and /tmp are in memory: Claude Code's own files never reach a disk.
         tmpfs.insert(
@@ -322,6 +326,353 @@ impl DockerEngine {
 }
 
 impl DockerEngine {
+    /// Run a short shell script in a privileged helper container of the
+    /// run's image, with the workspace store mounted at `/store`, and return
+    /// what it printed. Privileged, because it attaches loop devices in the
+    /// engine's VM; it has no network, no credential, and nothing of a run.
+    async fn helper(
+        &self,
+        docker: &Docker,
+        image: &str,
+        installation: &str,
+        run_id: &str,
+        script: &str,
+    ) -> AppResult<String> {
+        // The scripts interpolate the run ID: only a name, never a path.
+        if !super::protocol::valid_id(run_id) {
+            return Err(AppError::validation("Invalid run ID."));
+        }
+        let labels = HashMap::from([
+            (LABEL_INSTALLATION.to_string(), installation.to_string()),
+            (LABEL_RUN.to_string(), run_id.to_string()),
+            (LABEL_ROLE.to_string(), "helper".to_string()),
+        ]);
+        let host = HostConfig {
+            log_config: Some(HostConfigLogConfig {
+                typ: Some("none".to_string()),
+                ..Default::default()
+            }),
+            network_mode: Some("none".to_string()),
+            privileged: Some(true),
+            pids_limit: Some(64),
+            memory: Some(256 << 20),
+            mounts: Some(vec![Mount {
+                target: Some("/store".to_string()),
+                source: Some(STORE_VOLUME.to_string()),
+                typ: Some(MountTypeEnum::VOLUME),
+                read_only: Some(false),
+                ..Default::default()
+            }]),
+            restart_policy: Some(RestartPolicy {
+                name: Some(RestartPolicyNameEnum::NO),
+                maximum_retry_count: None,
+            }),
+            ..Default::default()
+        };
+        let body = ContainerCreateBody {
+            image: Some(image.to_string()),
+            entrypoint: Some(vec!["sh".to_string(), "-c".to_string()]),
+            cmd: Some(vec![script.to_string()]),
+            user: Some("root".to_string()),
+            tty: Some(false),
+            attach_stdout: Some(true),
+            attach_stderr: Some(true),
+            labels: Some(labels),
+            host_config: Some(host),
+            ..Default::default()
+        };
+        let name = format!("brainiac-helper-{run_id}-{}", now_suffix());
+        let created = docker
+            .create_container(
+                Some(CreateContainerOptionsBuilder::new().name(&name).build()),
+                body,
+            )
+            .await
+            .map_err(|e| {
+                engine_error(
+                    "The workspace helper's container could not be created. Is the image built?",
+                    e,
+                )
+            })?;
+        let id = created.id;
+        let result = self.run_helper(docker, &id).await;
+        let _ = docker
+            .remove_container(
+                &id,
+                Some(RemoveContainerOptionsBuilder::new().force(true).build()),
+            )
+            .await;
+        result
+    }
+
+    async fn run_helper(&self, docker: &Docker, id: &str) -> AppResult<String> {
+        let attach = AttachContainerOptionsBuilder::new()
+            .stream(true)
+            .stdout(true)
+            .stderr(true)
+            .logs(false)
+            .build();
+        let attached = docker
+            .attach_container(id, Some(attach))
+            .await
+            .map_err(|e| engine_error("The workspace helper could not be attached.", e))?;
+        docker
+            .start_container(id, None::<StartContainerOptions>)
+            .await
+            .map_err(|e| {
+                engine_error(
+                    "The engine did not start Brainiac's workspace helper. Runs need an engine that allows a privileged container of Brainiac's own.",
+                    e,
+                )
+            })?;
+        let mut output = attached.output;
+        let mut printed = Vec::new();
+        let read = async {
+            while let Some(item) = output.next().await {
+                let Ok(item) = item else { break };
+                if let LogOutput::StdOut { message } = item {
+                    if printed.len() + message.len() <= MAX_HELPER_OUTPUT {
+                        printed.extend_from_slice(&message);
+                    }
+                }
+            }
+        };
+        if tokio::time::timeout(Duration::from_secs(10 * 60), read)
+            .await
+            .is_err()
+        {
+            return Err(AppError::timeout(
+                "The workspace helper did not finish within ten minutes.",
+            ));
+        }
+        let mut waiting = docker.wait_container(
+            id,
+            Some(WaitContainerOptions {
+                condition: "not-running".to_string(),
+            }),
+        );
+        let exit = match waiting.next().await {
+            Some(Ok(response)) => response.status_code,
+            Some(Err(bollard::errors::Error::DockerContainerWaitError { code, .. })) => code,
+            Some(Err(e)) => {
+                return Err(engine_error(
+                    "The engine did not say how the helper ended.",
+                    e,
+                ))
+            }
+            None => 0,
+        };
+        if exit != 0 {
+            return Err(AppError::dependency(format!(
+                "Brainiac's workspace helper failed (exit status {exit}). The engine may not support loop devices."
+            )));
+        }
+        Ok(String::from_utf8_lossy(&printed).trim().to_string())
+    }
+
+    /// The volume that holds every workspace's image file on this engine.
+    async fn ensure_store(&self, docker: &Docker, installation: &str) -> AppResult<()> {
+        match docker.inspect_volume(STORE_VOLUME).await {
+            Ok(v) if v.labels.get(LABEL_ROLE).map(String::as_str) == Some("store") => {
+                return Ok(())
+            }
+            Ok(_) => {
+                return Err(AppError::dependency(
+                    "A volume named brainiac-workspaces on this engine is not Brainiac's; runs cannot use it.",
+                ))
+            }
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404, ..
+            }) => {}
+            Err(e) => {
+                return Err(engine_error(
+                    "The engine did not show the workspace store.",
+                    e,
+                ))
+            }
+        }
+        docker
+            .create_volume(VolumeCreateOptions {
+                name: Some(STORE_VOLUME.to_string()),
+                labels: Some(HashMap::from([
+                    (LABEL_INSTALLATION.to_string(), installation.to_string()),
+                    (LABEL_ROLE.to_string(), "store".to_string()),
+                ])),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| engine_error("The workspace store could not be created.", e))?;
+        Ok(())
+    }
+
+    /// A workspace of exactly the run's size: an ext4 filesystem in a file
+    /// of the store, attached as a loop device by the helper, and a volume
+    /// on that device. The engine refuses writes past the size.
+    async fn make_workspace(
+        &self,
+        docker: &Docker,
+        spec: &LaunchSpec,
+        labels: &HashMap<String, String>,
+    ) -> AppResult<()> {
+        self.ensure_store(docker, &spec.installation).await?;
+        let script = format!(
+            "set -e; f=/store/{run}.img; rm -f \"$f\"; truncate -s {size}G \"$f\"; \
+             mkfs.ext4 -q -F -E root_owner=1000:1000 \"$f\" >/dev/null; losetup -f --show \"$f\"",
+            run = spec.run_id,
+            size = spec.workspace_gib
+        );
+        let device = self
+            .helper(
+                docker,
+                &spec.image,
+                &spec.installation,
+                &spec.run_id,
+                &script,
+            )
+            .await?;
+        if !device.starts_with("/dev/loop") {
+            return Err(AppError::dependency(
+                "The workspace helper did not attach a loop device.",
+            ));
+        }
+        let mut labels = labels.clone();
+        labels.insert(LABEL_DEVICE.to_string(), device.clone());
+        docker
+            .create_volume(VolumeCreateOptions {
+                name: Some(spec.volume.clone()),
+                driver: Some("local".to_string()),
+                driver_opts: Some(HashMap::from([
+                    ("type".to_string(), "ext4".to_string()),
+                    ("device".to_string(), device),
+                ])),
+                labels: Some(labels),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| engine_error("The run's workspace could not be created.", e))?;
+        Ok(())
+    }
+
+    /// Before a kept workspace is used again (the collector): the loop
+    /// device may be gone after the engine restarted, so it is attached
+    /// again, and the volume made anew on it when its device changed. The
+    /// files are in the image file, which is unchanged by this.
+    async fn ensure_workspace(
+        &self,
+        docker: &Docker,
+        image: &str,
+        installation: &str,
+        run_id: &str,
+        volume: &str,
+    ) -> AppResult<()> {
+        let script = format!(
+            "set -e; f=/store/{run_id}.img; test -f \"$f\" || exit 3; \
+             d=$(losetup -j \"$f\" | head -n 1 | cut -d: -f1); \
+             [ -n \"$d\" ] || d=$(losetup -f --show \"$f\"); echo \"$d\""
+        );
+        let device = self
+            .helper(docker, image, installation, run_id, &script)
+            .await
+            .map_err(|e| {
+                AppError::new(
+                    e.code,
+                    "The run's workspace is missing from the engine, so its work cannot be collected.",
+                )
+                .with_details(e.message)
+            })?;
+        let current = match docker.inspect_volume(volume).await {
+            Ok(v) => Some(v),
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404, ..
+            }) => None,
+            Err(e) => {
+                return Err(engine_error(
+                    "The engine did not show the run's workspace.",
+                    e,
+                ))
+            }
+        };
+        let (labels, same) = match &current {
+            Some(v) => (
+                v.labels.clone(),
+                v.options.get("device").map(String::as_str) == Some(device.as_str()),
+            ),
+            None => (
+                HashMap::from([
+                    (LABEL_INSTALLATION.to_string(), installation.to_string()),
+                    (LABEL_RUN.to_string(), run_id.to_string()),
+                    (LABEL_ROLE.to_string(), "agent".to_string()),
+                ]),
+                false,
+            ),
+        };
+        if same {
+            return Ok(());
+        }
+        if current.is_some() {
+            // The engine keeps a volume that any container, stopped or not,
+            // still names; the run's stopped containers go first. Their
+            // layers hold nothing of the work: it is in the image file.
+            for id in self
+                .run_containers(docker, installation, run_id, true)
+                .await?
+            {
+                let options = RemoveContainerOptionsBuilder::new().build();
+                match docker.remove_container(&id, Some(options)).await {
+                    Ok(())
+                    | Err(bollard::errors::Error::DockerResponseServerError {
+                        status_code: 404,
+                        ..
+                    }) => {}
+                    Err(e) => return Err(engine_error(
+                        "The run's stopped container could not be removed to reach its workspace.",
+                        e,
+                    )),
+                }
+            }
+            docker
+                .remove_volume(volume, Some(RemoveVolumeOptionsBuilder::new().build()))
+                .await
+                .map_err(|e| engine_error("The run's workspace could not be made again.", e))?;
+        }
+        let mut labels = labels;
+        labels.insert(LABEL_DEVICE.to_string(), device.clone());
+        docker
+            .create_volume(VolumeCreateOptions {
+                name: Some(volume.to_string()),
+                driver: Some("local".to_string()),
+                driver_opts: Some(HashMap::from([
+                    ("type".to_string(), "ext4".to_string()),
+                    ("device".to_string(), device),
+                ])),
+                labels: Some(labels),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| engine_error("The run's workspace could not be made again.", e))?;
+        Ok(())
+    }
+
+    /// Detach the workspace's loop device and delete its image file.
+    async fn remove_workspace_file(
+        &self,
+        docker: &Docker,
+        image: &str,
+        installation: &str,
+        run_id: &str,
+    ) -> AppResult<()> {
+        let script = format!(
+            "f=/store/{run_id}.img; for d in $(losetup -j \"$f\" 2>/dev/null | cut -d: -f1); do losetup -d \"$d\" || true; done; rm -f \"$f\""
+        );
+        self.helper(docker, image, installation, run_id, &script)
+            .await
+            .map(|_| ())
+            .map_err(|e| {
+                AppError::new(e.code, "The run's workspace file was not removed.")
+                    .with_details(e.message)
+            })
+    }
+
     /// The collector's container: the run's volume read only, no network,
     /// no credential, the same image with its collector as the entrypoint.
     async fn create_collector(&self, docker: &Docker, spec: &CollectSpec) -> AppResult<String> {
@@ -506,12 +857,17 @@ impl DockerEngine {
                 )));
             }
         };
-        let raw: RawManifest = serde_json::from_slice(&manifest_bytes).map_err(|e| {
+        // A failed collection writes its reason and no result: read that first.
+        let raw: serde_json::Value = serde_json::from_slice(&manifest_bytes).map_err(|e| {
             AppError::io("The collector's manifest could not be read.").with_details(e.to_string())
         })?;
-        if let Some(error) = raw.error.filter(|e| !e.is_empty()) {
+        if let Some(error) = raw
+            .get("error")
+            .and_then(|e| e.as_str())
+            .filter(|e| !e.is_empty())
+        {
             let _ = std::fs::remove_file(&partial);
-            return Err(AppError::io(error));
+            return Err(AppError::io(error.to_string()));
         }
         if exit != 0 {
             let _ = std::fs::remove_file(&partial);
@@ -519,7 +875,9 @@ impl DockerEngine {
                 "The collector failed (exit status {exit})."
             )));
         }
-        let manifest = raw.manifest;
+        let manifest: CollectManifest = serde_json::from_value(raw).map_err(|e| {
+            AppError::io("The collector's manifest could not be read.").with_details(e.to_string())
+        })?;
         if manifest.result != manifest.start {
             if !entries[1].found {
                 return Err(AppError::io("The collector wrote no result bundle."));
@@ -530,14 +888,6 @@ impl DockerEngine {
         }
         Ok(manifest)
     }
-}
-
-/// The collector's manifest as written: the result, or an error.
-#[derive(serde::Deserialize)]
-struct RawManifest {
-    error: Option<String>,
-    #[serde(flatten)]
-    manifest: CollectManifest,
 }
 
 fn now_suffix() -> String {
@@ -645,6 +995,14 @@ impl Workloads for DockerEngine {
         {
             return Err(super::conflict("The run is still running; stop it first."));
         }
+        self.ensure_workspace(
+            &docker,
+            &spec.image,
+            &spec.installation,
+            &spec.run_id,
+            &spec.volume,
+        )
+        .await?;
         let id = self.create_collector(&docker, &spec).await?;
         let collected = self.run_collector(&docker, &id, &spec).await;
         // The collector's container is the collection's own; it goes
@@ -667,6 +1025,7 @@ impl Workloads for DockerEngine {
         installation: &str,
         run_id: &str,
         volume: &str,
+        image: &str,
     ) -> AppResult<()> {
         let docker = self.client(socket)?;
         if !self
@@ -722,12 +1081,16 @@ impl Workloads for DockerEngine {
             Ok(())
             | Err(bollard::errors::Error::DockerResponseServerError {
                 status_code: 404, ..
-            }) => Ok(()),
-            Err(e) => Err(engine_error(
-                "The engine did not remove the run's workspace.",
-                e,
-            )),
+            }) => {}
+            Err(e) => {
+                return Err(engine_error(
+                    "The engine did not remove the run's workspace.",
+                    e,
+                ))
+            }
         }
+        self.remove_workspace_file(&docker, image, installation, run_id)
+            .await
     }
 }
 

@@ -173,7 +173,7 @@ impl Workloads for FakeEngine {
         Ok(manifest)
     }
 
-    async fn discard(&self, _: &str, _: &str, run_id: &str, _: &str) -> AppResult<()> {
+    async fn discard(&self, _: &str, _: &str, run_id: &str, _: &str, _: &str) -> AppResult<()> {
         let mut engine = self.get();
         engine.containers.remove(run_id);
         engine.discarded.push(run_id.to_string());
@@ -287,7 +287,19 @@ pub async fn fake_agent(
                         std::fs::write(work.join("agent.txt"), "new\n").unwrap();
                         std::fs::remove_file(work.join("old.txt")).unwrap();
                         std::fs::write(work.join("notes.tmp"), "scratch\n").unwrap();
+                        // Kept by the start's negated rule, whatever the agent's rewrite says.
+                        std::fs::write(work.join("important.log"), "keep\n").unwrap();
                         std::fs::write(work.join(".gitignore"), "*\n").unwrap();
+                        // A fresh ext4 filesystem's own folder, and a folder the
+                        // agent made unreadable.
+                        std::fs::create_dir_all(work.join("lost+found")).unwrap();
+                        std::fs::create_dir_all(work.join("secret")).unwrap();
+                        std::fs::write(work.join("secret/x.txt"), "x\n").unwrap();
+                        std::fs::set_permissions(
+                            work.join("secret"),
+                            std::os::unix::fs::PermissionsExt::from_mode(0o000),
+                        )
+                        .unwrap();
                         say(update("edited")).await;
                         say(json!({ "jsonrpc": "2.0", "id": id, "result": { "stopReason": "end_turn" } })).await;
                     } else if text.contains("echo-secret") {

@@ -208,6 +208,13 @@ function main() {
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true, encoding: "buffer" });
     } catch (e) {
+      // A folder the agent made unreadable holds nothing tracked: it is left
+      // out rather than blocking the review. One with tracked files in it
+      // would make them look deleted, so that fails instead.
+      if (rel && !hasTrackedUnder(rel) && !include.has(rel)) {
+        leftOut(`${rel}/`, `not readable (${e.code || "error"})`);
+        return;
+      }
       throw new Failure(`${rel || "the workspace"} could not be read: ${e.code || e.message}`);
     }
     entries.sort((a, b) => Buffer.compare(a.name, b.name));
@@ -216,15 +223,16 @@ function main() {
         throw new Failure(`A file name in ${rel || "the workspace"} is not valid UTF-8.`);
       }
       const name = entry.name.toString("utf8");
-      if (name.includes("\n")) {
+      if (name.includes("\n") || name.includes("\r")) {
         throw new Failure(`A file name in ${rel || "the workspace"} has a line break in it.`);
       }
       const relPath = rel ? `${rel}/${name}` : name;
       const full = path.join(dir, name);
       const isTracked = tracked.has(relPath);
       // .git anywhere is never collected, never looked inside, and not
-      // worth listing: it is never output.
-      if (name === ".git") {
+      // worth listing: it is never output. lost+found at the root is the
+      // filesystem's own, root-owned folder.
+      if (name === ".git" || (!rel && name === "lost+found")) {
         continue;
       }
       if (entry.isSymbolicLink()) {
@@ -293,7 +301,10 @@ function main() {
     const fields = out.stdout.toString("utf8").split("\0");
     for (let i = 0; i + 3 < fields.length; i += 4) {
       const [source, line, pattern, p] = fields.slice(i, i + 4);
-      if (source) ignored.set(p, `${source}:${line} ${pattern}`);
+      // A negated pattern (!kept.log) is the rule that keeps the file.
+      if (source && !pattern.startsWith("!")) {
+        ignored.set(p, `${source}:${line} ${pattern}`);
+      }
     }
   }
 

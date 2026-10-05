@@ -192,22 +192,45 @@ function RunView({
   const [busy, setBusy] = useState(false);
   const [now, setNow] = useState(Date.now());
   const cursor = useRef(0);
+  /** One read of the mirror at a time; a change during it reads again. */
+  const reading = useRef<Promise<void> | null>(null);
+  const again = useRef(false);
 
-  // The list's copy moves on with the backend's events; this view's does too.
-  useEffect(() => setRun(initial), [initial]);
+  // The list's copy moves on with the backend's events; this view's does
+  // too, unless an action here already got something newer.
+  useEffect(() => {
+    setRun((current) =>
+      initial.version >= current.version ? initial : current,
+    );
+  }, [initial]);
 
-  const loadEvents = useCallback(async () => {
-    try {
-      for (;;) {
-        const page = await ipc.listRunEvents(initial.id, cursor.current);
-        if (page.events.length === 0) break;
-        cursor.current = page.events[page.events.length - 1].seq;
-        setEvents((old) => [...old, ...page.events]);
-        if (cursor.current >= page.cursor) break;
-      }
-    } catch (e) {
-      onError(errorMessage(e));
+  const loadEvents = useCallback(() => {
+    if (reading.current) {
+      again.current = true;
+      return reading.current;
     }
+    const read = (async () => {
+      try {
+        for (;;) {
+          const page = await ipc.listRunEvents(initial.id, cursor.current);
+          const fresh = page.events.filter((e) => e.seq > cursor.current);
+          if (fresh.length === 0) break;
+          cursor.current = fresh[fresh.length - 1].seq;
+          setEvents((old) => [...old, ...fresh]);
+          if (cursor.current >= page.cursor) break;
+        }
+      } catch (e) {
+        onError(errorMessage(e));
+      } finally {
+        reading.current = null;
+        if (again.current) {
+          again.current = false;
+          void loadEvents();
+        }
+      }
+    })();
+    reading.current = read;
+    return read;
   }, [initial.id, onError]);
 
   useEffect(() => {

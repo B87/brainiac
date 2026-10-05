@@ -313,9 +313,9 @@ async fn a_run_is_started_followed_finished_collected_and_reviewed() {
         .await;
     assert_eq!(run.outcome, Some(RunOutcome::Finished));
     assert!(run.stop_confirmed);
-    assert_eq!(run.changed_files, Some(4));
-    assert_eq!(run.left_out.len(), 1);
-    assert_eq!(run.left_out[0].path, "notes.tmp");
+    assert_eq!(run.changed_files, Some(5));
+    assert_eq!(run.left_out.len(), 2);
+    assert!(run.left_out.iter().any(|l| l.path == "notes.tmp"));
     // A left-out file waits for a decision: the container is kept.
     assert!(run.kept && !run.snapshot_accepted);
     assert!(h.engine.get().discarded.is_empty());
@@ -323,7 +323,16 @@ async fn a_run_is_started_followed_finished_collected_and_reviewed() {
     let changes = h.runs.changes(&run.id).await.unwrap();
     let mut paths: Vec<&str> = changes.files.iter().map(|f| f.path.as_str()).collect();
     paths.sort();
-    assert_eq!(paths, [".gitignore", "agent.txt", "old.txt", "readme.txt"]);
+    assert_eq!(
+        paths,
+        [
+            ".gitignore",
+            "agent.txt",
+            "important.log",
+            "old.txt",
+            "readme.txt"
+        ]
+    );
     let diff = h
         .runs
         .diff(RunDiffRequest {
@@ -349,6 +358,11 @@ async fn a_run_is_started_followed_finished_collected_and_reviewed() {
     assert_eq!(std::fs::read_to_string(&saved).unwrap(), patch);
 
     // Delete removes the conversation, the result, and the row.
+    std::fs::set_permissions(
+        h.tmp.path().join("volumes").join(&run.id).join("secret"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
     h.runs.delete(&run.id).await.unwrap();
     assert!(h.runs.get(&run.id).await.is_err());
     assert!(!h.data().join("agent-runs").join(&run.id).exists());

@@ -279,11 +279,11 @@ Behavior above is decided; these are feasibility/default gates, not unspecified 
 | Adapter capabilities | Pinned versions, no client filesystem/terminal; sign-in, autonomous/ask, follow-up, cancellation, safe stderr, no private persistent logs | Phase 1 and each agent |
 | Remote lifecycle | Independently running host service; real Mac sleep/app quit/SSH loss, same-session reconnect/follow-up, acknowledgements, permissions, offline stop/collection; no prompt replay | Blocking architecture spike; repeat before phase 3 ships |
 | Export arbitrary commit | App-owned ref/object transfer, minimum Git, source refs/index/config unchanged, missing objects fail locally | Phase 1 |
-| Collector policy | Direct-byte trees, eligibility policy, hostile tar/Git expansion, retention after failure | Phase 1 |
+| Collector policy | Direct-byte trees, eligibility policy, hostile tar/Git expansion, retention after failure. Resolved for phase 1: Record: collection on a real engine | Phase 1 |
 | Bootstrap | Authenticated secret transfer to controller memory, one bootstrap/ACP framing contract, inspect/log/build leakage, split-secret filtering, tmpfs home | Blocking spike; each shipped host/agent pair |
 | Subscription token | The pinned adapter authenticates with `CLAUDE_CODE_OAUTH_TOKEN` alone and writes no login files; how it reports a usage limit (reset time or plain error) and a rejected token; the token lasts the run without the Mac. Ask Anthropic whether a public app may offer a user-supplied subscription token for Claude Code runs, and record the answer | Blocking spike for the adapter checks; the terms answer before a release offers the option |
 | Key out of the agent's processes | Repository hooks and the commands the agent runs inherit the token or key (Spike record: repository settings). Try `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` with bubblewrap in the image, and what that needs from the container's seccomp, capabilities, and user namespaces; otherwise design a proxy outside the container that holds the key. Confirm a Bash tool command sees the value as a hook does | Before runs are offered for repositories the user does not trust; not a phase 1 gate |
-| Engines/budgets | Prototype remote engine plus Docker Desktop/OrbStack/Colima framing/archive/stop/quotas, local sleep/resume expiry reconciliation, controller journal/artifact budgets and toolchains | Blocking spike and phase 1 defaults; phase 3 remote support |
+| Engines/budgets | Prototype remote engine plus Docker Desktop/OrbStack/Colima framing/archive/stop/quotas, local sleep/resume expiry reconciliation, controller journal/artifact budgets and toolchains. The workspace budget is resolved for OrbStack (Record: a fixed-size workspace); Docker Desktop is to be confirmed with the packaged app | Blocking spike and phase 1 defaults; phase 3 remote support |
 | HTTPS credentials | Git formats/scopes, private bridge, no URL/argv/config leaks, empty-ref lease on minimum Git | Phase 2 |
 | Egress | Route/proxy bypass tests, package managers, private exceptions, proxy lifecycle | Phase 2 before registry tokens |
 | Controller | Host service/deployment alternatives, endpoint authentication, command reconciliation, filtered journal/replay, deadline timer, termination guard, independent emergency stop; packaged upgrades/removal per host | Architecture proof before phase 1; production remote integration before phase 3 |
@@ -389,6 +389,28 @@ Checked on 5 October 2026 with the phase 1 controller (`brainiac runner`'s code,
 - Cancel stopped the container and kept it and its volume; Discard removed both.
 
 Not covered: a real model reply (the key was fake), a real sleep, or a guard process outside the test.
+
+## Record: collection on a real engine
+
+Checked on 5 October 2026 with the phase 1 collector (`image/collector.mjs`) on OrbStack, in the same opt-in test, and on this Mac against a scratch repository (`tests/agent_controller.rs`, `a_finished_run_is_collected_as_one_snapshot_on_the_start`, which runs the real script with Node against the fake engine's folder).
+
+- The collector's container was created with network `none` and the run's volume read only; the controller refuses to start it when the engine's record says otherwise. It got the input bundle and its parameters through the archive API, and its `/out` came back through the archive API as a tar the controller reads entry by entry, taking only the manifest and the bundle.
+- Against a workspace the fake agent had edited: a tracked file edited and never committed, a new file, a deleted file, a new file the start's `.gitignore` leaves out, and the agent's own `.gitignore` rewritten to `*`, the snapshot kept the edit, the new file, and the deletion, left out only the file the start's rules name (with the rule as the reason), and ignored the agent's rewrite. Choosing the left-out file collected it too. On the scratch repository the same held for a binary file, a symbolic link, an executable bit, a tracked file inside a folder a fixed rule names (`build/`, kept) next to a new one (left out), and a `.gitignore` deleted by the agent.
+- The result bundle holds only `start..result`; `git bundle verify` against Brainiac's repository, which has the start, passes, and the import checks the commit's only parent is the start.
+- On OrbStack, after the refused-key run, the collector reported the start itself (nothing changed) and wrote no bundle.
+
+Not covered: a workspace near the 4 GB or 200,000-file limits, and a file over 200 MB.
+
+## Record: a fixed-size workspace
+
+Checked on 5 October 2026 on OrbStack with the Docker CLI, then with the controller in the opt-in real-engine test.
+
+- `docker volume create --opt type=ext4 --opt device=<file> --opt o=loop` fails when the volume is first used: "failed to mount local volume: … data: loop: invalid argument". The daemon mounts with the system call, to which `loop` means nothing; it is `mount(8)` that sets loop devices up. So the local driver cannot mount a file by itself.
+- A privileged container (`alpine` with `util-linux`, then the run image, which has `losetup`, `mkfs.ext4`, and `truncate` already) attached the file with `losetup -f --show` and printed `/dev/loop0`; a `local` volume of `type=ext4` on `device=/dev/loop0` mounted in an unprivileged container as user 1000 (`mkfs.ext4 -E root_owner=1000:1000`). `df` showed 487 MB of a 512 MB file, a 600 MB write stopped at 451 MB with the filesystem full, and the file written before it was there in the next container. `losetup -a` in the VM showed the device; `losetup -d` detached it; `docker volume rm` removed the volume and left the file, which the store volume keeps until the run is discarded.
+- A fresh ext4 filesystem holds `lost+found`, so `git clone` into it fails ("not an empty directory"): the entrypoint now initializes the workspace and fetches the start into it instead.
+- The engine does not keep loop devices across its VM restarting; the controller attaches the file again before the collector uses a kept workspace and makes the volume anew on the new device.
+
+Not covered: Docker Desktop (its VM supports privileged containers and loop devices, to be confirmed with the packaged app), what the engine's VM does when its own disk fills, and Colima.
 
 ## Sources
 

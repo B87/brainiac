@@ -187,6 +187,8 @@ pub struct RunRecord {
     /// The run's input bundle, given to the collector again.
     #[serde(default)]
     pub bundle: PathBuf,
+    #[serde(default = "default_workspace_gib")]
+    pub workspace_gib: u32,
     pub phase: Phase,
     pub outcome: Option<Outcome>,
     pub stop_confirmed: bool,
@@ -202,6 +204,10 @@ pub struct RunRecord {
     pub ended_at: Option<String>,
     pub expired_asleep: bool,
     pub error: Option<String>,
+}
+
+fn default_workspace_gib() -> u32 {
+    20
 }
 
 impl RunRecord {

@@ -124,6 +124,8 @@ pub struct StartRun {
     pub image: String,
     pub cpus: u32,
     pub memory_mib: u32,
+    /// The workspace's size: a filesystem of exactly this size.
+    pub workspace_gib: u32,
     pub time_limit_secs: u64,
     pub permissions: RunPermissions,
     /// The commit the run starts from: the snapshot's parent at collection.

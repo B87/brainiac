@@ -42,7 +42,7 @@ impl Harness {
         git(&repo, &["init", "-q"]);
         std::fs::write(repo.join("readme.txt"), "start\n").unwrap();
         std::fs::write(repo.join("old.txt"), "old\n").unwrap();
-        std::fs::write(repo.join(".gitignore"), "*.tmp\n").unwrap();
+        std::fs::write(repo.join(".gitignore"), "*.tmp\n*.log\n!important.log\n").unwrap();
         git(&repo, &["add", "."]);
         git(&repo, &["commit", "-q", "-m", "Start"]);
         git(&repo, &["branch", "start"]);
@@ -113,6 +113,7 @@ impl Harness {
             image: "brainiac-claude:test".into(),
             cpus: 2,
             memory_mib: 2048,
+            workspace_gib: 1,
             time_limit_secs: 3600,
             permissions,
             start_commit: self.start.clone(),
@@ -608,6 +609,7 @@ async fn a_run_on_a_real_engine() {
         image: image.name.clone(),
         cpus: 2,
         memory_mib: 3072,
+        workspace_gib: 1,
         time_limit_secs: 600,
         permissions: RunPermissions::Ask,
         start_commit: start_commit.clone(),
@@ -756,10 +758,20 @@ async fn a_run_on_a_real_engine() {
         Some(false),
         "stopped, and kept"
     );
-    docker
+    let volume = docker
         .inspect_volume(&format!("brainiac-run-{run_id}"))
         .await
         .expect("the workspace is kept");
+    // The workspace is a filesystem of the run's size on a loop device.
+    assert_eq!(volume.options.get("type").map(String::as_str), Some("ext4"));
+    assert!(volume
+        .options
+        .get("device")
+        .is_some_and(|d| d.starts_with("/dev/loop")));
+    assert_eq!(
+        volume.labels.get("org.brainiac.device"),
+        volume.options.get("device")
+    );
 
     // The collector runs against the kept volume, offline and read only:
     // the agent changed nothing, so the result is the start itself.
@@ -873,18 +885,23 @@ async fn a_finished_run_is_collected_as_one_snapshot_on_the_start() {
     let manifest = h.runtime.collect("run-1", Vec::new(), &out).await.unwrap();
     assert_eq!(manifest.start, h.start);
     assert_ne!(manifest.result, h.start);
-    // readme.txt edited, agent.txt new, old.txt deleted, .gitignore edited;
-    // notes.tmp left out by the start's rules, not hidden by the agent's "*".
-    assert_eq!(manifest.changed_files, 4);
-    assert_eq!(
-        manifest
-            .left_out
-            .iter()
-            .map(|l| l.path.as_str())
-            .collect::<Vec<_>>(),
-        ["notes.tmp"]
-    );
-    assert!(manifest.left_out[0].reason.contains("*.tmp"));
+    // readme.txt edited, agent.txt and important.log new (the start's
+    // "!important.log" keeps it), old.txt deleted, .gitignore edited;
+    // notes.tmp left out by the start's rules, not hidden by the agent's
+    // "*"; the unreadable folder left out rather than failing; lost+found
+    // not mentioned.
+    assert_eq!(manifest.changed_files, 5);
+    let mut left: Vec<(&str, &str)> = manifest
+        .left_out
+        .iter()
+        .map(|l| (l.path.as_str(), l.reason.as_str()))
+        .collect();
+    left.sort();
+    assert_eq!(left.len(), 2, "{left:?}");
+    assert_eq!(left[0].0, "notes.tmp");
+    assert!(left[0].1.contains("*.tmp"));
+    assert_eq!(left[1].0, "secret/");
+    assert!(left[1].1.contains("not readable"));
     let bundle = out.join("result.bundle");
     assert!(bundle.is_file());
     assert!(h
@@ -910,6 +927,7 @@ async fn a_finished_run_is_collected_as_one_snapshot_on_the_start() {
         "edited by the agent"
     );
     assert_eq!(git(&h.repo, &["show", "result:agent.txt"]), "new");
+    assert_eq!(git(&h.repo, &["show", "result:important.log"]), "keep");
     assert!(git(&h.repo, &["ls-tree", "--name-only", "result"])
         .lines()
         .all(|l| l != "old.txt" && l != "notes.tmp"));
@@ -920,6 +938,9 @@ async fn a_finished_run_is_collected_as_one_snapshot_on_the_start() {
         .collect("run-1", vec!["notes.tmp".into()], &out)
         .await
         .unwrap();
-    assert_eq!(manifest.changed_files, 5);
-    assert!(manifest.left_out.is_empty());
+    assert_eq!(manifest.changed_files, 6);
+    assert_eq!(manifest.left_out.len(), 1, "{:?}", manifest.left_out);
+    // The temporary folder can be removed again.
+    let secret = h.tmp.path().join("volumes").join("run-1").join("secret");
+    std::fs::set_permissions(&secret, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
 }
