@@ -59,13 +59,23 @@ pub enum Request {
     /// Build the snapshot of a stopped run's working tree: the collector
     /// runs against its volume and `result.bundle` is written into
     /// `out_dir`. `include` names left-out files to collect this time.
+    /// `image` is the current image's name: the run's own image serves
+    /// its collector and workspace helper, and this one stands in when the
+    /// run's image is no longer on the engine.
     Collect {
         run_id: String,
         include: Vec<String>,
         out_dir: PathBuf,
+        #[serde(default)]
+        image: Option<String>,
     },
-    /// Remove a stopped run's container, volume, and records here.
-    Discard { run_id: String },
+    /// Remove a stopped run's container, volume, and records here. `image`
+    /// is as for `Collect`.
+    Discard {
+        run_id: String,
+        #[serde(default)]
+        image: Option<String>,
+    },
     /// Exit, only when no run is live: a newer Brainiac replaces it.
     Shutdown,
 }

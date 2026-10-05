@@ -801,7 +801,8 @@ fn refused_credential() -> String {
 /// How the adapter words a refused credential: an ACP error
 /// "Authentication required", or a reply "Failed to authenticate. API Error:
 /// 401 …" (docs/design/agent-runs.md, Spike record: Claude subscription adapter).
-fn credential_refused(text: &str) -> bool {
+/// A refused key or token, by the wording the API and Claude Code use.
+pub(crate) fn credential_refused(text: &str) -> bool {
     let text = text.to_lowercase();
     text.contains("authentication required")
         || text.contains("failed to authenticate")

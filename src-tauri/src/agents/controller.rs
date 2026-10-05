@@ -513,11 +513,14 @@ impl<W: Workloads> Controller<W> {
                 run_id,
                 include,
                 out_dir,
+                image,
             } => self
-                .collect(&run_id, include, out_dir)
+                .collect(&run_id, include, out_dir, image)
                 .await
                 .map(|manifest| Response::Collected { manifest }),
-            Request::Discard { run_id } => self.discard(&run_id).await.map(|()| Response::Done),
+            Request::Discard { run_id, image } => {
+                self.discard(&run_id, image).await.map(|()| Response::Done)
+            }
             Request::Shutdown => {
                 if self.close_if_idle() {
                     Ok(Response::Done)
@@ -1050,6 +1053,7 @@ impl<W: Workloads> Controller<W> {
         run_id: &str,
         include: Vec<String>,
         out_dir: PathBuf,
+        fallback_image: Option<String>,
     ) -> AppResult<CollectManifest> {
         let run = self.run(run_id)?;
         if include.len() > MAX_INCLUDE || include.iter().any(|p| !safe_relative(p)) {
@@ -1082,6 +1086,7 @@ impl<W: Workloads> Controller<W> {
             CollectSpec {
                 engine_socket: inner.record.engine_socket.clone(),
                 image: inner.record.image.clone(),
+                fallback_image,
                 installation: self.installation.clone(),
                 run_id: run_id.to_string(),
                 attempt: inner.record.attempt,
@@ -1098,13 +1103,18 @@ impl<W: Workloads> Controller<W> {
         result
     }
 
-    async fn discard(&self, run_id: &str) -> AppResult<()> {
+    async fn discard(&self, run_id: &str, fallback_image: Option<String>) -> AppResult<()> {
         let run = self.run(run_id)?;
         let (socket, volume, image) = {
             let inner = run.lock();
             if inner.record.phase != Phase::Ended || !inner.record.stop_confirmed {
                 return Err(conflict(
                     "The run has not stopped; it cannot be discarded yet.",
+                ));
+            }
+            if inner.collecting {
+                return Err(conflict(
+                    "The run's work is being collected; discard it afterwards.",
                 ));
             }
             (
@@ -1114,7 +1124,14 @@ impl<W: Workloads> Controller<W> {
             )
         };
         self.workloads
-            .discard(&socket, &self.installation, run_id, &volume, &image)
+            .discard(
+                &socket,
+                &self.installation,
+                run_id,
+                &volume,
+                &image,
+                fallback_image.as_deref(),
+            )
             .await?;
         {
             let mut inner = run.lock();
@@ -1414,9 +1431,13 @@ fn set_aside(path: &std::path::Path) -> std::io::Result<()> {
     std::fs::rename(path, aside)
 }
 
+/// Runs the controller must stay for: not ended, or being collected.
 fn live_in(runs: &HashMap<String, Arc<Run>>) -> usize {
     runs.values()
-        .filter(|run| run.lock().record.phase != Phase::Ended)
+        .filter(|run| {
+            let inner = run.lock();
+            inner.record.phase != Phase::Ended || inner.collecting
+        })
         .count()
 }
 

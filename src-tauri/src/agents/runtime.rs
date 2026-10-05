@@ -204,19 +204,35 @@ impl RunRuntime {
     }
 
     async fn call(&self, request: Request, timeout: Duration) -> AppResult<Response> {
+        match self.exchange(request, timeout).await {
+            Ok(Ok(response)) => Ok(response),
+            Ok(Err(answered)) | Err(answered) => Err(answered),
+        }
+    }
+
+    /// One request: the outer error is the transport's (the controller was
+    /// not reached, or did not answer in time), the inner one the
+    /// controller's own answer.
+    async fn exchange(
+        &self,
+        request: Request,
+        timeout: Duration,
+    ) -> AppResult<Result<Response, AppError>> {
         let mut connection = self.connect().await?;
-        match connection.call(&request, timeout).await? {
+        Ok(match connection.call(&request, timeout).await? {
             Response::Error { error } => Err(error),
             response => Ok(response),
-        }
+        })
     }
 
     /// Hand a run to the controller. It answers once the run is accepted and
     /// its deadline armed; preparing it goes on there.
-    pub async fn start(&self, start: StartRun) -> AppResult<RunStatus> {
-        match self.call(Request::Start(start), CALL_TIMEOUT).await? {
-            Response::Run { run } => Ok(run),
-            _ => Err(unexpected()),
+    pub async fn start(&self, start: StartRun) -> Result<RunStatus, StartError> {
+        match self.exchange(Request::Start(start), CALL_TIMEOUT).await {
+            Ok(Ok(Response::Run { run })) => Ok(run),
+            Ok(Ok(_)) => Err(StartError::Unanswered(unexpected())),
+            Ok(Err(refused)) => Err(StartError::Refused(refused)),
+            Err(transport) => Err(StartError::Unanswered(transport)),
         }
     }
 
@@ -284,16 +300,19 @@ impl RunRuntime {
     }
 
     /// Collect a stopped run's working tree into `out_dir/result.bundle`.
+    /// `image` is the current image, for a run whose own is gone.
     pub async fn collect(
         &self,
         run_id: &str,
         include: Vec<String>,
         out_dir: &Path,
+        image: Option<String>,
     ) -> AppResult<CollectManifest> {
         let request = Request::Collect {
             run_id: run_id.to_string(),
             include,
             out_dir: out_dir.to_path_buf(),
+            image,
         };
         match self.call(request, COLLECT_TIMEOUT).await? {
             Response::Collected { manifest } => Ok(manifest),
@@ -301,11 +320,12 @@ impl RunRuntime {
         }
     }
 
-    pub async fn discard(&self, run_id: &str) -> AppResult<()> {
+    pub async fn discard(&self, run_id: &str, image: Option<String>) -> AppResult<()> {
         match self
             .call(
                 Request::Discard {
                     run_id: run_id.to_string(),
+                    image,
                 },
                 CALL_TIMEOUT * 2,
             )
@@ -314,6 +334,30 @@ impl RunRuntime {
             Response::Done => Ok(()),
             _ => Err(unexpected()),
         }
+    }
+}
+
+/// Why a start did not give a run. A refusal means the controller saw the
+/// request and made nothing; an unanswered start may have been accepted
+/// before the socket or the timeout failed, so the run must be followed.
+#[derive(Debug)]
+pub enum StartError {
+    Refused(AppError),
+    Unanswered(AppError),
+}
+
+impl StartError {
+    pub fn into_error(self) -> AppError {
+        match self {
+            StartError::Refused(e) | StartError::Unanswered(e) => e,
+        }
+    }
+}
+
+// `From` lets `?` turn a `StartError` into the app's one error type.
+impl From<StartError> for AppError {
+    fn from(e: StartError) -> Self {
+        e.into_error()
     }
 }
 

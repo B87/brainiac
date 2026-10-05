@@ -336,7 +336,7 @@ async fn cancel_answers_the_pending_permission_and_keeps_the_work() {
         Some(Outcome::Cancelled)
     );
 
-    h.runtime.discard("run-1").await.unwrap();
+    h.runtime.discard("run-1", None).await.unwrap();
     assert_eq!(h.engine.get().discarded, vec!["run-1"]);
     assert!(h.runtime.runs().await.unwrap().is_empty());
 }
@@ -452,7 +452,7 @@ async fn a_stop_the_engine_cannot_confirm_stays_stopping() {
     assert_eq!(status.phase, Phase::Stopping);
     assert!(!status.stop_confirmed);
     // Discard is refused while the stop is not confirmed.
-    assert!(h.runtime.discard("run-1").await.is_err());
+    assert!(h.runtime.discard("run-1", None).await.is_err());
     h.engine.get().unreachable = false;
     // The controller tries again by itself.
     for _ in 0..150 {
@@ -532,7 +532,9 @@ async fn the_guard_stops_what_a_dead_controller_left() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore]
 async fn a_run_on_a_real_engine() {
-    use bollard::query_parameters::{InspectContainerOptions, ListContainersOptionsBuilder};
+    use bollard::query_parameters::{
+        InspectContainerOptions, ListContainersOptionsBuilder, RemoveContainerOptionsBuilder,
+    };
     use brainiac_lib::agents::controller::docker::{DockerEngine, LABEL_RUN};
 
     let socket = std::env::var("BRAINIAC_TEST_DOCKER_SOCKET").expect("BRAINIAC_TEST_DOCKER_SOCKET");
@@ -777,13 +779,36 @@ async fn a_run_on_a_real_engine() {
     // the agent changed nothing, so the result is the start itself.
     let out = tmp.path().join("out");
     std::fs::create_dir_all(&out).unwrap();
-    let manifest = runtime.collect(&run_id, Vec::new(), &out).await.unwrap();
+    let manifest = runtime
+        .collect(&run_id, Vec::new(), &out, None)
+        .await
+        .unwrap();
     eprintln!("collected: {manifest:?}");
     assert_eq!(manifest.result, start_commit);
     assert_eq!(manifest.changed_files, 0);
     assert!(!out.join("result.bundle").exists());
 
-    runtime.discard(&run_id).await.unwrap();
+    // Discard after the container and volume already went (an earlier
+    // Discard that failed after those steps): the workspace file and its
+    // loop device still go.
+    docker
+        .remove_container(
+            &id,
+            Some(RemoveContainerOptionsBuilder::new().force(true).build()),
+        )
+        .await
+        .unwrap();
+    docker
+        .remove_volume(
+            &format!("brainiac-run-{run_id}"),
+            None::<bollard::query_parameters::RemoveVolumeOptions>,
+        )
+        .await
+        .unwrap();
+    assert!(store_listing(&docker, &image.name)
+        .await
+        .contains(&format!("{run_id}.img")));
+    runtime.discard(&run_id, None).await.unwrap();
     assert!(docker
         .inspect_container(&id, None::<InspectContainerOptions>)
         .await
@@ -792,7 +817,63 @@ async fn a_run_on_a_real_engine() {
         .inspect_volume(&format!("brainiac-run-{run_id}"))
         .await
         .is_err());
+    let store = store_listing(&docker, &image.name).await;
+    assert!(!store.contains(&format!("{run_id}.img")), "{store}");
     server.abort();
+}
+
+/// What the workspace store holds, listed by a plain container of the image.
+async fn store_listing(docker: &bollard::Docker, image: &str) -> String {
+    use bollard::models::{ContainerCreateBody, HostConfig, Mount, MountTypeEnum};
+    use bollard::query_parameters::{
+        CreateContainerOptions, LogsOptionsBuilder, RemoveContainerOptionsBuilder,
+        StartContainerOptions, WaitContainerOptions,
+    };
+    use futures_util::StreamExt;
+    let body = ContainerCreateBody {
+        image: Some(image.to_string()),
+        entrypoint: Some(vec!["sh".into(), "-c".into()]),
+        cmd: Some(vec!["ls /store".into()]),
+        user: Some("root".into()),
+        host_config: Some(HostConfig {
+            network_mode: Some("none".into()),
+            mounts: Some(vec![Mount {
+                target: Some("/store".into()),
+                source: Some("brainiac-workspaces".into()),
+                typ: Some(MountTypeEnum::VOLUME),
+                read_only: Some(true),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let id = docker
+        .create_container(None::<CreateContainerOptions>, body)
+        .await
+        .unwrap()
+        .id;
+    docker
+        .start_container(&id, None::<StartContainerOptions>)
+        .await
+        .unwrap();
+    let _ = docker
+        .wait_container(&id, None::<WaitContainerOptions>)
+        .collect::<Vec<_>>()
+        .await;
+    let mut out = String::new();
+    let mut logs = docker.logs(&id, Some(LogsOptionsBuilder::new().stdout(true).build()));
+    while let Some(Ok(line)) = logs.next().await {
+        out.push_str(&line.to_string());
+    }
+    docker
+        .remove_container(
+            &id,
+            Some(RemoveContainerOptionsBuilder::new().force(true).build()),
+        )
+        .await
+        .unwrap();
+    out
 }
 
 #[tokio::test]
@@ -869,7 +950,7 @@ async fn a_finished_run_is_collected_as_one_snapshot_on_the_start() {
     std::fs::create_dir_all(&out).unwrap();
     let err = h
         .runtime
-        .collect("run-1", Vec::new(), &out)
+        .collect("run-1", Vec::new(), &out, None)
         .await
         .unwrap_err();
     assert_eq!(err.code, ErrorCode::Conflict);
@@ -882,7 +963,11 @@ async fn a_finished_run_is_collected_as_one_snapshot_on_the_start() {
         .await;
     assert_eq!(status.outcome, Some(Outcome::Finished));
 
-    let manifest = h.runtime.collect("run-1", Vec::new(), &out).await.unwrap();
+    let manifest = h
+        .runtime
+        .collect("run-1", Vec::new(), &out, None)
+        .await
+        .unwrap();
     assert_eq!(manifest.start, h.start);
     assert_ne!(manifest.result, h.start);
     // readme.txt edited, agent.txt and important.log new (the start's
@@ -906,7 +991,7 @@ async fn a_finished_run_is_collected_as_one_snapshot_on_the_start() {
     assert!(bundle.is_file());
     assert!(h
         .runtime
-        .collect("run-1", vec!["../x".into()], &out)
+        .collect("run-1", vec!["../x".into()], &out, None)
         .await
         .is_err());
 
@@ -935,7 +1020,7 @@ async fn a_finished_run_is_collected_as_one_snapshot_on_the_start() {
     // Choosing the left-out file collects it too; the volume is unchanged.
     let manifest = h
         .runtime
-        .collect("run-1", vec!["notes.tmp".into()], &out)
+        .collect("run-1", vec!["notes.tmp".into()], &out, None)
         .await
         .unwrap();
     assert_eq!(manifest.changed_files, 6);

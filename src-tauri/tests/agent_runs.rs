@@ -12,11 +12,13 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use brainiac_lib::agents::controller::protocol::{Credential, CredentialKey, StartRun};
 use brainiac_lib::agents::controller::state::StateDir;
 use brainiac_lib::agents::controller::{serve, Config};
 use brainiac_lib::agents::runs::Located;
 use brainiac_lib::agents::{
     image, AgentRunService, AgentSettingsService, RepositoryLookup, RunArtifacts, RunRuntime,
+    StartError,
 };
 use brainiac_lib::credentials::{CommandRunner, CredentialService, MemoryStore};
 use brainiac_lib::db::{self, Db};
@@ -144,6 +146,24 @@ impl Harness {
 
     fn data(&self) -> PathBuf {
         self.tmp.path().join("data")
+    }
+
+    /// Another client of the same controller, as another Brainiac would be.
+    fn runtime(&self) -> RunRuntime {
+        RunRuntime::attach(
+            StateDir::new(self.tmp.path().join("c")),
+            self.tmp.path().join("c").join("runner.sock"),
+        )
+    }
+
+    /// The agent's unreadable folder, readable again so it can be collected
+    /// and the temporary folder removed.
+    fn open_secret(&self, run_id: &str) {
+        std::fs::set_permissions(
+            self.tmp.path().join("volumes").join(run_id).join("secret"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
     }
 
     /// Start the controller, or start it again as if the old one were killed.
@@ -320,6 +340,20 @@ async fn a_run_is_started_followed_finished_collected_and_reviewed() {
     assert!(run.kept && !run.snapshot_accepted);
     assert!(h.engine.get().discarded.is_empty());
 
+    // Choose files to add…: the left-out folder is named as the list shows
+    // it, with its slash, and the volume is unchanged.
+    h.open_secret(&run.id);
+    let run = h
+        .runs
+        .collect(&run.id, vec!["secret/".into()])
+        .await
+        .unwrap();
+    assert_eq!(run.collection, RunCollection::Ready);
+    assert_eq!(run.changed_files, Some(6));
+    assert_eq!(run.left_out.len(), 1, "{:?}", run.left_out);
+    assert_eq!(run.left_out[0].path, "notes.tmp");
+    assert!(run.kept && !run.snapshot_accepted);
+
     let changes = h.runs.changes(&run.id).await.unwrap();
     let mut paths: Vec<&str> = changes.files.iter().map(|f| f.path.as_str()).collect();
     paths.sort();
@@ -330,7 +364,8 @@ async fn a_run_is_started_followed_finished_collected_and_reviewed() {
             "agent.txt",
             "important.log",
             "old.txt",
-            "readme.txt"
+            "readme.txt",
+            "secret/x.txt"
         ]
     );
     let diff = h
@@ -358,11 +393,6 @@ async fn a_run_is_started_followed_finished_collected_and_reviewed() {
     assert_eq!(std::fs::read_to_string(&saved).unwrap(), patch);
 
     // Delete removes the conversation, the result, and the row.
-    std::fs::set_permissions(
-        h.tmp.path().join("volumes").join(&run.id).join("secret"),
-        std::os::unix::fs::PermissionsExt::from_mode(0o755),
-    )
-    .unwrap();
     h.runs.delete(&run.id).await.unwrap();
     assert!(h.runs.get(&run.id).await.is_err());
     assert!(!h.data().join("agent-runs").join(&run.id).exists());
@@ -373,6 +403,97 @@ async fn a_run_is_started_followed_finished_collected_and_reviewed() {
         .unwrap()
         .iter()
         .any(|e| e.run_id == run.id && e.deleted));
+    // Every collection and the cleanup named the current image, for a run
+    // whose own image is no longer on the engine.
+    let current = h.settings.get().await.unwrap().profile.image.unwrap().name;
+    let named = h.engine.get().fallback_images.clone();
+    assert_eq!(named.len(), 3, "{named:?}");
+    assert!(named.iter().all(|i| i.as_deref() == Some(current.as_str())));
+}
+
+#[tokio::test]
+async fn the_settings_test_fails_when_a_refused_key_comes_back_as_a_reply() {
+    let h = Harness::new().await;
+    h.engine.get().refusal_as_reply = true;
+    let before = h.settings.get().await.unwrap().profile.test_passed_at;
+    let result = h.runs.test().await.unwrap();
+    assert!(!result.passed, "{result:?}");
+    let step = result
+        .steps
+        .iter()
+        .find(|s| s.name == "The agent answers a prompt")
+        .unwrap();
+    assert!(!step.passed, "{result:?}");
+    let detail = step.detail.as_deref().unwrap_or("").to_lowercase();
+    assert!(
+        detail.contains("did not accept") || detail.contains("refused"),
+        "{result:?}"
+    );
+    // Nothing is recorded, and the test's run is discarded.
+    assert_eq!(
+        h.settings.get().await.unwrap().profile.test_passed_at,
+        before
+    );
+    assert_eq!(h.engine.get().discarded.len(), 1);
+}
+
+#[tokio::test]
+async fn a_kept_run_the_controller_forgot_can_still_be_deleted() {
+    let h = Harness::new().await;
+    let run = h.start("edit", RunPermissions::Act).await;
+    h.wait(&run.id, "the turn ends", idle).await;
+    h.runs.finish(&run.id).await.unwrap();
+    let run = h
+        .wait(&run.id, "the work is collected", |r| {
+            r.collection == RunCollection::Ready
+        })
+        .await;
+    assert!(run.kept);
+    // The controller's record goes without the row hearing of it: a discard
+    // whose answer was lost, or the controller's folder wiped.
+    h.runtime().discard(&run.id, None).await.unwrap();
+    assert!(h.runs.get(&run.id).await.unwrap().kept);
+    h.open_secret(&run.id);
+    h.runs.delete(&run.id).await.unwrap();
+    assert!(h.runs.get(&run.id).await.is_err());
+}
+
+#[tokio::test]
+async fn a_start_the_controller_answers_with_an_error_is_a_refusal() {
+    let mut h = Harness::new().await;
+    let start = |bundle: PathBuf| StartRun {
+        run_id: "run-x".into(),
+        attempt: 1,
+        engine_socket: SOCKET.into(),
+        image: "brainiac-claude:test".into(),
+        cpus: 2,
+        memory_mib: 2048,
+        workspace_gib: 1,
+        time_limit_secs: 600,
+        permissions: RunPermissions::Act,
+        start_commit: h.start.clone(),
+        bundle,
+        prompt_id: "p1".into(),
+        prompt: "hello".into(),
+        credential: Credential {
+            key: CredentialKey::AnthropicApiKey,
+            value: KEY.into(),
+        },
+    };
+    // A bundle that is not there: the controller answers, and made nothing.
+    let missing = h.tmp.path().join("missing.bundle");
+    match h.runtime().start(start(missing.clone())).await {
+        Err(StartError::Refused(e)) => assert_eq!(e.code, ErrorCode::NotFound, "{e:?}"),
+        other => panic!("{other:?}"),
+    }
+    assert!(h.runtime().runs().await.unwrap().is_empty());
+    // No controller: the start may or may not have been seen.
+    h.server.abort();
+    let _ = (&mut h.server).await;
+    match h.runtime().start(start(missing)).await {
+        Err(StartError::Unanswered(_)) => {}
+        other => panic!("{other:?}"),
+    }
 }
 
 #[tokio::test]

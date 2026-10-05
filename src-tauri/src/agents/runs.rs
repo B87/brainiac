@@ -25,6 +25,7 @@ use serde::de::DeserializeOwned;
 use super::controller::protocol::{
     Credential, CredentialKey, EventBody, RunStatus, StartRun, StopReason, MAX_PROMPT_BYTES,
 };
+use super::runtime::StartError;
 use super::settings::{self, AgentSettingsService};
 use super::{RunArtifacts, RunRuntime};
 use crate::credentials::{CredentialService, Resolution};
@@ -359,16 +360,11 @@ impl AgentRunService {
                     .store(true, std::sync::atomic::Ordering::SeqCst);
                 self.apply_status(&run_id, &status).await?;
             }
-            // A refusal means nothing was made. Any other failure (a timeout,
-            // the socket) may have come after the controller accepted the
-            // run, so the run stays live and is followed: the controller
+            // An answered error means nothing was made. An unanswered start
+            // (a timeout, the socket) may have been accepted before the
+            // failure, so the run stays live and is followed: the controller
             // answers a start it never saw with "unknown run", which ends it.
-            Err(e)
-                if matches!(
-                    e.code,
-                    ErrorCode::Validation | ErrorCode::Conflict | ErrorCode::Unauthenticated
-                ) =>
-            {
+            Err(StartError::Refused(e)) => {
                 tracing::warn!(error = %e, details = ?e.details, "the run controller refused a run");
                 let (id, message) = (run_id.clone(), e.message.clone());
                 self.history
@@ -377,7 +373,7 @@ impl AgentRunService {
                 self.emit(&run_id, false);
                 return Err(e);
             }
-            Err(e) => {
+            Err(StartError::Unanswered(e)) => {
                 tracing::warn!(error = %e, details = ?e.details, "a start was not answered");
                 self.mark_unreachable();
                 self.spawn_sync(&run_id);
@@ -386,6 +382,18 @@ impl AgentRunService {
         }
         self.spawn_sync(&run_id);
         self.get(&run_id).await
+    }
+
+    /// The current image's name, handed to the controller with a collection
+    /// or a discard: a kept run whose own image was removed from the engine
+    /// (a rebuild after an update, a prune) uses it for its helper and
+    /// collector instead.
+    async fn current_image(&self) -> Option<String> {
+        self.settings
+            .get()
+            .await
+            .ok()
+            .and_then(|s| s.profile.image.map(|i| i.name))
     }
 
     /// The profile's token or key, read through the credentials layer.
@@ -456,7 +464,7 @@ impl AgentRunService {
                         if run.phase != super::controller::protocol::Phase::Ended {
                             let _ = self.runtime.stop(&run.run_id, StopReason::Cancel).await;
                         }
-                        let _ = self.runtime.discard(&run.run_id).await;
+                        let _ = self.discard_at_controller(&run.run_id).await;
                         let _ = self.artifacts.remove_run("test", &run.run_id).await;
                     }
                 }
@@ -805,6 +813,12 @@ impl AgentRunService {
         let Ok(_held) = lock.try_lock() else {
             return Err(conflict("The run's work is already being collected."));
         };
+        // The left-out list names a folder with a trailing slash; the
+        // collector takes it without one.
+        let include: Vec<String> = include
+            .into_iter()
+            .map(|p| p.trim_end_matches('/').to_string())
+            .collect();
         let row = self.row(run_id).await?;
         if row.phase != RunPhase::Ended || !row.stop_confirmed {
             return Err(conflict(
@@ -819,7 +833,11 @@ impl AgentRunService {
         let out_dir = self.artifacts.run_dir(run_id);
         let collected = async {
             std::fs::create_dir_all(&out_dir)?;
-            let manifest = self.runtime.collect(run_id, include, &out_dir).await?;
+            let image = self.current_image().await;
+            let manifest = self
+                .runtime
+                .collect(run_id, include, &out_dir, image)
+                .await?;
             self.connected
                 .store(true, std::sync::atomic::Ordering::SeqCst);
             if manifest.start != row.start_commit {
@@ -931,7 +949,7 @@ impl AgentRunService {
             return;
         }
         let id = run_id.to_string();
-        let result = self.runtime.discard(run_id).await;
+        let result = self.discard_at_controller(run_id).await;
         let pending = match &result {
             Ok(()) => None,
             Err(e) => Some(e.message.clone()),
@@ -946,6 +964,21 @@ impl AgentRunService {
         self.emit(run_id, false);
     }
 
+    /// Remove the run's container, workspace, and record at the controller.
+    /// A run the controller no longer knows has nothing left there to
+    /// remove: its record went with an earlier discard whose answer was
+    /// lost, or with the controller's folder.
+    async fn discard_at_controller(&self, run_id: &str) -> AppResult<()> {
+        let image = self.current_image().await;
+        match self.runtime.discard(run_id, image).await {
+            Err(e) if e.code == ErrorCode::NotFound => {
+                tracing::warn!(run = %run_id, "the controller no longer knows the run; nothing left to remove");
+                Ok(())
+            }
+            result => result,
+        }
+    }
+
     /// **Discard work…**: the stopped container and its files go, whatever
     /// was or was not collected.
     pub async fn discard(self: &Arc<Self>, run_id: &str) -> AppResult<AgentRun> {
@@ -955,7 +988,12 @@ impl AgentRunService {
                 "The run has not stopped, so its work cannot be discarded yet.",
             ));
         }
-        self.runtime.discard(run_id).await?;
+        if row.collection == RunCollection::Collecting {
+            return Err(conflict(
+                "The run's work is being collected; discard it afterwards.",
+            ));
+        }
+        self.discard_at_controller(run_id).await?;
         let id = run_id.to_string();
         self.history
             .call(move |conn| store::set_cleanup(conn, &id, true, None))
@@ -1047,7 +1085,7 @@ impl AgentRunService {
             ));
         }
         if row.kept {
-            if let Err(e) = self.runtime.discard(run_id).await {
+            if let Err(e) = self.discard_at_controller(run_id).await {
                 let id = run_id.to_string();
                 let message = e.message.clone();
                 let _ = self
@@ -1161,7 +1199,7 @@ impl AgentRunService {
             }
         };
         // The test's run is not kept, whatever happened.
-        let _ = self.runtime.discard(&run_id).await;
+        let _ = self.runtime.discard(&run_id, Some(image.name)).await;
         let _ = self.artifacts.remove_run("test", &run_id).await;
         let passed = outcome.is_ok();
         if passed {
@@ -1206,6 +1244,36 @@ impl AgentRunService {
         Ok(())
     }
 
+    /// After the test's turn ended: `None` once the run is running and idle,
+    /// or why it is not. The controller's failure follows the turn's end by
+    /// a moment, so the status is read until it settles either way.
+    async fn test_settled(&self, run_id: &str) -> Option<String> {
+        use super::controller::protocol::{Activity, Phase};
+        for _ in 0..15 {
+            match self.status_of(run_id).await {
+                Ok(status) if status.phase == Phase::Ended => {
+                    return Some(status.error.unwrap_or_else(|| "the run ended".into()));
+                }
+                Ok(status) if status.phase == Phase::Stopping => {
+                    return Some(
+                        status
+                            .error
+                            .unwrap_or_else(|| "the run stopped after its reply".into()),
+                    );
+                }
+                Ok(status)
+                    if status.phase == Phase::Running && status.activity == Activity::Idle =>
+                {
+                    return None;
+                }
+                Ok(_) => {}
+                Err(e) => return Some(e.message),
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        Some("The run did not settle after its reply.".into())
+    }
+
     /// Wait for the test's turn to end, cancel, and collect.
     async fn test_follow(
         &self,
@@ -1248,7 +1316,14 @@ impl AgentRunService {
                     _ => {}
                 }
             }
-            if replied || failure.is_some() || settled {
+            if failure.is_some() || settled {
+                break;
+            }
+            if replied {
+                // A refused key can come back as the reply, and the
+                // controller fails the run just after the turn ends: the run
+                // must still be running and idle, not merely answered.
+                failure = self.test_settled(run_id).await;
                 break;
             }
             if let Ok(status) = self.status_of(run_id).await {
@@ -1258,6 +1333,12 @@ impl AgentRunService {
                 }
                 settled = status.phase == Phase::Running && status.activity == Activity::Idle;
             }
+        }
+        if failure.is_none() && super::controller::acp::credential_refused(&reply) {
+            failure = Some(format!(
+                "The key or token was refused: {}",
+                reply.trim().chars().take(120).collect::<String>()
+            ));
         }
         let answered = match failure {
             Some(message) => Err(AppError::validation(message)),
@@ -1286,7 +1367,7 @@ impl AgentRunService {
         }
         let collected = async {
             let out = self.artifacts.run_dir(run_id);
-            let manifest = self.runtime.collect(run_id, Vec::new(), &out).await?;
+            let manifest = self.runtime.collect(run_id, Vec::new(), &out, None).await?;
             Ok(format!("{} changed file(s)", manifest.changed_files))
         }
         .await;

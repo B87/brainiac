@@ -89,7 +89,11 @@ pub struct LaunchSpec {
 #[derive(Debug, Clone)]
 pub struct CollectSpec {
     pub engine_socket: String,
+    /// The run's own image, which holds the collector and the helper.
     pub image: String,
+    /// The current image, used when the run's is no longer on the engine:
+    /// a rebuild after an update does not strand older runs.
+    pub fallback_image: Option<String>,
     pub installation: String,
     pub run_id: String,
     pub attempt: u32,
@@ -169,7 +173,8 @@ pub trait Workloads: Send + Sync + 'static {
     /// result to `out_dir`.
     fn collect(&self, spec: CollectSpec)
         -> impl Future<Output = AppResult<CollectManifest>> + Send;
-    /// Remove the run's stopped containers, its volume, and its workspace file.
+    /// Remove the run's stopped containers, its volume, and its workspace
+    /// file. `fallback_image` is as in `CollectSpec`.
     fn discard(
         &self,
         socket: &str,
@@ -177,6 +182,7 @@ pub trait Workloads: Send + Sync + 'static {
         run_id: &str,
         volume: &str,
         image: &str,
+        fallback_image: Option<&str>,
     ) -> impl Future<Output = AppResult<()>> + Send;
 }
 
@@ -468,6 +474,29 @@ impl DockerEngine {
             )));
         }
         Ok(String::from_utf8_lossy(&printed).trim().to_string())
+    }
+
+    /// The image to run a kept run's helper and collector from: the run's
+    /// own, or the current one when the run's was removed from the engine
+    /// (a rebuild after an update, or a prune).
+    async fn resolve_image(
+        &self,
+        docker: &Docker,
+        image: &str,
+        fallback: Option<&str>,
+    ) -> AppResult<String> {
+        for candidate in std::iter::once(image).chain(fallback) {
+            match docker.inspect_image(candidate).await {
+                Ok(_) => return Ok(candidate.to_string()),
+                Err(bollard::errors::Error::DockerResponseServerError {
+                    status_code: 404, ..
+                }) => {}
+                Err(e) => return Err(engine_error("The engine did not show the image.", e)),
+            }
+        }
+        Err(AppError::dependency(
+            "The run's image is no longer on the engine. Build the image in Settings → Agents, then try again.",
+        ))
     }
 
     /// The volume that holds every workspace's image file on this engine.
@@ -995,14 +1024,18 @@ impl Workloads for DockerEngine {
         {
             return Err(super::conflict("The run is still running; stop it first."));
         }
+        let image = self
+            .resolve_image(&docker, &spec.image, spec.fallback_image.as_deref())
+            .await?;
         self.ensure_workspace(
             &docker,
-            &spec.image,
+            &image,
             &spec.installation,
             &spec.run_id,
             &spec.volume,
         )
         .await?;
+        let spec = CollectSpec { image, ..spec };
         let id = self.create_collector(&docker, &spec).await?;
         let collected = self.run_collector(&docker, &id, &spec).await;
         // The collector's container is the collection's own; it goes
@@ -1026,8 +1059,10 @@ impl Workloads for DockerEngine {
         run_id: &str,
         volume: &str,
         image: &str,
+        fallback_image: Option<&str>,
     ) -> AppResult<()> {
         let docker = self.client(socket)?;
+        let image = self.resolve_image(&docker, image, fallback_image).await?;
         if !self
             .run_containers(&docker, installation, run_id, false)
             .await?
@@ -1053,15 +1088,17 @@ impl Workloads for DockerEngine {
                 }
             }
         }
-        // Only the run's own volume: its name is the run's, and its labels say so.
+        // Only the run's own volume: its name is the run's, and its labels
+        // say so. A volume already gone (an earlier Discard that failed
+        // after this step) still leaves the file and its device to remove.
         let owned = match docker.inspect_volume(volume).await {
-            Ok(v) => {
+            Ok(v) => Some(
                 v.labels.get(LABEL_RUN).map(String::as_str) == Some(run_id)
-                    && v.labels.get(LABEL_INSTALLATION).map(String::as_str) == Some(installation)
-            }
+                    && v.labels.get(LABEL_INSTALLATION).map(String::as_str) == Some(installation),
+            ),
             Err(bollard::errors::Error::DockerResponseServerError {
                 status_code: 404, ..
-            }) => return Ok(()),
+            }) => None,
             Err(e) => {
                 return Err(engine_error(
                     "The engine did not show the run's workspace.",
@@ -1069,27 +1106,29 @@ impl Workloads for DockerEngine {
                 ))
             }
         };
-        if !owned {
+        if owned == Some(false) {
             return Err(super::conflict(
                 "A workspace with the run's name belongs to something else; it was left alone.",
             ));
         }
-        match docker
-            .remove_volume(volume, Some(RemoveVolumeOptionsBuilder::new().build()))
-            .await
-        {
-            Ok(())
-            | Err(bollard::errors::Error::DockerResponseServerError {
-                status_code: 404, ..
-            }) => {}
-            Err(e) => {
-                return Err(engine_error(
-                    "The engine did not remove the run's workspace.",
-                    e,
-                ))
+        if owned.is_some() {
+            match docker
+                .remove_volume(volume, Some(RemoveVolumeOptionsBuilder::new().build()))
+                .await
+            {
+                Ok(())
+                | Err(bollard::errors::Error::DockerResponseServerError {
+                    status_code: 404, ..
+                }) => {}
+                Err(e) => {
+                    return Err(engine_error(
+                        "The engine did not remove the run's workspace.",
+                        e,
+                    ))
+                }
             }
         }
-        self.remove_workspace_file(&docker, image, installation, run_id)
+        self.remove_workspace_file(&docker, &image, installation, run_id)
             .await
     }
 }
