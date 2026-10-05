@@ -197,6 +197,9 @@ pub struct RunRecord {
     pub container_id: Option<String>,
     pub volume: String,
     pub session_id: Option<String>,
+    /// The model the agent reported when the session opened.
+    #[serde(default)]
+    pub model: Option<String>,
     pub turn: u32,
     pub accepted_at: String,
     pub deadline_at: String,
@@ -238,6 +241,7 @@ impl RunRecord {
             kept: self.kept,
             permissions: Vec::new(),
             session_id: self.session_id.clone(),
+            model: self.model.clone(),
             accepted_at: self.accepted_at.clone(),
             deadline_at: self.deadline_at.clone(),
             ended_at: self.ended_at.clone(),

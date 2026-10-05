@@ -450,6 +450,7 @@ export class FakeBackend {
       cpus: 4,
       memory_mib: 8192,
       workspace_gib: 20,
+      model: "",
       image: null,
       version: 1,
     },

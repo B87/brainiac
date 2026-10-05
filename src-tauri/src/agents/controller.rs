@@ -256,9 +256,10 @@ impl RunSink for Run {
         self.append(body, false);
     }
 
-    fn ready(&self, session_id: &str) {
+    fn ready(&self, session_id: &str, model: Option<&str>) {
         let mut inner = self.lock();
         inner.record.session_id = Some(session_id.to_string());
+        inner.record.model = model.map(str::to_string);
         if inner.record.phase == Phase::Preparing {
             inner.record.phase = Phase::Running;
             inner.activity = Activity::Idle;
@@ -569,6 +570,7 @@ impl<W: Workloads> Controller<W> {
             container_id: None,
             volume: format!("brainiac-run-{}", start.run_id),
             session_id: None,
+            model: None,
             turn: 0,
             accepted_at: wall(armed_wall),
             deadline_at: wall(armed_wall + limit),
@@ -649,6 +651,7 @@ impl<W: Workloads> Controller<W> {
             cpus: start.cpus,
             memory_mib: start.memory_mib,
             workspace_gib: start.workspace_gib,
+            model: start.model.clone(),
             bundle: start.bundle.clone(),
             cancel: cancelled,
         };

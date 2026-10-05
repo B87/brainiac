@@ -124,6 +124,7 @@ impl Harness {
                 key: CredentialKey::AnthropicApiKey,
                 value: KEY.into(),
             },
+            model: "opus".into(),
         }
     }
 
@@ -622,6 +623,7 @@ async fn a_run_on_a_real_engine() {
             key: CredentialKey::AnthropicApiKey,
             value: KEY.into(),
         },
+        model: String::new(),
     };
     runtime.start(start).await.unwrap();
 

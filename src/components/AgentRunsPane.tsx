@@ -5,6 +5,8 @@ import {
   durationLabel,
   engineSummary,
   imageSummary,
+  MODEL_SUGGESTIONS,
+  parseModel,
   paymentLabel,
   settingsRequest,
   TIME_LIMITS,
@@ -442,6 +444,24 @@ export default function AgentRunsPane() {
                 ))}
             </select>
           </label>
+          <CommitField
+            label="Model"
+            hint={
+              <>
+                An alias (opus, sonnet, haiku, opusplan) or a full model name;
+                empty for Claude Code's default. The agent reports the model it
+                opened with, so a name the plan or key cannot use shows there.
+              </>
+            }
+            value={profile.model}
+            format={(m) => m}
+            parse={parseModel}
+            onCommit={(model) => save({ model })}
+            placeholder="Claude Code's default"
+            suggestions={MODEL_SUGGESTIONS}
+            mono
+            width={180}
+          />
           <CommitField
             label="CPUs"
             value={profile.cpus}

@@ -30,7 +30,12 @@ credential_ageing: boolean,
  * The user agreed that runs send code and prompts to the provider under
  * this payment.
  */
-sends_code_agreed: boolean, permissions: RunPermissions, time_limit_minutes: number, cpus: number, memory_mib: number, workspace_gib: number, image: AgentImage | null, 
+sends_code_agreed: boolean, permissions: RunPermissions, time_limit_minutes: number, cpus: number, memory_mib: number, workspace_gib: number, 
+/**
+ * The model new runs ask Claude Code for: an alias such as `sonnet` or
+ * a full name; empty for Claude Code's own default.
+ */
+model: string, image: AgentImage | null, 
 /**
  * When the last test passed.
  */

@@ -30,6 +30,7 @@ const profile: AgentProfile = {
   cpus: 4,
   memory_mib: 8192,
   workspace_gib: 20,
+  model: "",
   image: null,
   version: 3,
 };
@@ -98,6 +99,8 @@ describe("Runs", () => {
     cpus: 4,
     memory_mib: 8192,
     workspace_gib: 20,
+    model: "",
+    model_used: null,
     phase: "running",
     activity: "working",
     turn: 2,
@@ -195,7 +198,15 @@ describe("Runs", () => {
     const at = "2026-10-05T10:00:00Z";
     const events: RunEvent[] = [
       { seq: 1, at, type: "accepted", deadline_at: at, permissions: "act" },
-      { seq: 2, at, type: "ready", session_id: "s", agent: "a", version: "1" },
+      {
+        seq: 2,
+        at,
+        type: "ready",
+        session_id: "s",
+        agent: "a",
+        version: "1",
+        model: null,
+      },
       { seq: 3, at, type: "prompt", turn: 1, command_id: "c1", text: "go" },
       { seq: 4, at, type: "message", turn: 1, text: "Sure, " },
       {

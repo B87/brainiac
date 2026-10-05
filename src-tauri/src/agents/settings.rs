@@ -116,6 +116,21 @@ fn partial_save(e: AppError) -> AppError {
     )
 }
 
+/// A model as typed: an alias such as `sonnet` or `opus[1m]`, or a full
+/// name; empty means Claude Code's default. Only the characters model
+/// names use, so the value is safe as an environment variable.
+pub fn check_model(text: &str) -> AppResult<String> {
+    let model = text.trim();
+    let plain =
+        |c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':' | '[' | ']');
+    if model.len() > 64 || !model.chars().all(plain) {
+        return Err(AppError::validation(
+            "The model is an alias such as sonnet, or a full model name, with no spaces.",
+        ));
+    }
+    Ok(model.to_string())
+}
+
 pub fn in_range(name: &str, value: u32, (min, max): (u32, u32)) -> AppResult<u32> {
     if (min..=max).contains(&value) {
         Ok(value)
@@ -197,6 +212,7 @@ impl AgentSettingsService {
         let cpus = in_range("CPUs", request.cpus, CPUS)?;
         let memory = in_range("Memory in MiB", request.memory_mib, MEMORY_MIB)?;
         let workspace = in_range("The workspace in GiB", request.workspace_gib, WORKSPACE_GIB)?;
+        let model = check_model(&request.model)?;
         let (expected, agreed, permissions) = (
             request.expected_version,
             request.sends_code_agreed,
@@ -215,7 +231,7 @@ impl AgentSettingsService {
                 let changed = tx.execute(
                     "UPDATE agent_profiles SET sends_code_agreed = ?2, permissions = ?3,
                        time_limit_minutes = ?4, cpus = ?5, memory_mib = ?6, workspace_gib = ?7,
-                       version = version + 1, updated_at = ?8
+                       model = ?10, version = version + 1, updated_at = ?8
                      WHERE id = ?1 AND version = ?9",
                     params![
                         PROFILE_ID,
@@ -226,7 +242,8 @@ impl AgentSettingsService {
                         memory,
                         workspace,
                         now,
-                        expected
+                        expected,
+                        model
                     ],
                 )?;
                 if changed == 0 {
@@ -632,7 +649,7 @@ const COLUMNS: &str = "p.id, h.socket, p.payment, p.secret_source, p.credential_
     p.source_approved, p.credential_pending, p.credential_saved_at, p.sends_code_agreed,
     p.permissions, p.time_limit_minutes, p.cpus, p.memory_mib, p.workspace_gib, p.image_id,
     p.image_recipe, p.image_built_at, p.version, p.test_passed_at, p.test_credential_revision,
-    p.test_image_id, p.test_engine_socket";
+    p.test_image_id, p.test_engine_socket, p.model";
 
 fn parse<T: serde::de::DeserializeOwned>(text: String) -> rusqlite::Result<T> {
     serde_json::from_value(serde_json::Value::String(text)).map_err(|e| {
@@ -703,6 +720,7 @@ fn from_row(r: &Row<'_>) -> rusqlite::Result<AgentProfile> {
         time_limit_minutes: r.get(10)?,
         cpus: r.get(11)?,
         memory_mib: r.get(12)?,
+        model: r.get(22)?,
         workspace_gib: r.get(13)?,
         image,
         test_passed_at,

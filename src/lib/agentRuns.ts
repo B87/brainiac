@@ -26,6 +26,32 @@ export function durationLabel(minutes: number): string {
   return `${Math.floor(hours)} h ${minutes % 60} min`;
 }
 
+/**
+ * Models offered as suggestions: Claude Code's aliases, which follow its
+ * releases; a full model name is accepted too. Empty is its default.
+ */
+export const MODEL_SUGGESTIONS = ["opus", "sonnet", "haiku", "opusplan"];
+
+/** A model as typed: trimmed; an alias or a name without spaces, up to 64. */
+export function parseModel(
+  text: string,
+): { value: string } | { error: string } {
+  const model = text.trim();
+  return model.length <= 64 && /^[A-Za-z0-9._:[\]-]*$/.test(model)
+    ? { value: model }
+    : {
+        error: "An alias such as sonnet, or a full model name, with no spaces.",
+      };
+}
+
+/** What a run's model shows: the one the agent reported, else the one asked for. */
+export function modelLabel(
+  run: Pick<AgentRun, "model" | "model_used">,
+): string {
+  if (run.model_used) return run.model_used;
+  return run.model === "" ? "Claude Code's default" : run.model;
+}
+
 /** The pane's request for a profile with some fields changed. */
 export function settingsRequest(
   profile: AgentProfile,
@@ -40,6 +66,7 @@ export function settingsRequest(
     cpus: profile.cpus,
     memory_mib: profile.memory_mib,
     workspace_gib: profile.workspace_gib,
+    model: profile.model,
     ...patch,
   };
 }

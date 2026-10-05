@@ -286,6 +286,7 @@ impl AgentRunService {
             request.workspace_gib,
             settings::WORKSPACE_GIB,
         )?;
+        let model = settings::check_model(&request.model)?;
         let (name, root) = self.repositories.locate(&request.repository_id).await?;
         let preview = self
             .artifacts
@@ -328,6 +329,7 @@ impl AgentRunService {
             cpus,
             memory_mib: memory,
             workspace_gib: workspace,
+            model: model.clone(),
         });
         // The row is written before the controller is asked, so a start
         // whose answer is lost is still a run Brainiac knows.
@@ -353,6 +355,7 @@ impl AgentRunService {
             prompt_id: format!("{run_id}-prompt-1"),
             prompt,
             credential,
+            model,
         };
         match self.runtime.start(start).await {
             Ok(status) => {
@@ -1239,6 +1242,8 @@ impl AgentRunService {
             prompt_id: format!("{run_id}-prompt-1"),
             prompt: TEST_PROMPT.to_string(),
             credential,
+            // The profile's model, so a name the plan or key cannot use fails here.
+            model: profile.model.clone(),
         };
         self.runtime.start(start).await?;
         Ok(())

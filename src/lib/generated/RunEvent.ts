@@ -8,7 +8,11 @@ import type { RunPlanEntry } from "./RunPlanEntry";
  * One entry of a run's conversation, as the journal recorded it:
  * normalized and filtered, never the agent's raw protocol.
  */
-export type RunEvent = { seq: number, at: string, } & ({ "type": "accepted", deadline_at: string, permissions: RunPermissions, } | { "type": "ready", session_id: string, agent: string, version: string, } | { "type": "prompt", turn: number, command_id: string, text: string, } | { "type": "message", turn: number, text: string, } | { "type": "thought", turn: number, text: string, } | { "type": "plan", turn: number, entries: Array<RunPlanEntry>, } | { "type": "tool", turn: number, tool_id: string, title: string | null, kind: string | null, status: string | null, locations: Array<string>, output: string | null, } | { "type": "permission" } & RunPermissionRequest | { "type": "permission_answered", permission_id: string, 
+export type RunEvent = { seq: number, at: string, } & ({ "type": "accepted", deadline_at: string, permissions: RunPermissions, } | { "type": "ready", session_id: string, agent: string, version: string, 
+/**
+ * The model the session opened with, when the agent reports it.
+ */
+model: string | null, } | { "type": "prompt", turn: number, command_id: string, text: string, } | { "type": "message", turn: number, text: string, } | { "type": "thought", turn: number, text: string, } | { "type": "plan", turn: number, entries: Array<RunPlanEntry>, } | { "type": "tool", turn: number, tool_id: string, title: string | null, kind: string | null, status: string | null, locations: Array<string>, output: string | null, } | { "type": "permission" } & RunPermissionRequest | { "type": "permission_answered", permission_id: string, 
 /**
  * `allowed`, `rejected`, or `cancelled`.
  */

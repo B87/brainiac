@@ -4,7 +4,11 @@ import type { RunPermissionRequest } from "./RunPermissionRequest";
 import type { RunPermissions } from "./RunPermissions";
 import type { RunPlanEntry } from "./RunPlanEntry";
 
-export type RunEventBody = { "type": "accepted", deadline_at: string, permissions: RunPermissions, } | { "type": "ready", session_id: string, agent: string, version: string, } | { "type": "prompt", turn: number, command_id: string, text: string, } | { "type": "message", turn: number, text: string, } | { "type": "thought", turn: number, text: string, } | { "type": "plan", turn: number, entries: Array<RunPlanEntry>, } | { "type": "tool", turn: number, tool_id: string, title: string | null, kind: string | null, status: string | null, locations: Array<string>, output: string | null, } | { "type": "permission" } & RunPermissionRequest | { "type": "permission_answered", permission_id: string, 
+export type RunEventBody = { "type": "accepted", deadline_at: string, permissions: RunPermissions, } | { "type": "ready", session_id: string, agent: string, version: string, 
+/**
+ * The model the session opened with, when the agent reports it.
+ */
+model: string | null, } | { "type": "prompt", turn: number, command_id: string, text: string, } | { "type": "message", turn: number, text: string, } | { "type": "thought", turn: number, text: string, } | { "type": "plan", turn: number, entries: Array<RunPlanEntry>, } | { "type": "tool", turn: number, tool_id: string, title: string | null, kind: string | null, status: string | null, locations: Array<string>, output: string | null, } | { "type": "permission" } & RunPermissionRequest | { "type": "permission_answered", permission_id: string, 
 /**
  * `allowed`, `rejected`, or `cancelled`.
  */

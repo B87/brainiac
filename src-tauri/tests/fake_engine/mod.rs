@@ -36,6 +36,8 @@ pub struct Engine {
     /// Each prompt the agents were sent.
     pub prompts: Vec<String>,
     pub launches: usize,
+    /// The model each launch asked for, in order.
+    pub models: Vec<String>,
     pub discarded: Vec<String>,
     /// The current image each collection and discard named, in order.
     pub fallback_images: Vec<Option<String>>,
@@ -84,6 +86,7 @@ impl Workloads for FakeEngine {
         let agent = tokio::spawn(fake_agent(self.clone(), work, stdin_rx, output_tx.clone()));
         let mut engine = self.get();
         engine.launches += 1;
+        engine.models.push(spec.model.clone());
         engine.containers.insert(
             spec.run_id.clone(),
             Container {
@@ -259,7 +262,10 @@ pub async fn fake_agent(
                 }
                 Some("session/new") => {
                     assert_eq!(message["params"]["mcpServers"], json!([]));
-                    say(json!({ "jsonrpc": "2.0", "id": id, "result": { "sessionId": "sess-1" } }))
+                    // The adapter names the models it offers and the one in use.
+                    say(json!({ "jsonrpc": "2.0", "id": id, "result": { "sessionId": "sess-1",
+                        "models": { "currentModelId": "claude-sonnet-4-5",
+                            "availableModels": [{ "modelId": "claude-sonnet-4-5", "name": "Sonnet" }] } } }))
                         .await;
                 }
                 Some("session/prompt") => {

@@ -21,7 +21,15 @@ title: string, start_commit: string, start_subject: string, payment: AgentPaymen
 /**
  * Where the credential came from, in words ("the Keychain").
  */
-credential_source: string, engine_name: string, image_name: string, permissions: RunPermissions, time_limit_minutes: number, cpus: number, memory_mib: number, workspace_gib: number, phase: RunPhase, activity: RunActivity, turn: number, outcome: RunOutcome | null, 
+credential_source: string, engine_name: string, image_name: string, permissions: RunPermissions, time_limit_minutes: number, cpus: number, memory_mib: number, workspace_gib: number, 
+/**
+ * The model the run asked for; empty for Claude Code's default.
+ */
+model: string, 
+/**
+ * The model the agent reported once its session opened.
+ */
+model_used: string | null, phase: RunPhase, activity: RunActivity, turn: number, outcome: RunOutcome | null, 
 /**
  * The engine confirmed that nothing of the run runs.
  */

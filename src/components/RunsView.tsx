@@ -6,6 +6,7 @@ import {
   foldTurns,
   GROUP_LABEL,
   groupOf,
+  modelLabel,
   type PermissionState,
   producedLabel,
   type RunGroup,
@@ -398,7 +399,9 @@ function RunView({
           <span className="mono" title={run.start_commit}>
             {run.start_commit.slice(0, 7)}
           </span>
-          <span>Claude Code · {run.engine_name}</span>
+          <span>
+            Claude Code · {modelLabel(run)} · {run.engine_name}
+          </span>
           <span>
             {run.permissions === "ask"
               ? "Ask before actions"
@@ -496,6 +499,18 @@ function RunView({
             {run.credential_source}
           </Fact>
           <Fact label="Network">Unrestricted</Fact>
+          <Fact label="Model">
+            {modelLabel(run)}
+            {run.model_used && run.model !== "" && (
+              <span className="text-muted"> (asked for {run.model})</span>
+            )}
+            {!run.model_used && run.model !== "" && (
+              <span className="text-muted">
+                {" "}
+                (not yet reported by the agent)
+              </span>
+            )}
+          </Fact>
           <Fact label="Limits">
             {run.time_limit_minutes} min · {run.cpus} CPUs ·{" "}
             {Math.round(run.memory_mib / 1024)} GB memory · {run.workspace_gib}{" "}

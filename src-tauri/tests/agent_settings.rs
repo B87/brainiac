@@ -101,6 +101,7 @@ fn settings_request(settings: &AgentSettings) -> SaveAgentSettingsRequest {
         cpus: p.cpus,
         memory_mib: p.memory_mib,
         workspace_gib: p.workspace_gib,
+        model: p.model.clone(),
     }
 }
 
@@ -422,6 +423,20 @@ async fn limits_are_checked_and_another_engine_forgets_the_image() {
         .unwrap_err()
         .message
         .contains("time limit"));
+
+    // The model: an alias or a name, or empty for Claude Code's default.
+    let mut spaced = settings_request(&s);
+    spaced.model = "claude sonnet".into();
+    let err = h.agents.save(spaced).await.unwrap_err();
+    assert!(err.message.contains("model"), "{err:?}");
+    let mut alias = settings_request(&s);
+    alias.model = " opus[1m] ".into();
+    let s = h.agents.save(alias).await.unwrap();
+    assert_eq!(s.profile.model, "opus[1m]");
+    let mut none = settings_request(&s);
+    none.model = String::new();
+    let s = h.agents.save(none).await.unwrap();
+    assert_eq!(s.profile.model, "");
 
     let mut missing = settings_request(&s);
     missing.engine_socket = Some(h.tmp.path().join("none.sock").display().to_string());

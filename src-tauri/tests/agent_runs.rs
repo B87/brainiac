@@ -202,6 +202,7 @@ impl Harness {
                 cpus: 2,
                 memory_mib: 2048,
                 workspace_gib: 20,
+                model: "sonnet".into(),
             })
             .await
             .unwrap()
@@ -276,10 +277,14 @@ async fn a_run_is_started_followed_finished_collected_and_reviewed() {
     assert!(run.credential_source.contains("Keychain"));
     assert_eq!(run.image_name, image::name_for(&image::recipe()));
     assert!(run.deadline_at.is_some());
-    // The key went to the agent, once.
+    // The key went to the agent, once, and the model it was asked for
+    // went with it; the session reported the one it opened with.
     let run = h.wait(&run.id, "the first turn ends", idle).await;
     assert_eq!(run.turn, 1);
     assert_eq!(h.engine.get().frames.len(), 1);
+    assert_eq!(h.engine.get().models, vec!["sonnet".to_string()]);
+    assert_eq!(run.model, "sonnet");
+    assert_eq!(run.model_used.as_deref(), Some("claude-sonnet-4-5"));
 
     // The journal is mirrored to the Mac, filtered, in order.
     let page = h.runs.events(&run.id, 0).await.unwrap();
@@ -288,7 +293,10 @@ async fn a_run_is_started_followed_finished_collected_and_reviewed() {
         .iter()
         .map(|e| match &e.body {
             RunEventBody::Accepted { .. } => "accepted",
-            RunEventBody::Ready { .. } => "ready",
+            RunEventBody::Ready { model, .. } => {
+                assert_eq!(model.as_deref(), Some("claude-sonnet-4-5"));
+                "ready"
+            }
             RunEventBody::Prompt { text, .. } => {
                 assert_eq!(text, "edit\nsecond line");
                 "prompt"
@@ -479,6 +487,7 @@ async fn a_start_the_controller_answers_with_an_error_is_a_refusal() {
             key: CredentialKey::AnthropicApiKey,
             value: KEY.into(),
         },
+        model: String::new(),
     };
     // A bundle that is not there: the controller answers, and made nothing.
     let missing = h.tmp.path().join("missing.bundle");
@@ -626,6 +635,7 @@ async fn a_start_the_settings_do_not_allow_is_refused_before_anything_is_read() 
             cpus: 2,
             memory_mib: 2048,
             workspace_gib: 20,
+            model: String::new(),
         })
         .await
         .unwrap_err();

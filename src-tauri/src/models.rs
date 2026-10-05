@@ -3398,6 +3398,9 @@ pub struct AgentProfile {
     pub cpus: u32,
     pub memory_mib: u32,
     pub workspace_gib: u32,
+    /// The model new runs ask Claude Code for: an alias such as `sonnet` or
+    /// a full name; empty for Claude Code's own default.
+    pub model: String,
     pub image: Option<AgentImage>,
     /// When the last test passed.
     pub test_passed_at: Option<String>,
@@ -3434,6 +3437,7 @@ pub struct SaveAgentSettingsRequest {
     pub cpus: u32,
     pub memory_mib: u32,
     pub workspace_gib: u32,
+    pub model: String,
 }
 
 /// Settings → Agents, **Pay with**: the token or key and where it comes from.
@@ -3605,6 +3609,10 @@ pub struct AgentRun {
     pub cpus: u32,
     pub memory_mib: u32,
     pub workspace_gib: u32,
+    /// The model the run asked for; empty for Claude Code's default.
+    pub model: String,
+    /// The model the agent reported once its session opened.
+    pub model_used: Option<String>,
     pub phase: RunPhase,
     pub activity: RunActivity,
     pub turn: u32,
@@ -3669,6 +3677,8 @@ pub struct StartRunRequest {
     pub cpus: u32,
     pub memory_mib: u32,
     pub workspace_gib: u32,
+    /// The model for this run; empty for Claude Code's default.
+    pub model: String,
 }
 
 /// One entry of a run's conversation, as the journal recorded it:
@@ -3702,6 +3712,8 @@ pub enum RunEventBody {
         session_id: String,
         agent: String,
         version: String,
+        /// The model the session opened with, when the agent reports it.
+        model: Option<String>,
     },
     Prompt {
         turn: u32,

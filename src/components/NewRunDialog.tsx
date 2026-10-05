@@ -2,6 +2,8 @@ import { useEffect, useId, useState } from "react";
 import {
   destinationLabel,
   durationLabel,
+  MODEL_SUGGESTIONS,
+  parseModel,
   paymentLabel,
   TIME_LIMITS,
 } from "../lib/agentRuns";
@@ -51,6 +53,7 @@ export default function NewRunDialog({
   const [cpus, setCpus] = useState(4);
   const [memoryGb, setMemoryGb] = useState(8);
   const [workspaceGb, setWorkspaceGb] = useState(20);
+  const [model, setModel] = useState("");
   const [limits, setLimits] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -68,6 +71,7 @@ export default function NewRunDialog({
         setCpus(s.profile.cpus);
         setMemoryGb(Math.round(s.profile.memory_mib / 1024));
         setWorkspaceGb(s.profile.workspace_gib);
+        setModel(s.profile.model);
       })
       .catch((e) => alive && setError(errorMessage(e)));
     return () => {
@@ -100,8 +104,17 @@ export default function NewRunDialog({
     { hour: "2-digit", minute: "2-digit" },
   );
 
+  const modelProblem = (() => {
+    const parsed = parseModel(model);
+    return "error" in parsed ? parsed.error : null;
+  })();
+
   const startRun = async () => {
     if (!preview) return;
+    if (modelProblem) {
+      setError(modelProblem);
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -114,6 +127,7 @@ export default function NewRunDialog({
         cpus,
         memory_mib: memoryGb * 1024,
         workspace_gib: workspaceGb,
+        model: model.trim(),
       });
       onStarted(run);
     } catch (e) {
@@ -272,6 +286,25 @@ export default function NewRunDialog({
           <span className="pb-1.5 text-[12px] text-muted">
             Ends at {ends}. Waiting for you and idle time count.
           </span>
+          <label className="flex flex-col gap-1">
+            <span className="font-medium">Model</span>
+            <input
+              className="field mono"
+              style={{ width: 160 }}
+              value={model}
+              list={`${id}-models`}
+              placeholder="Claude Code's default"
+              spellCheck={false}
+              aria-invalid={modelProblem ? true : undefined}
+              title={modelProblem ?? undefined}
+              onChange={(e) => setModel(e.target.value)}
+            />
+            <datalist id={`${id}-models`}>
+              {MODEL_SUGGESTIONS.map((m) => (
+                <option key={m} value={m} />
+              ))}
+            </datalist>
+          </label>
           <span className="flex-1" />
           <span className="pb-1.5 text-[12px] text-fg-2">
             {cpus} CPUs · {memoryGb} GB memory · {workspaceGb} GB workspace

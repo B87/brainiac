@@ -59,7 +59,8 @@ pub enum Command {
 pub trait RunSink: Send + Sync + 'static {
     /// Store an event in the journal, filtered.
     fn record(&self, body: EventBody);
-    fn ready(&self, session_id: &str);
+    /// The session is open, with the model the agent reported, if any.
+    fn ready(&self, session_id: &str, model: Option<&str>);
     fn activity(&self, activity: Activity, turn: u32);
     fn asked(&self, permission: PendingPermission);
     fn answered(&self, permission_id: &str);
@@ -345,14 +346,22 @@ impl<S: RunSink> Session<S> {
                     return self.fail("The agent opened a session without an ID.".into());
                 };
                 let (agent, version) = self.agent.clone();
+                // The adapter reports the models it offers and the one the
+                // session opened with; a name it could not use shows here as
+                // its default.
+                let model = result
+                    .pointer("/models/currentModelId")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
                 self.session_id = Some(session_id.to_string());
                 self.state = State::Idle;
                 self.sink.record(EventBody::Ready {
                     session_id: session_id.to_string(),
                     agent,
                     version,
+                    model: model.clone(),
                 });
-                self.sink.ready(session_id);
+                self.sink.ready(session_id, model.as_deref());
                 if let Some((command_id, text, done)) = self.first.take() {
                     let _ = done.send(self.prompt(command_id, text));
                 }
@@ -869,7 +878,7 @@ mod tests {
         fn record(&self, body: EventBody) {
             self.events.lock().unwrap().push(body);
         }
-        fn ready(&self, _: &str) {}
+        fn ready(&self, _: &str, _: Option<&str>) {}
         fn activity(&self, activity: Activity, _: u32) {
             *self.activity.lock().unwrap() = Some(activity);
         }

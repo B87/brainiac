@@ -8,4 +8,8 @@ export type StartRunRequest = { repository_id: string,
 /**
  * From the preview: the commit the start resolved to.
  */
-start_commit: string, prompt: string, permissions: RunPermissions, time_limit_minutes: number, cpus: number, memory_mib: number, workspace_gib: number, };
+start_commit: string, prompt: string, permissions: RunPermissions, time_limit_minutes: number, cpus: number, memory_mib: number, workspace_gib: number, 
+/**
+ * The model for this run; empty for Claude Code's default.
+ */
+model: string, };

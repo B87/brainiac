@@ -32,6 +32,7 @@ pub struct NewRun {
     pub cpus: u32,
     pub memory_mib: u32,
     pub workspace_gib: u32,
+    pub model: String,
 }
 
 /// One row, as stored.
@@ -55,6 +56,8 @@ pub struct RunRow {
     pub cpus: u32,
     pub memory_mib: u32,
     pub workspace_gib: u32,
+    pub model: String,
+    pub model_used: Option<String>,
     pub attempt: u32,
     pub phase: RunPhase,
     pub activity: RunActivity,
@@ -107,6 +110,8 @@ impl RunRow {
             cpus: new.cpus,
             memory_mib: new.memory_mib,
             workspace_gib: new.workspace_gib,
+            model: new.model,
+            model_used: None,
             attempt: 1,
             phase: RunPhase::Preparing,
             activity: RunActivity::Preparing,
@@ -156,6 +161,8 @@ impl RunRow {
             cpus: self.cpus,
             memory_mib: self.memory_mib,
             workspace_gib: self.workspace_gib,
+            model: self.model,
+            model_used: self.model_used,
             phase: self.phase,
             activity: self.activity,
             turn: self.turn,
@@ -233,6 +240,7 @@ pub struct Projection {
     pub stop_confirmed: bool,
     pub kept: bool,
     pub session_id: Option<String>,
+    pub model_used: Option<String>,
     pub accepted_at: String,
     pub deadline_at: String,
     pub ended_at: Option<String>,
@@ -252,6 +260,7 @@ impl Projection {
             stop_confirmed: status.stop_confirmed,
             kept: status.kept,
             session_id: status.session_id.clone(),
+            model_used: status.model.clone(),
             accepted_at: status.accepted_at.clone(),
             deadline_at: status.deadline_at.clone(),
             ended_at: status.ended_at.clone(),
@@ -283,7 +292,7 @@ const COLUMNS: &str = "id, repository_id, repository_name, title, start_commit, 
     turn, outcome, stop_confirmed, kept, session_id, accepted_at, deadline_at, ended_at,
     expired_asleep, error, pending_permissions, cursor, reported_at, cancel_requested,
     collection, collection_error, result_commit, changed_files, left_out, left_out_more,
-    snapshot_accepted, cleanup_pending, version, created_at, updated_at";
+    snapshot_accepted, cleanup_pending, version, created_at, updated_at, model, model_used";
 
 fn word<T: serde::Serialize>(value: &T) -> String {
     match serde_json::to_value(value) {
@@ -350,6 +359,8 @@ fn from_row(r: &Row<'_>) -> rusqlite::Result<RunRow> {
         version: r.get(43)?,
         created_at: r.get(44)?,
         updated_at: r.get(45)?,
+        model: r.get(46)?,
+        model_used: r.get(47)?,
     })
 }
 
@@ -378,9 +389,9 @@ pub fn insert(conn: &mut Connection, row: &RunRow) -> AppResult<()> {
         "INSERT INTO agent_runs (id, repository_id, repository_name, title, start_commit,
            start_subject, profile_id, payment, credential_source, engine_socket, engine_name,
            image_name, image_id, permissions, time_limit_minutes, cpus, memory_mib,
-           workspace_gib, created_at, updated_at)
+           workspace_gib, created_at, updated_at, model)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-           ?18, ?19, ?20)",
+           ?18, ?19, ?20, ?21)",
         params![
             row.id,
             row.repository_id,
@@ -402,6 +413,7 @@ pub fn insert(conn: &mut Connection, row: &RunRow) -> AppResult<()> {
             row.workspace_gib,
             row.created_at,
             row.updated_at,
+            row.model,
         ],
     )?;
     Ok(())
@@ -414,11 +426,13 @@ pub fn apply(conn: &mut Connection, id: &str, p: &Projection) -> AppResult<bool>
         "UPDATE agent_runs SET phase = ?2, activity = ?3, turn = ?4, outcome = ?5,
            stop_confirmed = ?6, kept = ?7, session_id = ?8, accepted_at = ?9, deadline_at = ?10,
            ended_at = ?11, expired_asleep = ?12, error = ?13, pending_permissions = ?14,
-           reported_at = ?15, attempt = ?16, version = version + 1, updated_at = ?15
+           reported_at = ?15, attempt = ?16, model_used = ?17, version = version + 1,
+           updated_at = ?15
          WHERE id = ?1 AND NOT (phase = ?2 AND activity = ?3 AND turn = ?4
            AND outcome IS ?5 AND stop_confirmed = ?6 AND kept = ?7 AND session_id IS ?8
            AND accepted_at IS ?9 AND deadline_at IS ?10 AND ended_at IS ?11
-           AND expired_asleep = ?12 AND error IS ?13 AND pending_permissions = ?14)",
+           AND expired_asleep = ?12 AND error IS ?13 AND pending_permissions = ?14
+           AND model_used IS ?17)",
         params![
             id,
             word(&p.phase),
@@ -436,6 +450,7 @@ pub fn apply(conn: &mut Connection, id: &str, p: &Projection) -> AppResult<bool>
             permissions,
             now_rfc3339(),
             p.attempt,
+            p.model_used,
         ],
     )?;
     if changed == 0 {

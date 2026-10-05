@@ -145,6 +145,10 @@ pub struct StartRun {
     pub prompt_id: String,
     pub prompt: String,
     pub credential: Credential,
+    /// The model to ask Claude Code for, as `ANTHROPIC_MODEL` in the
+    /// container's environment; empty for its default. Not a secret.
+    #[serde(default)]
+    pub model: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -276,6 +280,9 @@ pub struct RunStatus {
     pub kept: bool,
     pub permissions: Vec<PendingPermission>,
     pub session_id: Option<String>,
+    /// The model the agent reported when its session opened.
+    #[serde(default)]
+    pub model: Option<String>,
     pub accepted_at: String,
     /// When the time limit ends the run, by the wall clock at acceptance.
     pub deadline_at: String,
@@ -318,6 +325,9 @@ pub enum EventBody {
         session_id: String,
         agent: String,
         version: String,
+        /// The model the agent says the session opened with.
+        #[serde(default)]
+        model: Option<String>,
     },
     Prompt {
         turn: u32,
@@ -390,7 +400,12 @@ impl EventBody {
                 session_id,
                 agent,
                 version,
-            } => vec![session_id, agent, version],
+                model,
+            } => {
+                let mut texts = vec![session_id, agent, version];
+                texts.extend(model.as_mut());
+                texts
+            }
             EventBody::Prompt {
                 command_id, text, ..
             } => vec![command_id, text],

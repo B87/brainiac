@@ -73,6 +73,8 @@ export function CommitField<T>({
   unit,
   mono = false,
   width = 220,
+  placeholder,
+  suggestions,
 }: {
   label: string;
   hint?: ReactNode;
@@ -83,6 +85,9 @@ export function CommitField<T>({
   unit?: string;
   mono?: boolean;
   width?: number;
+  placeholder?: string;
+  /** Values offered while typing; anything else can still be typed. */
+  suggestions?: string[];
 }) {
   const id = useId();
   const saved = format(value);
@@ -145,6 +150,8 @@ export function CommitField<T>({
           } ${problem ? "border-conflict" : ""}`}
           style={{ width }}
           value={text}
+          placeholder={placeholder}
+          list={suggestions ? `${id}-suggestions` : undefined}
           spellCheck={false}
           inputMode={unit ? "numeric" : undefined}
           aria-invalid={problem ? true : undefined}
@@ -159,6 +166,13 @@ export function CommitField<T>({
             }
           }}
         />
+        {suggestions && (
+          <datalist id={`${id}-suggestions`}>
+            {suggestions.map((s) => (
+              <option key={s} value={s} />
+            ))}
+          </datalist>
+        )}
         {unit}
       </span>
     </div>

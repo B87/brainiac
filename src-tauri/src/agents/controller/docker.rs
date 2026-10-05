@@ -78,6 +78,9 @@ pub struct LaunchSpec {
     pub memory_mib: u32,
     /// The workspace's filesystem is made at exactly this size.
     pub workspace_gib: u32,
+    /// The model Claude Code is asked for, as `ANTHROPIC_MODEL`; empty for
+    /// its default. A model name is not a secret, unlike the credential.
+    pub model: String,
     /// Copied to `/opt/brainiac/input/input.bundle` before the container starts.
     pub bundle: PathBuf,
     /// Becomes `true` when the run is stopped while its container is being
@@ -285,6 +288,9 @@ impl DockerEngine {
             attach_stderr: Some(true),
             user: Some("node".to_string()),
             working_dir: Some("/workspace".to_string()),
+            // The model wins over the repository's settings, as Claude Code
+            // resolves it: this variable, then settings.json, then its default.
+            env: (!spec.model.is_empty()).then(|| vec![format!("ANTHROPIC_MODEL={}", spec.model)]),
             labels: Some(labels),
             host_config: Some(host),
             ..Default::default()
