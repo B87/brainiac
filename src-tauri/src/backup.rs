@@ -419,6 +419,9 @@ fn stage(
         "UPDATE agent_profiles SET image_id = NULL, image_recipe = NULL, image_built_at = NULL",
         [],
     )?;
+    // A restored remote host stays off until the user confirms its key
+    // (SPEC.md, Remote hosts).
+    tx.execute("UPDATE agent_hosts SET approved = 0 WHERE kind = 'ssh'", [])?;
     let vault_name = vault
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())

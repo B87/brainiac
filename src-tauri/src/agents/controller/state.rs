@@ -58,6 +58,21 @@ impl StateDir {
         self.root.join("runner.log")
     }
 
+    /// The input bundle a service controller was given for this run.
+    pub fn input_bundle(&self, run_id: &str) -> PathBuf {
+        self.run_dir(run_id).join("input.bundle")
+    }
+
+    /// The collector's bundle, written on this host before the Mac copies it.
+    pub fn result_bundle(&self, run_id: &str) -> PathBuf {
+        self.run_dir(run_id).join("result.bundle")
+    }
+
+    /// The guard's socket: emergency stop, without the Mac.
+    pub fn emergency_socket(&self) -> PathBuf {
+        self.root.join("emergency.sock")
+    }
+
     /// The token, created on first use. Refused when others can read it.
     pub fn token(&self) -> io::Result<String> {
         self.secret_file("token")

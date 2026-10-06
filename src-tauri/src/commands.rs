@@ -847,6 +847,61 @@ pub async fn preview_run_start(
 }
 
 pub type Runs = Arc<crate::agents::AgentRunService>;
+pub type AgentHosts = Arc<crate::agents::hosts::AgentHostService>;
+
+#[tauri::command]
+pub async fn preview_agent_host(
+    host: String,
+    port: u16,
+    hosts: State<'_, AgentHosts>,
+) -> AppResult<crate::models::AgentHostPreview> {
+    hosts.preview(&host, port).await
+}
+
+#[tauri::command]
+pub async fn approve_agent_host(
+    request: crate::models::ApproveAgentHostRequest,
+    hosts: State<'_, AgentHosts>,
+) -> AppResult<crate::models::AgentHost> {
+    hosts.approve(request).await
+}
+
+#[tauri::command]
+pub async fn deploy_agent_host(
+    id: String,
+    hosts: State<'_, AgentHosts>,
+) -> AppResult<crate::models::AgentHost> {
+    hosts.deploy(&id).await
+}
+
+#[tauri::command]
+pub async fn upgrade_agent_host(
+    id: String,
+    hosts: State<'_, AgentHosts>,
+) -> AppResult<crate::models::AgentHost> {
+    hosts.upgrade(&id).await
+}
+
+#[tauri::command]
+pub async fn remove_agent_host(id: String, hosts: State<'_, AgentHosts>) -> AppResult<()> {
+    hosts.remove(&id).await
+}
+
+#[tauri::command]
+pub async fn build_agent_host_image(
+    id: String,
+    hosts: State<'_, AgentHosts>,
+) -> AppResult<crate::models::AgentHost> {
+    hosts.build_image(&id).await
+}
+
+#[tauri::command]
+pub async fn test_agent_host(
+    id: String,
+    runs: State<'_, Runs>,
+) -> AppResult<crate::models::AgentTestResult> {
+    runs.test_host(&id).await
+}
 
 /// Runs: every run, newest first, and whether the controller is running.
 #[tauri::command]

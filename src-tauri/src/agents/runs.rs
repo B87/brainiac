@@ -93,6 +93,12 @@ pub struct AgentRunService {
     credentials: Arc<CredentialService>,
     artifacts: Arc<RunArtifacts>,
     runtime: Arc<RunRuntime>,
+    /// Remote hosts, when the app has them. Tests leave this empty.
+    hosts: Mutex<Option<Arc<super::hosts::AgentHostService>>>,
+    /// Whether each remote host answered last. This Mac uses `connected`.
+    links: Mutex<HashMap<String, bool>>,
+    /// A test run's controller, when it is not this Mac's.
+    test_runtimes: Mutex<HashMap<String, Arc<RunRuntime>>>,
     repositories: Arc<dyn RepositoryLookup>,
     emitter: RunEmitter,
     /// One sync task per live run, by run ID.
@@ -120,6 +126,9 @@ impl AgentRunService {
             credentials,
             artifacts,
             runtime,
+            hosts: Mutex::new(None),
+            links: Mutex::new(HashMap::new()),
+            test_runtimes: Mutex::new(HashMap::new()),
             repositories,
             emitter,
             syncing: Mutex::new(HashMap::new()),
@@ -144,14 +153,94 @@ impl AgentRunService {
         let runs = self.history.call(store::list).await?;
         let connected = self.connected.load(std::sync::atomic::Ordering::SeqCst);
         Ok(AgentRunList {
-            runs: runs.into_iter().map(|r| r.into_run(connected)).collect(),
+            runs: runs
+                .into_iter()
+                .map(|r| {
+                    let up = self.link_up(&r.host_id);
+                    r.into_run(up)
+                })
+                .collect(),
+            // The local controller. A remote host that is down does not
+            // change this.
             controller_running: connected,
         })
     }
 
     pub async fn get(&self, run_id: &str) -> AppResult<AgentRun> {
         let row = self.row(run_id).await?;
-        Ok(row.into_run(self.connected.load(std::sync::atomic::Ordering::SeqCst)))
+        let up = self.link_up(&row.host_id);
+        Ok(row.into_run(up))
+    }
+
+    fn link_up(&self, host_id: &str) -> bool {
+        if host_id.is_empty() || host_id == super::hosts::LOCAL_ID {
+            self.connected.load(std::sync::atomic::Ordering::SeqCst)
+        } else {
+            self.links
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(host_id)
+                .copied()
+                .unwrap_or(false)
+        }
+    }
+
+    fn set_link(&self, host_id: &str, up: bool) {
+        if host_id.is_empty() || host_id == super::hosts::LOCAL_ID {
+            self.connected
+                .store(up, std::sync::atomic::Ordering::SeqCst);
+        } else {
+            self.links
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .insert(host_id.to_string(), up);
+        }
+    }
+
+    async fn runtime_for(&self, host_id: &str) -> AppResult<Arc<RunRuntime>> {
+        if host_id.is_empty() || host_id == super::hosts::LOCAL_ID {
+            return Ok(Arc::clone(&self.runtime));
+        }
+        let hosts = self
+            .hosts
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+            .ok_or_else(|| AppError::dependency("Remote hosts are not available."))?;
+        hosts.runtime(host_id).await
+    }
+
+    /// The controller for this run. A run with no row (a local test) uses
+    /// this Mac.
+    async fn rt(&self, run_id: &str) -> AppResult<Arc<RunRuntime>> {
+        if let Some(runtime) = self
+            .test_runtimes
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(run_id)
+            .cloned()
+        {
+            return Ok(runtime);
+        }
+        let host = match self.row(run_id).await {
+            Ok(row) => row.host_id,
+            Err(_) => super::hosts::LOCAL_ID.to_string(),
+        };
+        self.runtime_for(&host).await
+    }
+
+    fn refuse_if_upgrading(&self, host_id: &str) -> AppResult<()> {
+        let upgrading = self
+            .hosts
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .is_some_and(|hosts| hosts.is_deploying(host_id));
+        if upgrading {
+            Err(upgrading_conflict())
+        } else {
+            Ok(())
+        }
     }
 
     async fn row(&self, run_id: &str) -> AppResult<RunRow> {
@@ -257,11 +346,35 @@ impl AgentRunService {
     // Starting
     // -----------------------------------------------------------------------
 
+    /// Attach the host service. The local controller is already set.
+    pub fn set_hosts(&self, hosts: Arc<super::hosts::AgentHostService>) {
+        *self.hosts.lock().unwrap_or_else(|p| p.into_inner()) = Some(hosts);
+    }
+
     /// New run, **Start run**: refuse what Settings still lacks, copy the
     /// start, read the credential, hand the run to the controller.
     pub async fn start(self: &Arc<Self>, request: StartRunRequest) -> AppResult<AgentRun> {
         let settings = self.settings.get().await?;
-        if let Some(first) = settings.missing.first() {
+        let host_id = if request.host_id.is_empty() {
+            super::hosts::LOCAL_ID.to_string()
+        } else {
+            request.host_id.clone()
+        };
+        let remote = host_id != super::hosts::LOCAL_ID;
+        if !remote {
+            if let Some(first) = settings.missing.first() {
+                return Err(AppError::validation(format!(
+                    "Settings → Agents is not ready: {first}"
+                )));
+            }
+        } else if let Some(first) = settings.missing.iter().find(|m| {
+            !m.starts_with("Choose where")
+                && !m.starts_with("Build the image")
+                && !m.starts_with("Rebuild the image")
+                && !m.starts_with("Test again")
+                && !m.starts_with("Pass a test")
+                && !m.starts_with("Run the test")
+        }) {
             return Err(AppError::validation(format!(
                 "Settings → Agents is not ready: {first}"
             )));
@@ -302,7 +415,49 @@ impl AgentRunService {
             .artifacts
             .export(&request.repository_id, &root, &preview.commit, &run_id)
             .await?;
-        let (socket, image) = engine_and_image(&profile)?;
+        let (socket, image_name, image_id, engine_name, host_name) = if remote {
+            let host = settings
+                .hosts
+                .iter()
+                .find(|h| h.id == host_id)
+                .cloned()
+                .ok_or_else(|| AppError::validation("Choose a host for the run."))?;
+            if !host.approved {
+                return Err(AppError::validation(
+                    "Confirm this host before starting a run on it.",
+                ));
+            }
+            if !host.installed || !host.loop_devices {
+                return Err(AppError::validation(
+                    "Deploy this host and build its image before starting a run.",
+                ));
+            }
+            let image = host.image.clone().filter(|i| i.current).ok_or_else(|| {
+                AppError::validation("Build the image on this host before starting a run.")
+            })?;
+            if !host.test_current {
+                return Err(AppError::validation(
+                    "Test this host before starting a run. The host's administrator can see the repository and the credential.",
+                ));
+            }
+            self.refuse_if_upgrading(&host_id)?;
+            (
+                "/var/run/docker.sock".to_string(),
+                image.name,
+                image.id,
+                host.engine_name.unwrap_or_else(|| "Docker".into()),
+                host.name,
+            )
+        } else {
+            let (socket, image) = engine_and_image(&profile)?;
+            (
+                socket.clone(),
+                image.name,
+                image.id,
+                super::engine::name_of(&socket),
+                "This Mac".to_string(),
+            )
+        };
         // The credential is read on the Mac, after everything that could be
         // refused, and goes once to the controller.
         let credential = self.credential(&profile).await?;
@@ -320,10 +475,12 @@ impl AgentRunService {
                 &profile.credential_source,
                 &settings::credential_owner(&profile.id),
             ),
+            host_id: host_id.clone(),
+            host_name,
             engine_socket: socket.clone(),
-            engine_name: super::engine::name_of(&socket),
-            image_name: image.name.clone(),
-            image_id: image.id.clone(),
+            engine_name,
+            image_name: image_name.clone(),
+            image_id,
             permissions: request.permissions,
             time_limit_minutes: time_limit,
             cpus,
@@ -344,7 +501,7 @@ impl AgentRunService {
             run_id: run_id.clone(),
             attempt: 1,
             engine_socket: socket,
-            image: image.name,
+            image: image_name.clone(),
             cpus,
             memory_mib: memory,
             workspace_gib: workspace,
@@ -357,10 +514,20 @@ impl AgentRunService {
             credential,
             model,
         };
-        match self.runtime.start(start).await {
+        let runtime = self.runtime_for(&host_id).await?;
+        if remote {
+            if let Err(e) = self.refuse_if_upgrading(&host_id) {
+                let (id, message) = (run_id.clone(), e.message.clone());
+                self.history
+                    .call(move |conn| store::mark_refused(conn, &id, &message))
+                    .await?;
+                self.emit(&run_id, false);
+                return Err(e);
+            }
+        }
+        match runtime.start(start).await {
             Ok(status) => {
-                self.connected
-                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                self.set_link(&host_id, true);
                 self.apply_status(&run_id, &status).await?;
             }
             // An answered error means nothing was made. An unanswered start
@@ -378,7 +545,7 @@ impl AgentRunService {
             }
             Err(StartError::Unanswered(e)) => {
                 tracing::warn!(error = %e, details = ?e.details, "a start was not answered");
-                self.mark_unreachable();
+                self.set_link(&host_id, false);
                 self.spawn_sync(&run_id);
                 return Err(e);
             }
@@ -397,6 +564,26 @@ impl AgentRunService {
             .await
             .ok()
             .and_then(|s| s.profile.image.map(|i| i.name))
+    }
+
+    async fn current_image_for(&self, run_id: &str) -> Option<String> {
+        let row = self.row(run_id).await.ok()?;
+        if row.host_id.is_empty() || row.host_id == super::hosts::LOCAL_ID {
+            return self.current_image().await;
+        }
+        self.settings
+            .get()
+            .await
+            .ok()?
+            .hosts
+            .into_iter()
+            .find_map(|h| {
+                if h.id == row.host_id {
+                    h.image.map(|i| i.name)
+                } else {
+                    None
+                }
+            })
     }
 
     /// The profile's token or key, read through the credentials layer.
@@ -456,22 +643,64 @@ impl AgentRunService {
                 self.spawn_sync(&row.id);
             }
         }
-        // A Settings test Brainiac quit in the middle of has no row: its run
-        // is discarded if the controller is still up (never started for it).
-        if self.runtime.running().await.is_some() {
-            if let Ok(runs) = self.runtime.runs().await {
-                for run in runs {
-                    let orphan =
-                        run.run_id.starts_with("test-") && !rows.iter().any(|r| r.id == run.run_id);
-                    if orphan {
-                        if run.phase != super::controller::protocol::Phase::Ended {
-                            let _ = self.runtime.stop(&run.run_id, StopReason::Cancel).await;
-                        }
-                        let _ = self.discard_at_controller(&run.run_id).await;
-                        let _ = self.artifacts.remove_run("test", &run.run_id).await;
-                    }
+        // A Settings test Brainiac quit in the middle of has no row. Stop it
+        // on whichever controller still has it: this Mac, and each installed
+        // host. One host that does not answer does not block the others.
+        let known: Vec<String> = rows.iter().map(|row| row.id.clone()).collect();
+        self.sweep_test_runs(self.runtime.as_ref(), &known).await;
+        let hosts = self.hosts.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        if let Some(hosts) = hosts {
+            if let Ok(ids) = hosts.installed_ids().await {
+                let mut tasks = Vec::new();
+                for id in ids {
+                    let hosts = Arc::clone(&hosts);
+                    let service = Arc::clone(self);
+                    let known = known.clone();
+                    tasks.push(tokio::spawn(async move {
+                        let Ok(runtime) = hosts.runtime(&id).await else {
+                            return;
+                        };
+                        service.sweep_test_runs(runtime.as_ref(), &known).await;
+                    }));
+                }
+                for task in tasks {
+                    let _ = task.await;
                 }
             }
+        }
+    }
+
+    /// Stop and discard a Settings test the controller still has and Brainiac
+    /// has no row for. Discard waits until the stop is confirmed, because a
+    /// live container is refused.
+    async fn sweep_test_runs(&self, runtime: &RunRuntime, known: &[String]) {
+        use super::controller::protocol::Phase;
+        let Ok(runs) = runtime.runs().await else {
+            return;
+        };
+        for run in runs {
+            let orphan =
+                run.run_id.starts_with("test-") && !known.iter().any(|id| id == &run.run_id);
+            if !orphan {
+                continue;
+            }
+            if run.phase != Phase::Ended || !run.stop_confirmed {
+                let _ = runtime.stop(&run.run_id, StopReason::Cancel).await;
+                for _ in 0..50 {
+                    let Ok(now) = runtime.runs().await else {
+                        break;
+                    };
+                    let Some(status) = now.into_iter().find(|r| r.run_id == run.run_id) else {
+                        break;
+                    };
+                    if status.phase == Phase::Ended && status.stop_confirmed {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+            }
+            let _ = runtime.discard(&run.run_id, None).await;
+            let _ = self.artifacts.remove_run("test", &run.run_id).await;
         }
     }
 
@@ -498,8 +727,16 @@ impl AgentRunService {
                 return;
             }
             // A Cancel asked for while the controller could not be reached.
+            let runtime = match self.runtime_for(&row.host_id).await {
+                Ok(runtime) => runtime,
+                Err(_) => {
+                    self.set_link(&row.host_id, false);
+                    tokio::time::sleep(RETRY_AFTER).await;
+                    continue;
+                }
+            };
             if row.cancel_requested && row.phase != RunPhase::Ended {
-                match self.runtime.stop(run_id, StopReason::Cancel).await {
+                match runtime.stop(run_id, StopReason::Cancel).await {
                     Ok(status) => {
                         let id = run_id.to_string();
                         let _ = self
@@ -526,7 +763,7 @@ impl AgentRunService {
                             .await;
                     }
                     Err(_) => {
-                        self.mark_unreachable();
+                        self.set_link(&row.host_id, false);
                         tokio::time::sleep(RETRY_AFTER).await;
                         continue;
                     }
@@ -540,10 +777,9 @@ impl AgentRunService {
             } else {
                 POLL_WAIT
             };
-            match self.runtime.events(run_id, row.cursor, wait).await {
+            match runtime.events(run_id, row.cursor, wait).await {
                 Ok(page) => {
-                    self.connected
-                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    self.set_link(&row.host_id, true);
                     let last = page.events.last().map(|e| e.seq);
                     if !page.events.is_empty() {
                         if let Err(e) = self.mirror(run_id, page.events).await {
@@ -555,7 +791,7 @@ impl AgentRunService {
                     let status = match self.status_of(run_id).await {
                         Ok(status) => status,
                         Err(_) => {
-                            self.mark_unreachable();
+                            self.set_link(&row.host_id, false);
                             tokio::time::sleep(RETRY_AFTER).await;
                             continue;
                         }
@@ -583,7 +819,7 @@ impl AgentRunService {
                         self.emit(run_id, false);
                         return;
                     }
-                    self.mark_unreachable();
+                    self.set_link(&row.host_id, false);
                     self.emit(run_id, false);
                     tokio::time::sleep(RETRY_AFTER).await;
                 }
@@ -591,13 +827,9 @@ impl AgentRunService {
         }
     }
 
-    fn mark_unreachable(&self) {
-        self.connected
-            .store(false, std::sync::atomic::Ordering::SeqCst);
-    }
-
     async fn status_of(&self, run_id: &str) -> AppResult<RunStatus> {
-        self.runtime
+        self.rt(run_id)
+            .await?
             .runs()
             .await?
             .into_iter()
@@ -722,9 +954,11 @@ impl AgentRunService {
         // One ID per prompt the user sends, so a retry of this call never
         // sends it twice; the controller keeps the first outcome.
         let command_id = format!("prompt-{}", uuid::Uuid::new_v4());
-        self.runtime.prompt(run_id, &command_id, text).await?;
-        self.connected
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.rt(run_id)
+            .await?
+            .prompt(run_id, &command_id, text)
+            .await?;
+        self.set_link(&row.host_id, true);
         self.refresh(run_id).await
     }
 
@@ -742,7 +976,8 @@ impl AgentRunService {
         // The same answer to the same request has the same ID, so it is
         // written to the agent once however often it is sent.
         let command_id = format!("permit-{}", short_hash(&format!("{permission_id}:{allow}")));
-        self.runtime
+        self.rt(run_id)
+            .await?
             .permit(run_id, &command_id, permission_id, allow)
             .await?;
         self.refresh(run_id).await
@@ -754,7 +989,12 @@ impl AgentRunService {
         if row.phase == RunPhase::Ended {
             return Ok(row.into_run(true));
         }
-        match self.runtime.stop(run_id, StopReason::Cancel).await {
+        match self
+            .rt(run_id)
+            .await?
+            .stop(run_id, StopReason::Cancel)
+            .await
+        {
             Ok(status) => {
                 self.apply_status(run_id, &status).await?;
                 self.spawn_sync(run_id);
@@ -762,7 +1002,7 @@ impl AgentRunService {
             }
             Err(e) if e.code == ErrorCode::Conflict || e.code == ErrorCode::Validation => Err(e),
             Err(_) => {
-                self.mark_unreachable();
+                self.set_link(&row.host_id, false);
                 let id = run_id.to_string();
                 self.history
                     .call(move |conn| store::set_cancel_requested(conn, &id, true))
@@ -780,7 +1020,11 @@ impl AgentRunService {
         if row.phase != RunPhase::Running {
             return Err(conflict("The run is not running."));
         }
-        let status = self.runtime.stop(run_id, StopReason::Finish).await?;
+        let status = self
+            .rt(run_id)
+            .await?
+            .stop(run_id, StopReason::Finish)
+            .await?;
         self.apply_status(run_id, &status).await?;
         self.spawn_sync(run_id);
         self.get(run_id).await
@@ -836,13 +1080,13 @@ impl AgentRunService {
         let out_dir = self.artifacts.run_dir(run_id);
         let collected = async {
             std::fs::create_dir_all(&out_dir)?;
-            let image = self.current_image().await;
+            let image = self.current_image_for(run_id).await;
             let manifest = self
-                .runtime
+                .rt(run_id)
+                .await?
                 .collect(run_id, include, &out_dir, image)
                 .await?;
-            self.connected
-                .store(true, std::sync::atomic::Ordering::SeqCst);
+            self.set_link(&row.host_id, true);
             if manifest.start != row.start_commit {
                 return Err(AppError::io(
                     "The collector reported another start than the run's.",
@@ -972,8 +1216,8 @@ impl AgentRunService {
     /// remove: its record went with an earlier discard whose answer was
     /// lost, or with the controller's folder.
     async fn discard_at_controller(&self, run_id: &str) -> AppResult<()> {
-        let image = self.current_image().await;
-        match self.runtime.discard(run_id, image).await {
+        let image = self.current_image_for(run_id).await;
+        match self.rt(run_id).await?.discard(run_id, image).await {
             Err(e) if e.code == ErrorCode::NotFound => {
                 tracing::warn!(run = %run_id, "the controller no longer knows the run; nothing left to remove");
                 Ok(())
@@ -1201,12 +1445,96 @@ impl AgentRunService {
                 Err(())
             }
         };
-        // The test's run is not kept, whatever happened.
-        let _ = self.runtime.discard(&run_id, Some(image.name)).await;
+        // Stop the container first when the follow-up never reached Cancel.
+        // Discard refuses a run that is still going.
+        self.release_test(&run_id, Some(image.name)).await;
         let _ = self.artifacts.remove_run("test", &run_id).await;
         let passed = outcome.is_ok();
         if passed {
             self.settings.record_test(&profile).await?;
+        }
+        Ok(AgentTestResult {
+            steps,
+            passed,
+            tested_at: now_rfc3339(),
+        })
+    }
+
+    /// **Test** on an approved host. The token or key is sent to that host.
+    pub async fn test_host(self: &Arc<Self>, host_id: &str) -> AppResult<AgentTestResult> {
+        let settings = self.settings.get().await?;
+        let host = settings
+            .hosts
+            .iter()
+            .find(|h| h.id == host_id)
+            .cloned()
+            .ok_or_else(|| AppError::validation("Choose a host."))?;
+        if !host.approved || !host.installed {
+            return Err(AppError::validation("Deploy this host before testing it."));
+        }
+        let image = host.image.clone().filter(|i| i.current).ok_or_else(|| {
+            AppError::validation("Build the image on this host before testing it.")
+        })?;
+        if !host.loop_devices {
+            return Err(AppError::validation(
+                "This host's Docker engine cannot attach loop devices, so it cannot take a run.",
+            ));
+        }
+        let profile = settings.profile.clone();
+        let hosts = self
+            .hosts
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+            .ok_or_else(|| AppError::dependency("Remote hosts are not available."))?;
+        if hosts.is_deploying(host_id) {
+            return Err(upgrading_conflict());
+        }
+        let _lease = hosts.begin_test(host_id);
+        let runtime = self.runtime_for(host_id).await?;
+        let run_id = format!("test-{}", uuid::Uuid::new_v4());
+        self.test_runtimes
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(run_id.clone(), runtime);
+        let mut steps = Vec::new();
+        let mut step = |name: &str, result: AppResult<String>| -> bool {
+            let passed = result.is_ok();
+            steps.push(AgentTestStep {
+                name: name.to_string(),
+                passed,
+                detail: match result {
+                    Ok(detail) if detail.is_empty() => None,
+                    Ok(detail) => Some(detail),
+                    Err(e) => Some(e.message),
+                },
+            });
+            passed
+        };
+        let started = self
+            .test_start(&profile, "/var/run/docker.sock", &image.name, &run_id)
+            .await;
+        let outcome = match started {
+            Ok(()) => {
+                step("Start a run", Ok(String::new()));
+                self.test_follow(&run_id, &mut step).await
+            }
+            Err(e) => {
+                step("Start a run", Err(e));
+                Err(())
+            }
+        };
+        self.release_test(&run_id, Some(image.name.clone())).await;
+        let _ = self.artifacts.remove_run("test", &run_id).await;
+        self.test_runtimes
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&run_id);
+        let passed = outcome.is_ok();
+        if passed {
+            hosts
+                .record_test(host_id, profile.credential.revision)
+                .await?;
         }
         Ok(AgentTestResult {
             steps,
@@ -1245,8 +1573,34 @@ impl AgentRunService {
             // The profile's model, so a name the plan or key cannot use fails here.
             model: profile.model.clone(),
         };
-        self.runtime.start(start).await?;
+        self.rt(run_id).await?.start(start).await?;
         Ok(())
+    }
+
+    /// Stop a Settings test and discard it. Discard is refused while the
+    /// container is still running, so this waits until the stop is confirmed.
+    /// A follow-up that returned early would otherwise leave the container.
+    async fn release_test(&self, run_id: &str, image: Option<String>) {
+        use super::controller::protocol::Phase;
+        let Ok(runtime) = self.rt(run_id).await else {
+            return;
+        };
+        let _ = runtime.stop(run_id, StopReason::Cancel).await;
+        for _ in 0..600 {
+            match runtime.runs().await {
+                Ok(runs) => {
+                    let Some(status) = runs.into_iter().find(|r| r.run_id == run_id) else {
+                        break;
+                    };
+                    if status.phase == Phase::Ended && status.stop_confirmed {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        let _ = runtime.discard(run_id, image).await;
     }
 
     /// After the test's turn ended: `None` once the run is running and idle,
@@ -1296,11 +1650,16 @@ impl AgentRunService {
         // the status can say so before the events are fetched.
         let mut settled = false;
         while tokio::time::Instant::now() < deadline {
-            let page = match self
-                .runtime
-                .events(run_id, cursor, Duration::from_secs(5))
-                .await
-            {
+            // A host test is followed on that host. `self.runtime` is this Mac,
+            // which does not know the run and would leave its container going.
+            let runtime = match self.rt(run_id).await {
+                Ok(runtime) => runtime,
+                Err(e) => {
+                    step("The agent answers a prompt", Err(e));
+                    return Err(());
+                }
+            };
+            let page = match runtime.events(run_id, cursor, Duration::from_secs(5)).await {
                 Ok(page) => page,
                 Err(e) => {
                     step("The agent answers a prompt", Err(e));
@@ -1356,7 +1715,10 @@ impl AgentRunService {
             return Err(());
         }
         let cancelled = async {
-            self.runtime.stop(run_id, StopReason::Cancel).await?;
+            self.rt(run_id)
+                .await?
+                .stop(run_id, StopReason::Cancel)
+                .await?;
             for _ in 0..600 {
                 let status = self.status_of(run_id).await?;
                 if status.phase == Phase::Ended && status.stop_confirmed {
@@ -1372,7 +1734,11 @@ impl AgentRunService {
         }
         let collected = async {
             let out = self.artifacts.run_dir(run_id);
-            let manifest = self.runtime.collect(run_id, Vec::new(), &out, None).await?;
+            let manifest = self
+                .rt(run_id)
+                .await?
+                .collect(run_id, Vec::new(), &out, None)
+                .await?;
             Ok(format!("{} changed file(s)", manifest.changed_files))
         }
         .await;
@@ -1381,6 +1747,13 @@ impl AgentRunService {
         }
         Ok(())
     }
+}
+
+fn upgrading_conflict() -> AppError {
+    AppError::new(
+        ErrorCode::Conflict,
+        "This host is being upgraded. Wait until that finishes.",
+    )
 }
 
 /// The profile's engine socket and image, which Settings' checks promised.

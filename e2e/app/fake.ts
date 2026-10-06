@@ -5,6 +5,7 @@
  * backend's own behavior is tested by `cargo test`.
  */
 import type {
+  AgentRun,
   AgentSettings,
   AppSnapshot,
   Cell,
@@ -30,6 +31,7 @@ import type {
   ResolveThreadRequest,
   ReviewDraft,
   ReviewDrafts,
+  RunEvent,
   RunStatementRequest,
   SaveDbConnectionRequest,
   SavedQuery,
@@ -421,6 +423,291 @@ function pullRequestDiff(req: PullRequestDiffRequest): PullRequestDiff {
   };
 }
 
+/** A minute offset from now, as RFC 3339: runs are shown against the clock. */
+const minutesFromNow = (m: number) =>
+  new Date(Date.now() + m * 60_000).toISOString();
+
+function sampleRun(fields: Partial<AgentRun>): AgentRun {
+  return {
+    id: "run-x",
+    repository_id: "repo-1",
+    repository_name: "parser",
+    title: "A run",
+    start_commit: "4e1c9a2".padEnd(40, "0"),
+    start_subject: "Fix currency labels",
+    payment: "claude_plan",
+    credential_source: "the Keychain",
+    host_id: "local",
+    host_name: "This Mac",
+    engine_name: "OrbStack",
+    image_name: "brainiac-claude:3f9c41e1a2b0",
+    permissions: "ask",
+    time_limit_minutes: 120,
+    cpus: 4,
+    memory_mib: 8192,
+    workspace_gib: 20,
+    model: "",
+    model_used: "claude-sonnet-5-5",
+    phase: "running",
+    activity: "working",
+    turn: 1,
+    outcome: null,
+    stop_confirmed: false,
+    kept: true,
+    accepted_at: minutesFromNow(-20),
+    deadline_at: minutesFromNow(100),
+    ended_at: null,
+    expired_asleep: false,
+    error: null,
+    pending_permissions: [],
+    connected: true,
+    reported_at: minutesFromNow(0),
+    cancel_requested: false,
+    collection: "none",
+    collection_error: null,
+    result_commit: null,
+    changed_files: null,
+    left_out: [],
+    left_out_more: 0,
+    snapshot_accepted: false,
+    cleanup_pending: null,
+    cursor: 0,
+    created_at: minutesFromNow(-20),
+    updated_at: minutesFromNow(0),
+    version: 1,
+    ...fields,
+  };
+}
+
+/** Runs in the states the Runs view shows: waiting, working, ended. */
+export function sampleRuns(): {
+  runs: AgentRun[];
+  events: Record<string, RunEvent[]>;
+} {
+  const asked = minutesFromNow(-4);
+  const permission = {
+    permission_id: "perm-1",
+    turn: 2,
+    title: "pnpm install",
+    kind: "execute",
+    detail: "rm -rf node_modules && pnpm install",
+    asked_at: asked,
+  };
+  const runs = [
+    sampleRun({
+      id: "run-ask",
+      title: "Fix the flaky invoice rounding test",
+      activity: "permission",
+      turn: 2,
+      pending_permissions: [permission],
+    }),
+    sampleRun({
+      id: "run-idle",
+      title: "Add pagination to the export endpoint",
+      activity: "idle",
+      turn: 1,
+    }),
+    sampleRun({
+      id: "run-review",
+      title: "Upgrade the date library",
+      phase: "ended",
+      activity: "ended",
+      outcome: "finished",
+      stop_confirmed: true,
+      accepted_at: minutesFromNow(-91),
+      ended_at: minutesFromNow(-60),
+      collection: "ready",
+      result_commit: "c".repeat(40),
+      changed_files: 2,
+    }),
+    sampleRun({
+      id: "run-interrupted",
+      title: "Migrate config to TOML",
+      phase: "ended",
+      activity: "ended",
+      outcome: "interrupted",
+      stop_confirmed: true,
+      accepted_at: minutesFromNow(-321),
+      ended_at: minutesFromNow(-300),
+      error: "OrbStack quit while the agent was working.",
+    }),
+  ];
+  const at = (m: number) => minutesFromNow(m);
+  const events: Record<string, RunEvent[]> = {
+    "run-ask": [
+      {
+        seq: 1,
+        at: at(-20),
+        type: "prompt",
+        turn: 1,
+        command_id: "c1",
+        text: "The invoice rounding test fails about one run in five. Find out why and fix it.",
+      },
+      {
+        seq: 2,
+        at: at(-18),
+        type: "tool",
+        turn: 1,
+        tool_id: "t1",
+        title: "src/billing/round.ts",
+        kind: "read",
+        status: "completed",
+        locations: ["src/billing/round.ts"],
+        output: null,
+      },
+      {
+        seq: 3,
+        at: at(-17),
+        type: "tool",
+        turn: 1,
+        tool_id: "t2",
+        title: "pnpm vitest run test/billing",
+        kind: "execute",
+        status: "completed",
+        locations: [],
+        output: "1 failed",
+      },
+      {
+        seq: 4,
+        at: at(-16),
+        type: "message",
+        turn: 1,
+        text: "Floating point turns 1.005 into 1.00499…, so half-cent totals round down. Should roundMoney keep its signature?",
+      },
+      {
+        seq: 5,
+        at: at(-16),
+        type: "turn_ended",
+        turn: 1,
+        reason: "end_turn",
+        message: null,
+      },
+      {
+        seq: 6,
+        at: at(-10),
+        type: "prompt",
+        turn: 2,
+        command_id: "c2",
+        text: "Yes, keep the signature.",
+      },
+      {
+        seq: 7,
+        at: at(-9),
+        type: "plan",
+        turn: 2,
+        entries: [
+          {
+            content: "Round in integer cents inside roundMoney",
+            status: "completed",
+          },
+          { content: "Reinstall dependencies", status: "in_progress" },
+          { content: "Run the billing tests 50 times", status: "pending" },
+        ],
+      },
+      {
+        seq: 8,
+        at: at(-8),
+        type: "tool",
+        turn: 2,
+        tool_id: "t3",
+        title: "src/billing/round.ts",
+        kind: "edit",
+        status: "completed",
+        locations: ["src/billing/round.ts"],
+        output: null,
+      },
+      {
+        seq: 9,
+        at: at(-5),
+        type: "message",
+        turn: 2,
+        text: "The lockfile doesn't match package.json. I'll reinstall the dependencies.",
+      },
+      { seq: 10, at: asked, type: "permission", ...permission },
+    ],
+    "run-idle": [
+      {
+        seq: 1,
+        at: at(-20),
+        type: "prompt",
+        turn: 1,
+        command_id: "c1",
+        text: "Add pagination to the export endpoint.",
+      },
+      {
+        seq: 2,
+        at: at(-12),
+        type: "tool",
+        turn: 1,
+        tool_id: "t1",
+        title: "src/export.ts",
+        kind: "edit",
+        status: "completed",
+        locations: ["src/export.ts"],
+        output: null,
+      },
+      {
+        seq: 3,
+        at: at(-11),
+        type: "message",
+        turn: 1,
+        text: "Export now pages by 500 rows.",
+      },
+      {
+        seq: 4,
+        at: at(-11),
+        type: "turn_ended",
+        turn: 1,
+        reason: "end_turn",
+        message: null,
+      },
+    ],
+    "run-review": [
+      {
+        seq: 1,
+        at: at(-90),
+        type: "prompt",
+        turn: 1,
+        command_id: "c1",
+        text: "Upgrade the date library.",
+      },
+      {
+        seq: 2,
+        at: at(-61),
+        type: "turn_ended",
+        turn: 1,
+        reason: "end_turn",
+        message: null,
+      },
+      {
+        seq: 3,
+        at: at(-60),
+        type: "ended",
+        outcome: "finished",
+        message: null,
+      },
+    ],
+    "run-interrupted": [
+      {
+        seq: 1,
+        at: at(-320),
+        type: "prompt",
+        turn: 1,
+        command_id: "c1",
+        text: "Migrate config to TOML.",
+      },
+      {
+        seq: 2,
+        at: at(-300),
+        type: "ended",
+        outcome: "interrupted",
+        message: null,
+      },
+    ],
+  };
+  return { runs, events };
+}
+
 let counter = 0;
 const uid = (prefix: string) => `${prefix}-${++counter}`;
 const versionOf = (text: string) => `v${text.length}-${++counter}`;
@@ -432,7 +719,18 @@ export class FakeBackend {
     { kind: "github", account: null, keychain_token: false },
     { kind: "bitbucket_cloud", account: null, keychain_token: true },
   ];
+  /** Runs and their conversations: none until a test asks for samples. */
+  runs: AgentRun[] = [];
+  runEvents: Record<string, RunEvent[]> = {};
+  useSampleRuns() {
+    const { runs, events } = sampleRuns();
+    this.runs = runs;
+    this.runEvents = events;
+    for (const r of runs)
+      this.emit("agent_run_changed", { run_id: r.id, deleted: false });
+  }
   /** Settings → Agents: nothing set up yet, OrbStack running. */
+  hostKey = "SHA256:preview";
   agentSettings: AgentSettings = {
     profile: {
       id: "claude-code",
@@ -456,6 +754,27 @@ export class FakeBackend {
     },
     plan_offered: true,
     missing: ["Choose where runs execute.", "Add an API key."],
+    hosts: [
+      {
+        id: "local",
+        kind: "local",
+        name: "This Mac",
+        ssh_user: null,
+        ssh_host: null,
+        ssh_port: null,
+        identity_path: null,
+        fingerprint: null,
+        approved: true,
+        installed: true,
+        engine_name: null,
+        loop_devices: false,
+        image: null,
+        test_current: false,
+        emergency_stop: null,
+        state_kept: false,
+        version: 1,
+      },
+    ],
   };
   /** Settings → Secrets, from the accounts and connections. */
   secrets(): SecretsOverview {
@@ -1191,6 +1510,73 @@ export class FakeBackend {
         };
       case "get_agent_settings":
         return this.agentSettings;
+      case "preview_agent_host":
+        return {
+          fingerprint: this.hostKey,
+          actions: [
+            "Create the user brainiac, in the docker group, if it does not exist.",
+          ],
+        };
+      case "approve_agent_host": {
+        const request = args.request as {
+          name: string;
+          user: string;
+          host: string;
+          port: number;
+          fingerprint: string;
+          accept_changed_key?: boolean;
+        };
+        const previous = this.agentSettings.hosts.find(
+          (h) =>
+            h.kind === "ssh" &&
+            h.ssh_user === request.user &&
+            h.ssh_host === request.host &&
+            h.ssh_port === request.port,
+        );
+        if (
+          previous?.fingerprint &&
+          previous.fingerprint !== request.fingerprint &&
+          !request.accept_changed_key
+        ) {
+          throw {
+            code: "VALIDATION",
+            message:
+              "This host's key changed. Approve the new fingerprint to continue.",
+          };
+        }
+        const saved = {
+          id: "host-1",
+          kind: "ssh",
+          name: request.name || request.host,
+          ssh_user: request.user,
+          ssh_host: request.host,
+          ssh_port: request.port,
+          identity_path: null,
+          fingerprint: request.fingerprint,
+          approved: true,
+          installed: false,
+          engine_name: null,
+          loop_devices: false,
+          image: null,
+          test_current: false,
+          emergency_stop: null,
+          state_kept: false,
+          version: 1,
+        };
+        this.agentSettings.hosts = [
+          ...this.agentSettings.hosts.filter((h) => h.kind === "local"),
+          saved,
+        ];
+        return saved;
+      }
+      case "deploy_agent_host": {
+        const host = this.agentSettings.hosts.find((h) => h.id === args.id);
+        if (host) {
+          host.installed = true;
+          host.emergency_stop = `ssh -p ${host.ssh_port} ${host.ssh_user}@${host.ssh_host} sudo -n -u brainiac /usr/local/bin/brainiac-runner emergency-stop --state /var/lib/brainiac-runner`;
+        }
+        return host;
+      }
       case "list_agent_engines":
         return [
           {
@@ -1235,7 +1621,70 @@ export class FakeBackend {
       case "agent_dockerfile":
         return "FROM node:22-bookworm-slim\n";
       case "list_agent_runs":
-        return { runs: [], controller_running: false };
+        return { runs: this.runs, controller_running: this.runs.length > 0 };
+      case "get_agent_run": {
+        const run = this.runs.find((r) => r.id === args.id);
+        if (!run) throw { code: "NOT_FOUND", message: "No such run." };
+        return run;
+      }
+      case "list_run_events": {
+        const events = this.runEvents[args.id as string] ?? [];
+        return {
+          run_id: args.id,
+          events: events.filter((e) => e.seq > (args.after as number)),
+          cursor: events.at(-1)?.seq ?? 0,
+        };
+      }
+      case "answer_run_permission": {
+        const run = this.runs.find((r) => r.id === args.id);
+        if (!run) throw { code: "NOT_FOUND", message: "No such run." };
+        Object.assign(run, {
+          activity: "working",
+          pending_permissions: [],
+          version: run.version + 1,
+        });
+        return run;
+      }
+      case "preview_run_start":
+        return {
+          repository_id: args.repositoryId,
+          commit: "4e1c9a2".padEnd(40, "0"),
+          subject: "Fix currency labels",
+          author: "Ada",
+          committed_at: NOW,
+          history_commits: 1284,
+        };
+      case "get_run_changes":
+        return {
+          run_id: args.id,
+          start_commit: "4e1c9a2".padEnd(40, "0"),
+          result_commit: "c".repeat(40),
+          files: [
+            {
+              path: "src/parse.ts",
+              old_path: null,
+              kind: "modified",
+              additions: 2,
+              deletions: 1,
+              is_binary: false,
+            },
+            {
+              path: "test/parse.test.ts",
+              old_path: null,
+              kind: "added",
+              additions: 25,
+              deletions: 0,
+              is_binary: false,
+            },
+          ],
+        };
+      case "get_run_diff":
+        return pullRequestDiff({
+          reference: "run",
+          path: (args.request as { path: string }).path,
+          old_path: null,
+          since: null,
+        } as unknown as PullRequestDiffRequest).diff;
       case "get_run_controller_status":
         return { running: false, pid: null, live_runs: 0 };
       case "test_agent_setup":

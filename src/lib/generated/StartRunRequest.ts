@@ -12,4 +12,8 @@ start_commit: string, prompt: string, permissions: RunPermissions, time_limit_mi
 /**
  * The model for this run; empty for Claude Code's default.
  */
-model: string, };
+model: string, 
+/**
+ * Empty means this Mac.
+ */
+host_id: string, };

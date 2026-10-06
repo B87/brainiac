@@ -846,6 +846,7 @@ export default function App() {
                   }
                   onNewRun={() => setNewRun({})}
                   onOpenRepo={openRepo}
+                  onOpenSettings={() => openSettings("agents")}
                   onError={setBanner}
                   onNotice={setNotice}
                 />

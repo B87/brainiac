@@ -16,7 +16,15 @@ use crate::models::{AppError, RunPermissions};
 
 /// Bumped when a request or response changes shape. A controller with
 /// another protocol is replaced only when it has no live runs.
-pub const PROTOCOL: u32 = 1;
+/// 2 adds bundle upload and download, remote image build, and the engine
+/// probe (docs/architecture.md, Remote hosts).
+pub const PROTOCOL: u32 = 2;
+
+/// One piece of a bundle copied to or from the controller. Hex doubles it,
+/// and the line must stay under [`MAX_LINE_BYTES`].
+pub const TRANSFER_CHUNK: usize = 256 * 1024;
+/// The same ceiling as a Git bundle the collector will accept.
+pub const MAX_TRANSFER: u64 = (1 << 33) - 1;
 
 /// The longest request or response line. A prompt is at most
 /// `MAX_PROMPT_BYTES`; a page of events is bounded by `MAX_PAGE_BYTES`.
@@ -78,6 +86,42 @@ pub enum Request {
     },
     /// Exit, only when no run is live: a newer Brainiac replaces it.
     Shutdown,
+    /// Write the run's input bundle into the controller's state directory,
+    /// one chunk at a time. `offset` is how many bytes are already there.
+    PutBundle {
+        run_id: String,
+        offset: u64,
+        total: u64,
+        hex: String,
+    },
+    /// Read `result.bundle` after [`Request::CollectHere`].
+    ReadBundle {
+        run_id: String,
+        offset: u64,
+        max: u32,
+    },
+    /// Collect into the controller's state directory, not a path on the Mac.
+    CollectHere {
+        run_id: String,
+        include: Vec<String>,
+        #[serde(default)]
+        image: Option<String>,
+    },
+    /// What the engine on this host is, and whether it can attach loop devices.
+    ProbeEngine {
+        socket: String,
+        #[serde(default)]
+        image: Option<String>,
+    },
+    /// Build the run image from a tar of Brainiac's Dockerfile and its files.
+    BuildImage {
+        socket: String,
+        tag: String,
+        hex: String,
+    },
+    /// Stop every live run's containers and keep them. The guard's socket
+    /// answers this when the Mac cannot.
+    EmergencyStop,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -184,9 +228,36 @@ pub enum Response {
         manifest: CollectManifest,
     },
     Done,
+    /// The input bundle is in place on this host. `path` is where Start reads it.
+    Uploaded {
+        path: String,
+        size: u64,
+    },
+    /// A slice of `result.bundle`. `hex` is empty when `offset == total`.
+    Chunk {
+        offset: u64,
+        total: u64,
+        hex: String,
+    },
+    Engine {
+        report: EngineReport,
+    },
+    Image {
+        id: String,
+    },
     Error {
         error: AppError,
     },
+}
+
+/// What a host's Docker engine said (SPEC.md, Remote hosts).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EngineReport {
+    pub name: String,
+    pub supported: bool,
+    pub problem: Option<String>,
+    /// `losetup` worked in a privileged container of the run image.
+    pub loop_devices: bool,
 }
 
 /// What the collector found (docs/architecture.md, Agent runs — v0.5,
@@ -450,6 +521,41 @@ impl EventBody {
 }
 
 /// IDs become file names and labels: letters, digits, dashes, underscores.
+pub fn encode_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0xf) as usize] as char);
+    }
+    out
+}
+
+pub fn decode_hex(text: &str) -> Option<Vec<u8>> {
+    if !text.len().is_multiple_of(2) {
+        return None;
+    }
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len() / 2);
+    let mut i = 0;
+    while i < bytes.len() {
+        let hi = from_hex(bytes[i])?;
+        let lo = from_hex(bytes[i + 1])?;
+        out.push((hi << 4) | lo);
+        i += 2;
+    }
+    Some(out)
+}
+
+fn from_hex(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
 pub fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 64

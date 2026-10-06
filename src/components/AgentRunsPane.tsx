@@ -14,6 +14,7 @@ import {
 import type { SaveAgentSettingsRequest } from "../lib/generated/SaveAgentSettingsRequest";
 import {
   type AgentEngine,
+  type AgentHost,
   type AgentPayment,
   type AgentSettings,
   type AgentTestResult,
@@ -280,6 +281,18 @@ export default function AgentRunsPane() {
           </button>
         </div>
       </Group>
+
+      <RemoteHosts
+        hosts={settings.hosts}
+        busy={busy}
+        onBusy={setBusy}
+        onError={setError}
+        onChanged={() =>
+          ipc
+            .getAgentSettings()
+            .then(setSettings, (e) => setError(errorMessage(e)))
+        }
+      />
 
       <Group label="Claude Code">
         <CredentialSection
@@ -823,5 +836,243 @@ function CredentialSection({
         )}
       </div>
     </div>
+  );
+}
+
+function RemoteHosts({
+  hosts,
+  busy,
+  onBusy,
+  onError,
+  onChanged,
+}: {
+  hosts: AgentHost[];
+  busy: boolean;
+  onBusy: (busy: boolean) => void;
+  onError: (message: string | null) => void;
+  onChanged: () => void;
+}) {
+  const [name, setName] = useState("");
+  const [user, setUser] = useState("");
+  const [host, setHost] = useState("");
+  const [port, setPort] = useState("22");
+  const [identity, setIdentity] = useState("");
+  const [preview, setPreview] = useState<{
+    fingerprint: string;
+    actions: string[];
+  } | null>(null);
+  const [confirmChange, setConfirmChange] = useState(false);
+  const remote = hosts.filter((h) => h.kind === "ssh");
+  const saved = remote.find(
+    (item) =>
+      item.ssh_user === user.trim() &&
+      item.ssh_host === host.trim() &&
+      (item.ssh_port ?? 22) === (Number(port) || 22),
+  );
+  const keyChanged =
+    confirmChange ||
+    (preview != null &&
+      saved?.fingerprint != null &&
+      saved.fingerprint !== preview.fingerprint);
+
+  const look = async () => {
+    onBusy(true);
+    onError(null);
+    setConfirmChange(false);
+    try {
+      setPreview(await ipc.previewAgentHost(host.trim(), Number(port) || 22));
+    } catch (e) {
+      setPreview(null);
+      onError(errorMessage(e));
+    } finally {
+      onBusy(false);
+    }
+  };
+
+  const approve = async (acceptChanged: boolean) => {
+    if (!preview) return;
+    onBusy(true);
+    onError(null);
+    try {
+      await ipc.approveAgentHost({
+        name: name.trim(),
+        user: user.trim(),
+        host: host.trim(),
+        port: Number(port) || 22,
+        identity_path: identity.trim() || null,
+        fingerprint: preview.fingerprint,
+        accept_changed_key: acceptChanged,
+      });
+      setPreview(null);
+      setConfirmChange(false);
+      onChanged();
+    } catch (e) {
+      const message = errorMessage(e);
+      if (!acceptChanged && message.includes("Approve the new fingerprint")) {
+        setConfirmChange(true);
+      }
+      onError(message);
+    } finally {
+      onBusy(false);
+    }
+  };
+
+  const run = async (action: () => Promise<unknown>) => {
+    onBusy(true);
+    onError(null);
+    try {
+      await action();
+      onChanged();
+    } catch (e) {
+      onError(errorMessage(e));
+    } finally {
+      onBusy(false);
+    }
+  };
+
+  return (
+    <Group label="Remote hosts">
+      <p className="m-0 text-[12px] text-muted">
+        A Linux machine with systemd and Docker. Brainiac installs its run
+        controller there. The host's administrator can see the repository and
+        the credential. The private key stays in your SSH setup.
+      </p>
+      {remote.map((item) => (
+        <div key={item.id} className="settings-group">
+          <div className="settings-row">
+            <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+              <span className="font-medium">{item.name}</span>
+              <Hint>
+                {item.ssh_user}@{item.ssh_host}:{item.ssh_port}
+                {item.fingerprint ? ` · ${item.fingerprint}` : ""}
+                {!item.approved ? " · waiting for confirmation" : ""}
+                {item.state_kept ? " · files remain on the host" : ""}
+              </Hint>
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-2 px-3 pb-3">
+            <button
+              type="button"
+              className="btn btn-sm"
+              disabled={busy || !item.approved}
+              onClick={() => void run(() => ipc.deployAgentHost(item.id))}
+            >
+              {item.installed ? "Deploy again" : "Deploy"}
+            </button>
+            <button
+              type="button"
+              className="btn btn-sm"
+              disabled={busy || !item.installed}
+              onClick={() => void run(() => ipc.upgradeAgentHost(item.id))}
+            >
+              Upgrade
+            </button>
+            <button
+              type="button"
+              className="btn btn-sm"
+              disabled={busy || !item.installed}
+              onClick={() => void run(() => ipc.buildAgentHostImage(item.id))}
+            >
+              Build image
+            </button>
+            <button
+              type="button"
+              className="btn btn-sm"
+              disabled={busy || !item.image}
+              onClick={() => void run(() => ipc.testAgentHost(item.id))}
+            >
+              Test
+            </button>
+            <button
+              type="button"
+              className="btn btn-sm"
+              disabled={busy}
+              onClick={() => void run(() => ipc.removeAgentHost(item.id))}
+            >
+              Remove
+            </button>
+          </div>
+          {item.emergency_stop && (
+            <p className="m-0 px-3 pb-3 font-mono text-[11px] text-muted">
+              Emergency stop, on the host: {item.emergency_stop}
+            </p>
+          )}
+        </div>
+      ))}
+      <div className="flex flex-col gap-2">
+        <div className="grid grid-cols-2 gap-2">
+          <input
+            className="field"
+            placeholder="Name"
+            aria-label="Host name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+          <input
+            className="field"
+            placeholder="SSH user"
+            aria-label="SSH user"
+            value={user}
+            onChange={(e) => setUser(e.target.value)}
+          />
+          <input
+            className="field"
+            placeholder="Host"
+            aria-label="SSH host"
+            value={host}
+            onChange={(e) => setHost(e.target.value)}
+          />
+          <input
+            className="field"
+            placeholder="Port"
+            aria-label="SSH port"
+            value={port}
+            onChange={(e) => setPort(e.target.value)}
+          />
+        </div>
+        <input
+          className="field"
+          placeholder="Identity file, optional absolute path"
+          aria-label="Identity file"
+          value={identity}
+          onChange={(e) => setIdentity(e.target.value)}
+        />
+        <button
+          type="button"
+          className="btn btn-sm self-start"
+          disabled={busy || !user.trim() || !host.trim()}
+          onClick={() => void look()}
+        >
+          Show host key
+        </button>
+        {preview && (
+          <div className="rounded-lg border px-3 py-2 text-[12.5px]">
+            <p className="m-0 font-medium">Host key {preview.fingerprint}</p>
+            <ul className="m-0 pl-5">
+              {preview.actions.map((action) => (
+                <li key={action}>{action}</li>
+              ))}
+            </ul>
+            <p className="m-0 text-muted">
+              Deploy runs these with sudo and no password prompt.
+            </p>
+            {keyChanged && (
+              <p className="m-0 text-muted">
+                This replaces the host key Brainiac had saved. SSH will not
+                connect until you approve it.
+              </p>
+            )}
+            <button
+              type="button"
+              className="btn btn-sm btn-primary mt-2"
+              disabled={busy}
+              onClick={() => void approve(keyChanged)}
+            >
+              {keyChanged ? "Approve the new fingerprint" : "Approve this key"}
+            </button>
+          </div>
+        )}
+      </div>
+    </Group>
   );
 }

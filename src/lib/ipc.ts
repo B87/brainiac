@@ -7,12 +7,15 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { ActivitySettings } from "./generated/ActivitySettings";
 import type { AgentAccessStatus } from "./generated/AgentAccessStatus";
 import type { AgentEngine } from "./generated/AgentEngine";
+import type { AgentHost } from "./generated/AgentHost";
+import type { AgentHostPreview } from "./generated/AgentHostPreview";
 import type { AgentRun } from "./generated/AgentRun";
 import type { AgentRunChangedEvent } from "./generated/AgentRunChangedEvent";
 import type { AgentRunList } from "./generated/AgentRunList";
 import type { AgentSettings } from "./generated/AgentSettings";
 import type { AgentTestResult } from "./generated/AgentTestResult";
 import type { AppError } from "./generated/AppError";
+import type { ApproveAgentHostRequest } from "./generated/ApproveAgentHostRequest";
 import type { AppSnapshot } from "./generated/AppSnapshot";
 import type { Cell } from "./generated/Cell";
 import type { CellValue } from "./generated/CellValue";
@@ -165,6 +168,8 @@ export type { ActivityItem } from "./generated/ActivityItem";
 export type { ActivityKind } from "./generated/ActivityKind";
 export type { AgentAccess } from "./generated/AgentAccess";
 export type { AgentEngine } from "./generated/AgentEngine";
+export type { AgentHost } from "./generated/AgentHost";
+export type { AgentHostPreview } from "./generated/AgentHostPreview";
 export type { AgentImage } from "./generated/AgentImage";
 export type { AgentPayment } from "./generated/AgentPayment";
 export type { AgentProfile } from "./generated/AgentProfile";
@@ -576,6 +581,21 @@ export const ipc = {
   testAgentSetup: () => invoke<AgentTestResult>("test_agent_setup"),
   getRunControllerStatus: () =>
     invoke<RunControllerStatus>("get_run_controller_status"),
+  /** The host key, before anything is saved. */
+  previewAgentHost: (host: string, port: number) =>
+    invoke<AgentHostPreview>("preview_agent_host", { host, port }),
+  /** Approve that fingerprint and save the host. */
+  approveAgentHost: (request: ApproveAgentHostRequest) =>
+    invoke<AgentHost>("approve_agent_host", { request }),
+  deployAgentHost: (id: string) =>
+    invoke<AgentHost>("deploy_agent_host", { id }),
+  upgradeAgentHost: (id: string) =>
+    invoke<AgentHost>("upgrade_agent_host", { id }),
+  removeAgentHost: (id: string) => invoke<void>("remove_agent_host", { id }),
+  buildAgentHostImage: (id: string) =>
+    invoke<AgentHost>("build_agent_host_image", { id }),
+  testAgentHost: (id: string) =>
+    invoke<AgentTestResult>("test_agent_host", { id }),
 
   /** Where a repository's pull requests come from; `forge: null` goes back to `origin`. */
   setRepositoryForge: (request: SetRepositoryForgeRequest) =>

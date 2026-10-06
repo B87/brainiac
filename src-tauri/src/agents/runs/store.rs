@@ -23,6 +23,8 @@ pub struct NewRun {
     pub profile_id: String,
     pub payment: AgentPayment,
     pub credential_source: String,
+    pub host_id: String,
+    pub host_name: String,
     pub engine_socket: String,
     pub engine_name: String,
     pub image_name: String,
@@ -47,6 +49,8 @@ pub struct RunRow {
     pub profile_id: String,
     pub payment: AgentPayment,
     pub credential_source: String,
+    pub host_id: String,
+    pub host_name: String,
     pub engine_socket: String,
     pub engine_name: String,
     pub image_name: String,
@@ -101,6 +105,8 @@ impl RunRow {
             profile_id: new.profile_id,
             payment: new.payment,
             credential_source: new.credential_source,
+            host_id: new.host_id,
+            host_name: new.host_name,
             engine_socket: new.engine_socket,
             engine_name: new.engine_name,
             image_name: new.image_name,
@@ -154,6 +160,8 @@ impl RunRow {
             start_subject: self.start_subject,
             payment: self.payment,
             credential_source: self.credential_source,
+            host_id: self.host_id,
+            host_name: self.host_name,
             engine_name: self.engine_name,
             image_name: self.image_name,
             permissions: self.permissions,
@@ -292,7 +300,8 @@ const COLUMNS: &str = "id, repository_id, repository_name, title, start_commit, 
     turn, outcome, stop_confirmed, kept, session_id, accepted_at, deadline_at, ended_at,
     expired_asleep, error, pending_permissions, cursor, reported_at, cancel_requested,
     collection, collection_error, result_commit, changed_files, left_out, left_out_more,
-    snapshot_accepted, cleanup_pending, version, created_at, updated_at, model, model_used";
+    snapshot_accepted, cleanup_pending, version, created_at, updated_at, model, model_used,
+    host_id, host_name";
 
 fn word<T: serde::Serialize>(value: &T) -> String {
     match serde_json::to_value(value) {
@@ -361,6 +370,8 @@ fn from_row(r: &Row<'_>) -> rusqlite::Result<RunRow> {
         updated_at: r.get(45)?,
         model: r.get(46)?,
         model_used: r.get(47)?,
+        host_id: r.get(48)?,
+        host_name: r.get(49)?,
     })
 }
 
@@ -387,11 +398,11 @@ pub fn get(conn: &mut Connection, id: &str) -> AppResult<Option<RunRow>> {
 pub fn insert(conn: &mut Connection, row: &RunRow) -> AppResult<()> {
     conn.execute(
         "INSERT INTO agent_runs (id, repository_id, repository_name, title, start_commit,
-           start_subject, profile_id, payment, credential_source, engine_socket, engine_name,
-           image_name, image_id, permissions, time_limit_minutes, cpus, memory_mib,
-           workspace_gib, created_at, updated_at, model)
+           start_subject, profile_id, payment, credential_source, host_id, host_name,
+           engine_socket, engine_name, image_name, image_id, permissions, time_limit_minutes,
+           cpus, memory_mib, workspace_gib, created_at, updated_at, model)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-           ?18, ?19, ?20, ?21)",
+           ?18, ?19, ?20, ?21, ?22, ?23)",
         params![
             row.id,
             row.repository_id,
@@ -402,6 +413,8 @@ pub fn insert(conn: &mut Connection, row: &RunRow) -> AppResult<()> {
             row.profile_id,
             row.payment.as_str(),
             row.credential_source,
+            row.host_id,
+            row.host_name,
             row.engine_socket,
             row.engine_name,
             row.image_name,

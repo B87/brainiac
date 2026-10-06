@@ -90,6 +90,7 @@ impl Harness {
             socket: self.socket(),
             idle_exit: None,
             spawn_guard: false,
+            service: false,
         };
         let engine = self.engine.clone();
         self.server = tokio::spawn(async move {
@@ -595,6 +596,7 @@ async fn a_run_on_a_real_engine() {
         socket: tmp.path().join("c").join("runner.sock"),
         idle_exit: None,
         spawn_guard: false,
+        service: false,
     };
     let server = tokio::spawn(async move { serve(config, DockerEngine::new()).await.unwrap() });
     let runtime = RunRuntime::attach(state, tmp.path().join("c").join("runner.sock"));
@@ -1030,4 +1032,44 @@ async fn a_finished_run_is_collected_as_one_snapshot_on_the_start() {
     // The temporary folder can be removed again.
     let secret = h.tmp.path().join("volumes").join("run-1").join("secret");
     std::fs::set_permissions(&secret, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+}
+
+/// One host that accepts a connection and never answers does not delay
+/// another host's status. Each runtime has its own timeout.
+#[tokio::test]
+async fn a_stuck_host_does_not_block_another() {
+    let tmp = tempfile::tempdir().unwrap();
+    let slow_dir = StateDir::new(tmp.path().join("slow"));
+    let fast_dir = StateDir::new(tmp.path().join("fast"));
+    slow_dir.ensure().unwrap();
+    fast_dir.ensure().unwrap();
+    let slow_sock = tmp.path().join("slow.sock");
+    let fast_sock = tmp.path().join("fast.sock");
+    let slow_listener = tokio::net::UnixListener::bind(&slow_sock).unwrap();
+    let fast_listener = tokio::net::UnixListener::bind(&fast_sock).unwrap();
+    tokio::spawn(async move {
+        loop {
+            if let Ok((stream, _)) = slow_listener.accept().await {
+                std::mem::forget(stream);
+            }
+        }
+    });
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = fast_listener.accept().await {
+            drop(stream);
+        }
+    });
+    let slow =
+        RunRuntime::attach(slow_dir, slow_sock).with_call_timeout(Duration::from_millis(300));
+    let fast =
+        RunRuntime::attach(fast_dir, fast_sock).with_call_timeout(Duration::from_millis(300));
+    let started = std::time::Instant::now();
+    let (slow_result, fast_result) = tokio::join!(slow.runs(), fast.runs());
+    assert!(fast_result.is_err());
+    assert!(slow_result.is_err());
+    assert!(
+        started.elapsed() < Duration::from_millis(500),
+        "the stuck host held the other for {:?}",
+        started.elapsed()
+    );
 }

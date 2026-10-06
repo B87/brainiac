@@ -3421,6 +3421,64 @@ pub struct AgentSettings {
     pub plan_offered: bool,
     /// What still stops a run from starting, in the order to do it.
     pub missing: Vec<String>,
+    /// This Mac, then every remote host (SPEC.md, Remote hosts).
+    pub hosts: Vec<AgentHost>,
+}
+
+/// A machine that can run an agent (SPEC.md, Remote hosts). Never a private
+/// key and never the agent's token.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AgentHost {
+    pub id: String,
+    /// `local` or `ssh`.
+    pub kind: String,
+    pub name: String,
+    pub ssh_user: Option<String>,
+    pub ssh_host: Option<String>,
+    pub ssh_port: Option<u16>,
+    pub identity_path: Option<String>,
+    /// The host key the user approved.
+    pub fingerprint: Option<String>,
+    /// The user confirmed this host. A restored host waits until they do.
+    pub approved: bool,
+    /// The controller Deploy installed, once it has answered.
+    pub installed: bool,
+    pub engine_name: Option<String>,
+    /// The engine can attach the workspace's loop devices.
+    pub loop_devices: bool,
+    pub image: Option<AgentImage>,
+    pub test_current: bool,
+    /// A command the host's administrator can run to stop containers.
+    pub emergency_stop: Option<String>,
+    /// Remove finished, and the host still holds a container or a volume.
+    pub state_kept: bool,
+    #[ts(type = "number")]
+    pub version: i64,
+}
+
+/// The host key a new host presented, before anything is saved.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AgentHostPreview {
+    pub fingerprint: String,
+    /// What Deploy will run with `sudo`, shown first.
+    pub actions: Vec<String>,
+}
+
+/// Approve a host key and save the host.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ApproveAgentHostRequest {
+    pub name: String,
+    pub user: String,
+    pub host: String,
+    pub port: u16,
+    pub identity_path: Option<String>,
+    /// The fingerprint the preview showed.
+    pub fingerprint: String,
+    /// Set when the host already has a different fingerprint.
+    pub accept_changed_key: bool,
 }
 
 /// Settings → Agents, everything but the token or key.
@@ -3602,6 +3660,8 @@ pub struct AgentRun {
     pub payment: AgentPayment,
     /// Where the credential came from, in words ("the Keychain").
     pub credential_source: String,
+    pub host_id: String,
+    pub host_name: String,
     pub engine_name: String,
     pub image_name: String,
     pub permissions: RunPermissions,
@@ -3679,6 +3739,9 @@ pub struct StartRunRequest {
     pub workspace_gib: u32,
     /// The model for this run; empty for Claude Code's default.
     pub model: String,
+    /// Empty means this Mac.
+    #[serde(default)]
+    pub host_id: String,
 }
 
 /// One entry of a run's conversation, as the journal recorded it:

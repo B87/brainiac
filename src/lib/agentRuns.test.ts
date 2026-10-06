@@ -1,13 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
   activityLabel,
+  activityTone,
   durationLabel,
   engineSummary,
   foldTurns,
   groupOf,
   imageSummary,
+  listResult,
+  listWhen,
   producedLabel,
   settingsRequest,
+  spanLabel,
   timeLeft,
   turnSummary,
   visibilityLabel,
@@ -92,6 +96,8 @@ describe("Runs", () => {
     start_subject: "Start",
     payment: "api_key",
     credential_source: "the Keychain",
+    host_id: "local",
+    host_name: "This Mac",
     engine_name: "OrbStack",
     image_name: "brainiac-claude:abc",
     permissions: "ask",
@@ -132,7 +138,9 @@ describe("Runs", () => {
 
   it("groups runs by what they wait for", () => {
     expect(groupOf(run)).toBe("active");
+    expect(groupOf({ ...run, activity: "preparing" })).toBe("active");
     expect(groupOf({ ...run, activity: "permission" })).toBe("needs_you");
+    expect(groupOf({ ...run, activity: "idle" })).toBe("needs_you");
     expect(groupOf({ ...run, activity: "plan_limit" })).toBe("needs_you");
     const ended: AgentRun = {
       ...run,
@@ -142,9 +150,19 @@ describe("Runs", () => {
       stop_confirmed: true,
     };
     expect(groupOf({ ...ended, collection: "collecting" })).toBe("ended");
-    expect(groupOf({ ...ended, collection: "ready" })).toBe("needs_you");
+    expect(groupOf({ ...ended, collection: "ready" })).toBe("review");
+    expect(groupOf({ ...ended, collection: "no_changes" })).toBe("ended");
+    const leftOut = [{ path: "out.log", reason: "ignored by .gitignore" }];
+    expect(groupOf({ ...ended, collection: "ready", left_out: leftOut })).toBe(
+      "needs_you",
+    );
     expect(
-      groupOf({ ...ended, collection: "ready", snapshot_accepted: true }),
+      groupOf({
+        ...ended,
+        collection: "ready",
+        left_out: leftOut,
+        snapshot_accepted: true,
+      }),
     ).toBe("review");
     expect(groupOf({ ...ended, collection: "failed" })).toBe("needs_you");
     expect(groupOf({ ...ended, outcome: "interrupted" })).toBe("needs_you");
@@ -154,7 +172,10 @@ describe("Runs", () => {
   });
 
   it("says what the agent is doing and what the run produced", () => {
-    expect(activityLabel(run)).toBe("Working, turn 2");
+    expect(activityLabel(run)).toBe("Working · turn 2");
+    expect(activityTone(run)).toBe("blue");
+    expect(activityTone({ ...run, activity: "idle" })).toBe("amber");
+    expect(activityTone({ ...run, connected: false })).toBe("dashed");
     expect(activityLabel({ ...run, activity: "idle" })).toBe(
       "Ready for your prompt",
     );
@@ -169,17 +190,39 @@ describe("Runs", () => {
     expect(producedLabel(run)).toBeNull();
     expect(
       producedLabel({ ...run, collection: "ready", changed_files: 1 }),
-    ).toBe("Ready to review, 1 file");
+    ).toBe("Ready to review · 1 file");
     expect(visibilityLabel(run)).toBeNull();
     expect(visibilityLabel({ ...run, cancel_requested: true })).toBe(
       "Cancel requested",
     );
+    expect(visibilityLabel({ ...run, connected: false })).toBe(
+      "Last reported: working · turn 2",
+    );
+    const now = new Date("2026-10-05T10:40:00Z").getTime();
+    expect(listWhen(run, now)).toMatch(/^40 min · ends /);
     expect(
-      visibilityLabel(
-        { ...run, connected: false },
-        new Date("2026-10-05T10:40:00Z").getTime(),
+      listWhen(
+        {
+          ...run,
+          activity: "permission",
+          pending_permissions: [
+            {
+              permission_id: "p",
+              turn: 2,
+              title: "npm install",
+              kind: "execute",
+              detail: null,
+              asked_at: "2026-10-05T10:36:00Z",
+            },
+          ],
+        },
+        now,
       ),
-    ).toMatch(/^Last reported: /);
+    ).toMatch(/^asked 4 min ago · ends /);
+    expect(listResult({ ...run, phase: "ended", stop_confirmed: true })).toBe(
+      "Work kept · not collected",
+    );
+    expect(spanLabel(70 * 60_000)).toBe("1 h 10 min");
     expect(
       timeLeft(
         "2026-10-05T11:00:00Z",

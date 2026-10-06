@@ -21,7 +21,7 @@ title: string, start_commit: string, start_subject: string, payment: AgentPaymen
 /**
  * Where the credential came from, in words ("the Keychain").
  */
-credential_source: string, engine_name: string, image_name: string, permissions: RunPermissions, time_limit_minutes: number, cpus: number, memory_mib: number, workspace_gib: number, 
+credential_source: string, host_id: string, host_name: string, engine_name: string, image_name: string, permissions: RunPermissions, time_limit_minutes: number, cpus: number, memory_mib: number, workspace_gib: number, 
 /**
  * The model the run asked for; empty for Claude Code's default.
  */

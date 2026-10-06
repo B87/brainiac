@@ -2,22 +2,35 @@ import { ask, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   activityLabel,
+  activityTone,
+  agoLabel,
   costLabel,
+  destinationLabel,
+  durationLabel,
   foldTurns,
   GROUP_LABEL,
   groupOf,
+  hostLabel,
+  isRemote,
+  leftOutUndecided,
+  listResult,
+  listWhen,
   modelLabel,
   type PermissionState,
+  permissionHeading,
   producedLabel,
+  producedTone,
   type RunGroup,
+  type RunTone,
   shortClock,
+  spanLabel,
   type ToolState,
   type Turn,
   timeLeft,
+  toolVerb,
   turnSummary,
   visibilityLabel,
 } from "../lib/agentRuns";
-import { absoluteTime } from "../lib/format";
 import {
   type AgentRun,
   type AppSnapshot,
@@ -29,9 +42,19 @@ import {
   type RunEvent,
   subscribe,
 } from "../lib/ipc";
-import { plural, splitPath } from "../lib/repo";
+import { KIND_LETTER, kindTone, plural, splitPath } from "../lib/repo";
 import DiffView from "./DiffView";
-import { ChevronDown, ChevronLeft, ChevronRight, PlusIcon } from "./icons";
+import {
+  CheckIcon,
+  ChevronDown,
+  ChevronRight,
+  CircleIcon,
+  ClockIcon,
+  CrossIcon,
+  PlusIcon,
+  ProgressIcon,
+  TerminalIcon,
+} from "./icons";
 import { RepoChip } from "./RepoChip";
 
 type Props = {
@@ -41,11 +64,21 @@ type Props = {
   onSelect: (id: string | null) => void;
   onNewRun: () => void;
   onOpenRepo: (id: string) => void;
+  onOpenSettings: () => void;
   onError: (text: string) => void;
   onNotice: (text: string) => void;
 };
 
 const GROUPS: RunGroup[] = ["needs_you", "review", "active", "ended"];
+
+/** The list's Show filter: Ended covers runs ready to review too. */
+type Show = "all" | "needs_you" | "active" | "ended";
+const SHOWN: Record<Show, RunGroup[]> = {
+  all: GROUPS,
+  needs_you: ["needs_you"],
+  active: ["active"],
+  ended: ["review", "ended"],
+};
 
 /** Runs (SPEC.md, The run): the list, or one run. */
 export default function RunsView(props: Props) {
@@ -59,6 +92,7 @@ export default function RunsView(props: Props) {
         snapshot={props.snapshot}
         onBack={() => props.onSelect(null)}
         onOpenRepo={props.onOpenRepo}
+        onOpenSettings={props.onOpenSettings}
         onError={props.onError}
         onNotice={props.onNotice}
       />
@@ -67,21 +101,82 @@ export default function RunsView(props: Props) {
   return <RunList {...props} />;
 }
 
+/** A run's state in words, tinted by tone; a dot while the agent is live. */
+function StatePill({
+  tone,
+  dot = false,
+  children,
+}: {
+  tone: RunTone;
+  dot?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <span className="state-pill" data-tone={tone}>
+      {dot && <span className="dot" aria-hidden="true" />}
+      {children}
+    </span>
+  );
+}
+
 function RunList({ snapshot, runs, onSelect, onNewRun }: Props) {
+  const [show, setShow] = useState<Show>("all");
   const [repoFilter, setRepoFilter] = useState<string>("");
+  const [hostFilter, setHostFilter] = useState<string>("");
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, []);
   const repos = useMemo(() => {
     const seen = new Map<string, string>();
     for (const r of runs ?? []) seen.set(r.repository_id, r.repository_name);
     return [...seen.entries()].sort((a, b) => a[1].localeCompare(b[1]));
   }, [runs]);
-  const shown = (runs ?? []).filter(
-    (r) => !repoFilter || r.repository_id === repoFilter,
+  const hosts = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const r of runs ?? [])
+      seen.set(isRemote(r) ? r.host_id : "local", hostLabel(r));
+    return [...seen.entries()];
+  }, [runs]);
+  const filtered = (runs ?? []).filter(
+    (r) =>
+      (!repoFilter || r.repository_id === repoFilter) &&
+      (!hostFilter || (isRemote(r) ? r.host_id : "local") === hostFilter),
   );
+  const needing = filtered.filter((r) => groupOf(r) === "needs_you").length;
+  const shown = filtered.filter((r) => SHOWN[show].includes(groupOf(r)));
   const byId = new Map(snapshot.repositories.map((r) => [r.id, r]));
+  const filters: Array<[Show, string]> = [
+    ["all", "All"],
+    ["needs_you", "Needs you"],
+    ["active", "Active"],
+    ["ended", "Ended"],
+  ];
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex h-12 shrink-0 items-center gap-3 border-b px-4 pl-lead">
+      <div className="flex min-h-12 shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b px-4 py-2 pl-lead">
         <h1 className="m-0 text-[15px] font-semibold">Runs</h1>
+        {(runs?.length ?? 0) > 0 && (
+          <fieldset className="seg seg-sm m-0 border-0" aria-label="Show">
+            {filters.map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                aria-pressed={show === value}
+                onClick={() => setShow(value)}
+              >
+                {label}
+                {value === "needs_you" && needing > 0 && (
+                  <>
+                    {" "}
+                    <span className="tabular text-muted">{needing}</span>
+                  </>
+                )}
+              </button>
+            ))}
+          </fieldset>
+        )}
         {repos.length > 1 && (
           <select
             className="field h-7 text-[12.5px]"
@@ -97,76 +192,151 @@ function RunList({ snapshot, runs, onSelect, onNewRun }: Props) {
             ))}
           </select>
         )}
+        {hosts.length > 1 && (
+          <select
+            className="field h-7 text-[12.5px]"
+            aria-label="Host"
+            value={hostFilter}
+            onChange={(e) => setHostFilter(e.target.value)}
+          >
+            <option value="">All hosts</option>
+            {hosts.map(([id, name]) => (
+              <option key={id} value={id}>
+                {name}
+              </option>
+            ))}
+          </select>
+        )}
         <span className="flex-1" />
-        <button type="button" className="btn btn-sm" onClick={onNewRun}>
+        <button
+          type="button"
+          className="btn btn-sm"
+          onClick={onNewRun}
+          title="New run (⌥⌘N)"
+        >
           <PlusIcon size={12} /> New run…
         </button>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
         {runs === null ? (
           <p className="text-muted">Loading…</p>
-        ) : shown.length === 0 ? (
-          <div className="flex flex-col items-start gap-2 py-8 text-[13px] text-fg-2">
+        ) : runs.length === 0 ? (
+          <div className="flex max-w-[560px] flex-col items-start gap-2 py-8 text-[13px] text-fg-2">
             <p className="m-0">
-              No runs yet. A run hands a repository's commit to Claude Code in a
-              container on this Mac; its work comes back as changes you review
-              before anything leaves Brainiac.
+              No runs yet. A run hands a commit of one of your repositories to
+              Claude Code in a container. Its work comes back as changes you
+              review before anything leaves Brainiac.
             </p>
             <button type="button" className="btn btn-sm" onClick={onNewRun}>
-              New run…
+              New run… <span className="kbd">⌥⌘N</span>
             </button>
           </div>
         ) : (
-          GROUPS.map((group) => {
-            const members = shown.filter((r) => groupOf(r) === group);
-            if (members.length === 0) return null;
-            return (
-              <section key={group} className="mb-4">
-                <h2 className="section-label m-0 px-1 pb-1">
-                  {GROUP_LABEL[group]}
-                  <span className="ml-2 text-muted">{members.length}</span>
-                </h2>
-                <ul className="m-0 flex list-none flex-col gap-px p-0">
-                  {members.map((run) => (
-                    <li key={run.id}>
-                      <button
-                        type="button"
-                        className="side-row h-auto w-full items-start gap-3 py-2 text-left"
-                        onClick={() => onSelect(run.id)}
-                      >
-                        <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                          <span className="truncate font-medium">
-                            {run.title}
-                          </span>
-                          <span className="flex flex-wrap items-center gap-x-2 text-[11.5px] text-muted">
-                            <RepoChip
-                              repo={byId.get(run.repository_id)}
-                              fallbackName={run.repository_name}
-                            />
-                            <span>{activityLabel(run)}</span>
-                            {producedLabel(run) && (
-                              <span>· {producedLabel(run)}</span>
-                            )}
-                            {visibilityLabel(run) && (
-                              <span className="text-conflict">
-                                · {visibilityLabel(run)}
-                              </span>
-                            )}
-                          </span>
-                        </span>
-                        <span className="shrink-0 text-[11.5px] text-muted">
-                          {shortClock(run.ended_at ?? run.created_at)}
-                        </span>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            );
-          })
+          <>
+            <div className="rounded-[10px] border">
+              <div
+                className="run-grid section-label border-b bg-header px-3 py-1.5"
+                aria-hidden="true"
+              >
+                <span>Run</span>
+                <span>Now</span>
+                <span>Result</span>
+                <span>When</span>
+              </div>
+              {shown.length === 0 && (
+                <p className="m-0 px-3 py-4 text-[12.5px] text-muted">
+                  No runs here.
+                </p>
+              )}
+              {GROUPS.map((group) => {
+                const members = shown.filter((r) => groupOf(r) === group);
+                if (members.length === 0) return null;
+                return (
+                  <section key={group} aria-label={GROUP_LABEL[group]}>
+                    <h2 className="m-0 border-b bg-panel px-3 py-1 text-[11.5px] font-semibold text-fg-2">
+                      {GROUP_LABEL[group]}
+                      <span className="ml-2 font-normal text-muted">
+                        {members.length}
+                      </span>
+                    </h2>
+                    <ul className="m-0 list-none p-0">
+                      {members.map((run) => (
+                        <li key={run.id} className="border-b last:border-b-0">
+                          <RunRow
+                            run={run}
+                            now={now}
+                            repo={byId.get(run.repository_id)}
+                            onOpen={() => onSelect(run.id)}
+                          />
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                );
+              })}
+            </div>
+            <p className="m-0 mt-3 text-[12px] text-muted">
+              Ended runs are removed 30 days after they end. Work that waits for
+              your decision stays until you decide.
+            </p>
+          </>
         )}
       </div>
     </div>
+  );
+}
+
+function RunRow({
+  run,
+  now,
+  repo,
+  onOpen,
+}: {
+  run: AgentRun;
+  now: number;
+  repo: AppSnapshot["repositories"][number] | undefined;
+  onOpen: () => void;
+}) {
+  const result = listResult(run);
+  const live = run.phase !== "ended";
+  const label = live && !run.connected ? visibilityLabel(run) : null;
+  return (
+    <button
+      type="button"
+      className="run-grid w-full px-3 py-2 text-left hover:bg-panel"
+      onClick={onOpen}
+    >
+      <span className="flex min-w-0 flex-col gap-0.5">
+        <span className="truncate font-medium">{run.title}</span>
+        <span className="flex min-w-0 items-center gap-1.5 text-[11.5px] text-muted">
+          <RepoChip repo={repo} fallbackName={run.repository_name} />
+          <span className="truncate">· Claude Code on {hostLabel(run)}</span>
+        </span>
+      </span>
+      <span className="flex min-w-0 flex-wrap items-center gap-1">
+        <StatePill tone={activityTone(run)} dot={live && run.connected}>
+          {label ?? activityLabel(run)}
+        </StatePill>
+        {run.cancel_requested && (
+          <StatePill tone="red">Cancel requested</StatePill>
+        )}
+      </span>
+      <span
+        className={`min-w-0 truncate text-[12px] ${
+          run.collection === "ready"
+            ? "text-clean"
+            : run.collection === "failed" ||
+                (run.kept && run.collection === "none" && !live)
+              ? "text-conflict"
+              : "text-fg-2"
+        }`}
+      >
+        {result ?? "—"}
+      </span>
+      <span className="min-w-0 truncate text-[12px] text-muted">
+        {listWhen(run, now)}
+      </span>
+    </button>
   );
 }
 
@@ -177,6 +347,7 @@ function RunView({
   snapshot,
   onBack,
   onOpenRepo,
+  onOpenSettings,
   onError,
   onNotice,
 }: {
@@ -184,6 +355,7 @@ function RunView({
   snapshot: AppSnapshot;
   onBack: () => void;
   onOpenRepo: (id: string) => void;
+  onOpenSettings: () => void;
   onError: (text: string) => void;
   onNotice: (text: string) => void;
 }) {
@@ -245,9 +417,10 @@ function RunView({
     );
   }, [initial.id, loadEvents]);
 
+  // A live run's clocks ("last update 3 s ago", the time left) move on.
   useEffect(() => {
     if (run.phase === "ended") return;
-    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    const timer = setInterval(() => setNow(Date.now()), 5_000);
     return () => clearInterval(timer);
   }, [run.phase]);
 
@@ -264,11 +437,15 @@ function RunView({
   };
 
   const cancel = async () => {
+    const message = run.connected
+      ? "Cancel this run? The agent stops, and its work so far is collected for review."
+      : "Cancel this run? Brainiac can't reach it now, so the cancel is sent when it reconnects. Until then, the time limit still ends the run.";
     if (
-      !(await ask(
-        "Cancel this run? The agent stops, and its work so far is collected for review.",
-        { title: "Cancel Run", kind: "warning", okLabel: "Cancel Run" },
-      ))
+      !(await ask(message, {
+        title: "Cancel Run",
+        kind: "warning",
+        okLabel: "Cancel Run",
+      }))
     )
       return;
     await act(() => ipc.cancelAgentRun(run.id));
@@ -287,18 +464,20 @@ function RunView({
     await act(() => ipc.discardAgentRun(run.id));
   };
   const remove = async () => {
+    const names = run.left_out.slice(0, 3).map((l) => l.path);
+    const more = run.left_out.length - names.length + run.left_out_more;
     const lost =
       run.kept && !run.snapshot_accepted
         ? run.collection === "failed" || run.collection === "none"
           ? " Its uncollected work is lost."
-          : run.left_out.length > 0
-            ? ` ${plural(run.left_out.length + run.left_out_more, "left-out file")} never added or accepted ${run.left_out.length === 1 ? "is" : "are"} lost.`
+          : names.length > 0
+            ? ` ${plural(names.length + more, "left-out file")} never added or accepted ${names.length + more === 1 ? "is" : "are"} lost: ${names.join(", ")}${more > 0 ? `, and ${more} more` : ""}.`
             : ""
         : "";
     if (
       !(await ask(
-        `Delete this run? The conversation, the review, and the stopped container with its files are removed.${lost}`,
-        { title: "Delete Run", kind: "warning", okLabel: "Delete" },
+        `Delete this run? Its conversation, the review, and the stopped container with its files are removed.${lost}`,
+        { title: "Delete Run", kind: "warning", okLabel: "Delete Run" },
       ))
     )
       return;
@@ -308,276 +487,625 @@ function RunView({
       return undefined;
     });
   };
+  const copyPatch = async () => {
+    try {
+      const patch = await ipc.copyRunPatch(run.id);
+      await navigator.clipboard?.writeText(patch);
+      onNotice("Patch copied");
+    } catch (e) {
+      onError(errorMessage(e));
+    }
+  };
+  const savePatch = async () => {
+    try {
+      const path = await saveDialog({
+        defaultPath: `${run.title.replace(/[^\w.-]+/g, "-").slice(0, 40) || "run"}.patch`,
+        filters: [{ name: "Patch", extensions: ["patch", "diff"] }],
+      });
+      if (!path) return;
+      await ipc.saveRunPatch(run.id, path);
+      onNotice("Patch saved");
+    } catch (e) {
+      onError(errorMessage(e));
+    }
+  };
 
   const repo = snapshot.repositories.find((r) => r.id === run.repository_id);
-  const produced = producedLabel(run);
-  const visibility = visibilityLabel(run, now);
-  const idle =
-    run.phase === "running" &&
-    (run.activity === "idle" || run.activity === "plan_limit");
   const live = run.phase !== "ended";
+  const idle =
+    live && (run.activity === "idle" || run.activity === "plan_limit");
   const collected =
     run.collection === "ready" || run.collection === "no_changes";
   const folded = useMemo(() => foldTurns(events), [events]);
   const reported = useMemo(() => reportedFiles(folded.turns), [folded]);
+  const finishTitle = !run.connected
+    ? "Possible once Brainiac reconnects"
+    : idle
+      ? "Stop the agent and collect its work"
+      : "Available when the turn ends";
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <header className="flex shrink-0 flex-col gap-2 border-b px-4 py-3 pl-lead">
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            className="btn btn-sm btn-ghost px-1.5"
-            aria-label="Back to runs"
-            onClick={onBack}
-          >
-            <ChevronLeft />
-          </button>
-          <h1 className="m-0 min-w-0 flex-1 truncate text-[15px] font-semibold">
-            {run.title}
-          </h1>
-          {live && (
-            <button
-              type="button"
-              className="btn btn-sm"
-              disabled={busy}
-              onClick={() => void cancel()}
+      <header className="flex shrink-0 flex-col border-b bg-header px-5 pt-3 pl-lead">
+        <div className="flex flex-wrap items-start gap-x-6 gap-y-2 pb-2">
+          <div className="flex min-w-0 flex-[999_1_380px] flex-col gap-1">
+            <nav
+              aria-label="Breadcrumb"
+              className="flex items-center gap-1 text-[12px] text-muted"
             >
-              Cancel run…
-            </button>
-          )}
-          {live && (
-            <button
-              type="button"
-              className="btn btn-sm btn-primary"
-              disabled={busy || !idle || !run.connected}
-              title={
-                idle
-                  ? "Stop the agent and collect its work"
-                  : "Possible while the agent waits for a prompt"
-              }
-              onClick={() => void finish()}
-            >
-              Finish and collect
-            </button>
-          )}
-          {!live &&
-            run.kept &&
-            run.collection === "none" &&
-            run.stop_confirmed && (
+              <button
+                type="button"
+                className="text-muted hover:text-fg"
+                onClick={onBack}
+              >
+                Runs
+              </button>
+              <span aria-hidden="true">›</span>
+              <span className="truncate">{run.repository_name}</span>
+            </nav>
+            <h1 className="selectable m-0 text-[17px] font-semibold leading-snug">
+              {run.title}
+            </h1>
+            <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1 text-[12px] text-fg-2">
+              <RepoChip
+                repo={repo}
+                fallbackName={run.repository_name}
+                onClick={repo ? () => onOpenRepo(repo.id) : undefined}
+              />
+              <span>
+                from{" "}
+                <code className="mono" title={run.start_commit}>
+                  {run.start_commit.slice(0, 7)}
+                </code>
+              </span>
+              <span>
+                Claude Code on {hostLabel(run)} · {modelLabel(run)}
+              </span>
+              <span>
+                {run.permissions === "ask"
+                  ? "Asks before actions"
+                  : "Acts without asking"}
+              </span>
+            </div>
+          </div>
+          <div className="flex flex-[1_1_auto] flex-wrap items-center justify-end gap-x-2.5 gap-y-2">
+            {live ? (
+              <LiveStatus run={run} now={now} />
+            ) : (
+              <EndedStatus run={run} turns={folded.turns.length} />
+            )}
+            {live && (
+              <button
+                type="button"
+                className="btn btn-sm text-conflict"
+                disabled={busy || run.cancel_requested}
+                onClick={() => void cancel()}
+              >
+                {run.cancel_requested ? "Cancel requested" : "Cancel run…"}
+              </button>
+            )}
+            {live && (
               <button
                 type="button"
                 className="btn btn-sm btn-primary"
-                disabled={busy}
-                onClick={() => void collect()}
+                disabled={busy || !idle || !run.connected}
+                title={finishTitle}
+                onClick={() => void finish()}
               >
-                Collect work
+                Finish and collect
               </button>
             )}
-          {!live && (
-            <button
-              type="button"
-              className="btn btn-sm"
-              disabled={busy || !run.stop_confirmed}
-              title={
-                run.stop_confirmed
-                  ? undefined
-                  : "Possible once the engine confirms the run stopped"
-              }
-              onClick={() => void remove()}
-            >
-              Delete run…
-            </button>
-          )}
+            {!live && run.collection === "ready" && (
+              <>
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() => void copyPatch()}
+                >
+                  Copy patch
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() => void savePatch()}
+                >
+                  Save patch…
+                </button>
+              </>
+            )}
+            {!live && (
+              <button
+                type="button"
+                className="btn btn-sm text-conflict"
+                disabled={busy || !run.stop_confirmed}
+                title={
+                  run.stop_confirmed
+                    ? undefined
+                    : "Possible once the engine confirms the run stopped"
+                }
+                onClick={() => void remove()}
+              >
+                Delete run…
+              </button>
+            )}
+          </div>
         </div>
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-fg-2">
-          <RepoChip
-            repo={repo}
-            fallbackName={run.repository_name}
-            onClick={repo ? () => onOpenRepo(repo.id) : undefined}
-          />
-          <span className="mono" title={run.start_commit}>
-            {run.start_commit.slice(0, 7)}
-          </span>
-          <span>
-            Claude Code · {modelLabel(run)} · {run.engine_name}
-          </span>
-          <span>
-            {run.permissions === "ask"
-              ? "Ask before actions"
-              : "Act without asking"}
-          </span>
-        </div>
-        <div className="flex flex-wrap items-center gap-2 text-[12px]">
-          <Badge tone={live ? "accent" : "plain"}>{activityLabel(run)}</Badge>
-          {produced && (
-            <Badge tone={run.collection === "failed" ? "conflict" : "plain"}>
-              {produced}
-            </Badge>
-          )}
-          {visibility && <Badge tone="conflict">{visibility}</Badge>}
-          {run.cleanup_pending && (
-            <Badge tone="conflict">Cleanup pending</Badge>
-          )}
-          {run.deadline_at && live && (
-            <span className="text-muted">
-              Ends {shortClock(run.deadline_at, now)} ·{" "}
-              {timeLeft(run.deadline_at, now)}
-            </span>
-          )}
-          <span className="text-muted">{costLabel(run.payment)}</span>
-        </div>
-        {run.error && (
-          <p className="m-0 text-[12.5px] text-conflict">{run.error}</p>
-        )}
-        {run.cleanup_pending && (
-          <p className="m-0 flex items-center gap-2 text-[12.5px] text-conflict">
-            <span>{run.cleanup_pending}</span>
-            <button
-              type="button"
-              className="btn btn-sm"
-              disabled={busy}
-              onClick={() => void act(() => ipc.retryRunCleanup(run.id))}
-            >
-              Retry cleanup
-            </button>
-          </p>
-        )}
-        <div className="flex gap-1">
-          <TabButton
-            selected={tab === "conversation"}
+        <div role="tablist" aria-label="Run" className="-mb-px flex gap-1">
+          <button
+            type="button"
+            role="tab"
+            className="tab"
+            aria-selected={tab === "conversation"}
             onClick={() => setTab("conversation")}
           >
             Conversation
-          </TabButton>
-          <TabButton
-            selected={tab === "changes"}
-            disabled={!collected && run.collection !== "failed"}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            className="tab"
+            aria-selected={tab === "changes"}
+            disabled={!collected}
+            title={collected ? undefined : "After the work is collected"}
             onClick={() => setTab("changes")}
           >
             Changes
-          </TabButton>
-        </div>
-      </header>
-      <div className="flex min-h-0 flex-1">
-        {tab === "conversation" ? (
-          <Conversation
-            run={run}
-            turns={folded.turns}
-            notices={folded.notices}
-            ended={folded.ended}
-            busy={busy}
-            onPermit={(id, allow) =>
-              act(() => ipc.answerRunPermission(run.id, id, allow))
-            }
-            onPrompt={(text) => act(() => ipc.sendRunPrompt(run.id, text))}
-            idle={idle && run.connected}
-          />
-        ) : (
-          <Changes
-            run={run}
-            busy={busy}
-            onCollect={collect}
-            onAccept={() => act(() => ipc.acceptRunSnapshot(run.id))}
-            onDiscard={() => void discard()}
-            onError={onError}
-            onNotice={onNotice}
-          />
-        )}
-        <aside className="w-[260px] shrink-0 overflow-y-auto border-l px-4 py-3 text-[12px]">
-          <Fact label="Start">
-            <span className="mono">{run.start_commit.slice(0, 10)}</span>{" "}
-            {run.start_subject}
-          </Fact>
-          <Fact label="Started">{absoluteTime(run.created_at)}</Fact>
-          <Fact label="Where it runs">
-            {run.engine_name}, in a container on this Mac
-          </Fact>
-          <Fact label="Provider">
-            Anthropic,{" "}
-            {run.payment === "claude_plan" ? "Claude plan" : "API key"} from{" "}
-            {run.credential_source}
-          </Fact>
-          <Fact label="Network">Unrestricted</Fact>
-          <Fact label="Model">
-            {modelLabel(run)}
-            {run.model_used && run.model !== "" && (
-              <span className="text-muted"> (asked for {run.model})</span>
-            )}
-            {!run.model_used && run.model !== "" && (
-              <span className="text-muted">
-                {" "}
-                (not yet reported by the agent)
+            {run.collection === "ready" && run.changed_files != null && (
+              <span className="rounded-lg bg-control px-1.5 text-[11px] font-normal text-fg-2">
+                {run.changed_files}
               </span>
             )}
-          </Fact>
-          <Fact label="Limits">
-            {run.time_limit_minutes} min · {run.cpus} CPUs ·{" "}
-            {Math.round(run.memory_mib / 1024)} GB memory · {run.workspace_gib}{" "}
-            GB workspace
-          </Fact>
-          <Fact label="Image">
-            <span className="mono break-all">{run.image_name}</span>
-          </Fact>
-          <Fact label="Files the agent says it changed">
-            {reported.length === 0 ? (
-              <span className="text-muted">None reported</span>
-            ) : (
-              <ul className="m-0 flex list-none flex-col gap-0.5 p-0">
-                {reported.map((p) => (
-                  <li key={p} className="mono truncate" title={p}>
-                    {p}
-                  </li>
-                ))}
-              </ul>
-            )}
-            <span className="text-muted">
-              As reported by the agent; the collected snapshot is what counts.
-            </span>
-          </Fact>
-        </aside>
+          </button>
+        </div>
+      </header>
+      {live && !run.connected && <AwayBanner run={run} now={now} />}
+      <div className="flex min-h-0 flex-1">
+        <div className="flex min-w-0 flex-1 flex-col">
+          <RunCards
+            run={run}
+            busy={busy}
+            onCollect={() => void collect()}
+            onDiscard={() => void discard()}
+            onRetryCleanup={() => void act(() => ipc.retryRunCleanup(run.id))}
+            onOpenSettings={onOpenSettings}
+          />
+          {tab === "conversation" || !collected ? (
+            <Conversation
+              run={run}
+              turns={folded.turns}
+              notices={folded.notices}
+              ended={folded.ended}
+              busy={busy}
+              now={now}
+              onPermit={(id, allow) =>
+                act(() => ipc.answerRunPermission(run.id, id, allow))
+              }
+              onPrompt={(text) => act(() => ipc.sendRunPrompt(run.id, text))}
+            />
+          ) : (
+            <Changes
+              run={run}
+              busy={busy}
+              onCollect={collect}
+              onAccept={() => act(() => ipc.acceptRunSnapshot(run.id))}
+              onError={onError}
+              onNotice={onNotice}
+            />
+          )}
+        </div>
+        <RunDetails run={run} reported={reported} />
       </div>
     </div>
   );
 }
 
-function Badge({
-  tone,
-  children,
-}: {
-  tone: "accent" | "plain" | "conflict";
-  children: React.ReactNode;
-}) {
-  const cls =
-    tone === "accent"
-      ? "badge"
-      : tone === "conflict"
-        ? "rounded-lg border border-conflict/40 px-1.5 text-conflict"
-        : "rounded-lg border px-1.5 text-fg-2";
-  return <span className={`${cls} text-[11px] leading-4`}>{children}</span>;
+/** A live run's header: what the agent is doing, when it ends, what it costs. */
+function LiveStatus({ run, now }: { run: AgentRun; now: number }) {
+  const label = run.connected ? activityLabel(run) : visibilityLabel(run);
+  return (
+    <>
+      <StatePill tone={activityTone(run)} dot={run.connected}>
+        {label}
+      </StatePill>
+      {run.cancel_requested && (
+        <StatePill tone="red">Cancel requested</StatePill>
+      )}
+      {run.deadline_at && (
+        <span
+          className="inline-flex items-center gap-1 text-[12px] text-fg-2"
+          title="The time limit counts idle and waiting time too"
+        >
+          <ClockIcon size={13} />
+          Ends {shortClock(run.deadline_at, now)} ·{" "}
+          {timeLeft(run.deadline_at, now)}
+        </span>
+      )}
+      <span className="text-[12px] text-fg-2">{costLabel(run.payment)}</span>
+    </>
+  );
 }
 
-function TabButton({
-  selected,
-  disabled,
-  onClick,
+/** An ended run's header: how it ended, what it produced, and how long it took. */
+function EndedStatus({ run, turns }: { run: AgentRun; turns: number }) {
+  const produced = producedLabel(run);
+  const visibility = visibilityLabel(run);
+  const took =
+    run.accepted_at && run.ended_at
+      ? spanLabel(
+          new Date(run.ended_at).getTime() -
+            new Date(run.accepted_at).getTime(),
+        )
+      : null;
+  return (
+    <>
+      <StatePill tone={activityTone(run)}>
+        {activityLabel(run)}
+        {run.ended_at ? ` ${shortClock(run.ended_at)}` : ""}
+      </StatePill>
+      {produced && <StatePill tone={producedTone(run)}>{produced}</StatePill>}
+      {visibility && <StatePill tone="dashed">{visibility}</StatePill>}
+      {run.cleanup_pending && (
+        <StatePill tone="grey">Cleanup pending</StatePill>
+      )}
+      <span className="text-[12px] text-fg-2">
+        {[
+          turns > 0 && plural(turns, "turn"),
+          took,
+          run.payment === "claude_plan"
+            ? "used your Claude plan"
+            : costLabel(run.payment),
+        ]
+          .filter(Boolean)
+          .join(" · ")}
+      </span>
+    </>
+  );
+}
+
+/** Brainiac cannot reach a live run: its last report, and that it may go on. */
+function AwayBanner({ run, now }: { run: AgentRun; now: number }) {
+  const remote = isRemote(run);
+  const last = run.reported_at
+    ? `Last report ${shortClock(run.reported_at, now)}, ${agoLabel(run.reported_at, now)}.`
+    : "No report yet.";
+  const ends = run.deadline_at ? shortClock(run.deadline_at, now) : null;
+  return (
+    <div
+      role="status"
+      className="flex shrink-0 flex-col gap-1 border-b border-dashed bg-panel px-5 py-2.5 pl-lead text-[12.5px] leading-relaxed text-fg-2"
+    >
+      <p className="m-0">
+        <strong className="text-fg">
+          {remote
+            ? `Can't reach ${run.host_name}.`
+            : `Can't reach the run on This Mac.`}
+        </strong>{" "}
+        {last}{" "}
+        {remote
+          ? `The run keeps going on ${run.host_name}${
+              run.activity === "permission"
+                ? ": the request below waits there, unanswered, until you're back"
+                : ""
+            }${ends ? ` and ends at ${ends} at the latest` : ""}.`
+          : "The agent may still be working; below is what it last reported."}{" "}
+        Brainiac keeps trying.
+      </p>
+      {run.cancel_requested && (
+        <p className="m-0">
+          Cancel is sent when Brainiac reconnects; until then the time limit
+          still stops the run.
+          {remote &&
+            " To stop it without this Mac, use the host's emergency stop in Settings → Agents."}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** What an ended run waits on, each with what you can do about it. */
+function RunCards({
+  run,
+  busy,
+  onCollect,
+  onDiscard,
+  onRetryCleanup,
+  onOpenSettings,
+}: {
+  run: AgentRun;
+  busy: boolean;
+  onCollect: () => void;
+  onDiscard: () => void;
+  onRetryCleanup: () => void;
+  onOpenSettings: () => void;
+}) {
+  if (run.phase !== "ended") return null;
+  const cards: React.ReactNode[] = [];
+  const uncollected = run.kept && run.collection === "none";
+  const credential = /token|api key|credential|unauthori[sz]ed|401/i.test(
+    run.error ?? "",
+  );
+  const collectButtons = (
+    <>
+      <button
+        type="button"
+        className="btn btn-sm btn-primary"
+        disabled={busy || !run.stop_confirmed}
+        onClick={onCollect}
+      >
+        Collect work
+      </button>
+      <button
+        type="button"
+        className="btn btn-sm text-conflict"
+        disabled={busy || !run.stop_confirmed}
+        onClick={onDiscard}
+      >
+        Discard work…
+      </button>
+    </>
+  );
+  if (uncollected && run.outcome === "interrupted") {
+    cards.push(
+      <RunCard
+        key="interrupted"
+        tone="red"
+        badge="Interrupted"
+        title={`The run stopped unexpectedly${run.ended_at ? ` at ${shortClock(run.ended_at)}` : ""}`}
+      >
+        <p className="m-0">
+          {run.error ? `${run.error} ` : ""}The container was stopped and kept
+          with its files; only Discard removes them. The conversation can't
+          continue, and updates after the last one recorded may be missing.
+        </p>
+        <div className="flex flex-wrap gap-2">{collectButtons}</div>
+      </RunCard>,
+    );
+  } else if (uncollected && run.outcome === "failed") {
+    cards.push(
+      <RunCard
+        key="failed"
+        tone="red"
+        badge="Failed"
+        title={run.error ?? "The run failed"}
+      >
+        <p className="m-0">
+          The agent's work so far is kept. A run can't take a new token or key,
+          so collect this one
+          {credential ? ", update the credential in Settings," : ","} and start
+          a new run.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          {collectButtons}
+          {credential && (
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={onOpenSettings}
+            >
+              Settings → Agents…
+            </button>
+          )}
+        </div>
+      </RunCard>,
+    );
+  } else if (uncollected && run.stop_confirmed) {
+    cards.push(
+      <RunCard
+        key="kept"
+        tone="grey"
+        badge="Not collected"
+        title="The agent's work is kept, not collected"
+      >
+        <p className="m-0">
+          {run.error ? `${run.error} ` : ""}The stopped container and its files
+          stay until you collect or discard them.
+        </p>
+        <div className="flex flex-wrap gap-2">{collectButtons}</div>
+      </RunCard>,
+    );
+  } else if (run.error && !run.stop_confirmed) {
+    // Shown with the stop card below.
+  } else if (run.error && run.collection !== "failed") {
+    cards.push(
+      <p key="error" className="m-0 text-[12.5px] text-conflict">
+        {run.error}
+      </p>,
+    );
+  }
+  if (run.collection === "failed") {
+    cards.push(
+      <RunCard
+        key="collection"
+        tone="red"
+        badge="Collection failed"
+        title="Couldn't collect the work"
+      >
+        <p className="m-0">
+          {run.collection_error ?? "The work could not be collected."} The
+          stopped container and its files are kept.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            className="btn btn-sm btn-primary"
+            disabled={busy || !run.kept}
+            onClick={onCollect}
+          >
+            Retry collection
+          </button>
+          <button
+            type="button"
+            className="btn btn-sm text-conflict"
+            disabled={busy || !run.kept}
+            onClick={onDiscard}
+          >
+            Discard work…
+          </button>
+        </div>
+      </RunCard>,
+    );
+  }
+  if (!run.stop_confirmed) {
+    cards.push(
+      <RunCard
+        key="stop"
+        tone="dashed"
+        badge="Stop not confirmed"
+        title="Brainiac can't confirm the run stopped"
+      >
+        <p className="m-0">
+          {run.error ?? "The engine isn't answering."} Collecting and deleting
+          stay off until it does; the run's time limit still applies on the
+          engine.
+        </p>
+      </RunCard>,
+    );
+  }
+  if (run.cleanup_pending) {
+    cards.push(
+      <RunCard
+        key="cleanup"
+        tone="grey"
+        badge="Cleanup pending"
+        title={
+          run.collection === "ready" || run.collection === "no_changes"
+            ? "The review is ready; cleanup didn't finish"
+            : "Cleanup didn't finish"
+        }
+      >
+        <p className="m-0">
+          {run.cleanup_pending}
+          {run.collection === "ready" || run.collection === "no_changes"
+            ? " Your result is safe on this Mac."
+            : ""}
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            className="btn btn-sm"
+            disabled={busy}
+            onClick={onRetryCleanup}
+          >
+            Retry cleanup
+          </button>
+        </div>
+      </RunCard>,
+    );
+  }
+  if (cards.length === 0) return null;
+  return (
+    <div className="flex shrink-0 flex-col gap-2 px-5 pt-3 pl-lead">
+      <div className="flex max-w-[720px] flex-col gap-2">{cards}</div>
+    </div>
+  );
+}
+
+function RunCard({
+  tone,
+  badge,
+  title,
   children,
 }: {
-  selected: boolean;
-  disabled?: boolean;
-  onClick: () => void;
+  tone: RunTone;
+  badge: string;
+  title: string;
   children: React.ReactNode;
 }) {
   return (
-    <button
-      type="button"
-      className="btn btn-sm btn-ghost"
-      aria-pressed={selected}
-      disabled={disabled}
-      onClick={onClick}
+    <section
+      className="run-card text-[12.5px] leading-relaxed text-fg-2"
+      data-tone={tone}
+      aria-label={badge}
     >
+      <div className="flex flex-wrap items-center gap-2">
+        <StatePill tone={tone}>{badge}</StatePill>
+        <h2 className="m-0 text-[13px] font-semibold text-fg">{title}</h2>
+      </div>
       {children}
-    </button>
+    </section>
+  );
+}
+
+/** The side panel: where the run came from, where it runs, and what it may reach. */
+function RunDetails({
+  run,
+  reported,
+}: {
+  run: AgentRun;
+  reported: Array<{ path: string; letter: string; tone: string }>;
+}) {
+  const remote = isRemote(run);
+  return (
+    <aside
+      aria-label="Run details"
+      className="w-[264px] shrink-0 overflow-y-auto border-l bg-panel px-4 py-4 text-[12px]"
+    >
+      <Fact label="Started from">
+        <span className="mono" title={run.start_commit}>
+          {run.start_commit.slice(0, 7)}
+        </span>{" "}
+        · {run.start_subject}
+        <Note>Uncommitted changes in your checkout were not included.</Note>
+      </Fact>
+      <Fact label="Runs on">
+        {remote ? run.host_name : "This Mac"} · {run.engine_name}
+        <Note>
+          {remote
+            ? "Keeps working while this Mac sleeps or Brainiac is closed."
+            : "Pauses while this Mac sleeps."}
+        </Note>
+      </Fact>
+      <Fact label="Code and prompts go to">
+        {destinationLabel(run.payment)}
+        <Note>
+          {run.payment === "claude_plan" ? "Token" : "Key"} from{" "}
+          {run.credential_source}.
+        </Note>
+      </Fact>
+      <Fact label="Network">
+        Unrestricted
+        <Note>The agent can reach any site.</Note>
+      </Fact>
+      <Fact label="Model">
+        {modelLabel(run)}
+        {run.model_used && run.model !== "" && (
+          <Note>Asked for {run.model}.</Note>
+        )}
+        {!run.model_used && run.model !== "" && (
+          <Note>Not yet reported by the agent.</Note>
+        )}
+      </Fact>
+      <Fact label="Limits">
+        {durationLabel(run.time_limit_minutes)} · {run.cpus} CPU ·{" "}
+        {Math.round(run.memory_mib / 1024)} GB memory · {run.workspace_gib} GB
+        workspace
+      </Fact>
+      <Fact label="Image">
+        <span className="mono break-all">{run.image_name}</span>
+      </Fact>
+      <div className="mt-1 flex flex-col gap-1.5 border-t pt-3">
+        <span className="section-label">Files the agent says it changed</span>
+        {reported.length === 0 ? (
+          <span className="text-muted">None reported yet.</span>
+        ) : (
+          <ul className="m-0 flex list-none flex-col gap-1 p-0">
+            {reported.map((f) => (
+              <li key={f.path} className="flex min-w-0 items-center gap-2">
+                <span className="kind" data-tone={f.tone}>
+                  {f.letter}
+                </span>
+                <span className="mono selectable truncate" title={f.path}>
+                  {f.path}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+        <span className="text-muted">
+          Reported by the agent. Changes shows what was actually collected.
+        </span>
+      </div>
+    </aside>
   );
 }
 
@@ -589,11 +1117,15 @@ function Fact({
   children: React.ReactNode;
 }) {
   return (
-    <div className="mb-3 flex flex-col gap-0.5">
+    <div className="mb-3.5 flex flex-col gap-0.5">
       <span className="section-label">{label}</span>
-      <span className="selectable text-fg-2">{children}</span>
+      <span className="selectable leading-snug text-fg">{children}</span>
     </div>
   );
+}
+
+function Note({ children }: { children: React.ReactNode }) {
+  return <span className="block text-muted">{children}</span>;
 }
 
 /** Plan entries with a key each: the content, numbered when it repeats. */
@@ -608,18 +1140,28 @@ function withKeys<T extends { content: string }>(
   });
 }
 
-/** Paths of the agent's edit tools, in order, once each. */
-function reportedFiles(turns: Turn[]): string[] {
-  const seen = new Set<string>();
+/** Paths of the agent's edit tools, in order, once each, with a change letter. */
+function reportedFiles(
+  turns: Turn[],
+): Array<{ path: string; letter: string; tone: string }> {
+  const seen = new Map<
+    string,
+    { path: string; letter: string; tone: string }
+  >();
   for (const t of turns)
-    for (const tool of t.tools)
-      if (
-        tool.kind === "edit" ||
-        tool.kind === "delete" ||
-        tool.kind === "move"
-      )
-        for (const l of tool.locations) seen.add(l);
-  return [...seen];
+    for (const tool of t.tools) {
+      const kind =
+        tool.kind === "edit"
+          ? { letter: "M", tone: "mod" }
+          : tool.kind === "delete"
+            ? { letter: "D", tone: "del" }
+            : tool.kind === "move"
+              ? { letter: "R", tone: "ren" }
+              : null;
+      if (kind)
+        for (const path of tool.locations) seen.set(path, { path, ...kind });
+    }
+  return [...seen.values()];
 }
 
 function Conversation({
@@ -628,7 +1170,7 @@ function Conversation({
   notices,
   ended,
   busy,
-  idle,
+  now,
   onPermit,
   onPrompt,
 }: {
@@ -637,194 +1179,291 @@ function Conversation({
   notices: string[];
   ended: { outcome: string; message: string | null } | null;
   busy: boolean;
-  idle: boolean;
+  now: number;
   onPermit: (id: string, allow: boolean) => Promise<void>;
   onPrompt: (text: string) => Promise<void>;
 }) {
   const [text, setText] = useState("");
-  const [open, setOpen] = useState<Set<number>>(new Set());
   const bottom = useRef<HTMLDivElement>(null);
   const last = turns[turns.length - 1];
   // biome-ignore lint/correctness/useExhaustiveDependencies: new events scroll the latest into view.
   useEffect(() => {
     bottom.current?.scrollIntoView({ block: "end" });
-  }, [turns.length, last?.message.length, last?.tools.length]);
+  }, [
+    turns.length,
+    last?.message.length,
+    last?.tools.length,
+    run.pending_permissions.length,
+  ]);
   const pending = new Set(run.pending_permissions.map((p) => p.permission_id));
+  const live = run.phase !== "ended";
+  const canSend =
+    live &&
+    run.connected &&
+    (run.activity === "idle" || run.activity === "plan_limit");
+  const working =
+    live && run.connected && run.activity === "working" && !last?.ended;
   const send = async () => {
     const prompt = text.trim();
-    if (!prompt) return;
+    if (!prompt || !canSend) return;
     await onPrompt(prompt);
     setText("");
   };
+  const placeholder = !run.connected
+    ? "You can send prompts again once Brainiac reconnects."
+    : run.activity === "permission"
+      ? "Answer the request above first."
+      : run.activity === "idle"
+        ? "Ask for another change…"
+        : run.activity === "plan_limit"
+          ? "Continue where it stopped…"
+          : "You can send the next prompt when this turn ends.";
   return (
-    <div className="flex min-w-0 flex-1 flex-col">
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3 pl-lead">
-        {run.phase === "preparing" && turns.length === 0 && (
-          <p className="text-muted">
-            Preparing: the container starts and clones the start commit.
-          </p>
-        )}
-        {notices.map((n) => (
-          <p key={n} className="m-0 mb-2 text-[12px] text-muted">
-            {n}
-          </p>
-        ))}
-        {turns.map((t) => {
-          const isLast = t === last;
-          const foldedTurn = !!t.ended && !isLast && !open.has(t.turn);
-          return (
-            <section key={t.turn} className="mb-4">
-              {t.prompt !== null && (
-                <div className="mb-2 flex flex-col gap-0.5">
-                  <span className="text-[11px] text-muted">
-                    You · {t.promptAt ? shortClock(t.promptAt) : ""}
-                  </span>
-                  <p className="selectable m-0 whitespace-pre-wrap rounded-lg bg-header px-3 py-2 text-[13px]">
-                    {t.prompt}
-                  </p>
-                </div>
-              )}
-              {foldedTurn ? (
-                <button
-                  type="button"
-                  className="flex items-center gap-1 text-[12px] text-fg-2 hover:text-fg"
-                  onClick={() => setOpen((s) => new Set(s).add(t.turn))}
-                >
-                  <ChevronRight size={12} /> {turnSummary(t)}
-                </button>
-              ) : (
-                <TurnBody
-                  turn={t}
-                  pending={pending}
-                  busy={busy}
-                  onPermit={onPermit}
-                  onFold={
-                    t.ended && !isLast
-                      ? () =>
-                          setOpen((s) => {
-                            const next = new Set(s);
-                            next.delete(t.turn);
-                            return next;
-                          })
-                      : undefined
-                  }
-                />
-              )}
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4 pl-lead">
+        <div className="flex max-w-[720px] flex-col gap-4">
+          {run.activity === "preparing" && turns.length === 0 && (
+            <p className="m-0 flex items-center gap-2 text-[12.5px] text-muted">
+              <ProgressIcon size={13} className="motion-safe:animate-spin" />
+              Preparing: copying the start commit and starting the container.
+              Nothing has reached the provider yet.
+            </p>
+          )}
+          {notices.map((n) => (
+            <p key={n} className="m-0 text-[12px] text-muted">
+              {n}
+            </p>
+          ))}
+          {turns.map((t) => (
+            <TurnView
+              key={t.turn}
+              turn={t}
+              latest={t === last}
+              pending={pending}
+              busy={busy}
+              connected={run.connected}
+              deadline={run.deadline_at}
+              onPermit={onPermit}
+            />
+          ))}
+          {working && last && (
+            <p className="m-0 flex items-center gap-1.5 text-[12px] text-muted">
+              <ProgressIcon
+                size={13}
+                className="text-accent motion-safe:animate-spin"
+              />
+              Claude Code is working
+              {last.lastAt
+                ? ` · last update ${agoLabel(last.lastAt, now)}`
+                : ""}
+            </p>
+          )}
+          {live && run.activity === "idle" && last?.ended && (
+            <Divider>
+              Turn {last.turn} ended {shortClock(last.ended.at, now)} ·{" "}
+              {turnSummary(last)}
+            </Divider>
+          )}
+          {live && run.activity === "plan_limit" && (
+            <section
+              className="run-card text-[12.5px] leading-relaxed text-fg-2"
+              data-tone="amber"
+              aria-labelledby="plan-limit"
+            >
+              <h3
+                id="plan-limit"
+                className="m-0 text-[13px] font-semibold text-fg"
+              >
+                {run.payment === "claude_plan"
+                  ? "Your Claude plan's usage limit stopped this turn"
+                  : "A usage limit stopped this turn"}
+              </h3>
+              <p className="m-0">
+                {run.payment === "claude_plan"
+                  ? "Runs share limits with Claude Code in your terminal and on claude.ai, which shows when they reset. "
+                  : ""}
+                The session stays open and its work is kept. The time limit
+                keeps running
+                {run.deadline_at
+                  ? `: the run ends at ${shortClock(run.deadline_at, now)}`
+                  : ""}
+                .
+              </p>
             </section>
-          );
-        })}
-        {ended && (
-          <p className="m-0 text-[12px] text-muted">
-            {activityLabel(run)}
-            {ended.message ? `: ${ended.message}` : ""}
-          </p>
-        )}
-        <div ref={bottom} />
+          )}
+          {ended && (
+            <Divider>
+              {activityLabel(run)}
+              {run.ended_at ? ` ${shortClock(run.ended_at, now)}` : ""}
+              {ended.message ? ` · ${ended.message}` : ""}
+            </Divider>
+          )}
+          <div ref={bottom} />
+        </div>
       </div>
-      {run.phase !== "ended" && (
-        <div className="flex shrink-0 items-end gap-2 border-t px-4 py-3 pl-lead">
-          <textarea
-            className="field min-h-[60px] flex-1 resize-y text-[13px]"
-            placeholder={
-              idle
-                ? "Next prompt"
-                : run.activity === "permission"
-                  ? "Answer the permission request first"
-                  : "The agent is working"
-            }
-            aria-label="Next prompt"
-            value={text}
-            disabled={!idle || busy}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && e.metaKey) {
-                e.preventDefault();
-                void send();
-              }
-            }}
-          />
-          <button
-            type="button"
-            className="btn btn-sm btn-primary"
-            disabled={!idle || busy || !text.trim()}
-            title="Send (⌘↩)"
-            onClick={() => void send()}
-          >
-            Send
-          </button>
+      {live && (
+        <div className="shrink-0 border-t px-5 pt-2.5 pb-3.5 pl-lead">
+          <div className="flex max-w-[720px] flex-col gap-1.5">
+            <label
+              htmlFor={`prompt-${run.id}`}
+              className="text-[12px] text-muted"
+            >
+              Next prompt
+            </label>
+            <div className="flex items-end gap-2">
+              <textarea
+                id={`prompt-${run.id}`}
+                className="field min-h-[56px] flex-1 resize-y text-[13px]"
+                rows={canSend ? 3 : 2}
+                placeholder={placeholder}
+                value={text}
+                disabled={!canSend || busy}
+                onChange={(e) => setText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && e.metaKey) {
+                    e.preventDefault();
+                    void send();
+                  }
+                }}
+              />
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={!canSend || busy || !text.trim()}
+                title="Send (⌘↩)"
+                onClick={() => void send()}
+              >
+                Send <span className="opacity-80">⌘↩</span>
+              </button>
+            </div>
+            {canSend && (
+              <p className="m-0 text-[12px] text-muted">
+                {run.activity === "plan_limit"
+                  ? "Sending before the limit resets stops again right away. Or finish and collect what's done."
+                  : "Finish and collect stops the agent and snapshots its work for review. You can't send more prompts after that."}
+              </p>
+            )}
+          </div>
         </div>
       )}
     </div>
   );
 }
 
-function TurnBody({
+function Divider({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex items-center gap-3 text-[12px] text-muted">
+      <span className="h-px flex-1 bg-line" aria-hidden="true" />
+      <span className="text-center">{children}</span>
+      <span className="h-px flex-1 bg-line" aria-hidden="true" />
+    </div>
+  );
+}
+
+/**
+ * One turn: the prompt, the agent's steps (folded to a summary once the
+ * turn ended, unless it is the latest), its questions, and its reply.
+ */
+function TurnView({
   turn: t,
+  latest,
   pending,
   busy,
+  connected,
+  deadline,
   onPermit,
-  onFold,
 }: {
   turn: Turn;
+  latest: boolean;
   pending: Set<string>;
   busy: boolean;
+  connected: boolean;
+  deadline: string | null;
   onPermit: (id: string, allow: boolean) => Promise<void>;
-  onFold?: () => void;
 }) {
+  const [open, setOpen] = useState(false);
   const [thinking, setThinking] = useState(false);
+  const waiting = t.permissions.filter((p) => pending.has(p.permission_id));
+  const answered = t.permissions.filter((p) => !pending.has(p.permission_id));
+  const hasSteps = t.tools.length > 0 || answered.length > 0 || !!t.thought;
+  const foldable = !!t.ended && hasSteps;
+  const showSteps = !foldable || open;
   return (
-    <div className="flex flex-col gap-2">
-      {onFold && (
-        <button
-          type="button"
-          className="flex items-center gap-1 self-start text-[12px] text-fg-2 hover:text-fg"
-          onClick={onFold}
-        >
-          <ChevronDown size={12} /> {turnSummary(t)}
-        </button>
-      )}
-      {t.plan && t.plan.length > 0 && (
-        <ul className="m-0 flex list-none flex-col gap-0.5 rounded-lg border px-3 py-2 text-[12px]">
-          {withKeys(t.plan).map(([key, p]) => (
-            <li key={key} className="flex gap-2">
-              <span className="w-20 shrink-0 text-muted">{p.status ?? ""}</span>
-              <span className="selectable">{p.content}</span>
-            </li>
-          ))}
-        </ul>
-      )}
-      {t.thought && (
-        <div className="text-[12px]">
-          <button
-            type="button"
-            className="text-muted hover:text-fg"
-            onClick={() => setThinking(!thinking)}
-          >
-            {thinking ? "Hide thinking" : "Thinking…"}
-          </button>
-          {thinking && (
-            <p className="selectable m-0 mt-1 whitespace-pre-wrap text-fg-2">
-              {t.thought}
-            </p>
-          )}
+    <section className="flex flex-col gap-3" aria-label={`Turn ${t.turn}`}>
+      {t.prompt !== null && (
+        <div className="flex flex-col gap-1">
+          <span className="text-[12px] text-muted">
+            <strong className="font-semibold text-fg">You</strong>
+            {t.promptAt ? ` · ${shortClock(t.promptAt)}` : ""}
+            {t.turn > 1 ? ` · turn ${t.turn}` : ""}
+          </span>
+          <p className="selectable m-0 whitespace-pre-wrap text-[13px] leading-relaxed">
+            {t.prompt}
+          </p>
         </div>
       )}
-      {t.tools.map((tool) => (
-        <ToolRow key={tool.id} tool={tool} />
-      ))}
-      {t.permissions.map((p) => (
-        <PermissionRow
-          key={p.permission_id}
-          permission={p}
-          pending={pending.has(p.permission_id)}
-          busy={busy}
-          onPermit={onPermit}
-        />
-      ))}
-      {t.message && (
-        <p className="selectable m-0 whitespace-pre-wrap text-[13px] leading-relaxed">
-          {t.message}
-        </p>
+      {foldable && (
+        <button
+          type="button"
+          className="flex items-center gap-1.5 self-start rounded-md border bg-panel py-1 pr-2.5 pl-1.5 text-[12px] text-fg-2 hover:text-fg"
+          aria-expanded={open}
+          onClick={() => setOpen(!open)}
+        >
+          {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+          {turnSummary(t)}
+        </button>
+      )}
+      {(t.message ||
+        (showSteps && hasSteps) ||
+        t.plan ||
+        waiting.length > 0) && (
+        <div className="flex flex-col gap-2.5">
+          <span className="text-[12px] text-muted">
+            <strong className="font-semibold text-fg">Claude Code</strong>
+            {t.lastAt ? ` · ${shortClock(t.ended?.at ?? t.lastAt)}` : ""}
+            {t.ended ? ` · turn ${t.turn} ended` : ""}
+          </span>
+          {t.plan && t.plan.length > 0 && (latest || showSteps) && (
+            <Plan entries={t.plan} />
+          )}
+          {showSteps && t.thought && (
+            <div className="text-[12px]">
+              <button
+                type="button"
+                className="text-muted hover:text-fg"
+                aria-expanded={thinking}
+                onClick={() => setThinking(!thinking)}
+              >
+                {thinking ? "Hide thinking" : "Thinking…"}
+              </button>
+              {thinking && (
+                <p className="selectable m-0 mt-1 whitespace-pre-wrap text-fg-2">
+                  {t.thought}
+                </p>
+              )}
+            </div>
+          )}
+          {showSteps && t.tools.length > 0 && <Tools tools={t.tools} />}
+          {showSteps &&
+            answered.map((p) => (
+              <AnsweredRow key={p.permission_id} permission={p} />
+            ))}
+          {t.message && (
+            <p className="selectable m-0 whitespace-pre-wrap text-[13px] leading-relaxed">
+              {t.message}
+            </p>
+          )}
+          {waiting.map((p) => (
+            <PermissionCard
+              key={p.permission_id}
+              permission={p}
+              busy={busy}
+              connected={connected}
+              deadline={deadline}
+              onPermit={onPermit}
+            />
+          ))}
+        </div>
       )}
       {t.notices.map((n) => (
         <p key={n} className="m-0 text-[12px] text-muted">
@@ -839,44 +1478,95 @@ function TurnBody({
       {t.ended && t.ended.reason === "cancelled" && (
         <p className="m-0 text-[12px] text-muted">The turn was cancelled.</p>
       )}
+    </section>
+  );
+}
+
+function Plan({ entries }: { entries: NonNullable<Turn["plan"]> }) {
+  return (
+    <div className="flex flex-col gap-1.5 rounded-lg border px-3 py-2.5 text-[12.5px]">
+      <span className="text-[12px] font-semibold text-fg-2">Plan</span>
+      <ul className="m-0 flex list-none flex-col gap-1 p-0">
+        {withKeys(entries).map(([key, p]) => (
+          <li key={key} className="flex items-start gap-2">
+            <span className="mt-px shrink-0">
+              {p.status === "completed" ? (
+                <CheckIcon size={14} className="text-clean" />
+              ) : p.status === "in_progress" ? (
+                <ProgressIcon size={14} className="text-accent" />
+              ) : (
+                <CircleIcon size={14} className="text-faint" />
+              )}
+            </span>
+            <span
+              className={`selectable ${p.status === "completed" || p.status === "in_progress" ? "" : "text-muted"}`}
+            >
+              {p.content}
+              <span className="sr-only">
+                {p.status === "completed"
+                  ? " (done)"
+                  : p.status === "in_progress"
+                    ? " (in progress)"
+                    : " (not started)"}
+              </span>
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function Tools({ tools }: { tools: ToolState[] }) {
+  return (
+    <div className="overflow-hidden rounded-lg border">
+      {tools.map((tool) => (
+        <ToolRow key={tool.id} tool={tool} />
+      ))}
     </div>
   );
 }
 
 function ToolRow({ tool }: { tool: ToolState }) {
-  const [open, setOpen] = useState(false);
-  const word =
-    tool.status === "completed"
-      ? "done"
-      : tool.status === "failed"
-        ? "failed"
-        : tool.status === "in_progress"
-          ? "running"
-          : (tool.status ?? "");
+  const running = tool.status === "pending" || tool.status === "in_progress";
+  const [open, setOpen] = useState(running && tool.kind === "execute");
+  const details = tool.locations.length > 0 || !!tool.output;
   return (
-    <div className="rounded-md border px-2 py-1 text-[12px]">
+    <div className="border-b text-[12px] last:border-b-0">
       <button
         type="button"
-        className="flex w-full items-center gap-2 text-left"
+        className="flex w-full items-center gap-2.5 px-3 py-1.5 text-left hover:bg-panel"
+        aria-expanded={details ? open : undefined}
+        disabled={!details}
         onClick={() => setOpen(!open)}
       >
-        <span className="w-14 shrink-0 text-muted">{tool.kind ?? "tool"}</span>
-        <span className="mono min-w-0 flex-1 truncate">{tool.title}</span>
-        <span
-          className={`shrink-0 ${tool.status === "failed" ? "text-conflict" : "text-muted"}`}
-        >
-          {word}
+        <span className="shrink-0">
+          {tool.status === "completed" ? (
+            <CheckIcon size={14} className="text-clean" />
+          ) : tool.status === "failed" ? (
+            <CrossIcon size={14} className="text-conflict" />
+          ) : (
+            <ProgressIcon
+              size={14}
+              className="text-accent motion-safe:animate-spin"
+            />
+          )}
         </span>
+        <span className="w-[60px] shrink-0 text-fg-2">{toolVerb(tool)}</span>
+        <code className="mono min-w-0 flex-1 truncate">{tool.title}</code>
+        {tool.status === "failed" && (
+          <span className="shrink-0 text-conflict">failed</span>
+        )}
       </button>
-      {open && (
-        <div className="mt-1 flex flex-col gap-1">
+      {open && details && (
+        <div className="flex flex-col gap-1 bg-panel px-3 py-2 pl-[38px]">
           {tool.locations.length > 0 && (
             <p className="mono selectable m-0 break-all text-muted">
               {tool.locations.join(", ")}
             </p>
           )}
           {tool.output && (
-            <pre className="mono selectable m-0 max-h-60 overflow-auto whitespace-pre-wrap text-[11.5px]">
+            <pre className="mono selectable m-0 max-h-60 overflow-auto whitespace-pre-wrap text-[11.5px] leading-relaxed text-fg-3">
               {tool.output}
             </pre>
           )}
@@ -886,70 +1576,88 @@ function ToolRow({ tool }: { tool: ToolState }) {
   );
 }
 
-function PermissionRow({
-  permission: p,
-  pending,
-  busy,
-  onPermit,
-}: {
-  permission: PermissionState;
-  pending: boolean;
-  busy: boolean;
-  onPermit: (id: string, allow: boolean) => Promise<void>;
-}) {
+function AnsweredRow({ permission: p }: { permission: PermissionState }) {
+  const outcome =
+    p.outcome === "allowed"
+      ? "Allowed"
+      : p.outcome === "rejected"
+        ? "Rejected"
+        : p.outcome === "cancelled"
+          ? "Cancelled"
+          : "Answered";
   return (
-    <div
-      className={`flex flex-col gap-1 rounded-lg border px-3 py-2 text-[12.5px] ${pending ? "border-accent" : ""}`}
-      role={pending ? "alert" : undefined}
-    >
-      <span className="font-medium">
-        {pending ? "Permission request" : "Permission"} · {p.title}
-      </span>
-      {p.detail && (
-        <code className="mono selectable break-all text-[11.5px]">
-          {p.detail}
-        </code>
-      )}
-      <span className="text-[11.5px] text-muted">
-        Runs inside the container · asked {shortClock(p.asked_at)} · the run
-        still ends at its time limit
-      </span>
-      {pending ? (
-        <div className="flex gap-2">
-          <button
-            type="button"
-            className="btn btn-sm btn-primary"
-            disabled={busy}
-            onClick={() => void onPermit(p.permission_id, true)}
-          >
-            Allow once
-          </button>
-          <button
-            type="button"
-            className="btn btn-sm"
-            disabled={busy}
-            onClick={() => void onPermit(p.permission_id, false)}
-          >
-            Reject
-          </button>
-        </div>
-      ) : (
-        <span className="text-[11.5px] text-fg-2">
-          {p.outcome === "allowed"
-            ? "Allowed"
-            : p.outcome === "rejected"
-              ? "Rejected"
-              : p.outcome === "cancelled"
-                ? "Cancelled"
-                : "Answered"}
+    <p className="m-0 flex items-center gap-2 text-[12px] text-fg-2">
+      <TerminalIcon size={13} className="shrink-0 text-muted" />
+      <span className="min-w-0 truncate">
+        {outcome}: {p.detail ?? p.title}
+        <span className="text-muted">
           {p.by === "auto"
             ? " (Act without asking)"
             : p.by === "run"
               ? " (the run ended)"
               : ""}
         </span>
-      )}
-    </div>
+      </span>
+    </p>
+  );
+}
+
+function PermissionCard({
+  permission: p,
+  busy,
+  connected,
+  deadline,
+  onPermit,
+}: {
+  permission: PermissionState;
+  busy: boolean;
+  connected: boolean;
+  deadline: string | null;
+  onPermit: (id: string, allow: boolean) => Promise<void>;
+}) {
+  const heading = `perm-${p.permission_id}`;
+  return (
+    <section
+      className="run-card text-[12.5px]"
+      data-tone="amber"
+      role="alert"
+      aria-labelledby={heading}
+    >
+      <div className="flex items-center gap-2">
+        <TerminalIcon size={15} className="text-dirty" />
+        <h3 id={heading} className="m-0 text-[13px] font-semibold">
+          {permissionHeading(p.kind)}
+        </h3>
+      </div>
+      <pre className="mono selectable m-0 whitespace-pre-wrap break-all rounded-md border bg-app px-2.5 py-2 text-[12px]">
+        {p.detail ?? p.title}
+      </pre>
+      <p className="m-0 text-[12px] leading-relaxed text-fg-2">
+        Inside the run's container, not on your Mac. Asked{" "}
+        {shortClock(p.asked_at)}.{" "}
+        {connected
+          ? `If no one answers, the run still ends${deadline ? ` at ${shortClock(deadline)}` : " at its time limit"}.`
+          : "You can answer once Brainiac reconnects. While you're away nothing is allowed on your behalf."}
+      </p>
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={busy || !connected}
+          onClick={() => void onPermit(p.permission_id, true)}
+        >
+          Allow once
+        </button>
+        <button
+          type="button"
+          className="btn"
+          disabled={busy || !connected}
+          onClick={() => void onPermit(p.permission_id, false)}
+        >
+          Reject
+        </button>
+      </div>
+    </section>
   );
 }
 
@@ -958,7 +1666,6 @@ function Changes({
   busy,
   onCollect,
   onAccept,
-  onDiscard,
   onError,
   onNotice,
 }: {
@@ -966,7 +1673,6 @@ function Changes({
   busy: boolean;
   onCollect: (include: string[]) => Promise<void>;
   onAccept: () => Promise<void>;
-  onDiscard: () => void;
   onError: (text: string) => void;
   onNotice: (text: string) => void;
 }) {
@@ -1019,28 +1725,6 @@ function Changes({
     };
   }, [run.id, file, ignoreWhitespace, onError]);
 
-  const copyPatch = async () => {
-    try {
-      const patch = await ipc.copyRunPatch(run.id);
-      await navigator.clipboard?.writeText(patch);
-      onNotice("Patch copied");
-    } catch (e) {
-      onError(errorMessage(e));
-    }
-  };
-  const savePatch = async () => {
-    try {
-      const path = await saveDialog({
-        defaultPath: `${run.title.replace(/[^\w.-]+/g, "-").slice(0, 40) || "run"}.patch`,
-        filters: [{ name: "Patch", extensions: ["patch", "diff"] }],
-      });
-      if (!path) return;
-      await ipc.saveRunPatch(run.id, path);
-      onNotice("Patch saved");
-    } catch (e) {
-      onError(errorMessage(e));
-    }
-  };
   const index = files?.findIndex((f) => f.path === selected) ?? -1;
   const stepper =
     files && files.length > 1 && index >= 0
@@ -1052,169 +1736,163 @@ function Changes({
             setSelected(files[Math.min(files.length - 1, index + 1)].path),
         }
       : undefined;
-
-  if (run.collection === "failed") {
-    return (
-      <div className="flex flex-1 flex-col gap-2 px-4 py-3 pl-lead text-[13px]">
-        <p className="m-0 font-medium">Collection failed</p>
-        <p className="m-0 text-fg-2">
-          {run.collection_error ?? "The work could not be collected."} The
-          stopped container and its files are kept.
-        </p>
-        <div className="flex gap-2">
-          <button
-            type="button"
-            className="btn btn-sm btn-primary"
-            disabled={busy || !run.kept}
-            onClick={() => void onCollect([])}
-          >
-            Retry collection
-          </button>
-          <button
-            type="button"
-            className="btn btn-sm"
-            disabled={busy || !run.kept}
-            onClick={onDiscard}
-          >
-            Discard work…
-          </button>
-        </div>
-      </div>
-    );
-  }
+  const added = (files ?? []).reduce((n, f) => n + (f.additions ?? 0), 0);
+  const deleted = (files ?? []).reduce((n, f) => n + (f.deletions ?? 0), 0);
 
   const leftOut = run.left_out;
+  const leftOutCount = leftOut.length + run.left_out_more;
+  const undecided = leftOutUndecided(run);
   return (
-    <div className="flex min-w-0 flex-1 flex-col">
-      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b px-4 py-2 pl-lead text-[12px]">
-        <span className="text-fg-2">
-          {run.collection === "no_changes"
-            ? "The agent changed nothing."
-            : `${plural(files?.length ?? run.changed_files ?? 0, "file")} against the start · includes edits the agent did not commit`}
-        </span>
-        <span className="flex-1" />
-        {run.collection === "ready" && (
-          <>
-            <button
-              type="button"
-              className="btn btn-sm"
-              onClick={() => void copyPatch()}
-            >
-              Copy patch
-            </button>
-            <button
-              type="button"
-              className="btn btn-sm"
-              onClick={() => void savePatch()}
-            >
-              Save patch…
-            </button>
-          </>
-        )}
-      </div>
-      {(leftOut.length > 0 || run.left_out_more > 0) && (
-        <div className="shrink-0 border-b px-4 py-2 pl-lead text-[12px]">
-          <div className="flex items-center gap-2">
-            <span className="font-medium">
-              Left out: {plural(leftOut.length + run.left_out_more, "new file")}
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <div className="flex shrink-0 flex-col gap-2 border-b px-5 py-2.5 pl-lead text-[12px]">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-fg-2">
+          {run.collection === "no_changes" ? (
+            <span>
+              The agent changed nothing: its working tree matches the start
+              commit.
             </span>
-            <span className="flex-1" />
-            {!run.snapshot_accepted && run.kept && (
-              <>
-                <button
-                  type="button"
-                  className="btn btn-sm"
-                  disabled={busy}
-                  onClick={() => setChoosing(!choosing)}
-                >
-                  Choose files to add…
-                </button>
+          ) : (
+            <>
+              <span>
+                Snapshot of the agent's working tree, compared with the start,{" "}
+                <code className="mono">{run.start_commit.slice(0, 7)}</code>
+              </span>
+              {files && (
+                <span className="tabular">
+                  <span className="text-added">+{added}</span>{" "}
+                  <span className="text-deleted">−{deleted}</span>
+                </span>
+              )}
+              <span className="text-muted">
+                Includes edits the agent didn't commit.
+              </span>
+            </>
+          )}
+        </div>
+        {leftOutCount > 0 && (
+          <section
+            aria-label="Files left out"
+            className="run-card gap-1.5 py-2.5"
+            data-tone={undecided ? "amber" : "grey"}
+          >
+            <div className="flex flex-wrap items-center gap-2">
+              <strong className="text-[12.5px] text-fg">
+                {plural(leftOutCount, "new file")}{" "}
+                {leftOutCount === 1 ? "was" : "were"} left out of the snapshot
+              </strong>
+              <span className="flex-1" />
+              {undecided && (
+                <>
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    disabled={busy}
+                    aria-pressed={choosing}
+                    onClick={() => setChoosing(!choosing)}
+                  >
+                    Choose files to add…
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-primary"
+                    disabled={busy}
+                    onClick={() => void onAccept()}
+                  >
+                    Keep this snapshot
+                  </button>
+                </>
+              )}
+            </div>
+            <ul className="m-0 flex max-h-40 list-none flex-col gap-0.5 overflow-y-auto p-0">
+              {leftOut.map((l) => (
+                <li key={l.path} className="flex min-w-0 items-center gap-2">
+                  {choosing && (
+                    <input
+                      type="checkbox"
+                      aria-label={`Add ${l.path}`}
+                      checked={chosen.has(l.path)}
+                      onChange={(e) =>
+                        setChosen((s) => {
+                          const next = new Set(s);
+                          if (e.target.checked) next.add(l.path);
+                          else next.delete(l.path);
+                          return next;
+                        })
+                      }
+                    />
+                  )}
+                  <code className="mono truncate text-fg" title={l.path}>
+                    {l.path}
+                  </code>
+                  <span className="truncate text-muted">{l.reason}</span>
+                </li>
+              ))}
+              {run.left_out_more > 0 && (
+                <li className="text-muted">
+                  … and {plural(run.left_out_more, "more file")}
+                </li>
+              )}
+            </ul>
+            <span className="text-fg-2">
+              {run.snapshot_accepted
+                ? "You kept the snapshot without them."
+                : run.kept
+                  ? "The stopped container is kept until you decide."
+                  : "The container is gone, so they can no longer be added."}
+            </span>
+            {choosing && (
+              <div className="flex gap-2">
                 <button
                   type="button"
                   className="btn btn-sm btn-primary"
-                  disabled={busy}
-                  onClick={() => void onAccept()}
+                  disabled={busy || chosen.size === 0}
+                  onClick={() => {
+                    setChoosing(false);
+                    void onCollect([...chosen]);
+                  }}
                 >
-                  Keep this snapshot
+                  Collect again with {plural(chosen.size, "file")}
                 </button>
-              </>
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() => setChoosing(false)}
+                >
+                  Cancel
+                </button>
+              </div>
             )}
-            {run.snapshot_accepted && (
-              <span className="text-muted">Snapshot kept</span>
-            )}
-          </div>
-          <ul className="m-0 mt-1 flex max-h-40 list-none flex-col gap-0.5 overflow-y-auto p-0">
-            {leftOut.map((l) => (
-              <li key={l.path} className="flex items-center gap-2">
-                {choosing && (
-                  <input
-                    type="checkbox"
-                    aria-label={`Add ${l.path}`}
-                    checked={chosen.has(l.path)}
-                    onChange={(e) =>
-                      setChosen((s) => {
-                        const next = new Set(s);
-                        if (e.target.checked) next.add(l.path);
-                        else next.delete(l.path);
-                        return next;
-                      })
-                    }
-                  />
-                )}
-                <span className="mono truncate" title={l.path}>
-                  {l.path}
-                </span>
-                <span className="truncate text-muted">{l.reason}</span>
-              </li>
-            ))}
-            {run.left_out_more > 0 && (
-              <li className="text-muted">
-                … and {plural(run.left_out_more, "more file")}
-              </li>
-            )}
-          </ul>
-          {choosing && (
-            <div className="mt-1 flex gap-2">
-              <button
-                type="button"
-                className="btn btn-sm btn-primary"
-                disabled={busy || chosen.size === 0}
-                onClick={() => {
-                  setChoosing(false);
-                  void onCollect([...chosen]);
-                }}
-              >
-                Collect again with {plural(chosen.size, "file")}
-              </button>
-              <button
-                type="button"
-                className="btn btn-sm"
-                onClick={() => setChoosing(false)}
-              >
-                Cancel
-              </button>
-            </div>
-          )}
-        </div>
-      )}
+          </section>
+        )}
+      </div>
       {run.collection === "ready" && (
         <div className="flex min-h-0 flex-1">
-          <ul className="m-0 w-[260px] shrink-0 list-none overflow-y-auto border-r p-1">
+          <ul
+            aria-label="Changed files"
+            className="m-0 w-[260px] shrink-0 list-none overflow-y-auto border-r p-1"
+          >
             {(files ?? []).map((f) => {
               const { dir, name } = splitPath(f.path);
               return (
                 <li key={f.path}>
                   <button
                     type="button"
-                    className="side-row w-full text-left"
+                    className="side-row h-auto w-full items-start gap-2 py-1.5 text-left"
                     aria-current={f.path === selected}
                     onClick={() => setSelected(f.path)}
                   >
-                    <span className="min-w-0 flex-1 truncate">
-                      {dir && <span className="text-muted">{dir}/</span>}
-                      {name}
+                    <span className="kind mt-px" data-tone={kindTone(f.kind)}>
+                      {KIND_LETTER[f.kind]}
                     </span>
-                    <span className="shrink-0 text-[11px] tabular">
+                    <span className="flex min-w-0 flex-1 flex-col">
+                      <span className="truncate">{name}</span>
+                      {dir && (
+                        <span className="truncate text-[11px] text-muted">
+                          {dir.replace(/\/$/, "")}
+                        </span>
+                      )}
+                    </span>
+                    <span className="mt-px shrink-0 text-[11px] tabular">
                       {f.additions != null && (
                         <span className="text-added">+{f.additions} </span>
                       )}

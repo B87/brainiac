@@ -124,21 +124,34 @@ export const GROUP_LABEL: Record<RunGroup, string> = {
   ended: "Ended",
 };
 
-/** Whether the run waits on the user, and otherwise where it belongs. */
+/**
+ * Whether the run waits on the user, and otherwise where it belongs: a
+ * question, an idle session, or work that waits for a decision needs you.
+ */
 export function groupOf(run: AgentRun): RunGroup {
   if (run.phase !== "ended") {
-    return run.activity === "permission" || run.activity === "plan_limit"
+    return run.activity === "permission" ||
+      run.activity === "idle" ||
+      run.activity === "plan_limit"
       ? "needs_you"
       : "active";
   }
-  const collected =
-    run.collection === "ready" || run.collection === "no_changes";
   if (run.collection === "failed") return "needs_you";
-  if (run.outcome === "interrupted" && run.kept && run.collection === "none")
+  if (run.kept && run.collection === "none" && run.stop_confirmed)
     return "needs_you";
-  if (collected && !run.snapshot_accepted) return "needs_you";
-  if (collected) return "review";
+  if (leftOutUndecided(run)) return "needs_you";
+  if (run.collection === "ready") return "review";
   return "ended";
+}
+
+/** Left-out files that were neither added nor accepted while the work is kept. */
+export function leftOutUndecided(run: AgentRun): boolean {
+  return (
+    run.kept &&
+    !run.snapshot_accepted &&
+    (run.collection === "ready" || run.collection === "no_changes") &&
+    run.left_out.length + run.left_out_more > 0
+  );
 }
 
 export function needsYou(run: AgentRun): boolean {
@@ -163,9 +176,9 @@ export function activityLabel(run: AgentRun): string {
     case "preparing":
       return "Preparing";
     case "working":
-      return `Working, turn ${run.turn}`;
+      return `Working · turn ${run.turn}`;
     case "permission":
-      return "Waiting for you, permission";
+      return "Waiting for you · permission";
     case "idle":
       return "Ready for your prompt";
     case "plan_limit":
@@ -183,7 +196,7 @@ export function producedLabel(run: AgentRun): string | null {
     case "collecting":
       return "Collecting";
     case "ready":
-      return `Ready to review, ${run.changed_files ?? 0} ${
+      return `Ready to review · ${run.changed_files ?? 0} ${
         run.changed_files === 1 ? "file" : "files"
       }`;
     case "no_changes":
@@ -196,19 +209,101 @@ export function producedLabel(run: AgentRun): string | null {
 }
 
 /** Whether Brainiac can see the run; null when connected. */
-export function visibilityLabel(
-  run: AgentRun,
-  now = Date.now(),
-): string | null {
+export function visibilityLabel(run: AgentRun): string | null {
   if (run.phase === "ended") {
     return run.stop_confirmed ? null : "Stop not confirmed";
   }
   if (run.cancel_requested) return "Cancel requested";
   if (!run.connected) {
-    return `Last reported: ${
-      run.reported_at ? shortClock(run.reported_at, now) : "never"
-    }`;
+    const label = activityLabel(run);
+    return `Last reported: ${label.charAt(0).toLowerCase()}${label.slice(1)}`;
   }
+  return null;
+}
+
+/** A state badge's colour (SPEC.md, The run: States). */
+export type RunTone = "blue" | "amber" | "green" | "red" | "grey" | "dashed";
+
+/** The tone of what the agent is doing: working, waiting on you, or ended. */
+export function activityTone(run: AgentRun): RunTone {
+  if (run.phase !== "ended" && !run.connected) return "dashed";
+  if (run.phase === "ended" || run.activity === "ended") {
+    return run.outcome === "failed" || run.outcome === "interrupted"
+      ? "red"
+      : "grey";
+  }
+  switch (run.activity) {
+    case "working":
+      return "blue";
+    case "permission":
+    case "idle":
+    case "plan_limit":
+      return "amber";
+    default:
+      return "grey";
+  }
+}
+
+export function producedTone(run: AgentRun): RunTone {
+  if (run.collection === "ready") return "green";
+  if (run.collection === "failed") return "red";
+  return "grey";
+}
+
+/** "This Mac", or the remote host's name. */
+export function hostLabel(run: Pick<AgentRun, "host_id" | "host_name">) {
+  return isRemote(run) ? run.host_name : "This Mac";
+}
+
+export function isRemote(run: Pick<AgentRun, "host_id">): boolean {
+  return run.host_id !== "" && run.host_id !== "local";
+}
+
+/** "under a minute", "31 min", "1 h 10 min". */
+export function spanLabel(ms: number): string {
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 1) return "under a minute";
+  if (minutes < 60) return `${minutes} min`;
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return m === 0 ? `${h} h` : `${h} h ${m} min`;
+}
+
+/** "just now", "40 s ago", "6 min ago", "2 h ago", then the clock. */
+export function agoLabel(rfc3339: string, now = Date.now()): string {
+  const ms = now - new Date(rfc3339).getTime();
+  if (Number.isNaN(ms)) return "";
+  if (ms < 5_000) return "just now";
+  if (ms < 60_000) return `${Math.floor(ms / 1000)} s ago`;
+  if (ms < 60 * 60_000) return `${Math.floor(ms / 60_000)} min ago`;
+  if (ms < 12 * 60 * 60_000) return `${Math.floor(ms / (60 * 60_000))} h ago`;
+  return shortClock(rfc3339, now);
+}
+
+/** The Runs list's When: what the time means for the run's group. */
+export function listWhen(run: AgentRun, now = Date.now()): string {
+  if (run.phase === "ended") {
+    return run.ended_at ? `ended ${shortClock(run.ended_at, now)}` : "ended";
+  }
+  const ends = run.deadline_at
+    ? `ends ${shortClock(run.deadline_at, now)}`
+    : "";
+  const asked = run.pending_permissions[0]?.asked_at;
+  const lead =
+    run.activity === "permission" && asked
+      ? `asked ${agoLabel(asked, now)}`
+      : run.accepted_at
+        ? spanLabel(now - new Date(run.accepted_at).getTime())
+        : "";
+  return [lead, ends].filter(Boolean).join(" · ");
+}
+
+/** The Runs list's Result: what was collected, or that work waits uncollected. */
+export function listResult(run: AgentRun): string | null {
+  const produced = producedLabel(run);
+  if (produced) return produced;
+  if (run.phase === "ended" && run.kept && run.collection === "none")
+    return "Work kept · not collected";
   return null;
 }
 
@@ -273,6 +368,8 @@ export type Turn = {
   permissions: PermissionState[];
   notices: string[];
   ended: { reason: string; message: string | null; at: string } | null;
+  /** When the turn's latest event arrived. */
+  lastAt: string | null;
 };
 
 /** Events of a run as turns, plus the notices before the first prompt. */
@@ -298,6 +395,7 @@ export function foldTurns(events: RunEvent[]): {
         permissions: [],
         notices: [],
         ended: null,
+        lastAt: null,
       };
       turns.set(n, t);
     }
@@ -306,6 +404,7 @@ export function foldTurns(events: RunEvent[]): {
   let current = 0;
   for (const e of events) {
     const b = e;
+    if ("turn" in b) turnOf(b.turn).lastAt = e.at;
     switch (b.type) {
       case "prompt": {
         current = b.turn;
@@ -404,4 +503,47 @@ export function turnSummary(t: Turn): string {
   const steps = t.tools.length;
   const head = `${steps} ${steps === 1 ? "step" : "steps"}`;
   return parts.length ? `${head} · ${parts.join(", ")}` : head;
+}
+
+/** A tool row's verb: "Read", "Edited", "Running", by kind and status. */
+export function toolVerb(tool: Pick<ToolState, "kind" | "status">): string {
+  const running = tool.status === "pending" || tool.status === "in_progress";
+  switch (tool.kind) {
+    case "read":
+      return running ? "Reading" : "Read";
+    case "edit":
+      return running ? "Editing" : "Edited";
+    case "delete":
+      return running ? "Deleting" : "Deleted";
+    case "move":
+      return running ? "Moving" : "Moved";
+    case "search":
+      return running ? "Searching" : "Searched";
+    case "execute":
+      return running ? "Running" : "Ran";
+    case "fetch":
+      return running ? "Fetching" : "Fetched";
+    case "think":
+      return "Thought";
+    default:
+      return running ? "Working" : "Tool";
+  }
+}
+
+/** What a permission request asks for, as its card's heading. */
+export function permissionHeading(kind: string | null): string {
+  switch (kind) {
+    case "execute":
+      return "Claude Code asks to run a command";
+    case "edit":
+      return "Claude Code asks to edit a file";
+    case "delete":
+      return "Claude Code asks to delete a file";
+    case "move":
+      return "Claude Code asks to move a file";
+    case "fetch":
+      return "Claude Code asks to fetch a page";
+    default:
+      return "Claude Code asks for permission";
+  }
 }

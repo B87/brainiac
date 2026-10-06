@@ -244,7 +244,7 @@ impl BuildOutput {
 
 /// The build context: the files as a tar archive (POSIX ustar). Names are
 /// under 100 bytes, so no long-name extension is needed.
-fn context() -> Vec<u8> {
+pub(crate) fn context() -> Vec<u8> {
     let mut tar = Vec::new();
     for (name, text) in FILES {
         tar.extend_from_slice(&header(name, text.len()));

@@ -277,6 +277,29 @@ export const CircleIcon = (p: IconProps) => (
   </Svg>
 );
 
+/** The network: anywhere the agent can reach. */
+export const GlobeIcon = (p: IconProps) => (
+  <Svg strokeWidth={1.4} {...p}>
+    <circle cx="8" cy="8" r="6" />
+    <path d="M2 8h12M8 2c2 2.2 2 9.8 0 12M8 2c-2 2.2-2 9.8 0 12" />
+  </Svg>
+);
+
+/** A container: what a run gets. */
+export const BoxIcon = (p: IconProps) => (
+  <Svg strokeWidth={1.4} {...p}>
+    <path d="M2.5 5L8 2.5 13.5 5v6L8 13.5 2.5 11z" strokeLinejoin="round" />
+    <path d="M2.5 5L8 7.5 13.5 5M8 7.5v6" strokeLinejoin="round" />
+  </Svg>
+);
+
+/** Three quarters of a circle: a step in progress. */
+export const ProgressIcon = (p: IconProps) => (
+  <Svg {...p} strokeWidth={1.8}>
+    <path d="M8 2a6 6 0 1 1-6 6" strokeLinecap="round" />
+  </Svg>
+);
+
 export const ChevronLeft = (p: IconProps) => (
   <Svg {...p}>
     <path d="M10 3.5 5.5 8 10 12.5" />

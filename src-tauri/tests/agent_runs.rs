@@ -177,6 +177,7 @@ impl Harness {
             socket: self.tmp.path().join("c").join("runner.sock"),
             idle_exit: None,
             spawn_guard: false,
+            service: false,
         };
         let engine = self.engine.clone();
         self.server = tokio::spawn(async move {
@@ -203,6 +204,7 @@ impl Harness {
                 memory_mib: 2048,
                 workspace_gib: 20,
                 model: "sonnet".into(),
+                host_id: String::new(),
             })
             .await
             .unwrap()
@@ -636,6 +638,7 @@ async fn a_start_the_settings_do_not_allow_is_refused_before_anything_is_read() 
             memory_mib: 2048,
             workspace_gib: 20,
             model: String::new(),
+            host_id: String::new(),
         })
         .await
         .unwrap_err();

@@ -306,6 +306,123 @@ test("Settings → Agents chooses the engine and saves a pasted key, never showi
   await expect(page.getByText(key)).toBeHidden();
 });
 
+test("Settings → Agents approves a remote host, and New run can choose it", async ({
+  page,
+}) => {
+  await openSettings(page, "Agents");
+  await page.getByLabel("SSH user").fill("ada");
+  await page.getByLabel("SSH host").fill("runner.example");
+  await page.getByRole("button", { name: "Show host key" }).click();
+  await expect(page.getByText(/SHA256:preview/)).toBeVisible();
+  await page.getByRole("button", { name: "Approve this key" }).click();
+  await expect(page.getByText("ada@runner.example:22")).toBeVisible();
+  await page.getByRole("button", { name: "Deploy" }).click();
+  await expect(page.getByText(/Emergency stop/)).toBeVisible();
+  await page.keyboard.press("Escape");
+
+  await page.evaluate(() => window.emitEvent("menu", { id: "palette" }));
+  const palette = page.getByRole("dialog", { name: "Search and switch" });
+  await palette.getByRole("button", { name: "New Run…" }).click();
+  const dialog = page.getByRole("dialog", { name: "New run" });
+  await dialog.getByRole("button", { name: "runner.example · remote" }).click();
+  await expect(
+    dialog.getByText(/Anyone who administers it can read them/),
+  ).toBeVisible();
+  await expect(dialog.getByText(/over SSH/)).toBeVisible();
+});
+
+test("Settings → Agents can approve a host key that changed", async ({
+  page,
+}) => {
+  await openSettings(page, "Agents");
+  await page.getByLabel("SSH user").fill("ada");
+  await page.getByLabel("SSH host").fill("runner.example");
+  await page.getByRole("button", { name: "Show host key" }).click();
+  await page.getByRole("button", { name: "Approve this key" }).click();
+  await expect(page.getByText("ada@runner.example:22")).toBeVisible();
+
+  await page.evaluate(() => {
+    window.fake.hostKey = "SHA256:changed";
+  });
+  await page.getByRole("button", { name: "Show host key" }).click();
+  await expect(page.getByText(/SHA256:changed/)).toBeVisible();
+  await page
+    .getByRole("button", { name: "Approve the new fingerprint" })
+    .click();
+  expect((await calls(page, "approve_agent_host")).at(-1)).toMatchObject({
+    request: { fingerprint: "SHA256:changed", accept_changed_key: true },
+  });
+});
+
+test("Runs puts what needs you first, and a run asks for permission in its conversation", async ({
+  page,
+}) => {
+  await page.evaluate(() => window.fake.useSampleRuns());
+  await page.evaluate(() => window.emitEvent("menu", { id: "show_runs" }));
+  const needsYou = page.getByRole("region", { name: "Needs you" });
+  await expect(
+    needsYou.getByText("Fix the flaky invoice rounding test"),
+  ).toBeVisible();
+  await expect(needsYou.getByText("Ready for your prompt")).toBeVisible();
+  await expect(needsYou.getByText("Interrupted")).toBeVisible();
+  await expect(
+    page
+      .getByRole("region", { name: "Ready to review" })
+      .getByText("Ready to review · 2 files"),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Needs you 3" }).click();
+  await expect(page.getByText("Upgrade the date library")).toBeHidden();
+  await page.getByRole("button", { name: "All", exact: true }).click();
+
+  await page.getByText("Fix the flaky invoice rounding test").click();
+  await expect(
+    page.getByRole("heading", { name: "Fix the flaky invoice rounding test" }),
+  ).toBeVisible();
+  await expect(page.getByText("Waiting for you · permission")).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "2 steps · read 1 file, ran 1 command" }),
+  ).toBeVisible();
+  await expect(page.getByLabel("Next prompt")).toBeDisabled();
+  const request = page
+    .getByRole("alert")
+    .filter({ hasText: "Claude Code asks to run a command" });
+  await expect(
+    request.getByText("rm -rf node_modules && pnpm install"),
+  ).toBeVisible();
+  await request.getByRole("button", { name: "Allow once" }).click();
+  expect((await calls(page, "answer_run_permission")).at(-1)).toEqual({
+    id: "run-ask",
+    permissionId: "perm-1",
+    allow: true,
+  });
+
+  await page
+    .getByRole("navigation", { name: "Breadcrumb" })
+    .getByRole("button", { name: "Runs" })
+    .click();
+  await page.getByText("Migrate config to TOML").click();
+  const interrupted = page.getByRole("region", { name: "Interrupted" });
+  await expect(
+    interrupted.getByText(/OrbStack quit while the agent was working/),
+  ).toBeVisible();
+  await expect(
+    interrupted.getByRole("button", { name: "Collect work" }),
+  ).toBeEnabled();
+
+  await page
+    .getByRole("navigation", { name: "Breadcrumb" })
+    .getByRole("button", { name: "Runs" })
+    .click();
+  await page.getByText("Upgrade the date library").click();
+  await page.getByRole("tab", { name: /Changes/ }).click();
+  await expect(
+    page
+      .getByRole("list", { name: "Changed files" })
+      .getByText("parse.test.ts"),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "Copy patch" })).toBeVisible();
+});
+
 test("Settings checks a value before saving it, and saves it when the field is left", async ({
   page,
 }) => {

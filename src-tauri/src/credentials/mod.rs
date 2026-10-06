@@ -16,7 +16,7 @@
 //! `Token` or `Secret` it sends, with that domain's rules.
 
 mod command;
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "app"))]
 mod macos;
 mod service;
 mod sources;
@@ -25,7 +25,7 @@ mod store;
 use std::fmt;
 
 pub use command::{find_program, CommandRunner};
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "app"))]
 pub use macos::MacStore;
 pub use service::{Binding, CredentialService, Lease, LeaseHandle, OwnerGate, Probe, Resolution};
 pub use sources::{check_source, describe};

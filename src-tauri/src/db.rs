@@ -58,6 +58,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0010_agent_model",
         include_str!("../migrations/0010_agent_model.sql"),
     ),
+    (
+        "0011_agent_hosts_remote",
+        include_str!("../migrations/0011_agent_hosts_remote.sql"),
+    ),
 ];
 
 /// How many daily backups to keep.
@@ -145,6 +149,10 @@ pub const HISTORY: Store = Store {
         (
             "0005_agent_run_model",
             include_str!("../migrations/history/0005_agent_run_model.sql"),
+        ),
+        (
+            "0006_agent_run_host",
+            include_str!("../migrations/history/0006_agent_run_host.sql"),
         ),
     ],
     backups: Backups::Every { days: 7, keep: 2 },
@@ -383,12 +391,31 @@ fn check_compatible(conn: &Connection, path: &Path, store: &Store) -> AppResult<
 pub fn migrate(conn: &mut Connection, store: &Store) -> AppResult<()> {
     let current = schema_version(conn)? as usize;
     for (index, (name, sql)) in store.migrations.iter().enumerate().skip(current) {
+        // Rebuilding `agent_hosts` drops a table other rows reference.
+        // SQLite ignores `foreign_keys` inside a transaction, so it is
+        // set around this one migration and the new table is checked after.
+        let rebuilds_parent = *name == "0011_agent_hosts_remote";
+        if rebuilds_parent {
+            conn.pragma_update(None, "foreign_keys", false)?;
+        }
         let tx = conn.transaction()?;
         tx.execute_batch(sql).map_err(|e| {
             AppError::db(format!("Migration {name} failed.")).with_details(e.to_string())
         })?;
         tx.pragma_update(None, "user_version", (index + 1) as i64)?;
         tx.commit()?;
+        if rebuilds_parent {
+            conn.pragma_update(None, "foreign_keys", true)?;
+            let broken: i64 =
+                conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
+                    r.get(0)
+                })?;
+            if broken != 0 {
+                return Err(AppError::db(
+                    "Migration 0011_agent_hosts_remote left a broken reference.",
+                ));
+            }
+        }
         tracing::info!(migration = name, "applied database migration");
     }
     Ok(())

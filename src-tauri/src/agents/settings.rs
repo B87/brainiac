@@ -185,10 +185,12 @@ impl AgentSettingsService {
 
     pub async fn get(&self) -> AppResult<AgentSettings> {
         let profile = self.profile().await?;
+        let hosts = self.db.call(|conn| super::hosts::list(conn)).await?;
         Ok(AgentSettings {
             missing: missing(&profile),
             profile,
             plan_offered: PLAN_OFFERED,
+            hosts,
         })
     }
 

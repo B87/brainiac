@@ -33,9 +33,9 @@ use self::acp::{Command, RunSink, Session};
 use self::docker::{CollectSpec, LaunchSpec, Running, Workloads};
 use self::journal::{journal_path, Append, Redactor, TraceJournal};
 use self::protocol::{
-    valid_id, Activity, CollectManifest, Credential, Delivery, EventBody, EventPage, Outcome,
-    PendingPermission, Phase, Request, Response, RunStatus, StartRun, StopReason, MAX_LINE_BYTES,
-    MAX_PROMPT_BYTES, PROTOCOL,
+    decode_hex, valid_id, Activity, CollectManifest, Credential, Delivery, EventBody, EventPage,
+    Outcome, PendingPermission, Phase, Request, Response, RunStatus, StartRun, StopReason,
+    MAX_LINE_BYTES, MAX_PROMPT_BYTES, MAX_TRANSFER, PROTOCOL, TRANSFER_CHUNK,
 };
 use self::state::{Ledger, RunRecord, StateDir};
 use crate::models::{AppError, AppResult, ErrorCode};
@@ -80,8 +80,23 @@ pub struct Config {
     pub socket: PathBuf,
     /// Exit after this long with no live run and no request; `None` never.
     pub idle_exit: Option<Duration>,
-    /// Start `brainiac runner guard` beside the controller.
+    /// Start the guard beside the controller.
     pub spawn_guard: bool,
+    /// Installed on a remote host: no idle exit, a group-readable socket,
+    /// and a bundle path only inside this state directory.
+    pub service: bool,
+}
+
+/// This process as the runner: the Linux binary is already `brainiac-runner`,
+/// and the Mac app is `brainiac` plus the word `runner`.
+pub fn runner_command() -> std::io::Result<(PathBuf, Vec<String>)> {
+    let exe = std::env::current_exe()?;
+    let name = exe.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if name == "brainiac-runner" {
+        Ok((exe, Vec::new()))
+    } else {
+        Ok((exe, vec!["runner".into()]))
+    }
 }
 
 /// What a run's session or the engine tells the controller.
@@ -320,6 +335,8 @@ impl RunSink for Run {
 pub struct Controller<W: Workloads> {
     state: StateDir,
     installation: String,
+    /// A service on a remote host (SPEC.md, Remote hosts).
+    service: bool,
     workloads: W,
     runs: Mutex<HashMap<String, Arc<Run>>>,
     signals: mpsc::UnboundedSender<Signal>,
@@ -358,6 +375,7 @@ impl<W: Workloads> Controller<W> {
     fn load(
         state: StateDir,
         installation: String,
+        service: bool,
         workloads: W,
     ) -> AppResult<(Arc<Self>, mpsc::UnboundedReceiver<Signal>)> {
         let (signals, receiver) = mpsc::unbounded_channel();
@@ -428,6 +446,7 @@ impl<W: Workloads> Controller<W> {
         let controller = Arc::new(Self {
             state,
             installation,
+            service,
             workloads,
             runs: Mutex::new(runs),
             signals,
@@ -522,6 +541,52 @@ impl<W: Workloads> Controller<W> {
             Request::Discard { run_id, image } => {
                 self.discard(&run_id, image).await.map(|()| Response::Done)
             }
+            Request::PutBundle {
+                run_id,
+                offset,
+                total,
+                hex,
+            } => self
+                .put_bundle(&run_id, offset, total, &hex)
+                .map(|uploaded| Response::Uploaded {
+                    path: uploaded.0,
+                    size: uploaded.1,
+                }),
+            Request::ReadBundle {
+                run_id,
+                offset,
+                max,
+            } => self
+                .read_bundle(&run_id, offset, max)
+                .map(|(offset, total, hex)| Response::Chunk { offset, total, hex }),
+            Request::CollectHere {
+                run_id,
+                include,
+                image,
+            } => {
+                let out_dir = self.state.run_dir(&run_id);
+                match std::fs::create_dir_all(&out_dir) {
+                    Ok(()) => self
+                        .collect(&run_id, include, out_dir, image)
+                        .await
+                        .map(|manifest| Response::Collected { manifest }),
+                    Err(e) => Err(AppError::io("The collection folder could not be created.")
+                        .with_details(e.to_string())),
+                }
+            }
+            Request::ProbeEngine { socket, image } => self
+                .workloads
+                .probe(&socket, image.as_deref())
+                .await
+                .map(|report| Response::Engine { report }),
+            Request::BuildImage { socket, tag, hex } => self
+                .build_image(&socket, &tag, &hex)
+                .await
+                .map(|id| Response::Image { id }),
+            Request::EmergencyStop => {
+                self.emergency_stop().await;
+                Ok(Response::Done)
+            }
             Request::Shutdown => {
                 if self.close_if_idle() {
                     Ok(Response::Done)
@@ -535,6 +600,15 @@ impl<W: Workloads> Controller<W> {
 
     fn start(self: &Arc<Self>, start: StartRun) -> AppResult<RunStatus> {
         check_start(&start)?;
+        if self.service {
+            let allowed = std::fs::canonicalize(self.state.input_bundle(&start.run_id))?;
+            let got = std::fs::canonicalize(&start.bundle)?;
+            if got != allowed {
+                return Err(AppError::validation(
+                    "A service controller only starts a bundle it was given.",
+                ));
+            }
+        }
         let mut runs = self.runs();
         if self.closing.load(Ordering::SeqCst) {
             return Err(AppError::dependency(
@@ -1210,6 +1284,91 @@ impl<W: Workloads> Controller<W> {
         }
     }
 
+    /// Append one chunk of the input bundle. A service controller is the
+    /// only one that accepts this; the file stays inside its state directory.
+    fn put_bundle(
+        &self,
+        run_id: &str,
+        offset: u64,
+        total: u64,
+        hex: &str,
+    ) -> AppResult<(String, u64)> {
+        if !self.service {
+            return Err(AppError::validation(
+                "Only a host's run controller accepts a bundle upload.",
+            ));
+        }
+        if !valid_id(run_id) || total == 0 || total > MAX_TRANSFER || offset > total {
+            return Err(AppError::validation("That bundle upload is not valid."));
+        }
+        let bytes = decode_hex(hex)
+            .ok_or_else(|| AppError::validation("A bundle chunk was not readable."))?;
+        if bytes.len() > TRANSFER_CHUNK || offset + bytes.len() as u64 > total {
+            return Err(AppError::validation("A bundle chunk is the wrong size."));
+        }
+        let path = self.state.input_bundle(run_id);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        use std::io::{Seek, SeekFrom, Write};
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(offset == 0)
+            .open(&path)?;
+        file.seek(SeekFrom::Start(offset))?;
+        file.write_all(&bytes)?;
+        let size = file.metadata()?.len();
+        Ok((path.display().to_string(), size))
+    }
+
+    fn read_bundle(&self, run_id: &str, offset: u64, max: u32) -> AppResult<(u64, u64, String)> {
+        if !valid_id(run_id) || max == 0 || max as usize > TRANSFER_CHUNK {
+            return Err(AppError::validation("That bundle read is not valid."));
+        }
+        let path = self.state.result_bundle(run_id);
+        let file = std::fs::File::open(&path)?;
+        let total = file.metadata()?.len();
+        if offset > total {
+            return Err(AppError::validation(
+                "That bundle read starts past the end.",
+            ));
+        }
+        use std::io::{Read, Seek, SeekFrom};
+        let mut file = file;
+        file.seek(SeekFrom::Start(offset))?;
+        let mut buf = vec![0u8; max as usize];
+        let n = file.read(&mut buf)?;
+        buf.truncate(n);
+        Ok((offset, total, protocol::encode_hex(&buf)))
+    }
+
+    async fn build_image(&self, socket: &str, tag: &str, hex: &str) -> AppResult<String> {
+        if tag.is_empty() || tag.len() > 128 || tag.contains('\n') {
+            return Err(AppError::validation("That image name is not usable."));
+        }
+        let bytes = decode_hex(hex)
+            .ok_or_else(|| AppError::validation("The image context was not readable."))?;
+        if bytes.len() > MAX_LINE_BYTES {
+            return Err(AppError::validation("The image context is too large."));
+        }
+        self.workloads.build_image(socket, tag, bytes).await
+    }
+
+    /// Stop every live run's containers and keep them (SPEC.md, Emergency stop).
+    async fn emergency_stop(self: &Arc<Self>) {
+        let runs: Vec<Arc<Run>> = self.runs().values().cloned().collect();
+        let stops = runs.iter().map(|run| {
+            self.stop_run(
+                run,
+                Outcome::Interrupted,
+                Some("Emergency stop: the run's containers were stopped and kept.".into()),
+                false,
+            )
+        });
+        futures_util::future::join_all(stops).await;
+    }
+
     /// Stop every live run as interrupted: the controller is being stopped
     /// (the Mac logs out or restarts).
     async fn interrupt_all(self: &Arc<Self>) {
@@ -1340,7 +1499,7 @@ pub async fn write_line<T: serde::Serialize, W: tokio::io::AsyncWrite + Unpin>(
 }
 
 /// Compare two tokens without stopping at the first difference.
-fn same_token(a: &str, b: &str) -> bool {
+pub(crate) fn same_token(a: &str, b: &str) -> bool {
     a.len() == b.len()
         && a.bytes()
             .zip(b.bytes())
@@ -1353,8 +1512,14 @@ async fn connection<W: Workloads>(
     stream: UnixStream,
     token: Arc<String>,
 ) {
-    // Only this user's processes: the socket is mode 600, and this checks it.
-    if stream.peer_cred().map(|c| c.uid()).ok() != Some(crate::mcp::current_uid()) {
+    // A local socket is mode 600, and only this user's processes may use it.
+    // A service socket is mode 660: sshd connects as the SSH user, who is in
+    // the controller's group and is not the service account, so the same
+    // check would drop every remote Hello. The token below is what
+    // authorizes that connection.
+    if !controller.service
+        && stream.peer_cred().map(|c| c.uid()).ok() != Some(crate::mcp::current_uid())
+    {
         return;
     }
     let (read, mut write) = stream.into_split();
@@ -1446,7 +1611,7 @@ fn live_in(runs: &HashMap<String, Arc<Run>>) -> usize {
 
 /// Bind the controller's socket. The lock is held, so a socket already
 /// there is an earlier controller's.
-fn bind(socket: &std::path::Path) -> AppResult<UnixListener> {
+fn bind(socket: &std::path::Path, service: bool) -> AppResult<UnixListener> {
     use std::os::unix::fs::PermissionsExt;
     if socket.as_os_str().len() > crate::mcp::MAX_SOCKET_PATH {
         return Err(AppError::validation(
@@ -1466,13 +1631,21 @@ fn bind(socket: &std::path::Path) -> AppResult<UnixListener> {
         std::fs::remove_file(socket)?;
     }
     let listener = UnixListener::bind(socket)?;
-    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
+    // A service socket is group-writable so the SSH user, in the
+    // controller's group, can connect. The token file stays private.
+    let mode = if service { 0o660 } else { 0o600 };
+    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(mode))?;
     Ok(listener)
 }
 
 /// Run the controller until it is idle, asked to shut down, or stopped.
 pub async fn serve<W: Workloads>(config: Config, workloads: W) -> AppResult<()> {
     config.state.ensure()?;
+    if config.service {
+        use std::os::unix::fs::PermissionsExt;
+        // The SSH user is in this group and must be able to reach the socket.
+        std::fs::set_permissions(config.state.root(), std::fs::Permissions::from_mode(0o750))?;
+    }
     // An exiting controller's guard holds the lock while it checks what was
     // left; a new controller waits for it rather than giving up.
     let mut tries = 0;
@@ -1489,9 +1662,13 @@ pub async fn serve<W: Workloads>(config: Config, workloads: W) -> AppResult<()> 
     let token = Arc::new(config.state.token()?);
     let installation = config.state.installation()?;
     config.state.write_pid()?;
-    let listener = bind(&config.socket)?;
-    let (controller, mut signals) =
-        Controller::load(config.state.clone(), installation, workloads)?;
+    let listener = bind(&config.socket, config.service)?;
+    let (controller, mut signals) = Controller::load(
+        config.state.clone(),
+        installation,
+        config.service,
+        workloads,
+    )?;
     let _owned = Owned(Arc::clone(&controller));
 
     // Runs an earlier controller left live are stopped now.
@@ -1573,7 +1750,9 @@ pub fn main(args: &[String]) -> i32 {
             return 1;
         }
     };
-    let result = if args.first().map(String::as_str) == Some("guard") {
+    let result = if args.first().map(String::as_str) == Some("emergency-stop") {
+        runtime.block_on(guard::emergency_stop(&state))
+    } else if args.first().map(String::as_str) == Some("guard") {
         let Some(pid) = value("--pid").and_then(|p| p.parse().ok()) else {
             eprintln!("brainiac runner guard: --pid is required");
             return 2;
@@ -1585,11 +1764,19 @@ pub fn main(args: &[String]) -> i32 {
             eprintln!("brainiac runner: --socket is required");
             return 2;
         };
+        let service = args.iter().any(|a| a == "--service");
         let config = Config {
             state,
             socket,
-            idle_exit: Some(Duration::from_secs(10 * 60)),
+            // A host's service stays up after SSH closes. This Mac's
+            // controller still exits once it has been idle.
+            idle_exit: if service {
+                None
+            } else {
+                Some(Duration::from_secs(10 * 60))
+            },
             spawn_guard: true,
+            service,
         };
         runtime.block_on(serve(config, docker::DockerEngine::new()))
     };

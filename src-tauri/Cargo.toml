@@ -6,22 +6,39 @@ authors = ["Brainiac contributors"]
 license = "MIT OR Apache-2.0"
 edition = "2021"
 rust-version = "1.88"
+# `pnpm tauri dev` runs `cargo run`. The runner is selected with `--bin`.
+default-run = "brainiac"
 
 [lib]
 name = "brainiac_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+default = ["app"]
+# The GUI and the Keychain. The Linux `brainiac-runner` binary is built
+# without this feature (docs/architecture.md, Remote hosts).
+app = [
+  "dep:tauri",
+  "dep:tauri-build",
+  "dep:tauri-plugin-opener",
+  "dep:tauri-plugin-dialog",
+  "dep:tauri-plugin-updater",
+  "dep:tauri-plugin-process",
+  "dep:tauri-plugin-notification",
+  "dep:security-framework",
+]
+
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "2", optional = true, features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
-tauri-plugin-opener = "2"
-tauri-plugin-dialog = "2"
-tauri-plugin-updater = "2"
-tauri-plugin-process = "2"
+tauri = { version = "2", optional = true, features = [] }
+tauri-plugin-opener = { version = "2", optional = true }
+tauri-plugin-dialog = { version = "2", optional = true }
+tauri-plugin-updater = { version = "2", optional = true }
+tauri-plugin-process = { version = "2", optional = true }
 # macOS notifications for workspace activity, sent from Rust only (docs/architecture.md, Security).
-tauri-plugin-notification = "2"
+tauri-plugin-notification = { version = "2", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
@@ -43,7 +60,7 @@ libc = "0.2"
 # Pull requests (v0.3): GitHub and Bitbucket Cloud over HTTPS (rustls, macOS trust store),
 # and account tokens in the macOS Keychain.
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "json", "system-proxy"] }
-security-framework = "3"
+security-framework = { version = "3", optional = true }
 # Databases (v0.4): PostgreSQL over its extended protocol with rustls (the same
 # rustls, crypto provider, and macOS trust store verifier that reqwest uses).
 tokio-postgres = "0.7"
@@ -61,6 +78,15 @@ bollard = { version = "0.19", default-features = false, features = ["pipe"] }
 tempfile = "3"
 # Tests drive the MCP server as an agent would.
 rmcp = { version = "3.5", default-features = false, features = ["server", "macros", "client"] }
+
+[[bin]]
+name = "brainiac"
+path = "src/main.rs"
+required-features = ["app"]
+
+[[bin]]
+name = "brainiac-runner"
+path = "src/runner_main.rs"
 
 [profile.release]
 codegen-units = 1

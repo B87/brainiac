@@ -187,6 +187,29 @@ pub trait Workloads: Send + Sync + 'static {
         image: &str,
         fallback_image: Option<&str>,
     ) -> impl Future<Output = AppResult<()>> + Send;
+
+    /// What this engine is, and whether `losetup` works when `image` is set.
+    fn probe(
+        &self,
+        _socket: &str,
+        _image: Option<&str>,
+    ) -> impl Future<Output = AppResult<super::protocol::EngineReport>> + Send {
+        std::future::ready(Err(AppError::dependency(
+            "This engine is not probed from the run controller.",
+        )))
+    }
+
+    /// Build the run image from a tar context.
+    fn build_image(
+        &self,
+        _socket: &str,
+        _tag: &str,
+        _context: Vec<u8>,
+    ) -> impl Future<Output = AppResult<String>> + Send {
+        std::future::ready(Err(AppError::dependency(
+            "This engine does not build the run image.",
+        )))
+    }
 }
 
 /// One client per engine socket.
@@ -1136,6 +1159,90 @@ impl Workloads for DockerEngine {
         }
         self.remove_workspace_file(&docker, &image, installation, run_id)
             .await
+    }
+
+    async fn probe(
+        &self,
+        socket: &str,
+        image: Option<&str>,
+    ) -> AppResult<super::protocol::EngineReport> {
+        let docker = self.client(socket)?;
+        let info = docker
+            .info()
+            .await
+            .map_err(|e| engine_error("The engine did not answer.", e))?;
+        let name = info
+            .operating_system
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "Docker".into());
+        let linux = !name.to_ascii_lowercase().contains("windows");
+        let mut loop_devices = false;
+        if let Some(image) = image {
+            self.ensure_store(&docker, "probe").await?;
+            if super::protocol::valid_id("probe") {
+                let script = "losetup -f";
+                match self.helper(&docker, image, "probe", "probe", script).await {
+                    Ok(device) if device.starts_with("/dev/loop") => loop_devices = true,
+                    Ok(_) => {}
+                    Err(_) => {}
+                }
+            }
+        }
+        let supported = linux && (image.is_none() || loop_devices);
+        let problem = if !linux {
+            Some("Runs on a remote host need a Linux Docker engine.".into())
+        } else if image.is_some() && !loop_devices {
+            Some("This engine cannot attach the workspace's loop devices.".into())
+        } else {
+            None
+        };
+        Ok(super::protocol::EngineReport {
+            name,
+            supported,
+            problem,
+            loop_devices,
+        })
+    }
+
+    async fn build_image(&self, socket: &str, tag: &str, context: Vec<u8>) -> AppResult<String> {
+        use futures_util::StreamExt;
+        let docker = self.client(socket)?;
+        let options = bollard::query_parameters::BuildImageOptionsBuilder::default()
+            .dockerfile("Dockerfile")
+            .t(tag)
+            .pull("true")
+            .rm(true)
+            .forcerm(true)
+            .labels(&std::collections::HashMap::from([(
+                "org.brainiac.role".to_string(),
+                "image".to_string(),
+            )]))
+            .build();
+        let body = bollard::body_stream(futures_util::stream::iter(vec![bytes::Bytes::from(
+            context,
+        )]));
+        let mut stream = docker.build_image(options, None, Some(body));
+        let mut id = None;
+        let mut error = None;
+        while let Some(item) = stream.next().await {
+            match item {
+                Ok(info) => {
+                    if let Some(err) = info.error.filter(|e| !e.is_empty()) {
+                        error = Some(err);
+                    }
+                    if let Some(aux) = info.aux {
+                        if let Some(found) = aux.id {
+                            id = Some(found);
+                        }
+                    }
+                }
+                Err(e) => return Err(engine_error("The image could not be built.", e)),
+            }
+        }
+        if let Some(error) = error {
+            return Err(AppError::io("The image could not be built.").with_details(error));
+        }
+        id.ok_or_else(|| AppError::io("The engine built the image without an ID."))
     }
 }
 

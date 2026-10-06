@@ -28,11 +28,14 @@
 
 pub mod controller;
 pub mod engine;
+pub mod hosts;
 pub mod image;
 pub mod repository;
+pub mod runner_binary;
 pub mod runs;
 pub mod runtime;
 pub mod settings;
+pub mod ssh;
 
 pub use repository::{ExportedStart, RunArtifacts};
 pub use runs::{AgentRunService, RepositoryLookup, RunEmitter};

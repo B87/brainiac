@@ -61,8 +61,8 @@ The product can eventually include PR and CI status, calendar context, recurring
 | Databases | v0.4 | SQLite and PostgreSQL connections, read only by default; query editor and result grid, saved queries, history, and a PostgreSQL connection's health |
 | Secrets | v0.4.x | An account's token or a connection's password read from the Keychain, an environment variable, or a command such as `gh auth token` or `op read`, and Settings → Secrets (section 12) |
 | Database and credential follow-ups | v0.4.x | SSH tunnels, editing rows in the grid, saved queries as files, and secrets from Google Secret Manager, Git's credential helper, and `.pgpass`; chosen by use |
-| Agent runs | v0.5 | Claude Code run in a container on this Mac's Docker engine, with guided setup, a live conversation, follow-up prompts, and a review of the collected work saved as a patch (section 13) |
-| Agent run follow-ups | v0.5 | Pushing the reviewed result to a new branch, Codex and Gemini CLI, remote hosts that keep working while the Mac sleeps, and runs from tasks (`docs/design/agent-runs.md`) |
+| Agent runs | v0.5 | Claude Code run in a container on this Mac's Docker engine or an approved Linux host, with guided setup, a live conversation, follow-up prompts, and a review of the collected work saved as a patch (section 13) |
+| Agent run follow-ups | v0.5 | Pushing the reviewed result to a new branch, Codex and Gemini CLI, and runs from tasks (`docs/design/agent-runs.md`) |
 | External content imports | v0.6 | Paste, bookmarks, Markdown copies, articles, `.eml`, provenance and duplicate handling |
 | Global capture window and Inbox | v0.6 | System shortcut, floating capture, Inbox triage of captured and imported items, shared backend state |
 | Authenticated import adapters | v0.6.x | Selected Jira issues/mail messages; provider choice and video transcript acquisition validated separately |
@@ -675,20 +675,20 @@ Where an account's token and a connection's password come from. Brainiac writes 
 
 ## 13. Agent runs — v0.5
 
-A coding agent run in a container, started from a repository, followed live, steered with follow-up prompts, and reviewed in the diff viewer before its work leaves Brainiac. This section is phase 1: Claude Code on this Mac's Docker engine, ending in a patch. Pushing a branch, Codex and Gemini CLI, remote hosts, and runs from tasks follow within v0.5; their design, the options compared, the spike records, and the UX canvas are in `docs/design/agent-runs.md`.
+A coding agent run in a container, started from a repository, followed live, steered with follow-up prompts, and reviewed in the diff viewer before its work leaves Brainiac. This section is Claude Code on this Mac's Docker engine or on an approved Linux host, ending in a patch. Pushing a branch, Codex and Gemini CLI, and runs from tasks follow within v0.5; their design, the options compared, the spike records, and the UX canvas are in `docs/design/agent-runs.md`.
 
 ### Boundaries
 
 - **The user's repository is only read.** Its checkout is never mounted into a container, and its working tree, index, refs, configuration, and hooks are never changed. A run gets one commit and its history, copied into Brainiac's own repository in its data folder (`docs/architecture.md`, Agent runs — v0.5). Fetching stays the only write to a user's repository (section 2).
 - **Code and prompts go to the model provider during the run.** Reviewing decides what is published, not what is sent. New run says so before it starts.
-- **The agent can read the credential it is given, and so can the repository's own code and whoever controls the Docker engine.** Scripts the agent runs (tests, builds, installs) and the repository's Claude Code hooks see it in their environment, a hook even before the first prompt, so a run is for a repository you would trust with the token or key. Phase 1's network access is unrestricted: the agent can reach any site, including services on the user's network.
+- **The agent can read the credential it is given, and so can the repository's own code and whoever controls the Docker engine.** On a remote host, that includes whoever administers the host. Scripts the agent runs (tests, builds, installs) and the repository's Claude Code hooks see it in their environment, a hook even before the first prompt, so a run is for a repository you would trust with the token or key. Network access is unrestricted: the agent can reach any site, including services on the user's network.
 - **Nothing is pushed in phase 1.** The result leaves Brainiac only as a patch the user copies or saves.
 - **One tested agent:** Claude Code through its ACP adapter, at versions pinned in an image Brainiac builds. A request from the agent for a file or terminal on the Mac is refused. Brainiac's MCP server is not offered inside a run. The repository's own Claude Code setup applies, as on the Mac: its CLAUDE.md, and its `.claude` settings (hooks, permission rules, environment), except that the token or key always goes to Anthropic over verified TLS.
 - **Agents (section 9) cannot start runs or change Settings → Agents.**
 
 ### Settings → Agents
 
-- **Where runs execute:** this Mac's Docker engine, chosen by its socket (OrbStack or Docker Desktop; others when tested), with its state and whether the run controller is running. It says that runs pause while the Mac sleeps, and that a run past its time limit is stopped on wake. An engine on which Brainiac cannot enforce the workspace size, or that fails the test, is not offered.
+- **Where runs execute:** this Mac's Docker engine, chosen by its socket (OrbStack or Docker Desktop; others when tested), with its state and whether the run controller is running. It says that runs pause while the Mac sleeps, and that a run past its time limit is stopped on wake. An engine on which Brainiac cannot enforce the workspace size, or that fails the test, is not offered. A remote host is a separate choice (Remote hosts, below); it does not replace this Mac's engine.
 - **Claude Code**, paid with one of:
   - **Claude plan:** a token the user creates with `claude setup-token` in Terminal and pastes. A token Terminal wrapped over two lines is joined, with the spaces and invisible characters the wrap and the copy add; two tokens, or anything that still does not look like one, are refused. Brainiac never signs in to claude.ai, never reads Claude Code's own Keychain item or `~/.claude`, and never copies login files into a container. It records when the token was saved and warns from eleven months on. Runs use the plan's usage limits, shared with the user's other Claude use, and show "Uses your Claude plan" instead of a cost. This option is off by default and ships in a release only once Anthropic's answer on its terms is recorded (`docs/design/agent-runs.md`, Subscription token).
   - **API key:** an Anthropic API key.
@@ -700,21 +700,32 @@ A coding agent run in a container, started from a repository, followed live, ste
 - **Before the first run** lists what is still missing, in the order to do it: an engine, the token or key, the agreement, the image, a passed test. Choosing another engine forgets the image built on the old one.
 - **Test:** starts a short run, sends a prompt, cancels, and collects, and shows what passed and when. A wrong token or key can take a few minutes to be refused: Claude Code retries it first. A run cannot start until a test has passed for the current credential, image, and engine; a changed token or key needs a new test, because a wrong token can come back looking like an ordinary reply.
 
+### Remote hosts
+
+- **An approved host** is a Linux machine with systemd and Docker, reached by SSH with a key the user already has (an agent or a chosen identity file). Brainiac stores the user, host, port, the identity file's path, and the host key fingerprint. It does not store the private key, and it does not store the agent's token or key on the host's row.
+- **The host key** is shown before anything is installed. An unknown key, or a key that changed, is refused until the user approves that fingerprint. Brainiac never accepts a key on its own.
+- **Deploy** installs Brainiac's run controller as a service that keeps running after SSH closes, under its own user in the `docker` group. The SSH user must be able to run the install with `sudo` without a password prompt; Deploy lists those actions first. The uploaded program is checked against the copy Brainiac built. Before any agent credential is sent, Brainiac checks that this is the controller it installed and that the host's Docker engine can attach the workspace's loop devices.
+- **Upgrade** and **Remove** are explicit. A host with a live run is not upgraded or removed. Remove does not delete the controller's files on the host while a run's container, volume, or cleanup is still there.
+- **Build** and **Test** on that host are the same steps as on this Mac, after the controller is in place. Test is the first time the token or key is sent. Settings says the host's administrator can see the repository and the credential.
+- **Emergency stop**, shown in Settings, is a command run on the host. It stops the host's run containers and does not delete them. It works without the Mac app. On this Mac, stopping the engine is still the emergency stop.
+- A host restored from a backup stays off until the user confirms it. Until then Brainiac does not deploy to it or start a run on it.
+- One host that cannot be reached does not stop runs on another host, or on this Mac.
+
 ### New run
 
-- **New run…** from Runs (`Option+Cmd+N`), the command palette, or a repository. The repository must be a complete local Git repository: a shallow or partial clone, missing objects, Git LFS pointers, or submodules in the chosen tree are refused with a remedy, before any container starts or credential is read.
+- **New run…** from Runs (`Option+Cmd+N`), the command palette, or a repository. The repository must be a complete local Git repository: a shallow or partial clone, missing objects, Git LFS pointers, or submodules in the chosen tree are refused with a remedy, before any container starts or credential is read. When more than one approved host can take a run, the dialog asks which one; otherwise it uses this Mac.
 - **Start from** a branch or a commit, resolved once to a commit. The dialog shows that commit, says that uncommitted changes are not part of the run, and says what the container gets: this commit and its history (with the count); other branches, stashes, hooks, remotes, and Git settings stay on the Mac.
 - **Prompt**, **Time limit** (30 minutes to 8 hours) with the time it ends, which counts waiting for the user and idle time too, **Model** (the setting's, changeable for this run), and resource limits with **Change…**.
 - **Permissions:** **Ask before actions** waits for the user before the agent runs a command or edits a file; **Act without asking** lets it do anything inside its container, and never push, get new credentials, or change where it runs.
-- **Before you start** names the provider and plan or key, the unrestricted network, and who can read the token or key: the agent, the repository's code and Claude Code settings, and whoever controls the engine. **Start run** says nothing is pushed until the result is reviewed.
+- **Before you start** names the provider and plan or key, the unrestricted network, and who can read the token or key: the agent, the repository's code and Claude Code settings, and whoever controls the engine (and, on a remote host, whoever administers that host). **Start run** says nothing is pushed until the result is reviewed.
 
 ### The run
 
-- **Runs** is a sidebar section after Databases (also View › Runs and `Cmd+K`), with a badge counting runs that need the user. Its list groups runs as Needs you, Ready to review, Active, and Ended, filtered by repository, each with what it is doing, what it produced, and when.
-- A run's header shows its title, repository, start commit, agent, model, and engine, and permissions, then separate badges for what the agent is doing and what the run produced, the time it ends and the time left, "Uses your Claude plan" (or the cost when the provider reports one, "Unavailable" when not), **Cancel run…**, and **Finish and collect**.
+- **Runs** is a sidebar section after Databases (also View › Runs and `Cmd+K`), with a badge counting runs that need the user: a permission request, a session ready for the next prompt or stopped by the plan limit, or work waiting for a decision (uncollected, left-out files not yet added or accepted, a failed collection). Its list groups runs as Needs you, Ready to review, Active, and Ended, shows all of them or only those that need the user, are active, or ended, and is filtered by repository and host. Each row shows the run's title, repository and host, what it is doing, what it produced, and when (asked, idle or running for, the time it ends, or when it ended).
+- A run's header shows its title, repository, start commit, agent, model, and engine, and permissions, then separate badges for what the agent is doing and what the run produced, the time it ends and the time left, "Uses your Claude plan" (or the cost when the provider reports one, "Unavailable" when not), **Cancel run…**, and **Finish and collect**. A remote run names its host.
 - **Conversation:** the prompts, the agent's messages and plan, and its tool activity, with each finished turn folded to a summary ("14 steps · read 6 files, ran 3 commands"). A side panel lists the start, where it runs, the provider and credential source, the network, the model (the one the agent reported once its session opened, with the one asked for when they differ; a plan or key that cannot use the asked-for model gets the agent's default), limits with workspace use, the image, and the files the agent says it changed, marked as reported by the agent. **Changes** is available once the work is collected.
 - **Next prompt** is enabled only while the run is idle and connected; **Send** starts the next turn on the same session.
-- **Permission requests** (in Ask before actions) show the command or edit, that it runs inside the container, when it was asked, and that the run still ends at its time limit; **Allow once** or **Reject**. In Act without asking, Brainiac chooses allow once. A request that arrives after Cancel has no effect.
+- **Permission requests** (in Ask before actions) show the command or edit, that it runs inside the container, when it was asked, and that the run still ends at its time limit; **Allow once** or **Reject**. While Brainiac cannot reach the run, the request is shown and cannot be answered: nothing is allowed on the user's behalf. In Act without asking, Brainiac chooses allow once. A request that arrives after Cancel has no effect.
 - **States**, each in words:
 
   | Fact | States |
@@ -730,10 +741,10 @@ A coding agent run in a container, started from a repository, followed live, ste
 
 ### Leaving and coming back
 
-- Quitting Brainiac does not stop a run. Reopening reconnects to the same session, shows the updates missed while it was closed once each, and allows the next prompt without sending the credential again.
-- Logging out or restarting the Mac interrupts a run: it is stopped and its work kept, as for any interruption.
-- A run on this Mac does not work while the Mac sleeps. On wake, a run past its time limit is stopped and shown as "Expired while this Mac slept"; it may have worked for a few seconds after wake.
-- When Brainiac cannot reach the run (the engine is not answering), the run shows its last report and when it was made, retries, and never claims the run stopped. **Cancel** meanwhile is shown as requested and is sent when Brainiac reconnects.
+- Quitting Brainiac does not stop a run. Reopening reconnects to the same session, shows the updates missed while it was closed once each, and allows the next prompt without sending the credential again. Losing SSH does not stop a remote run either.
+- Logging out or restarting the Mac interrupts a run on this Mac: it is stopped and its work kept, as for any interruption. A remote run keeps going; the host is not this Mac.
+- A run on this Mac does not work while the Mac sleeps. On wake, a run past its time limit is stopped and shown as "Expired while this Mac slept"; it may have worked for a few seconds after wake. A remote run keeps working while the Mac sleeps. Its time limit is the host's, and closing the lid does not extend it. A prompt or permission answer that was not acknowledged is not sent again.
+- When Brainiac cannot reach the run (the engine or the host is not answering), the run shows its last report and when it was made, retries, and never claims the run stopped. **Cancel** meanwhile is shown as requested and is sent when Brainiac reconnects. Another host's runs are unaffected.
 
 ### Ending and collecting
 

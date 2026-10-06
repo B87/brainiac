@@ -704,6 +704,100 @@
     white-space: nowrap;
   }
 
+  /* A run's state in words (SPEC.md, The run: States), tinted by tone. */
+  .state-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 1px 9px;
+    border: 1px solid transparent;
+    border-radius: 999px;
+    background: var(--k-other-bg);
+    color: var(--k-other-fg);
+    font-size: 11.5px;
+    font-weight: 600;
+    line-height: 18px;
+    white-space: nowrap;
+  }
+  .state-pill > .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+  .state-pill[data-tone="blue"] {
+    background: var(--av0-bg);
+    color: var(--av0-fg);
+  }
+  .state-pill[data-tone="amber"] {
+    background: var(--av1-bg);
+    color: var(--av1-fg);
+  }
+  .state-pill[data-tone="green"] {
+    background: var(--av2-bg);
+    color: var(--av2-fg);
+  }
+  .state-pill[data-tone="red"] {
+    background: var(--av3-bg);
+    color: var(--av3-fg);
+  }
+  .state-pill[data-tone="dashed"] {
+    background: transparent;
+    border: 1px dashed var(--faint);
+    color: var(--fg-2);
+  }
+
+  /* The Runs list's columns: run, now, result, when. */
+  .run-grid {
+    display: grid;
+    grid-template-columns:
+      minmax(0, 2.2fr) minmax(0, 1.3fr) minmax(0, 1.2fr)
+      minmax(0, 1fr);
+    gap: 12px;
+    align-items: center;
+  }
+
+  /* A run's notice: a question, a lost connection, a failure to recover from. */
+  .run-card {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px 14px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--app);
+  }
+  .run-card[data-tone="amber"] {
+    border-color: color-mix(in srgb, var(--dirty) 45%, transparent);
+    background: color-mix(in srgb, var(--av1-bg) 40%, var(--app));
+  }
+  .run-card[data-tone="red"] {
+    border-color: color-mix(in srgb, var(--conflict) 35%, transparent);
+    background: color-mix(in srgb, var(--av3-bg) 30%, var(--app));
+  }
+
+  /* Underlined view tabs (a run's Conversation and Changes). */
+  .tab {
+    height: 34px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 8px;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    background: transparent;
+    color: var(--fg-2);
+    font: inherit;
+  }
+  .tab[aria-selected="true"] {
+    border-bottom-color: var(--accent);
+    color: var(--fg);
+    font-weight: 600;
+  }
+  .tab:disabled {
+    color: var(--faint);
+  }
+
   /* Added/removed proportion of a file. */
   .change-bar {
     width: 34px;

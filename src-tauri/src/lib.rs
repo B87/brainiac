@@ -3,6 +3,7 @@
 pub mod activity;
 pub mod agents;
 pub mod backup;
+#[cfg(feature = "app")]
 pub mod commands;
 pub mod credentials;
 pub mod databases;
@@ -23,12 +24,18 @@ pub mod workspaces;
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(feature = "app")]
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+#[cfg(feature = "app")]
 use tauri::{Emitter, Manager, WindowEvent};
 
+#[cfg(feature = "app")]
 use crate::models::{AppError, ChangeOrigin, MenuEvent, RepositoryChangedEvent};
+#[cfg(feature = "app")]
 use crate::notes::{KnowledgeEvent, NoteService};
+#[cfg(feature = "app")]
 use crate::tasks::TaskService;
+#[cfg(feature = "app")]
 use crate::workspaces::RepositoryService;
 
 /// Event names shared with the frontend.
@@ -43,13 +50,17 @@ pub const EVENT_DB_HEALTH_SAMPLE: &str = "db_health_sample";
 pub const EVENT_AGENT_RUN_CHANGED: &str = "agent_run_changed";
 
 /// Minimum age of a vault scan before focus or wake triggers another.
+#[cfg(feature = "app")]
 const VAULT_ACTIVATION_MIN_AGE: Duration = Duration::from_secs(30);
 
 /// Minimum age of an observation before focus/wake triggers a refresh.
+#[cfg(feature = "app")]
 const ACTIVATION_MIN_AGE: Duration = Duration::from_secs(10);
 /// How often auto-fetch and the morning digest check whether something is due.
+#[cfg(feature = "app")]
 const SCHEDULE_TICK: Duration = Duration::from_secs(60);
 
+#[cfg(feature = "app")]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let context = tauri::generate_context!();
@@ -222,6 +233,12 @@ pub fn run() {
                     tracing::warn!(error = %e, "failed to emit agent_run_changed");
                 }
             });
+            let agent_hosts = Arc::new(agents::hosts::AgentHostService::new(
+                stores.core.clone(),
+                stores.history.clone(),
+                &data_dir,
+            ));
+            app.manage(Arc::clone(&agent_hosts));
             let runs = agents::AgentRunService::new(
                 stores.history.clone(),
                 Arc::clone(&agent_settings),
@@ -231,6 +248,7 @@ pub fn run() {
                 Arc::clone(&service) as Arc<dyn agents::RepositoryLookup>,
                 run_emitter,
             );
+            runs.set_hosts(agent_hosts);
             app.manage(Arc::clone(&runs));
             // Reconnect to runs left live or uncollected, and apply retention
             // once an hour (SPEC.md, Leaving and coming back; Deleting and keeping).
@@ -497,6 +515,13 @@ pub fn run() {
             commands::copy_run_patch,
             commands::save_run_patch,
             commands::test_agent_setup,
+            commands::preview_agent_host,
+            commands::approve_agent_host,
+            commands::deploy_agent_host,
+            commands::upgrade_agent_host,
+            commands::remove_agent_host,
+            commands::build_agent_host_image,
+            commands::test_agent_host,
             commands::get_run_controller_status,
             commands::set_repository_forge,
             commands::update_workspace_pull_requests,
@@ -580,6 +605,7 @@ pub fn run() {
 /// ask before rolling back open transactions (SPEC.md, Databases: Safety);
 /// closing the last window quits. The standard Quit item would end the app
 /// without asking, so the menu has its own.
+#[cfg(feature = "app")]
 fn quit(app: &tauri::AppHandle) {
     match app.webview_windows().into_values().next() {
         Some(window) => {
@@ -607,6 +633,7 @@ const VAULT_IMAGE_TYPES: &[(&str, &str)] = &[
 
 /// Serve an image file of the active vault for `vault://localhost/<path>`.
 /// Anything else, including paths that leave the vault, is a 404.
+#[cfg(feature = "app")]
 fn vault_image(app: &tauri::AppHandle, uri_path: &str) -> tauri::http::Response<Vec<u8>> {
     let not_found = || {
         tauri::http::Response::builder()
@@ -648,6 +675,7 @@ fn vault_image(app: &tauri::AppHandle, uri_path: &str) -> tauri::http::Response<
     }
 }
 
+#[cfg(feature = "app")]
 fn percent_decode_path(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
@@ -671,6 +699,7 @@ fn percent_decode_path(s: &str) -> String {
 
 /// Tell the user why Brainiac cannot start and quit when they dismiss it.
 /// The main window stays hidden: without the database no command can run.
+#[cfg(feature = "app")]
 fn show_startup_error(app: &tauri::App, error: &AppError) {
     use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
     if let Some(window) = app.get_webview_window("main") {
@@ -688,6 +717,7 @@ fn show_startup_error(app: &tauri::App, error: &AppError) {
         .show(move |_| handle.exit(1));
 }
 
+#[cfg(feature = "app")]
 fn init_tracing() {
     use tracing_subscriber::EnvFilter;
     let filter = EnvFilter::try_from_default_env()
@@ -698,6 +728,7 @@ fn init_tracing() {
         .try_init();
 }
 
+#[cfg(feature = "app")]
 fn build_menu(app: &tauri::App) -> tauri::Result<()> {
     let open = MenuItem::with_id(
         app,
