@@ -926,6 +926,12 @@ pub async fn start_agent_run(
     runs.start(request).await
 }
 
+/// An agent's reply, drawn as Markdown. The journal keeps the text.
+#[tauri::command]
+pub fn render_markdown(text: String) -> String {
+    crate::forge::markdown::render(&text)
+}
+
 /// The conversation after a sequence, from the mirrored journal.
 #[tauri::command]
 pub async fn list_run_events(

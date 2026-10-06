@@ -1356,7 +1356,7 @@
   }
 }
 
-/* Pull request text and threads (SPEC.md, Pull request). The HTML comes from
+/* Pull request text and an agent's reply (SPEC.md). The HTML comes from
    forge::markdown in Rust: a few harmless tags, links, no images. */
 @layer components {
   .md {

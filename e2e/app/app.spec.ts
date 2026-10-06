@@ -378,6 +378,13 @@ test("Runs puts what needs you first, and a run asks for permission in its conve
   await expect(
     page.getByRole("heading", { name: "Fix the flaky invoice rounding test" }),
   ).toBeVisible();
+  const turn = page.getByRole("region", { name: "Turn 1" });
+  await expect(turn.getByText("so half-cent totals round down")).toBeVisible();
+  await expect(turn.getByText("**half-cent**")).toHaveCount(0);
+  await expect(turn.getByRole("list")).toBeVisible();
+  await expect(
+    turn.getByText("Keep the signature of roundMoney"),
+  ).toBeVisible();
   await expect(page.getByText("Waiting for you · permission")).toBeVisible();
   await expect(
     page.getByRole("button", { name: "2 steps · read 1 file, ran 1 command" }),

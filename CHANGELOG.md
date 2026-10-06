@@ -11,6 +11,7 @@ into the release's section.
 
 ## [Unreleased]
 
+- A run's replies are shown as Markdown, with headings, lists, and code blocks.
 - Runs can execute on an approved Linux host over SSH, and keep working while this Mac sleeps. Settings → Agents installs that host's run controller, and asks before it trusts a new or changed host key.
 - Settings → Agents, for runs of Claude Code in a container: choose the Docker engine, add an API key from the Keychain, a command, or a variable, and build the run image from a Dockerfile you can read.
 - Runs: hand a repository's commit to Claude Code in a container on this Mac (New run…, ⌥⌘N), follow the conversation live, answer its permission requests or let it act, send follow-up prompts, and cancel or finish; a run keeps going while Brainiac is closed.

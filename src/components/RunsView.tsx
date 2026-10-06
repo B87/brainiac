@@ -55,6 +55,7 @@ import {
   ProgressIcon,
   TerminalIcon,
 } from "./icons";
+import { Markdown } from "./Markdown";
 import { RepoChip } from "./RepoChip";
 
 type Props = {
@@ -1448,11 +1449,7 @@ function TurnView({
             answered.map((p) => (
               <AnsweredRow key={p.permission_id} permission={p} />
             ))}
-          {t.message && (
-            <p className="selectable m-0 whitespace-pre-wrap text-[13px] leading-relaxed">
-              {t.message}
-            </p>
-          )}
+          {t.message && <AgentReply text={t.message} />}
           {waiting.map((p) => (
             <PermissionCard
               key={p.permission_id}
@@ -1480,6 +1477,35 @@ function TurnView({
       )}
     </section>
   );
+}
+
+/** The agent's reply. The journal keeps the text; this draws it as Markdown. */
+function AgentReply({ text }: { text: string }) {
+  const [html, setHtml] = useState<string | null>(null);
+  const [plain, setPlain] = useState(false);
+  useEffect(() => {
+    let live = true;
+    setPlain(false);
+    ipc.renderMarkdown(text).then(
+      (next) => {
+        if (live) setHtml(next);
+      },
+      () => {
+        if (live) setPlain(true);
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [text]);
+  if (plain || html === null) {
+    return (
+      <p className="selectable m-0 whitespace-pre-wrap text-[13px] leading-relaxed">
+        {text}
+      </p>
+    );
+  }
+  return <Markdown html={html} />;
 }
 
 function Plan({ entries }: { entries: NonNullable<Turn["plan"]> }) {

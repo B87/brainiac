@@ -572,7 +572,7 @@ export function sampleRuns(): {
         at: at(-16),
         type: "message",
         turn: 1,
-        text: "Floating point turns 1.005 into 1.00499…, so half-cent totals round down. Should roundMoney keep its signature?",
+        text: "Floating point turns 1.005 into 1.00499…, so **half-cent** totals round down.\n\n- Keep the signature of roundMoney",
       },
       {
         seq: 5,
@@ -706,6 +706,36 @@ export function sampleRuns(): {
     ],
   };
   return { runs, events };
+}
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function inlineMarkdown(text: string): string {
+  return escapeHtml(text)
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/`([^`]+)`/g, "<code>$1</code>");
+}
+
+/** The conversation tests' stand-in for `forge::markdown`. */
+function renderMarkdown(text: string): string {
+  return text
+    .split(/\n\n+/)
+    .map((block) => {
+      const lines = block.split("\n");
+      if (lines.length > 0 && lines.every((line) => line.startsWith("- "))) {
+        const items = lines
+          .map((line) => `<li>${inlineMarkdown(line.slice(2))}</li>`)
+          .join("");
+        return `<ul>${items}</ul>`;
+      }
+      return `<p>${lines.map(inlineMarkdown).join("<br>")}</p>`;
+    })
+    .join("");
 }
 
 let counter = 0;
@@ -1627,6 +1657,8 @@ export class FakeBackend {
         if (!run) throw { code: "NOT_FOUND", message: "No such run." };
         return run;
       }
+      case "render_markdown":
+        return renderMarkdown(String(args.text ?? ""));
       case "list_run_events": {
         const events = this.runEvents[args.id as string] ?? [];
         return {

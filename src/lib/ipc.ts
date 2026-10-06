@@ -554,6 +554,8 @@ export const ipc = {
   /** The conversation after a sequence, from the mirrored journal. */
   listRunEvents: (id: string, after: number) =>
     invoke<RunEventPage>("list_run_events", { id, after }),
+  /** An agent's reply as sanitized HTML. The journal keeps the text. */
+  renderMarkdown: (text: string) => invoke<string>("render_markdown", { text }),
   sendRunPrompt: (id: string, text: string) =>
     invoke<AgentRun>("send_run_prompt", { id, text }),
   answerRunPermission: (id: string, permissionId: string, allow: boolean) =>

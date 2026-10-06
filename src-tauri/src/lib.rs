@@ -501,6 +501,7 @@ pub fn run() {
             commands::get_agent_run,
             commands::start_agent_run,
             commands::list_run_events,
+            commands::render_markdown,
             commands::send_run_prompt,
             commands::answer_run_permission,
             commands::cancel_agent_run,
