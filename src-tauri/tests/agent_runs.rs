@@ -385,6 +385,7 @@ async fn a_run_is_started_followed_finished_collected_and_reviewed() {
             path: "readme.txt".into(),
             old_path: None,
             options: Default::default(),
+            preview: false,
         })
         .await
         .unwrap();
@@ -419,6 +420,195 @@ async fn a_run_is_started_followed_finished_collected_and_reviewed() {
     let named = h.engine.get().fallback_images.clone();
     assert_eq!(named.len(), 3, "{named:?}");
     assert!(named.iter().all(|i| i.as_deref() == Some(current.as_str())));
+}
+
+#[tokio::test]
+async fn a_live_run_shows_changes_so_far_and_its_result_becomes_a_branch() {
+    let h = Harness::new().await;
+    let run = h.start("edit and report", RunPermissions::Act).await;
+    let run = h.wait(&run.id, "the first turn ends", idle).await;
+
+    // The edit the agent reported reaches the conversation with its text.
+    let events = h
+        .wait_events(
+            &run.id,
+            "the reported edit",
+            |b| matches!(b, RunEventBody::Tool { diffs, .. } if !diffs.is_empty()),
+        )
+        .await;
+    let diffs = events
+        .iter()
+        .find_map(|e| match &e.body {
+            RunEventBody::Tool { diffs, .. } if !diffs.is_empty() => Some(diffs.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(diffs[0].path, "/workspace/readme.txt");
+    assert_eq!(diffs[0].old_text.as_deref(), Some("start"));
+    assert_eq!(diffs[0].new_text, "edited by the agent");
+
+    // The turn's end took a preview of the working tree on its own.
+    let mut preview = h.runs.preview_state(&run.id).await.unwrap();
+    for _ in 0..500 {
+        if preview.commit.is_some() && !preview.busy {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        preview = h.runs.preview_state(&run.id).await.unwrap();
+    }
+    assert_eq!(preview.error, None);
+    assert_eq!(preview.turn, 1);
+    assert!(preview.taken_at.is_some());
+    let mut paths: Vec<&str> = preview.files.iter().map(|f| f.path.as_str()).collect();
+    paths.sort();
+    assert_eq!(
+        paths,
+        [
+            ".gitignore",
+            "agent.txt",
+            "important.log",
+            "old.txt",
+            "readme.txt"
+        ]
+    );
+    assert!(preview.left_out >= 1);
+    let diff = h
+        .runs
+        .diff(RunDiffRequest {
+            run_id: run.id.clone(),
+            path: "readme.txt".into(),
+            old_path: None,
+            options: Default::default(),
+            preview: true,
+        })
+        .await
+        .unwrap();
+    assert!(serde_json::to_string(&diff.content)
+        .unwrap()
+        .contains("edited by the agent"));
+    // A preview is not the result: nothing is reviewable or exported yet.
+    assert_eq!(
+        h.runs.changes(&run.id).await.unwrap_err().code,
+        ErrorCode::Conflict
+    );
+    assert!(h.runs.branch_command(&run.id).await.is_err());
+
+    // Previews live in the run's own repository, never Brainiac's.
+    let run_dir = h.data().join("agent-runs").join(&run.id);
+    assert!(run_dir.join("preview.git").is_dir());
+    assert!(!run_dir.join("preview").join("result.bundle").exists());
+
+    // Refresh takes another, now; the agent keeps its session.
+    let refreshed = h.runs.preview(&run.id).await.unwrap();
+    assert_eq!(refreshed.files.len(), 5);
+    assert!(h.engine.get().previews >= 2);
+    assert_eq!(h.runs.get(&run.id).await.unwrap().phase, RunPhase::Running);
+
+    // Once the run ended, no preview is taken; the collection is the result.
+    h.runs.finish(&run.id).await.unwrap();
+    let run = h
+        .wait(&run.id, "the work is collected", |r| {
+            r.collection == RunCollection::Ready
+        })
+        .await;
+    assert_eq!(
+        h.runs.preview(&run.id).await.unwrap_err().code,
+        ErrorCode::Conflict
+    );
+    // Once collected, Changes so far has served.
+    assert!(!run_dir.join("preview.git").exists());
+    assert!(!run_dir.join("preview.json").exists());
+
+    // Copy branch command: the user runs it in their own repository and
+    // gets the snapshot as a new branch. Brainiac ran nothing there.
+    let before = git(&h.tmp.path().join("repo"), &["for-each-ref"]);
+    let command = h.runs.branch_command(&run.id).await.unwrap();
+    let short: String = run
+        .id
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .take(8)
+        .collect();
+    assert_eq!(
+        command.branch,
+        format!("agent/edit-and-report-{}", short.to_lowercase())
+    );
+    assert_eq!(git(&h.tmp.path().join("repo"), &["for-each-ref"]), before);
+    let clone = h.tmp.path().join("clone");
+    git(h.tmp.path(), &["clone", "-q", "repo", "clone"]);
+    let ran = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&command.command)
+        .current_dir(&clone)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("HOME", &clone)
+        .output()
+        .unwrap();
+    assert!(
+        ran.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ran.stderr)
+    );
+    assert_eq!(
+        git(&clone, &["rev-parse", &command.branch]),
+        run.result_commit.clone().unwrap()
+    );
+    assert_eq!(
+        git(&clone, &["show", &format!("{}:readme.txt", command.branch)]),
+        "edited by the agent"
+    );
+    // A branch of that name with other work on it is not overwritten: no `+`.
+    git(
+        &clone,
+        &["commit", "-q", "--allow-empty", "-m", "Other work"],
+    );
+    git(&clone, &["branch", "-f", &command.branch, "HEAD"]);
+    let again = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&command.command)
+        .current_dir(&clone)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("HOME", &clone)
+        .output()
+        .unwrap();
+    assert!(!again.status.success());
+    assert_eq!(
+        git(&clone, &["rev-parse", &command.branch]),
+        git(&clone, &["rev-parse", "HEAD"])
+    );
+    // Like a patch export, it confirmed the left-out list.
+    let run = h.wait(&run.id, "the container goes", |r| !r.kept).await;
+    assert!(run.snapshot_accepted);
+}
+
+#[tokio::test]
+async fn a_preview_caught_by_finish_never_blocks_the_collection() {
+    let h = Harness::new().await;
+    // The turn's end starts a preview whose container takes a while to make.
+    h.engine.get().preview_delay = Duration::from_millis(800);
+    let run = h.start("edit", RunPermissions::Act).await;
+    let run = h.wait(&run.id, "the turn ends", idle).await;
+    for _ in 0..100 {
+        if h.engine.get().previews > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(h.engine.get().previews, 1, "a preview is being made");
+    h.runs.finish(&run.id).await.unwrap();
+    let run = h
+        .wait(&run.id, "the work is collected", |r| {
+            r.collection == RunCollection::Ready
+        })
+        .await;
+    assert_eq!(run.collection_error, None);
+    // The preview stopped with the run: never started, and no error is
+    // shown for it.
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    assert_eq!(h.engine.get().previews_cancelled, 1);
+    let preview = h.runs.preview_state(&run.id).await.unwrap();
+    assert_eq!(preview.error, None);
+    assert!(!preview.busy);
 }
 
 #[tokio::test]

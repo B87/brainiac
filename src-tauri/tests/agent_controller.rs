@@ -722,6 +722,29 @@ async fn a_run_on_a_real_engine() {
     );
     assert!(host.binds.as_ref().is_none_or(|b| b.is_empty()));
 
+    // Changes so far: a collector reads the volume while the agent's
+    // container runs on it, which keeps running, and its container goes.
+    let preview_dir = tmp.path().join("preview");
+    std::fs::create_dir_all(&preview_dir).unwrap();
+    let manifest = runtime.preview(&run_id, &preview_dir).await.unwrap();
+    assert_eq!(manifest.start, start_commit);
+    assert_eq!(manifest.result, start_commit, "nothing changed yet");
+    let inspected = docker
+        .inspect_container(&id, None::<InspectContainerOptions>)
+        .await
+        .unwrap();
+    assert_eq!(inspected.state.unwrap().running, Some(true));
+    let listed = docker
+        .list_containers(Some(
+            ListContainersOptionsBuilder::new()
+                .all(true)
+                .filters(&filters)
+                .build(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(listed.len(), 1, "the preview's container was removed");
+
     // Anthropic refuses the fake key: the run fails rather than ending its
     // turn as if the refusal were a reply.
     let mut failed = false;

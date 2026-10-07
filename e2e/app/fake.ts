@@ -492,6 +492,7 @@ export function sampleRuns(): {
     kind: "execute",
     detail: "rm -rf node_modules && pnpm install",
     asked_at: asked,
+    diffs: [],
   };
   const runs = [
     sampleRun({
@@ -554,6 +555,7 @@ export function sampleRuns(): {
         status: "completed",
         locations: ["src/billing/round.ts"],
         output: null,
+        diffs: [],
       },
       {
         seq: 3,
@@ -566,6 +568,7 @@ export function sampleRuns(): {
         status: "completed",
         locations: [],
         output: "1 failed",
+        diffs: [],
       },
       {
         seq: 4,
@@ -615,6 +618,7 @@ export function sampleRuns(): {
         status: "completed",
         locations: ["src/billing/round.ts"],
         output: null,
+        diffs: [],
       },
       {
         seq: 9,
@@ -643,8 +647,17 @@ export function sampleRuns(): {
         title: "src/export.ts",
         kind: "edit",
         status: "completed",
-        locations: ["src/export.ts"],
+        locations: ["/workspace/src/export.ts"],
         output: null,
+        diffs: [
+          {
+            path: "/workspace/src/export.ts",
+            old_text: "  const rows = await query(sql);\n  return rows;",
+            new_text:
+              "  const rows = await query(sql, { limit: 500, offset });\n  return { rows, next: offset + rows.length };",
+            truncated: false,
+          },
+        ],
       },
       {
         seq: 3,
@@ -1717,6 +1730,34 @@ export class FakeBackend {
           old_path: null,
           since: null,
         } as unknown as PullRequestDiffRequest).diff;
+      case "get_run_preview":
+      case "refresh_run_preview":
+        return {
+          run_id: args.id,
+          start_commit: "4e1c9a2".padEnd(40, "0"),
+          commit: "d".repeat(40),
+          taken_at: NOW,
+          turn: 1,
+          files: [
+            {
+              path: "src/export.ts",
+              old_path: null,
+              kind: "modified",
+              additions: 2,
+              deletions: 2,
+              is_binary: false,
+            },
+          ],
+          left_out: 0,
+          busy: false,
+          error: null,
+        };
+      case "get_run_branch_command":
+        return {
+          branch: "agent/add-pagination-run-done",
+          command:
+            "git fetch --no-tags '/data/agent-runs/repos/repo.git' 'refs/brainiac/runs/run-done/result:refs/heads/agent/add-pagination-run-done'",
+        };
       case "get_run_controller_status":
         return { running: false, pid: null, live_runs: 0 };
       case "test_agent_setup":

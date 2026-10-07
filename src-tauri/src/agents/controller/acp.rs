@@ -18,7 +18,7 @@ use tokio::time::Instant;
 
 use super::docker::Output;
 use super::journal::{clip, Redactor};
-use super::protocol::{Activity, EventBody, PendingPermission, PlanEntry};
+use super::protocol::{Activity, EventBody, FileDiff, PendingPermission, PlanEntry};
 use crate::models::{AppError, AppResult, ErrorCode, RunPermissions};
 
 /// The entrypoint clones the run's start before it is ready; a large
@@ -33,6 +33,11 @@ const MAX_PENDING: usize = 16;
 /// Output that is not ACP, skipped; past this the run is stopped.
 const MAX_SKIPPED_BYTES: usize = 64 << 20;
 const TITLE_BYTES: usize = 1024;
+/// An edit's text before or after, each, as the journal keeps any text; a
+/// whole file written is often more.
+const DIFF_TEXT_BYTES: usize = super::journal::MAX_TEXT_BYTES;
+/// Edits kept from one tool update (a multi-site edit reports several).
+const MAX_DIFFS: usize = 8;
 
 /// What a client asks of the session.
 pub enum Command {
@@ -484,8 +489,9 @@ impl<S: RunSink> Session<S> {
                 .get("kind")
                 .and_then(Value::as_str)
                 .map(|k| clipped(k, 64)),
-            detail: detail(&tool),
+            detail: detail(&tool, &self.redactor),
             asked_at: super::now(),
+            diffs: tool_diffs(&tool, &self.redactor),
         };
         let parked = Parked {
             permission_id: permission_id.clone(),
@@ -602,7 +608,8 @@ impl<S: RunSink> Session<S> {
                     kind: field("kind"),
                     status: field("status"),
                     locations,
-                    output: tool_output(update),
+                    output: tool_output(update, &self.redactor),
+                    diffs: tool_diffs(update, &self.redactor),
                 });
             }
             "plan" => {
@@ -832,34 +839,67 @@ fn clipped(text: &str, max: usize) -> String {
     text
 }
 
+/// Filtered, then cut short: a known value that straddles the cut is
+/// recognized whole, never kept as all but its end.
+fn redacted_clip(mut text: String, redactor: &Redactor, max: usize) -> String {
+    redactor.redact(&mut text);
+    clip(&mut text, max);
+    text
+}
+
 /// The command or file a permission is about, when the tool says.
-fn detail(tool: &Value) -> Option<String> {
+fn detail(tool: &Value, redactor: &Redactor) -> Option<String> {
     let input = tool.get("rawInput")?;
     let value = ["command", "file_path", "path", "url"]
         .iter()
         .find_map(|key| input.get(*key).and_then(Value::as_str))?;
-    let mut value = value.to_string();
-    clip(&mut value, TOOL_OUTPUT_BYTES);
-    Some(value)
+    Some(redacted_clip(
+        value.to_string(),
+        redactor,
+        TOOL_OUTPUT_BYTES,
+    ))
 }
 
 /// The text a tool update carries, cut short.
-fn tool_output(update: &Value) -> Option<String> {
+fn tool_output(update: &Value, redactor: &Redactor) -> Option<String> {
     let content = update.get("content")?.as_array()?;
-    let mut text = String::new();
-    for item in content {
-        if let Some(piece) = item.pointer("/content/text").and_then(Value::as_str) {
-            text.push_str(piece);
-        }
-        if text.len() > TOOL_OUTPUT_BYTES {
-            break;
-        }
-    }
+    let text: String = content
+        .iter()
+        .filter_map(|item| item.pointer("/content/text").and_then(Value::as_str))
+        .collect();
     if text.is_empty() {
         return None;
     }
-    clip(&mut text, TOOL_OUTPUT_BYTES);
-    Some(text)
+    Some(redacted_clip(text, redactor, TOOL_OUTPUT_BYTES))
+}
+
+/// The edits a tool call or update reports: ACP's `diff` content items, cut
+/// short. They say what the agent meant to change, not what the workspace holds.
+fn tool_diffs(update: &Value, redactor: &Redactor) -> Vec<FileDiff> {
+    let Some(content) = update.get("content").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    content
+        .iter()
+        .filter(|item| item.get("type").and_then(Value::as_str) == Some("diff"))
+        .filter_map(|item| {
+            let path = item.get("path").and_then(Value::as_str)?;
+            let new_text = item.get("newText").and_then(Value::as_str)?.to_string();
+            let old_text = item
+                .get("oldText")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let truncated = new_text.len() > DIFF_TEXT_BYTES
+                || old_text.as_ref().is_some_and(|t| t.len() > DIFF_TEXT_BYTES);
+            Some(FileDiff {
+                path: redacted_clip(path.to_string(), redactor, TITLE_BYTES),
+                old_text: old_text.map(|t| redacted_clip(t, redactor, DIFF_TEXT_BYTES)),
+                new_text: redacted_clip(new_text, redactor, DIFF_TEXT_BYTES),
+                truncated,
+            })
+        })
+        .take(MAX_DIFFS)
+        .collect()
 }
 
 #[cfg(test)]
@@ -1017,5 +1057,98 @@ mod tests {
             .unwrap()
             .iter()
             .all(|e| !matches!(e, EventBody::Permission(_))));
+    }
+
+    #[test]
+    fn an_edit_carries_the_change_the_agent_reports() {
+        let (mut session, sink, _rx) = session(Redactor::new());
+        let long = "x".repeat(DIFF_TEXT_BYTES + 10);
+        session.line(
+            &serde_json::to_vec(&json!({
+                "jsonrpc": "2.0", "method": "session/update",
+                "params": { "sessionId": "s1", "update": {
+                    "sessionUpdate": "tool_call", "toolCallId": "t1", "title": "Edit a.txt",
+                    "kind": "edit", "status": "pending",
+                    "locations": [{ "path": "/workspace/a.txt" }],
+                    "content": [
+                        { "type": "diff", "path": "/workspace/a.txt", "oldText": "one", "newText": "two" },
+                        { "type": "diff", "path": "/workspace/b.txt", "oldText": null, "newText": long },
+                        { "type": "content", "content": { "type": "text", "text": "done" } }
+                    ]
+                }}
+            }))
+            .unwrap(),
+        );
+        let events = sink.events.lock().unwrap();
+        let EventBody::Tool { diffs, output, .. } = &events[0] else {
+            panic!("a tool event");
+        };
+        assert_eq!(output.as_deref(), Some("done"));
+        assert_eq!(diffs.len(), 2);
+        assert_eq!(diffs[0].old_text.as_deref(), Some("one"));
+        assert_eq!(diffs[0].new_text, "two");
+        assert!(!diffs[0].truncated);
+        assert_eq!(diffs[1].old_text, None);
+        assert!(diffs[1].truncated);
+        assert!(diffs[1].new_text.len() <= DIFF_TEXT_BYTES + '…'.len_utf8());
+    }
+
+    #[test]
+    fn a_permission_to_edit_shows_the_edit() {
+        let (mut session, sink, _rx) = session(Redactor::new());
+        session.line(
+            &serde_json::to_vec(&json!({
+                "jsonrpc": "2.0", "id": 5, "method": "session/request_permission",
+                "params": { "sessionId": "s1",
+                    "toolCall": { "toolCallId": "t1", "title": "Edit a.txt", "kind": "edit",
+                        "rawInput": { "file_path": "/workspace/a.txt" },
+                        "content": [{ "type": "diff", "path": "/workspace/a.txt", "oldText": "one", "newText": "two" }] },
+                    "options": [{ "optionId": "a", "kind": "allow_once", "name": "Allow" }] }
+            }))
+            .unwrap(),
+        );
+        let events = sink.events.lock().unwrap();
+        let Some(EventBody::Permission(p)) = events.last() else {
+            panic!("a permission event");
+        };
+        assert_eq!(p.detail.as_deref(), Some("/workspace/a.txt"));
+        assert_eq!(p.diffs.len(), 1);
+        assert_eq!(p.diffs[0].new_text, "two");
+    }
+
+    #[test]
+    fn a_key_across_the_cut_of_an_edit_is_removed_whole() {
+        let key = "sk-ant-api03-abcdefghijklmnop";
+        let mut redactor = Redactor::new();
+        redactor.register(key, "ANTHROPIC_API_KEY");
+        let (mut session, sink, _rx) = session(redactor);
+        // The key starts 10 bytes before the cut.
+        let text = format!("{}{key}\n", "x".repeat(DIFF_TEXT_BYTES - 10));
+        session.line(
+            &serde_json::to_vec(&json!({
+                "jsonrpc": "2.0", "method": "session/update",
+                "params": { "sessionId": "s1", "update": {
+                    "sessionUpdate": "tool_call", "toolCallId": "t1", "title": "Write .env",
+                    "kind": "edit", "status": "pending",
+                    "content": [
+                        { "type": "diff", "path": "/workspace/.env", "oldText": null, "newText": text },
+                        { "type": "content", "content": { "type": "text", "text": text } }
+                    ]
+                }}
+            }))
+            .unwrap(),
+        );
+        let events = sink.events.lock().unwrap();
+        let EventBody::Tool { diffs, output, .. } = &events[0] else {
+            panic!("a tool event");
+        };
+        assert!(diffs[0].truncated);
+        for stored in [&diffs[0].new_text, output.as_ref().unwrap()] {
+            assert!(
+                !stored.contains("sk-ant-api03-abc"),
+                "{}",
+                &stored[stored.len() - 40..]
+            );
+        }
     }
 }

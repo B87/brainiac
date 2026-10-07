@@ -552,6 +552,42 @@ impl RunArtifacts {
         start: &str,
         result: &str,
     ) -> AppResult<String> {
+        self.import_snapshot(repository_id, run_id, bundle, start, result, false)
+            .await
+    }
+
+    /// A live run's previews (Changes so far): `agent-runs/<run-id>/preview.git`,
+    /// a repository of the run's own that borrows the start from Brainiac's
+    /// repository (an `alternates` file) and holds only the latest preview.
+    /// It never stands for the result, and it goes with the run's folder.
+    pub fn preview_repository(&self, run_id: &str) -> PathBuf {
+        self.run_dir(run_id).join("preview.git")
+    }
+
+    /// The same checks for a live run's provisional snapshot, imported into
+    /// a fresh preview repository that replaces the last one, so previews
+    /// never pile up in Brainiac's repository.
+    pub async fn import_preview(
+        &self,
+        repository_id: &str,
+        run_id: &str,
+        bundle: &Path,
+        start: &str,
+        result: &str,
+    ) -> AppResult<String> {
+        self.import_snapshot(repository_id, run_id, bundle, start, result, true)
+            .await
+    }
+
+    async fn import_snapshot(
+        &self,
+        repository_id: &str,
+        run_id: &str,
+        bundle: &Path,
+        start: &str,
+        result: &str,
+        preview: bool,
+    ) -> AppResult<String> {
         check_id("repository", repository_id)?;
         check_id("run", run_id)?;
         for id in [start, result] {
@@ -572,7 +608,7 @@ impl RunArtifacts {
         }
         let repo = self.repository_dir(repository_id);
         let start_ref = Self::run_ref(run_id, "start");
-        let result_ref = Self::run_ref(run_id, "result");
+        let result_ref = Self::run_ref(run_id, if preview { "preview" } else { "result" });
         let lock = Arc::clone(
             self.imports
                 .lock()
@@ -593,6 +629,28 @@ impl RunArtifacts {
                 "The run's start is no longer in Brainiac's repository.",
             ));
         }
+        // A preview goes into a repository made for it next to the last one,
+        // which it replaces once it holds the preview.
+        let (repo, made) = if preview {
+            let made = self.run_dir(run_id).join("preview-next.git");
+            let io = |e: std::io::Error| {
+                AppError::io("The preview's repository could not be made.")
+                    .with_details(e.to_string())
+            };
+            if made.exists() {
+                std::fs::remove_dir_all(&made).map_err(io)?;
+            }
+            self.init_bare(&self.run_dir(run_id), &made).await?;
+            let objects = std::fs::canonicalize(repo.join("objects")).map_err(io)?;
+            std::fs::write(
+                made.join("objects/info/alternates"),
+                format!("{}\n", objects.display()),
+            )
+            .map_err(io)?;
+            (made.clone(), Some(made))
+        } else {
+            (repo, None)
+        };
         let path = bundle.display().to_string();
         let heads = self
             .git_ok(&repo, &["bundle", "list-heads", &path], CHECK_TIMEOUT)
@@ -654,32 +712,55 @@ impl RunArtifacts {
                 "The collected snapshot is not one commit on top of the run's start.",
             ));
         }
+        if let Some(made) = made {
+            let current = self.preview_repository(run_id);
+            let io = |e: std::io::Error| {
+                AppError::io("The preview's repository could not be replaced.")
+                    .with_details(e.to_string())
+            };
+            if current.exists() {
+                std::fs::remove_dir_all(&current).map_err(io)?;
+            }
+            std::fs::rename(&made, &current).map_err(io)?;
+        }
         Ok(result.to_string())
     }
 
-    /// Changes: the files the snapshot changed against the start.
+    /// Where a snapshot is: Brainiac's repository, or the run's preview
+    /// repository for Changes so far.
+    fn snapshot_dir(&self, repository_id: &str, preview_of: Option<&str>) -> PathBuf {
+        match preview_of {
+            Some(run_id) => self.preview_repository(run_id),
+            None => self.repository_dir(repository_id),
+        }
+    }
+
+    /// Changes: the files the snapshot changed against the start;
+    /// `preview_of` names the run whose preview it is.
     pub async fn changes(
         &self,
         repository_id: &str,
         start: &str,
         result: &str,
+        preview_of: Option<&str>,
     ) -> AppResult<Vec<CommitFile>> {
         let git = self.git.as_ref().ok_or_else(|| {
             AppError::dependency("Git was not found, so Brainiac cannot read the result.")
         })?;
-        git.range_files(&self.repository_dir(repository_id), start, result)
+        git.range_files(&self.snapshot_dir(repository_id, preview_of), start, result)
             .await
     }
 
-    /// One file of the snapshot against the start, as the diff viewer shows it.
+    /// One file of the snapshot against the start, as the diff viewer shows
+    /// it, between the start and the snapshot.
     pub async fn diff(
         &self,
         repository_id: &str,
-        start: &str,
-        result: &str,
+        (start, result): (&str, &str),
         path: &str,
         old_path: Option<&str>,
         options: DiffOptions,
+        preview_of: Option<&str>,
     ) -> AppResult<DiffResult> {
         let git = self.git.as_ref().ok_or_else(|| {
             AppError::dependency("Git was not found, so Brainiac cannot read the result.")
@@ -696,7 +777,7 @@ impl RunArtifacts {
         };
         let content: DiffContent = git
             .diff(
-                &self.repository_dir(repository_id),
+                &self.snapshot_dir(repository_id, preview_of),
                 &selector,
                 &limits,
                 options,
@@ -742,6 +823,21 @@ impl RunArtifacts {
             ));
         }
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    /// **Copy branch command** (SPEC.md, Review): a Git command the user runs
+    /// in their own repository, which fetches the snapshot from Brainiac's
+    /// repository as a new branch. Brainiac never runs it: the user's
+    /// repository is only read. Without `+`, Git refuses to move a branch
+    /// that holds other work; it only moves one that is behind the snapshot.
+    pub fn branch_command(&self, repository_id: &str, run_id: &str, branch: &str) -> String {
+        let repo = self.repository_dir(repository_id);
+        let refspec = format!("{}:refs/heads/{branch}", Self::run_ref(run_id, "result"));
+        format!(
+            "git fetch --no-tags {} {}",
+            shell_quote(&repo.display().to_string()),
+            shell_quote(&refspec)
+        )
     }
 
     /// Settings → Agents, **Test**: a tiny repository made at `source`, its
@@ -804,6 +900,41 @@ impl RunArtifacts {
             }
         }
         Ok(())
+    }
+}
+
+/// One word for a POSIX shell: single quotes, a quote inside closed and
+/// escaped. The command is pasted into the user's terminal.
+fn shell_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
+
+/// A branch name for a run's snapshot: `agent/` and a few words of its
+/// title, then the start of its ID, so two runs never share one. Only
+/// lowercase letters, digits, and dashes, which Git accepts in a ref.
+pub fn branch_name(title: &str, run_id: &str) -> String {
+    let mut words = String::new();
+    for c in title.chars().flat_map(char::to_lowercase) {
+        if c.is_ascii_alphanumeric() {
+            words.push(c);
+        } else if !words.ends_with('-') && !words.is_empty() {
+            words.push('-');
+        }
+        if words.len() >= 32 {
+            break;
+        }
+    }
+    let words = words.trim_matches('-');
+    let id: String = run_id
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .take(8)
+        .collect::<String>()
+        .to_lowercase();
+    if words.is_empty() {
+        format!("agent/run-{id}")
+    } else {
+        format!("agent/{words}-{id}")
     }
 }
 
@@ -1076,5 +1207,22 @@ mod tests {
             .export("r", &source, &commit, "empty-template")
             .await
             .is_err());
+    }
+
+    #[test]
+    fn a_branch_name_is_a_few_words_of_the_title_and_the_run() {
+        assert_eq!(
+            branch_name("Fix the login page's focus ring!", "B2FAB68C-20a0-42db"),
+            "agent/fix-the-login-page-s-focus-ring-b2fab68c"
+        );
+        assert_eq!(branch_name("¿?", "run-1"), "agent/run-run1");
+        let long = branch_name(&"word ".repeat(40), "abc");
+        assert!(long.len() < 50, "{long}");
+        assert!(!long.contains("--"));
+    }
+
+    #[test]
+    fn a_quoted_path_survives_spaces_and_quotes() {
+        assert_eq!(shell_quote("/a b/it's"), "'/a b/it'\\''s'");
     }
 }

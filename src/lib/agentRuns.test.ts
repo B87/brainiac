@@ -10,6 +10,7 @@ import {
   listResult,
   listWhen,
   producedLabel,
+  samePreview,
   settingsRequest,
   spanLabel,
   timeLeft,
@@ -213,6 +214,7 @@ describe("Runs", () => {
               kind: "execute",
               detail: null,
               asked_at: "2026-10-05T10:36:00Z",
+              diffs: [],
             },
           ],
         },
@@ -263,6 +265,7 @@ describe("Runs", () => {
         status: "pending",
         locations: ["a.txt"],
         output: null,
+        diffs: [],
       },
       {
         seq: 6,
@@ -275,6 +278,7 @@ describe("Runs", () => {
         status: "completed",
         locations: [],
         output: "hi",
+        diffs: [],
       },
       {
         seq: 7,
@@ -287,6 +291,7 @@ describe("Runs", () => {
         status: "completed",
         locations: [],
         output: null,
+        diffs: [],
       },
       { seq: 8, at, type: "message", turn: 1, text: "done." },
       {
@@ -315,5 +320,63 @@ describe("Runs", () => {
     expect(turnSummary(turns[0])).toBe("2 steps · read 1 file, ran 1 command");
     expect(turns[1].notices).toEqual(["A request was refused."]);
     expect(notices).toEqual([]);
+  });
+});
+
+describe("reported edits", () => {
+  it("keep the latest diffs an update carried", () => {
+    const at = "2026-10-07T10:00:00Z";
+    const edit = (seq: number, newText: string | null, status: string) => ({
+      seq,
+      at,
+      type: "tool" as const,
+      turn: 1,
+      tool_id: "e1",
+      title: seq === 1 ? "Edit a.txt" : null,
+      kind: seq === 1 ? "edit" : null,
+      status,
+      locations: [],
+      output: null,
+      diffs:
+        newText === null
+          ? []
+          : [
+              {
+                path: "/workspace/a.txt",
+                old_text: "one",
+                new_text: newText,
+                truncated: false,
+              },
+            ],
+    });
+    const { turns } = foldTurns([
+      edit(1, "two", "pending"),
+      edit(2, "TWO", "in_progress"),
+      edit(3, null, "completed"),
+    ]);
+    expect(turns[0].tools[0].status).toBe("completed");
+    expect(turns[0].tools[0].diffs.map((d) => d.new_text)).toEqual(["TWO"]);
+  });
+});
+
+describe("samePreview", () => {
+  it("tells a new preview from the same one read again", () => {
+    const preview = {
+      run_id: "r",
+      start_commit: "a".repeat(40),
+      commit: "b".repeat(40),
+      taken_at: "2026-10-07T10:00:00Z",
+      turn: 1,
+      files: [],
+      left_out: 0,
+      busy: false,
+      error: null,
+    };
+    expect(samePreview(preview, { ...preview, files: [] })).toBe(true);
+    expect(samePreview(preview, { ...preview, busy: true })).toBe(false);
+    expect(
+      samePreview(preview, { ...preview, taken_at: "2026-10-07T10:05:00Z" }),
+    ).toBe(false);
+    expect(samePreview(preview, { ...preview, error: "failed" })).toBe(false);
   });
 });

@@ -50,6 +50,12 @@ pub struct Engine {
     pub launch_delay: Duration,
     /// The run image is gone from the engine, as after a prune.
     pub image_missing: bool,
+    /// Collections of a running run's workspace (Changes so far).
+    pub previews: usize,
+    /// How long a preview's container takes to be made.
+    pub preview_delay: Duration,
+    /// Previews whose container was never started: the run was stopping.
+    pub previews_cancelled: usize,
 }
 
 #[derive(Clone, Default)]
@@ -152,9 +158,28 @@ impl Workloads for FakeEngine {
     /// The real collector script, run on this Mac against the run's folder
     /// instead of in a container.
     async fn collect(&self, spec: CollectSpec) -> AppResult<CollectManifest> {
-        self.get().fallback_images.push(spec.fallback_image.clone());
+        if spec.live {
+            self.get().previews += 1;
+            // Making the preview's container takes a while; a stop meanwhile
+            // means it is never started.
+            let delay = self.get().preview_delay;
+            tokio::time::sleep(delay).await;
+            if spec.cancel.as_ref().is_some_and(|c| *c.borrow()) {
+                self.get().previews_cancelled += 1;
+                return Err(brainiac_lib::models::AppError::new(
+                    ErrorCode::Conflict,
+                    "The run started stopping while its changes were being read.",
+                ));
+            }
+        } else {
+            self.get().fallback_images.push(spec.fallback_image.clone());
+        }
         let work = self.get().volumes.join(&spec.run_id);
-        let scratch = self.get().volumes.join(format!("{}-collect", spec.run_id));
+        let scratch = self.get().volumes.join(format!(
+            "{}-{}",
+            spec.run_id,
+            if spec.live { "preview" } else { "collect" }
+        ));
         let _ = std::fs::remove_dir_all(&scratch);
         let input = scratch.join("input");
         let out = scratch.join("out");
@@ -215,7 +240,8 @@ impl Workloads for FakeEngine {
 /// A stand-in for the entrypoint and the Claude ACP adapter. Prompts steer it:
 /// "ask" asks a permission, "hang" works until cancelled, "die" exits,
 /// "fail-auth" is refused, "echo-secret" repeats the key in two pieces,
-/// "edit" changes files in the workspace.
+/// "edit" changes files in the workspace ("edit and report" also reports
+/// the edit as a diff).
 pub async fn fake_agent(
     engine: FakeEngine,
     work: PathBuf,
@@ -322,6 +348,17 @@ pub async fn fake_agent(
                         say(json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32000, "message": "Authentication required" } }))
                             .await;
                     } else if text.contains("edit") {
+                        // "edit and report" also says what it edited, as
+                        // the adapter's Edit tool does.
+                        if text.contains("report") {
+                            say(json!({ "jsonrpc": "2.0", "method": "session/update", "params": { "sessionId": "sess-1",
+                                "update": { "sessionUpdate": "tool_call", "toolCallId": "e1", "title": "Edit readme.txt",
+                                    "kind": "edit", "status": "completed",
+                                    "locations": [{ "path": "/workspace/readme.txt" }],
+                                    "content": [{ "type": "diff", "path": "/workspace/readme.txt",
+                                        "oldText": "start", "newText": "edited by the agent" }] } } }))
+                            .await;
+                        }
                         // Edits the agent never committed, a new file, a
                         // deletion, and a file its ignore rules would hide.
                         std::fs::write(work.join("readme.txt"), "edited by the agent\n").unwrap();

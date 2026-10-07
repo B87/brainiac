@@ -116,11 +116,13 @@ import type { RestoreResult } from "./generated/RestoreResult";
 import type { ResultColumn } from "./generated/ResultColumn";
 import type { ReviewCount } from "./generated/ReviewCount";
 import type { ReviewDrafts } from "./generated/ReviewDrafts";
+import type { RunBranchCommand } from "./generated/RunBranchCommand";
 import type { RunChanges } from "./generated/RunChanges";
 import type { RunControllerStatus } from "./generated/RunControllerStatus";
 import type { RunDiffRequest } from "./generated/RunDiffRequest";
 import type { RunEventPage } from "./generated/RunEventPage";
 import type { RunMode } from "./generated/RunMode";
+import type { RunPreview } from "./generated/RunPreview";
 import type { RunStartPreview } from "./generated/RunStartPreview";
 import type { RunStatementRequest } from "./generated/RunStatementRequest";
 import type { RunsOn } from "./generated/RunsOn";
@@ -224,6 +226,7 @@ export type { Reviewer } from "./generated/Reviewer";
 export type { ReviewState } from "./generated/ReviewState";
 export type { ReviewVerdict } from "./generated/ReviewVerdict";
 export type { RunActivity } from "./generated/RunActivity";
+export type { RunBranchCommand } from "./generated/RunBranchCommand";
 export type { RunChanges } from "./generated/RunChanges";
 export type { RunCollection } from "./generated/RunCollection";
 export type { RunControllerStatus } from "./generated/RunControllerStatus";
@@ -231,11 +234,13 @@ export type { RunDiffRequest } from "./generated/RunDiffRequest";
 export type { RunEvent } from "./generated/RunEvent";
 export type { RunEventBody } from "./generated/RunEventBody";
 export type { RunEventPage } from "./generated/RunEventPage";
+export type { RunFileDiff } from "./generated/RunFileDiff";
 export type { RunOutcome } from "./generated/RunOutcome";
 export type { RunPermissionRequest } from "./generated/RunPermissionRequest";
 export type { RunPermissions } from "./generated/RunPermissions";
 export type { RunPhase } from "./generated/RunPhase";
 export type { RunPlanEntry } from "./generated/RunPlanEntry";
+export type { RunPreview } from "./generated/RunPreview";
 export type { RunStartPreview } from "./generated/RunStartPreview";
 export type { SearchGroup } from "./generated/SearchGroup";
 export type { SearchHit } from "./generated/SearchHit";
@@ -575,6 +580,14 @@ export const ipc = {
   getRunChanges: (id: string) => invoke<RunChanges>("get_run_changes", { id }),
   getRunDiff: (request: RunDiffRequest) =>
     invoke<DiffResult>("get_run_diff", { request }),
+  /** Changes so far: the live run's last preview. */
+  getRunPreview: (id: string) => invoke<RunPreview>("get_run_preview", { id }),
+  /** Changes so far, Refresh: a new preview, now. */
+  refreshRunPreview: (id: string) =>
+    invoke<RunPreview>("refresh_run_preview", { id }),
+  /** Copy branch command: a command for the user to run in their repository. */
+  getRunBranchCommand: (id: string) =>
+    invoke<RunBranchCommand>("get_run_branch_command", { id }),
   /** The whole snapshot as a patch text. */
   copyRunPatch: (id: string) => invoke<string>("copy_run_patch", { id }),
   saveRunPatch: (id: string, path: string) =>

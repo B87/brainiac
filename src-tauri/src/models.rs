@@ -3642,6 +3642,26 @@ pub struct RunPermissionRequest {
     /// The command or the file, when the agent said which.
     pub detail: Option<String>,
     pub asked_at: String,
+    /// The edit asked for, as the agent describes it. Only the conversation
+    /// carries it; a run's pending list leaves it out.
+    #[serde(default)]
+    pub diffs: Vec<RunFileDiff>,
+}
+
+/// An edit as the agent reports it (SPEC.md, The run: Conversation): a
+/// file's text before and after, or only the part it replaces. Reported by
+/// the agent, not read from its workspace.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RunFileDiff {
+    /// As the agent names it, inside its container (`/workspace/…`).
+    pub path: String,
+    /// None for a new or rewritten file.
+    pub old_text: Option<String>,
+    pub new_text: String,
+    /// A text was cut short.
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 /// One agent run (SPEC.md, section 13): its start, what it runs with, the
@@ -3805,6 +3825,9 @@ pub enum RunEventBody {
         status: Option<String>,
         locations: Vec<String>,
         output: Option<String>,
+        /// The edits the tool reports; empty when the update carried none.
+        #[serde(default)]
+        diffs: Vec<RunFileDiff>,
     },
     Permission(RunPermissionRequest),
     PermissionAnswered {
@@ -3861,6 +3884,40 @@ pub struct RunDiffRequest {
     pub old_path: Option<String>,
     #[serde(default)]
     pub options: DiffOptions,
+    /// From the live run's latest preview (Changes so far), not the collected snapshot.
+    #[serde(default)]
+    pub preview: bool,
+}
+
+/// **Changes so far** (SPEC.md, The run): a provisional snapshot of a live
+/// run's working tree, taken while the agent works.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RunPreview {
+    pub run_id: String,
+    pub start_commit: String,
+    /// The provisional snapshot commit in Brainiac's repository; the start
+    /// when nothing had changed. None until one was taken.
+    pub commit: Option<String>,
+    pub taken_at: Option<String>,
+    /// The run's turn when it was taken.
+    pub turn: u32,
+    pub files: Vec<CommitFile>,
+    /// New files the collection would leave out, by the same rules.
+    pub left_out: u32,
+    /// One is being taken now.
+    pub busy: bool,
+    /// Why the last one could not be taken; the earlier one stays.
+    pub error: Option<String>,
+}
+
+/// **Copy branch command** (SPEC.md, Review): a command the user runs in
+/// their own repository; Brainiac does not run it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RunBranchCommand {
+    pub branch: String,
+    pub command: String,
 }
 
 /// Settings → Agents, **Test**: what passed, and when (SPEC.md, Settings → Agents).

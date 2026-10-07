@@ -1041,6 +1041,33 @@ pub async fn get_run_diff(
     runs.diff(request).await
 }
 
+/// **Changes so far**: the live run's last preview.
+#[tauri::command]
+pub async fn get_run_preview(
+    id: String,
+    runs: State<'_, Runs>,
+) -> AppResult<crate::models::RunPreview> {
+    runs.preview_state(&id).await
+}
+
+/// **Refresh** in Changes so far: a new preview, now.
+#[tauri::command]
+pub async fn refresh_run_preview(
+    id: String,
+    runs: State<'_, Runs>,
+) -> AppResult<crate::models::RunPreview> {
+    runs.preview(&id).await
+}
+
+/// **Copy branch command**: a command for the user to run; Brainiac does not.
+#[tauri::command]
+pub async fn get_run_branch_command(
+    id: String,
+    runs: State<'_, Runs>,
+) -> AppResult<crate::models::RunBranchCommand> {
+    runs.branch_command(&id).await
+}
+
 /// **Copy patch**: the whole snapshot as a patch.
 #[tauri::command]
 pub async fn copy_run_patch(id: String, runs: State<'_, Runs>) -> AppResult<String> {

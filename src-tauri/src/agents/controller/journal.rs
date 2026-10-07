@@ -95,6 +95,11 @@ impl TraceJournal {
             body,
         };
         let mut line = serde_json::to_vec(&event).map_err(std::io::Error::other)?;
+        // Edits are what makes a tool or a permission large; without them a
+        // permission can still be answered, where a notice could not.
+        if line.len() > MAX_EVENT_BYTES && event.body.drop_diffs() {
+            line = serde_json::to_vec(&event).map_err(std::io::Error::other)?;
+        }
         if line.len() > MAX_EVENT_BYTES {
             event.body = EventBody::Notice {
                 text: "An update from the agent over 1 MB was left out.".into(),
@@ -298,6 +303,7 @@ mod tests {
             status: None,
             locations: vec!["x".repeat(MAX_TEXT_BYTES); 900],
             output: None,
+            diffs: vec![],
         };
         journal.append("t".into(), body, false).unwrap();
         let body = EventBody::Plan {
@@ -339,6 +345,13 @@ mod tests {
             status: None,
             locations: vec![],
             output: Some("sk-ant-api03-secret-value\n".into()),
+            // An edit that writes the key into a file.
+            diffs: vec![super::super::protocol::FileDiff {
+                path: "/workspace/.env".into(),
+                old_text: None,
+                new_text: "KEY=sk-ant-api03-secret-value\n".into(),
+                truncated: false,
+            }],
         };
         redactor.redact_event(&mut body);
         let text = serde_json::to_string(&body).unwrap();
@@ -355,5 +368,35 @@ mod tests {
         assert_eq!(redactor.held_suffix("ends with s"), 1);
         // The whole value is not held: it is complete and gets replaced.
         assert_eq!(redactor.held_suffix("x sk-ant-oat01-abcdef"), 0);
+    }
+
+    #[test]
+    fn a_permission_too_large_with_its_edits_keeps_the_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut journal = TraceJournal::open(dir.path().join("journal.jsonl")).unwrap();
+        // Control characters are written six times as long in JSON.
+        let heavy = "\u{1}".repeat(MAX_TEXT_BYTES);
+        let diff = super::super::protocol::FileDiff {
+            path: "/workspace/a".into(),
+            old_text: Some(heavy.clone()),
+            new_text: heavy,
+            truncated: false,
+        };
+        let body = EventBody::Permission(super::super::protocol::PendingPermission {
+            permission_id: "p1".into(),
+            turn: 1,
+            title: "Edit a".into(),
+            kind: Some("edit".into()),
+            detail: Some("/workspace/a".into()),
+            asked_at: "t".into(),
+            diffs: vec![diff; 8],
+        });
+        journal.append("t".into(), body, false).unwrap();
+        let events = journal.after(0).unwrap();
+        let EventBody::Permission(p) = &events[0].body else {
+            panic!("the permission, not a notice: {:?}", events[0].body);
+        };
+        assert_eq!(p.permission_id, "p1");
+        assert!(p.diffs.is_empty());
     }
 }

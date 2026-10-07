@@ -11,8 +11,10 @@ import type {
   AgentProfile,
   AgentRun,
   RunEvent,
+  RunFileDiff,
   RunPermissionRequest,
   RunPlanEntry,
+  RunPreview,
 } from "./ipc";
 
 /** New run's time limits offered by default, in minutes (30 minutes to 8 hours). */
@@ -349,6 +351,8 @@ export type ToolState = {
   status: string | null;
   locations: string[];
   output: string | null;
+  /** The edits it reports; a later update's replace an earlier one's. */
+  diffs: RunFileDiff[];
 };
 
 export type PermissionState = RunPermissionRequest & {
@@ -431,6 +435,7 @@ export function foldTurns(events: RunEvent[]): {
           if (b.status != null) existing.status = b.status;
           if (b.locations.length) existing.locations = b.locations;
           if (b.output != null) existing.output = b.output;
+          if (b.diffs.length) existing.diffs = b.diffs;
         } else {
           t.tools.push({
             id: b.tool_id,
@@ -439,6 +444,7 @@ export function foldTurns(events: RunEvent[]): {
             status: b.status,
             locations: b.locations,
             output: b.output,
+            diffs: b.diffs,
           });
         }
         break;
@@ -546,4 +552,17 @@ export function permissionHeading(kind: string | null): string {
     default:
       return "Claude Code asks for permission";
   }
+}
+
+/**
+ * The same Changes so far, read again: the window asks on every change of
+ * the run, and an unchanged answer must not redraw the files or the diff.
+ */
+export function samePreview(a: RunPreview, b: RunPreview): boolean {
+  return (
+    a.commit === b.commit &&
+    a.taken_at === b.taken_at &&
+    a.busy === b.busy &&
+    a.error === b.error
+  );
 }

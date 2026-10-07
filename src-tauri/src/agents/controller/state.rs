@@ -68,6 +68,12 @@ impl StateDir {
         self.run_dir(run_id).join("result.bundle")
     }
 
+    /// Where a live run's preview is collected on this host, apart from its
+    /// final collection.
+    pub fn preview_dir(&self, run_id: &str) -> PathBuf {
+        self.run_dir(run_id).join("preview")
+    }
+
     /// The guard's socket: emergency stop, without the Mac.
     pub fn emergency_socket(&self) -> PathBuf {
         self.root.join("emergency.sock")

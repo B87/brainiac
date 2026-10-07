@@ -22,6 +22,7 @@ import {
   producedTone,
   type RunGroup,
   type RunTone,
+  samePreview,
   shortClock,
   spanLabel,
   type ToolState,
@@ -31,6 +32,7 @@ import {
   turnSummary,
   visibilityLabel,
 } from "../lib/agentRuns";
+import { editCounts, editLines, workspacePath } from "../lib/editDiff";
 import {
   type AgentRun,
   type AppSnapshot,
@@ -40,6 +42,8 @@ import {
   ipc,
   onAgentRunChanged,
   type RunEvent,
+  type RunFileDiff,
+  type RunPreview,
   subscribe,
 } from "../lib/ipc";
 import { KIND_LETTER, kindTone, plural, splitPath } from "../lib/repo";
@@ -497,6 +501,17 @@ function RunView({
       onError(errorMessage(e));
     }
   };
+  const copyBranchCommand = async () => {
+    try {
+      const { branch, command } = await ipc.getRunBranchCommand(run.id);
+      await navigator.clipboard?.writeText(command);
+      onNotice(
+        `Command copied. Run it in your repository to get the branch ${branch}.`,
+      );
+    } catch (e) {
+      onError(errorMessage(e));
+    }
+  };
   const savePatch = async () => {
     try {
       const path = await saveDialog({
@@ -612,6 +627,14 @@ function RunView({
                 >
                   Save patch…
                 </button>
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  title="A Git command you run in your repository: it fetches the snapshot as a new branch. Brainiac doesn't run it."
+                  onClick={() => void copyBranchCommand()}
+                >
+                  Copy branch command
+                </button>
               </>
             )}
             {!live && (
@@ -646,11 +669,17 @@ function RunView({
             role="tab"
             className="tab"
             aria-selected={tab === "changes"}
-            disabled={!collected}
-            title={collected ? undefined : "After the work is collected"}
+            disabled={!collected && !live}
+            title={
+              collected
+                ? undefined
+                : live
+                  ? "The agent's working tree so far, read while it works"
+                  : "After the work is collected"
+            }
             onClick={() => setTab("changes")}
           >
-            Changes
+            {collected || !live ? "Changes" : "Changes so far"}
             {run.collection === "ready" && run.changed_files != null && (
               <span className="rounded-lg bg-control px-1.5 text-[11px] font-normal text-fg-2">
                 {run.changed_files}
@@ -670,7 +699,9 @@ function RunView({
             onRetryCleanup={() => void act(() => ipc.retryRunCleanup(run.id))}
             onOpenSettings={onOpenSettings}
           />
-          {tab === "conversation" || !collected ? (
+          {tab === "changes" && !collected && live ? (
+            <ChangesSoFar run={run} onError={onError} onNotice={onNotice} />
+          ) : tab === "conversation" || !collected ? (
             <Conversation
               run={run}
               turns={folded.turns}
@@ -1137,7 +1168,7 @@ function RunDetails({
           </ul>
         )}
         <span className="text-muted">
-          Reported by the agent. Changes shows what was actually collected.
+          Reported by the agent. Changes shows its working tree itself.
         </span>
       </div>
     </aside>
@@ -1194,7 +1225,10 @@ function reportedFiles(
               ? { letter: "R", tone: "ren" }
               : null;
       if (kind)
-        for (const path of tool.locations) seen.set(path, { path, ...kind });
+        for (const location of tool.locations) {
+          const path = workspacePath(location);
+          seen.set(path, { path, ...kind });
+        }
     }
   return [...seen.values()];
 }
@@ -1589,8 +1623,11 @@ function Tools({ tools }: { tools: ToolState[] }) {
 
 function ToolRow({ tool }: { tool: ToolState }) {
   const running = tool.status === "pending" || tool.status === "in_progress";
-  const [open, setOpen] = useState(running && tool.kind === "execute");
-  const details = tool.locations.length > 0 || !!tool.output;
+  const [open, setOpen] = useState(
+    (running && tool.kind === "execute") || tool.diffs.length > 0,
+  );
+  const details =
+    tool.locations.length > 0 || !!tool.output || tool.diffs.length > 0;
   return (
     <div className="border-b text-[12px] last:border-b-0">
       <button
@@ -1620,17 +1657,82 @@ function ToolRow({ tool }: { tool: ToolState }) {
       </button>
       {open && details && (
         <div className="flex flex-col gap-1 bg-panel px-3 py-2 pl-[38px]">
-          {tool.locations.length > 0 && (
+          {tool.locations.length > 0 && tool.diffs.length === 0 && (
             <p className="mono selectable m-0 break-all text-muted">
-              {tool.locations.join(", ")}
+              {tool.locations.map(workspacePath).join(", ")}
             </p>
           )}
+          {tool.diffs.length > 0 && <ReportedEdits diffs={tool.diffs} />}
           {tool.output && (
             <pre className="mono selectable m-0 max-h-60 overflow-auto whitespace-pre-wrap text-[11.5px] leading-relaxed text-fg-3">
               {tool.output}
             </pre>
           )}
         </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Edits as the agent reports them: each file's text before and after, or
+ * only the part replaced, as removed and added lines. Not the workspace.
+ */
+function ReportedEdits({ diffs }: { diffs: RunFileDiff[] }) {
+  return (
+    <div className="flex flex-col gap-2">
+      {withKeys(diffs.map((d) => ({ content: d.path, diff: d }))).map(
+        ([key, { diff }]) => (
+          <ReportedEdit key={key} diff={diff} />
+        ),
+      )}
+    </div>
+  );
+}
+
+function ReportedEdit({ diff: d }: { diff: RunFileDiff }) {
+  const rows = useMemo(() => editLines(d.old_text, d.new_text), [d]);
+  const { added, removed } = editCounts(rows);
+  return (
+    <div className="overflow-hidden rounded-md border bg-app">
+      <div className="flex items-center gap-2 border-b px-2.5 py-1 text-[11.5px]">
+        <code className="mono selectable min-w-0 flex-1 break-all text-fg">
+          {workspacePath(d.path)}
+        </code>
+        {d.old_text === null && <span className="text-muted">new text</span>}
+        <span className="tabular">
+          <span className="text-added">+{added}</span>{" "}
+          <span className="text-deleted">−{removed}</span>
+        </span>
+      </div>
+      <div className="diff diff-wrap selectable max-h-72 overflow-auto">
+        {rows.map((row, i) => (
+          <div
+            // Rows have no identity beyond their place in the edit.
+            // biome-ignore lint/suspicious/noArrayIndexKey: the rows never reorder.
+            key={i}
+            className={`diff-row ${row.kind === "add" ? "diff-add" : row.kind === "del" ? "diff-del" : ""}`}
+          >
+            <span className="diff-sign" aria-hidden="true">
+              {row.kind === "add" ? "+" : row.kind === "del" ? "−" : ""}
+            </span>
+            <span className="diff-text">
+              <span className="sr-only">
+                {row.kind === "add"
+                  ? "Added: "
+                  : row.kind === "del"
+                    ? "Removed: "
+                    : ""}
+              </span>
+              {row.text}
+            </span>
+          </div>
+        ))}
+      </div>
+      {d.truncated && (
+        <p className="m-0 border-t px-2.5 py-1 text-[11.5px] text-muted">
+          Cut short: the edit is longer than the conversation keeps.
+        </p>
       )}
     </div>
   );
@@ -1689,9 +1791,13 @@ function PermissionCard({
           {permissionHeading(p.kind)}
         </h3>
       </div>
-      <pre className="mono selectable m-0 whitespace-pre-wrap break-all rounded-md border bg-app px-2.5 py-2 text-[12px]">
-        {p.detail ?? p.title}
-      </pre>
+      {(p.diffs.length === 0 ||
+        (p.detail !== null && p.diffs.some((d) => d.path !== p.detail))) && (
+        <pre className="mono selectable m-0 whitespace-pre-wrap break-all rounded-md border bg-app px-2.5 py-2 text-[12px]">
+          {p.detail ?? p.title}
+        </pre>
+      )}
+      {p.diffs.length > 0 && <ReportedEdits diffs={p.diffs} />}
       <p className="m-0 text-[12px] leading-relaxed text-fg-2">
         Inside the run's container, not on your Mac. Asked{" "}
         {shortClock(p.asked_at)}.{" "}
@@ -1737,10 +1843,6 @@ function Changes({
   onNotice: (text: string) => void;
 }) {
   const [files, setFiles] = useState<CommitFile[] | null>(null);
-  const [selected, setSelected] = useState<string | null>(null);
-  const [diff, setDiff] = useState<DiffResult | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [ignoreWhitespace, setIgnoreWhitespace] = useState(false);
   const [choosing, setChoosing] = useState(false);
   const [chosen, setChosen] = useState<Set<string>>(new Set());
   const collected =
@@ -1751,53 +1853,14 @@ function Changes({
     let alive = true;
     ipc
       .getRunChanges(run.id)
-      .then((c) => {
-        if (!alive) return;
-        setFiles(c.files);
-        setSelected((s) => s ?? c.files[0]?.path ?? null);
-      })
+      .then((c) => alive && setFiles(c.files))
       .catch((e) => alive && onError(errorMessage(e)));
     return () => {
       alive = false;
     };
   }, [run.id, run.result_commit, collected, onError]);
 
-  const file = files?.find((f) => f.path === selected) ?? null;
-  useEffect(() => {
-    if (!file) {
-      setDiff(null);
-      return;
-    }
-    let alive = true;
-    setLoading(true);
-    ipc
-      .getRunDiff({
-        run_id: run.id,
-        path: file.path,
-        old_path: file.old_path,
-        options: { ignore_whitespace: ignoreWhitespace },
-      })
-      .then((d) => alive && setDiff(d))
-      .catch((e) => alive && onError(errorMessage(e)))
-      .finally(() => alive && setLoading(false));
-    return () => {
-      alive = false;
-    };
-  }, [run.id, file, ignoreWhitespace, onError]);
-
-  const index = files?.findIndex((f) => f.path === selected) ?? -1;
-  const stepper =
-    files && files.length > 1 && index >= 0
-      ? {
-          index,
-          total: files.length,
-          onPrev: () => setSelected(files[Math.max(0, index - 1)].path),
-          onNext: () =>
-            setSelected(files[Math.min(files.length - 1, index + 1)].path),
-        }
-      : undefined;
-  const added = (files ?? []).reduce((n, f) => n + (f.additions ?? 0), 0);
-  const deleted = (files ?? []).reduce((n, f) => n + (f.deletions ?? 0), 0);
+  const { added, deleted } = lineTotals(files);
 
   const leftOut = run.left_out;
   const leftOutCount = leftOut.length + run.left_out_more;
@@ -1925,64 +1988,283 @@ function Changes({
           </section>
         )}
       </div>
-      {run.collection === "ready" && (
-        <div className="flex min-h-0 flex-1">
-          <ul
-            aria-label="Changed files"
-            className="m-0 w-[260px] shrink-0 list-none overflow-y-auto border-r p-1"
+      {run.collection === "ready" && files && (
+        <SnapshotFiles
+          runId={run.id}
+          commit={run.result_commit ?? ""}
+          files={files}
+          preview={false}
+          onError={onError}
+          onOpenInEditor={() =>
+            onNotice(
+              "The file is in the run's snapshot, not on this Mac. Save the patch to apply it.",
+            )
+          }
+        />
+      )}
+    </div>
+  );
+}
+
+function lineTotals(files: CommitFile[] | null): {
+  added: number;
+  deleted: number;
+} {
+  const added = (files ?? []).reduce((n, f) => n + (f.additions ?? 0), 0);
+  const deleted = (files ?? []).reduce((n, f) => n + (f.deletions ?? 0), 0);
+  return { added, deleted };
+}
+
+/** A snapshot's changed files beside the diff viewer: the collected one, or a preview. */
+function SnapshotFiles({
+  runId,
+  commit,
+  files,
+  preview,
+  onError,
+  onOpenInEditor,
+}: {
+  runId: string;
+  /** The snapshot shown: a new one reads the selected file's diff again. */
+  commit: string;
+  files: CommitFile[];
+  preview: boolean;
+  onError: (text: string) => void;
+  onOpenInEditor: () => void;
+}) {
+  const [selected, setSelected] = useState<string | null>(
+    files[0]?.path ?? null,
+  );
+  const [diff, setDiff] = useState<DiffResult | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [ignoreWhitespace, setIgnoreWhitespace] = useState(false);
+  // A new preview may no longer have the selected file.
+  const file = files.find((f) => f.path === selected) ?? files[0] ?? null;
+  const path = file?.path ?? null;
+  const oldPath = file?.old_path ?? null;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a newer snapshot (`commit`) reads the same file again.
+  useEffect(() => {
+    if (path === null) {
+      setDiff(null);
+      return;
+    }
+    let alive = true;
+    setLoading(true);
+    ipc
+      .getRunDiff({
+        run_id: runId,
+        path,
+        old_path: oldPath,
+        options: { ignore_whitespace: ignoreWhitespace },
+        preview,
+      })
+      .then((d) => alive && setDiff(d))
+      .catch((e) => alive && onError(errorMessage(e)))
+      .finally(() => alive && setLoading(false));
+    return () => {
+      alive = false;
+    };
+  }, [runId, commit, path, oldPath, ignoreWhitespace, preview, onError]);
+
+  const index = file ? files.indexOf(file) : -1;
+  const stepper =
+    files.length > 1 && index >= 0
+      ? {
+          index,
+          total: files.length,
+          onPrev: () => setSelected(files[Math.max(0, index - 1)].path),
+          onNext: () =>
+            setSelected(files[Math.min(files.length - 1, index + 1)].path),
+        }
+      : undefined;
+  return (
+    <div className="flex min-h-0 flex-1">
+      <ul
+        aria-label="Changed files"
+        className="m-0 w-[260px] shrink-0 list-none overflow-y-auto border-r p-1"
+      >
+        {files.map((f) => {
+          const { dir, name } = splitPath(f.path);
+          return (
+            <li key={f.path}>
+              <button
+                type="button"
+                className="side-row h-auto w-full items-start gap-2 py-1.5 text-left"
+                aria-current={f === file}
+                onClick={() => setSelected(f.path)}
+              >
+                <span className="kind mt-px" data-tone={kindTone(f.kind)}>
+                  {KIND_LETTER[f.kind]}
+                </span>
+                <span className="flex min-w-0 flex-1 flex-col">
+                  <span className="truncate">{name}</span>
+                  {dir && (
+                    <span className="truncate text-[11px] text-muted">
+                      {dir.replace(/\/$/, "")}
+                    </span>
+                  )}
+                </span>
+                <span className="mt-px shrink-0 text-[11px] tabular">
+                  {f.additions != null && (
+                    <span className="text-added">+{f.additions} </span>
+                  )}
+                  {f.deletions != null && (
+                    <span className="text-deleted">−{f.deletions}</span>
+                  )}
+                  {f.is_binary && <span className="text-muted">bin</span>}
+                </span>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+      <div className="flex min-w-0 flex-1 flex-col">
+        <DiffView
+          diff={diff}
+          loading={loading}
+          empty="Select a file"
+          historical
+          onOpenInEditor={onOpenInEditor}
+          stepper={stepper}
+          ignoreWhitespace={ignoreWhitespace}
+          onIgnoreWhitespace={setIgnoreWhitespace}
+        />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * **Changes so far** (SPEC.md, The run): a live run's working tree, read
+ * at the end of each turn and on Refresh. Provisional: the agent keeps
+ * working, and Finish and collect makes the result to review and export.
+ */
+function ChangesSoFar({
+  run,
+  onError,
+  onNotice,
+}: {
+  run: AgentRun;
+  onError: (text: string) => void;
+  onNotice: (text: string) => void;
+}) {
+  const [preview, setPreview] = useState<RunPreview | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  // The run changes on every page the agent streams: only the latest answer
+  // counts, and one that says what is shown already changes nothing.
+  const asked = useRef(0);
+  const show = useCallback((next: RunPreview) => {
+    setPreview((current) =>
+      current && samePreview(current, next) ? current : next,
+    );
+  }, []);
+  const load = useCallback(() => {
+    const n = ++asked.current;
+    ipc.getRunPreview(run.id).then(
+      (next) => n === asked.current && show(next),
+      (e) => n === asked.current && onError(errorMessage(e)),
+    );
+  }, [run.id, onError, show]);
+  useEffect(() => {
+    load();
+    return subscribe(
+      onAgentRunChanged((e) => {
+        if (e.run_id === run.id && !e.deleted) load();
+      }),
+    );
+  }, [run.id, load]);
+  const refresh = async () => {
+    setRefreshing(true);
+    try {
+      const next = await ipc.refreshRunPreview(run.id);
+      asked.current++;
+      show(next);
+    } catch (e) {
+      onError(errorMessage(e));
+      load();
+    } finally {
+      setRefreshing(false);
+    }
+  };
+  const busy = refreshing || !!preview?.busy;
+  const files = preview?.files ?? null;
+  const { added, deleted } = lineTotals(files);
+  const taken = preview?.taken_at ?? null;
+  return (
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <div className="flex shrink-0 flex-col gap-1.5 border-b px-5 py-2.5 pl-lead text-[12px]">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-fg-2">
+          <span>
+            {taken ? (
+              <>
+                The agent's working tree as of {shortClock(taken)}
+                {preview && preview.turn > 0
+                  ? `, after turn ${preview.turn}`
+                  : ""}
+                , compared with the start,{" "}
+                <code className="mono">{run.start_commit.slice(0, 7)}</code>
+              </>
+            ) : (
+              "Not read yet. The working tree is read when a turn ends, or now with Refresh."
+            )}
+          </span>
+          {files && files.length > 0 && (
+            <span className="tabular">
+              <span className="text-added">+{added}</span>{" "}
+              <span className="text-deleted">−{deleted}</span>
+            </span>
+          )}
+          <span className="flex-1" />
+          <button
+            type="button"
+            className="btn btn-sm"
+            disabled={busy || !run.connected}
+            title={
+              run.connected
+                ? "Read the working tree now"
+                : "Possible once Brainiac reconnects"
+            }
+            onClick={() => void refresh()}
           >
-            {(files ?? []).map((f) => {
-              const { dir, name } = splitPath(f.path);
-              return (
-                <li key={f.path}>
-                  <button
-                    type="button"
-                    className="side-row h-auto w-full items-start gap-2 py-1.5 text-left"
-                    aria-current={f.path === selected}
-                    onClick={() => setSelected(f.path)}
-                  >
-                    <span className="kind mt-px" data-tone={kindTone(f.kind)}>
-                      {KIND_LETTER[f.kind]}
-                    </span>
-                    <span className="flex min-w-0 flex-1 flex-col">
-                      <span className="truncate">{name}</span>
-                      {dir && (
-                        <span className="truncate text-[11px] text-muted">
-                          {dir.replace(/\/$/, "")}
-                        </span>
-                      )}
-                    </span>
-                    <span className="mt-px shrink-0 text-[11px] tabular">
-                      {f.additions != null && (
-                        <span className="text-added">+{f.additions} </span>
-                      )}
-                      {f.deletions != null && (
-                        <span className="text-deleted">−{f.deletions}</span>
-                      )}
-                      {f.is_binary && <span className="text-muted">bin</span>}
-                    </span>
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-          <div className="flex min-w-0 flex-1 flex-col">
-            <DiffView
-              diff={diff}
-              loading={loading}
-              empty="Select a file"
-              historical
-              onOpenInEditor={() =>
-                onNotice(
-                  "The file is in the run's snapshot, not on this Mac. Save the patch to apply it.",
-                )
-              }
-              stepper={stepper}
-              ignoreWhitespace={ignoreWhitespace}
-              onIgnoreWhitespace={setIgnoreWhitespace}
-            />
-          </div>
+            {busy && (
+              <ProgressIcon size={12} className="motion-safe:animate-spin" />
+            )}
+            {busy ? "Reading…" : "Refresh"}
+          </button>
         </div>
+        <span className="text-muted">
+          Provisional: the agent keeps working, and a file it was writing may be
+          caught halfway. Finish and collect makes the result you review and
+          export.
+          {preview && preview.left_out > 0
+            ? ` ${plural(preview.left_out, "new file")} would be left out, as in the collection.`
+            : ""}
+        </span>
+        {preview?.error && (
+          <span className="text-conflict">
+            The last read failed: {preview.error}
+            {taken ? " This is the one before it." : ""}
+          </span>
+        )}
+      </div>
+      {preview?.commit && files && files.length === 0 && (
+        <p className="m-0 px-5 py-4 pl-lead text-[12.5px] text-muted">
+          No changes yet: the working tree matches the start commit.
+        </p>
+      )}
+      {files && files.length > 0 && (
+        <SnapshotFiles
+          runId={run.id}
+          commit={preview?.commit ?? ""}
+          files={files}
+          preview
+          onError={onError}
+          onOpenInEditor={() =>
+            onNotice(
+              "The file is in the run's container, not on this Mac. Finish and collect, then save the patch or copy the branch command.",
+            )
+          }
+        />
       )}
     </div>
   );

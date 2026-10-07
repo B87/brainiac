@@ -416,6 +416,28 @@ test("Runs puts what needs you first, and a run asks for permission in its conve
     interrupted.getByRole("button", { name: "Collect work" }),
   ).toBeEnabled();
 
+  // A live run: the edit the agent reported, and Changes so far.
+  await page
+    .getByRole("navigation", { name: "Breadcrumb" })
+    .getByRole("button", { name: "Runs" })
+    .click();
+  await page.getByText("Add pagination to the export endpoint").click();
+  const edited = page.getByRole("region", { name: "Turn 1" });
+  await edited.getByRole("button", { name: "1 step · edited 1 file" }).click();
+  await expect(edited.getByText("limit: 500", { exact: false })).toBeVisible();
+  await expect(edited.getByText("Removed:", { exact: false })).toHaveCount(2);
+  await page.getByRole("tab", { name: "Changes so far" }).click();
+  await expect(
+    page.getByRole("list", { name: "Changed files" }).getByText("export.ts"),
+  ).toBeVisible();
+  await expect(
+    page.getByText(/Provisional: the agent keeps working/),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Refresh" }).click();
+  expect((await calls(page, "refresh_run_preview")).at(-1)).toEqual({
+    id: "run-idle",
+  });
+
   await page
     .getByRole("navigation", { name: "Breadcrumb" })
     .getByRole("button", { name: "Runs" })
@@ -428,6 +450,9 @@ test("Runs puts what needs you first, and a run asks for permission in its conve
       .getByText("parse.test.ts"),
   ).toBeVisible();
   await expect(page.getByRole("button", { name: "Copy patch" })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Copy branch command" }),
+  ).toBeVisible();
 });
 
 test("Settings checks a value before saving it, and saves it when the field is left", async ({

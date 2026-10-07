@@ -29,6 +29,9 @@ const RETRY_EVERY: Duration = Duration::from_millis(100);
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 /// A collection hashes the whole working tree and copies the result out.
 const COLLECT_TIMEOUT: Duration = Duration::from_secs(40 * 60);
+/// The controller's own limit for a preview, and time to make its container.
+const PREVIEW_CALL_TIMEOUT: Duration =
+    Duration::from_secs(super::controller::docker::PREVIEW_TIMEOUT.as_secs() + 5 * 60);
 
 /// What the controller said when the app connected.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -555,9 +558,59 @@ impl RunRuntime {
             Response::Error { error } => return Err(error),
             _ => return Err(unexpected()),
         };
-        if manifest.result == manifest.start {
-            return Ok(manifest);
+        if manifest.result != manifest.start {
+            self.download_bundle(&mut connection, run_id, out_dir, false)
+                .await?;
         }
+        Ok(manifest)
+    }
+
+    /// **Changes so far**: a provisional snapshot of a running run's working
+    /// tree into `out_dir/result.bundle`. A controller older than this
+    /// request answers that it did not understand it; that is said as an
+    /// upgrade to make.
+    pub async fn preview(&self, run_id: &str, out_dir: &Path) -> AppResult<CollectManifest> {
+        let remote = self.is_remote();
+        let older = |e: AppError| older_controller(e, remote);
+        if !self.is_remote() {
+            let request = Request::Preview {
+                run_id: run_id.to_string(),
+                out_dir: Some(out_dir.to_path_buf()),
+            };
+            return match self
+                .call(request, PREVIEW_CALL_TIMEOUT)
+                .await
+                .map_err(older)?
+            {
+                Response::Collected { manifest } => Ok(manifest),
+                _ => Err(unexpected()),
+            };
+        }
+        let (mut connection, _) = self.connect_remote().await?;
+        let request = Request::Preview {
+            run_id: run_id.to_string(),
+            out_dir: None,
+        };
+        let manifest = match connection.call(&request, PREVIEW_CALL_TIMEOUT).await? {
+            Response::Collected { manifest } => manifest,
+            Response::Error { error } => return Err(older(error)),
+            _ => return Err(unexpected()),
+        };
+        if manifest.result != manifest.start {
+            self.download_bundle(&mut connection, run_id, out_dir, true)
+                .await?;
+        }
+        Ok(manifest)
+    }
+
+    /// Copy the controller's `result.bundle` (or the preview's) to `out_dir`.
+    async fn download_bundle(
+        &self,
+        connection: &mut Connection,
+        run_id: &str,
+        out_dir: &Path,
+        preview: bool,
+    ) -> AppResult<()> {
         let dest = out_dir.join("result.bundle");
         let mut file = tokio::fs::File::create(&dest).await?;
         let mut offset = 0u64;
@@ -568,6 +621,7 @@ impl RunRuntime {
                         run_id: run_id.to_string(),
                         offset,
                         max: super::controller::protocol::TRANSFER_CHUNK as u32,
+                        preview,
                     },
                     self.call_timeout,
                 )
@@ -590,7 +644,7 @@ impl RunRuntime {
                 _ => return Err(unexpected()),
             }
         }
-        Ok(manifest)
+        Ok(())
     }
 
     pub async fn probe_engine(
@@ -721,6 +775,24 @@ pub fn forward_socket(host_dir: &Path, host_id: &str) -> PathBuf {
     }
 }
 
+/// A controller older than `Preview` answers that it did not understand;
+/// that is said as what to do about it.
+fn older_controller(e: AppError, remote: bool) -> AppError {
+    if !e.message.contains("did not understand the request") {
+        e
+    } else if remote {
+        AppError::dependency(
+            "This host's run controller is older than Brainiac, so it cannot show changes while the run works. Upgrade it in Settings → Agents once no run is live there.",
+        )
+    } else {
+        // A local controller of the same protocol keeps its live runs; it
+        // exits once none is live, and the next one is this build's.
+        AppError::dependency(
+            "This run's controller is from an earlier Brainiac, so it cannot show changes while the run works. Runs started after it exits can.",
+        )
+    }
+}
+
 fn unexpected() -> AppError {
     AppError::dependency("The run controller answered something unexpected.")
 }
@@ -787,5 +859,18 @@ mod tests {
         let text = path.to_string_lossy();
         assert!(!text.contains(' '));
         assert!(text.ends_with("abc-forward.sock"));
+    }
+
+    #[test]
+    fn an_older_controller_is_named_as_an_upgrade() {
+        let refused = || AppError::validation("The run controller did not understand the request.");
+        assert!(older_controller(refused(), true)
+            .message
+            .contains("Upgrade it in Settings"));
+        assert!(older_controller(refused(), false)
+            .message
+            .contains("earlier Brainiac"));
+        let other = AppError::not_found("The run controller does not know this run.");
+        assert_eq!(older_controller(other, true).code, ErrorCode::NotFound);
     }
 }

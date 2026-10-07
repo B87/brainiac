@@ -15,9 +15,13 @@ use serde::{Deserialize, Serialize};
 use crate::models::{AppError, RunPermissions};
 
 /// Bumped when a request or response changes shape. A controller with
-/// another protocol is replaced only when it has no live runs.
+/// another protocol is replaced only when it has no live runs, and is not
+/// reachable until then, so an addition an older controller can refuse
+/// (a new request it answers as not understood, a field with a default)
+/// keeps the number.
 /// 2 adds bundle upload and download, remote image build, and the engine
-/// probe (docs/architecture.md, Remote hosts).
+/// probe (docs/architecture.md, Remote hosts); `Preview` and edits' diffs
+/// came later without a bump.
 pub const PROTOCOL: u32 = 2;
 
 /// One piece of a bundle copied to or from the controller. Hex doubles it,
@@ -77,6 +81,18 @@ pub enum Request {
         #[serde(default)]
         image: Option<String>,
     },
+    /// A provisional snapshot of a live run's working tree, taken while the
+    /// agent works: the collector reads the volume the agent is writing to.
+    /// `out_dir` is where `result.bundle` is written on the Mac; without
+    /// it, into the controller's state directory, read with
+    /// [`Request::ReadBundle`] and `preview`. Added after protocol 2 without
+    /// a bump, so a live run's older controller stays reachable: it answers
+    /// that it did not understand the request.
+    Preview {
+        run_id: String,
+        #[serde(default)]
+        out_dir: Option<PathBuf>,
+    },
     /// Remove a stopped run's container, volume, and records here. `image`
     /// is as for `Collect`.
     Discard {
@@ -94,11 +110,14 @@ pub enum Request {
         total: u64,
         hex: String,
     },
-    /// Read `result.bundle` after [`Request::CollectHere`].
+    /// Read `result.bundle` after [`Request::CollectHere`], or the
+    /// preview's after [`Request::Preview`].
     ReadBundle {
         run_id: String,
         offset: u64,
         max: u32,
+        #[serde(default)]
+        preview: bool,
     },
     /// Collect into the controller's state directory, not a path on the Mac.
     CollectHere {
@@ -335,6 +354,22 @@ pub struct PendingPermission {
     /// The command or the file, when the agent said which.
     pub detail: Option<String>,
     pub asked_at: String,
+    /// The edit asked for, as the agent describes it.
+    #[serde(default)]
+    pub diffs: Vec<FileDiff>,
+}
+
+/// An edit as the agent reports it: a file's text before and after, or
+/// only the part it replaces. Reported, not read from the workspace.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileDiff {
+    pub path: String,
+    /// `None` for a new or rewritten file.
+    pub old_text: Option<String>,
+    pub new_text: String,
+    /// A text was cut short to keep the event small.
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -427,6 +462,9 @@ pub enum EventBody {
         status: Option<String>,
         locations: Vec<String>,
         output: Option<String>,
+        /// The edits the tool reports; empty when the update carried none.
+        #[serde(default)]
+        diffs: Vec<FileDiff>,
     },
     Permission(PendingPermission),
     PermissionAnswered {
@@ -463,6 +501,18 @@ pub struct PlanEntry {
 }
 
 impl EventBody {
+    /// Leave out the edits a tool or permission reports; `true` when there were any.
+    pub fn drop_diffs(&mut self) -> bool {
+        let diffs = match self {
+            EventBody::Tool { diffs, .. } => diffs,
+            EventBody::Permission(p) => &mut p.diffs,
+            _ => return false,
+        };
+        let had = !diffs.is_empty();
+        diffs.clear();
+        had
+    }
+
     /// Every text the event carries, for filtering before it is stored.
     pub fn texts_mut(&mut self) -> Vec<&mut String> {
         match self {
@@ -494,6 +544,7 @@ impl EventBody {
                 status,
                 locations,
                 output,
+                diffs,
                 ..
             } => std::iter::once(tool_id)
                 .chain(title.as_mut())
@@ -501,11 +552,13 @@ impl EventBody {
                 .chain(status.as_mut())
                 .chain(locations.iter_mut())
                 .chain(output.as_mut())
+                .chain(diffs.iter_mut().flat_map(FileDiff::texts_mut))
                 .collect(),
             EventBody::Permission(p) => std::iter::once(&mut p.permission_id)
                 .chain(std::iter::once(&mut p.title))
                 .chain(p.kind.as_mut())
                 .chain(p.detail.as_mut())
+                .chain(p.diffs.iter_mut().flat_map(FileDiff::texts_mut))
                 .collect(),
             EventBody::PermissionAnswered {
                 permission_id,
@@ -517,6 +570,14 @@ impl EventBody {
             } => std::iter::once(reason).chain(message.as_mut()).collect(),
             EventBody::Ended { message, .. } => message.iter_mut().collect(),
         }
+    }
+}
+
+impl FileDiff {
+    fn texts_mut(&mut self) -> impl Iterator<Item = &mut String> {
+        std::iter::once(&mut self.path)
+            .chain(self.old_text.as_mut())
+            .chain(std::iter::once(&mut self.new_text))
     }
 }
 

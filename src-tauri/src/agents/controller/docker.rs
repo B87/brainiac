@@ -61,6 +61,8 @@ const UPLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const MAX_BUNDLE_BYTES: u64 = (1 << 33) - 1;
 /// The collector hashes every file of the workspace and writes the bundle.
 const COLLECT_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// A preview of a live run gives up sooner.
+pub const PREVIEW_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// The result bundle holds only what the start does not: new objects.
 const MAX_RESULT_BYTES: u64 = 2 << 30;
 const MAX_MANIFEST_BYTES: u64 = 16 << 20;
@@ -110,6 +112,13 @@ pub struct CollectSpec {
     pub include: Vec<String>,
     /// Where `result.bundle` is written, on the Mac.
     pub out_dir: PathBuf,
+    /// A preview of a running run: its container is not stopped, and its
+    /// workspace is mounted and attached already, so it is read as it is.
+    pub live: bool,
+    /// For a preview: becomes `true` when the run starts stopping. The
+    /// preview's container is then not started, so a stop that listed the
+    /// run's running containers before it existed cannot miss it.
+    pub cancel: Option<tokio::sync::watch::Receiver<bool>>,
 }
 
 /// What the agent's stdout gave, a line at a time.
@@ -175,8 +184,8 @@ pub trait Workloads: Send + Sync + 'static {
         installation: &str,
         run_id: &str,
     ) -> impl Future<Output = AppResult<Running>> + Send;
-    /// Run the collector against the run's stopped volume and bring its
-    /// result to `out_dir`.
+    /// Run the collector against the run's stopped volume (or, `live`, its
+    /// running one) and bring its result to `out_dir`.
     fn collect(&self, spec: CollectSpec)
         -> impl Future<Output = AppResult<CollectManifest>> + Send;
     /// Remove the run's stopped containers, its volume, and its workspace
@@ -763,6 +772,51 @@ impl DockerEngine {
             })
     }
 
+    /// Remove a run's preview containers, running or not. One that started
+    /// after the run's stop was confirmed would otherwise keep the run
+    /// "running" for its collection and its Discard.
+    async fn remove_previews(
+        &self,
+        docker: &Docker,
+        installation: &str,
+        run_id: &str,
+    ) -> AppResult<()> {
+        let mut filters = HashMap::new();
+        filters.insert(
+            "label".to_string(),
+            vec![
+                format!("{LABEL_INSTALLATION}={installation}"),
+                format!("{LABEL_RUN}={run_id}"),
+                format!("{LABEL_ROLE}=preview"),
+            ],
+        );
+        let listed = docker
+            .list_containers(Some(
+                ListContainersOptionsBuilder::new()
+                    .all(true)
+                    .filters(&filters)
+                    .build(),
+            ))
+            .await
+            .map_err(|e| engine_error("The engine did not list the run's containers.", e))?;
+        for id in listed.into_iter().filter_map(|c| c.id) {
+            let options = RemoveContainerOptionsBuilder::new().force(true).build();
+            match docker.remove_container(&id, Some(options)).await {
+                Ok(())
+                | Err(bollard::errors::Error::DockerResponseServerError {
+                    status_code: 404, ..
+                }) => {}
+                Err(e) => {
+                    return Err(engine_error(
+                        "The engine did not remove a preview of the run's changes.",
+                        e,
+                    ))
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// The collector's container: the run's volume read only, no network,
     /// no credential, the same image with its collector as the entrypoint.
     async fn create_collector(&self, docker: &Docker, spec: &CollectSpec) -> AppResult<String> {
@@ -770,7 +824,10 @@ impl DockerEngine {
             (LABEL_INSTALLATION.to_string(), spec.installation.clone()),
             (LABEL_RUN.to_string(), spec.run_id.clone()),
             (LABEL_ATTEMPT.to_string(), spec.attempt.to_string()),
-            (LABEL_ROLE.to_string(), "collector".to_string()),
+            (
+                LABEL_ROLE.to_string(),
+                if spec.live { "preview" } else { "collector" }.to_string(),
+            ),
         ]);
         let host = HostConfig {
             log_config: Some(HostConfigLogConfig {
@@ -811,7 +868,12 @@ impl DockerEngine {
             host_config: Some(host),
             ..Default::default()
         };
-        let name = format!("brainiac-collect-{}-{}", spec.run_id, now_suffix());
+        let name = format!(
+            "brainiac-{}-{}-{}",
+            if spec.live { "preview" } else { "collect" },
+            spec.run_id,
+            now_suffix()
+        );
         let created = docker
             .create_container(
                 Some(CreateContainerOptionsBuilder::new().name(&name).build()),
@@ -866,13 +928,20 @@ impl DockerEngine {
             .start_container(id, None::<StartContainerOptions>)
             .await
             .map_err(|e| engine_error("The collector's container did not start.", e))?;
-        let mut waiting = docker.clone().with_timeout(COLLECT_TIMEOUT).wait_container(
+        // A preview reads a workspace the agent keeps changing; one that
+        // takes long is not worth holding the run's next preview for.
+        let limit = if spec.live {
+            PREVIEW_TIMEOUT
+        } else {
+            COLLECT_TIMEOUT
+        };
+        let mut waiting = docker.clone().with_timeout(limit).wait_container(
             id,
             Some(WaitContainerOptions {
                 condition: "not-running".to_string(),
             }),
         );
-        let exit = match tokio::time::timeout(COLLECT_TIMEOUT, waiting.next()).await {
+        let exit = match tokio::time::timeout(limit, waiting.next()).await {
             Ok(Some(Ok(response))) => response.status_code,
             // bollard reports a non-zero exit as an error carrying the code.
             Ok(Some(Err(bollard::errors::Error::DockerContainerWaitError { code, .. }))) => code,
@@ -887,9 +956,11 @@ impl DockerEngine {
                 let _ = docker
                     .stop_container(id, Some(StopContainerOptionsBuilder::new().t(5).build()))
                     .await;
-                return Err(AppError::timeout(
-                    "Collecting the work took over 30 minutes and was stopped.",
-                ));
+                return Err(AppError::timeout(if spec.live {
+                    "Reading the changes took over 5 minutes and was stopped."
+                } else {
+                    "Collecting the work took over 30 minutes and was stopped."
+                }));
             }
         };
         let bundle = spec.out_dir.join("result.bundle");
@@ -1091,27 +1162,44 @@ impl Workloads for DockerEngine {
 
     async fn collect(&self, spec: CollectSpec) -> AppResult<CollectManifest> {
         let docker = self.client(&spec.engine_socket)?;
-        if !self
-            .run_containers(&docker, &spec.installation, &spec.run_id, false)
-            .await?
-            .is_empty()
+        if !spec.live {
+            self.remove_previews(&docker, &spec.installation, &spec.run_id)
+                .await?;
+        }
+        if !spec.live
+            && !self
+                .run_containers(&docker, &spec.installation, &spec.run_id, false)
+                .await?
+                .is_empty()
         {
             return Err(super::conflict("The run is still running; stop it first."));
         }
         let image = self
             .resolve_image(&docker, &spec.image, spec.fallback_image.as_deref())
             .await?;
-        self.ensure_workspace(
-            &docker,
-            &image,
-            &spec.installation,
-            &spec.run_id,
-            &spec.volume,
-        )
-        .await?;
+        // A running run's workspace is attached and mounted: the engine
+        // mounts a volume once and gives each container its own read-only
+        // view of it. Making it again would pull it from under the agent.
+        if !spec.live {
+            self.ensure_workspace(
+                &docker,
+                &image,
+                &spec.installation,
+                &spec.run_id,
+                &spec.volume,
+            )
+            .await?;
+        }
         let spec = CollectSpec { image, ..spec };
         let id = self.create_collector(&docker, &spec).await?;
-        let collected = self.run_collector(&docker, &id, &spec).await;
+        let stopped = spec.cancel.as_ref().is_some_and(|c| *c.borrow());
+        let collected = if stopped {
+            Err(super::conflict(
+                "The run started stopping while its changes were being read.",
+            ))
+        } else {
+            self.run_collector(&docker, &id, &spec).await
+        };
         // The collector's container is the collection's own; it goes
         // whatever happened. The run's container and volume stay.
         let removed = docker
@@ -1137,6 +1225,7 @@ impl Workloads for DockerEngine {
     ) -> AppResult<()> {
         let docker = self.client(socket)?;
         let image = self.resolve_image(&docker, image, fallback_image).await?;
+        self.remove_previews(&docker, installation, run_id).await?;
         if !self
             .run_containers(&docker, installation, run_id, false)
             .await?

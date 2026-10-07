@@ -33,8 +33,9 @@ use crate::db::Db;
 use crate::models::{
     now_rfc3339, AgentPayment, AgentProfile, AgentRun, AgentRunChangedEvent, AgentRunList,
     AgentTestResult, AgentTestStep, AppError, AppResult, DiffResult, ErrorCode, LeftOutFile,
-    RunActivity, RunChanges, RunCollection, RunControllerStatus, RunDiffRequest, RunEvent,
-    RunEventPage, RunOutcome, RunPermissionRequest, RunPermissions, RunPhase, StartRunRequest,
+    RunActivity, RunBranchCommand, RunChanges, RunCollection, RunControllerStatus, RunDiffRequest,
+    RunEvent, RunEventPage, RunOutcome, RunPermissionRequest, RunPermissions, RunPhase, RunPreview,
+    StartRunRequest,
 };
 use crate::workspaces::RepositoryService;
 
@@ -44,6 +45,8 @@ pub use store::RunRow;
 const POLL_WAIT: Duration = Duration::from_secs(25);
 /// How long to wait before trying the controller again after it failed.
 const RETRY_AFTER: Duration = Duration::from_secs(5);
+/// How long a collection waits for the one before it to finish its cleanup.
+const COLLECT_HANDOVER: Duration = Duration::from_secs(30);
 /// Events the window gets per page.
 const PAGE: usize = 500;
 /// A title is the prompt's first line, this long.
@@ -79,6 +82,21 @@ impl RepositoryLookup for RepositoryService {
     }
 }
 
+/// The last Changes so far of a run, in `agent-runs/<run-id>/preview.json`:
+/// derived, and gone with the run's folder.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+struct PreviewRecord {
+    commit: Option<String>,
+    taken_at: Option<String>,
+    turn: u32,
+    left_out: u32,
+    error: Option<String>,
+    /// Read once when it was taken: the window asks for the preview each
+    /// time the run changes, which is every page while the agent streams.
+    #[serde(default)]
+    files: Vec<crate::models::CommitFile>,
+}
+
 /// Everything about one run held in memory: its mirrored journal.
 struct Journal {
     events: Vec<RunEvent>,
@@ -106,6 +124,11 @@ pub struct AgentRunService {
     journals: Mutex<HashMap<String, Arc<Mutex<Journal>>>>,
     /// One collection at a time per run.
     collecting: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// One preview (Changes so far) at a time per run.
+    previewing: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// Runs whose turn ended while a preview was being taken: one more
+    /// follows it, so the last turn is always read.
+    preview_again: Mutex<std::collections::HashSet<String>>,
     /// The last controller call answered.
     connected: std::sync::atomic::AtomicBool,
 }
@@ -134,6 +157,8 @@ impl AgentRunService {
             syncing: Mutex::new(HashMap::new()),
             journals: Mutex::new(HashMap::new()),
             collecting: Mutex::new(HashMap::new()),
+            previewing: Mutex::new(HashMap::new()),
+            preview_again: Mutex::new(std::collections::HashSet::new()),
             connected: std::sync::atomic::AtomicBool::new(false),
         })
     }
@@ -781,6 +806,10 @@ impl AgentRunService {
                 Ok(page) => {
                     self.set_link(&row.host_id, true);
                     let last = page.events.last().map(|e| e.seq);
+                    let turn_ended = page
+                        .events
+                        .iter()
+                        .any(|e| matches!(e.body, EventBody::TurnEnded { .. }));
                     if !page.events.is_empty() {
                         if let Err(e) = self.mirror(run_id, page.events).await {
                             tracing::warn!(run = %run_id, error = %e, "the run's journal could not be mirrored");
@@ -798,6 +827,10 @@ impl AgentRunService {
                     };
                     if let Err(e) = self.apply_status(run_id, &status).await {
                         tracing::warn!(run = %run_id, error = %e, "the run's row could not be updated");
+                    }
+                    // Changes so far, after each turn of a run still working.
+                    if turn_ended && status.phase == super::controller::protocol::Phase::Running {
+                        self.spawn_preview(run_id);
                     }
                     let caught_up = status.cursor <= last.unwrap_or(row.cursor);
                     if status.phase == super::controller::protocol::Phase::Ended && caught_up {
@@ -1064,8 +1097,20 @@ impl AgentRunService {
                 .entry(run_id.to_string())
                 .or_default(),
         );
-        let Ok(_held) = lock.try_lock() else {
-            return Err(conflict("The run's work is already being collected."));
+        let busy = || conflict("The run's work is already being collected.");
+        let _held = match lock.try_lock() {
+            Ok(held) => held,
+            // The row says what was collected a moment before the collection
+            // that wrote it lets go (a cleanup may follow); a collection asked
+            // for then waits for it. One still running is refused at once.
+            Err(_) => {
+                if self.row(run_id).await?.collection == RunCollection::Collecting {
+                    return Err(busy());
+                }
+                tokio::time::timeout(COLLECT_HANDOVER, lock.lock())
+                    .await
+                    .map_err(|_| busy())?
+            }
         };
         // The left-out list names a folder with a trailing slash; the
         // collector takes it without one.
@@ -1145,6 +1190,7 @@ impl AgentRunService {
                 self.history
                     .call(move |conn| store::set_collected(conn, &id, &outcome))
                     .await?;
+                self.drop_preview(run_id);
                 self.emit(run_id, false);
                 if accepted {
                     self.cleanup(run_id).await;
@@ -1262,6 +1308,192 @@ impl AgentRunService {
         self.get(run_id).await
     }
 
+    // -----------------------------------------------------------------------
+    // Changes so far
+    // -----------------------------------------------------------------------
+
+    fn preview_path(&self, run_id: &str) -> PathBuf {
+        self.artifacts.run_dir(run_id).join("preview.json")
+    }
+
+    fn preview_lock(&self, run_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        Arc::clone(
+            self.previewing
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .entry(run_id.to_string())
+                .or_default(),
+        )
+    }
+
+    /// The last preview taken, as recorded in the run's folder.
+    fn preview_record(&self, run_id: &str) -> PreviewRecord {
+        std::fs::read(self.preview_path(run_id))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default()
+    }
+
+    /// Take a preview in the background; one already being taken is
+    /// followed by another. A run that stopped meanwhile is not an error
+    /// worth showing.
+    fn spawn_preview(self: &Arc<Self>, run_id: &str) {
+        let service = Arc::clone(self);
+        let id = run_id.to_string();
+        tokio::spawn(async move {
+            match service.take_preview(&id, false).await {
+                Ok(()) => {}
+                Err(e) if e.code == ErrorCode::Conflict => {}
+                Err(e) => {
+                    tracing::warn!(run = %id, error = %e, details = ?e.details, "changes so far were not read");
+                }
+            }
+        });
+    }
+
+    /// **Refresh** in Changes so far: a provisional snapshot of the live
+    /// run's working tree, now.
+    pub async fn preview(self: &Arc<Self>, run_id: &str) -> AppResult<RunPreview> {
+        self.take_preview(run_id, true).await?;
+        self.preview_state(run_id).await
+    }
+
+    /// The collector reads the running workspace; its snapshot goes under
+    /// the run's preview ref, never its result. A failure keeps the earlier
+    /// preview and says why. `asked`: the user's Refresh, which waits for
+    /// one already being taken instead of being refused.
+    async fn take_preview(self: &Arc<Self>, run_id: &str, asked: bool) -> AppResult<()> {
+        let lock = self.preview_lock(run_id);
+        let _held = if asked {
+            lock.lock().await
+        } else {
+            match lock.try_lock() {
+                Ok(held) => held,
+                Err(_) => {
+                    self.preview_again
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .insert(run_id.to_string());
+                    return Err(conflict("Changes so far are already being read."));
+                }
+            }
+        };
+        let row = self.row(run_id).await?;
+        if row.phase != RunPhase::Running {
+            return Err(conflict(
+                "Changes so far can be shown while the run is working.",
+            ));
+        }
+        self.emit(run_id, false);
+        let dir = self.artifacts.run_dir(run_id).join("preview");
+        let bundle = dir.join("result.bundle");
+        let taken = async {
+            std::fs::create_dir_all(&dir)?;
+            let manifest = self.rt(run_id).await?.preview(run_id, &dir).await?;
+            if manifest.start != row.start_commit {
+                return Err(AppError::io(
+                    "The collector reported another start than the run's.",
+                ));
+            }
+            let commit = if manifest.result == manifest.start {
+                manifest.result.clone()
+            } else {
+                self.artifacts
+                    .import_preview(
+                        &row.repository_id,
+                        run_id,
+                        &bundle,
+                        &row.start_commit,
+                        &manifest.result,
+                    )
+                    .await?
+            };
+            let left_out = manifest.left_out.len() as u32 + manifest.left_out_more;
+            let files = if commit == row.start_commit {
+                Vec::new()
+            } else {
+                self.artifacts
+                    .changes(&row.repository_id, &row.start_commit, &commit, Some(run_id))
+                    .await?
+            };
+            Ok::<_, AppError>((commit, left_out, files))
+        }
+        .await;
+        // Imported or not, the bundle has served.
+        let _ = std::fs::remove_file(&bundle);
+        let mut record = self.preview_record(run_id);
+        let outcome = match taken {
+            Ok((commit, left_out, files)) => {
+                record = PreviewRecord {
+                    commit: Some(commit),
+                    taken_at: Some(now_rfc3339()),
+                    turn: row.turn,
+                    left_out,
+                    error: None,
+                    files,
+                };
+                Ok(())
+            }
+            // A run that stopped while it was read: the earlier preview
+            // stands, and the collection comes next.
+            Err(e) if e.code == ErrorCode::Conflict => Err(e),
+            Err(e) => {
+                record.error = Some(e.message.clone());
+                Err(e)
+            }
+        };
+        // A run that ended meanwhile is collected next, and a deleted one
+        // keeps its folder gone.
+        let path = self.preview_path(run_id);
+        if self
+            .row(run_id)
+            .await
+            .is_ok_and(|r| r.phase != RunPhase::Ended)
+        {
+            if let Ok(bytes) = serde_json::to_vec(&record) {
+                if let Err(e) = super::controller::state::write_atomic(&path, &bytes) {
+                    tracing::warn!(run = %run_id, error = %e, "the preview's record was not saved");
+                }
+            }
+        }
+        drop(_held);
+        self.emit(run_id, false);
+        let again = self
+            .preview_again
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(run_id);
+        if again {
+            self.spawn_preview(run_id);
+        }
+        outcome
+    }
+
+    /// Once the work is collected, Changes so far has served: its
+    /// repository and record go.
+    fn drop_preview(&self, run_id: &str) {
+        let _ = std::fs::remove_dir_all(self.artifacts.preview_repository(run_id));
+        let _ = std::fs::remove_dir_all(self.artifacts.run_dir(run_id).join("preview"));
+        let _ = std::fs::remove_file(self.preview_path(run_id));
+    }
+
+    /// **Changes so far**: the last preview and its files against the start.
+    pub async fn preview_state(&self, run_id: &str) -> AppResult<RunPreview> {
+        let row = self.row(run_id).await?;
+        let record = self.preview_record(run_id);
+        Ok(RunPreview {
+            run_id: run_id.to_string(),
+            start_commit: row.start_commit,
+            commit: record.commit,
+            taken_at: record.taken_at,
+            turn: record.turn,
+            files: record.files,
+            left_out: record.left_out,
+            busy: self.preview_lock(run_id).try_lock().is_err(),
+            error: record.error,
+        })
+    }
+
     /// **Changes**: the files the snapshot changed.
     pub async fn changes(&self, run_id: &str) -> AppResult<RunChanges> {
         let row = self.row(run_id).await?;
@@ -1270,7 +1502,7 @@ impl AgentRunService {
             Vec::new()
         } else {
             self.artifacts
-                .changes(&row.repository_id, &start, &result)
+                .changes(&row.repository_id, &start, &result, None)
                 .await?
         };
         Ok(RunChanges {
@@ -1283,15 +1515,23 @@ impl AgentRunService {
 
     pub async fn diff(&self, request: RunDiffRequest) -> AppResult<DiffResult> {
         let row = self.row(&request.run_id).await?;
-        let (start, result) = row.reviewable()?;
+        let (start, result) = if request.preview {
+            let commit = self
+                .preview_record(&request.run_id)
+                .commit
+                .ok_or_else(|| conflict("No changes so far have been read yet."))?;
+            (row.start_commit.clone(), commit)
+        } else {
+            row.reviewable()?
+        };
         self.artifacts
             .diff(
                 &row.repository_id,
-                &start,
-                &result,
+                (&start, &result),
                 &request.path,
                 request.old_path.as_deref(),
                 request.options,
+                request.preview.then_some(request.run_id.as_str()),
             )
             .await
     }
@@ -1318,6 +1558,27 @@ impl AgentRunService {
             let _ = self.accept_snapshot(run_id).await;
         }
         Ok(patch)
+    }
+
+    /// **Copy branch command**: a command that fetches the snapshot from
+    /// Brainiac's repository into the user's as a new branch, for the user to
+    /// run. Like a patch export, it confirms the left-out list.
+    pub async fn branch_command(self: &Arc<Self>, run_id: &str) -> AppResult<RunBranchCommand> {
+        let row = self.row(run_id).await?;
+        let (start, result) = row.reviewable()?;
+        if result == start {
+            return Err(AppError::validation(
+                "The run changed nothing: there is no branch to make.",
+            ));
+        }
+        let branch = super::repository::branch_name(&row.title, run_id);
+        let command = self
+            .artifacts
+            .branch_command(&row.repository_id, run_id, &branch);
+        if !row.snapshot_accepted {
+            let _ = self.accept_snapshot(run_id).await;
+        }
+        Ok(RunBranchCommand { branch, command })
     }
 
     // -----------------------------------------------------------------------

@@ -4,4 +4,8 @@ import type { DiffOptions } from "./DiffOptions";
 /**
  * One file's diff of a run's snapshot.
  */
-export type RunDiffRequest = { run_id: string, path: string, old_path: string | null, options: DiffOptions, };
+export type RunDiffRequest = { run_id: string, path: string, old_path: string | null, options: DiffOptions, 
+/**
+ * From the live run's latest preview (Changes so far), not the collected snapshot.
+ */
+preview: boolean, };

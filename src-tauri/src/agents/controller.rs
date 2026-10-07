@@ -188,6 +188,10 @@ struct RunInner {
     journal_failed: bool,
     /// The collector is running against the run's volume.
     collecting: bool,
+    /// A preview's collector is reading the live run's volume.
+    previewing: bool,
+    /// Tells a preview whose container is not started yet that the run stopped.
+    cancel_preview: Option<watch::Sender<bool>>,
 }
 
 pub struct Run {
@@ -291,8 +295,11 @@ impl RunSink for Run {
         }
     }
 
-    fn asked(&self, permission: PendingPermission) {
+    fn asked(&self, mut permission: PendingPermission) {
         // Filtered and cut like the journal's copy: `Status` answers with it.
+        // Its edits stay in the journal only, so a status of many runs
+        // stays small; the conversation shows them.
+        permission.diffs.clear();
         let mut body = EventBody::Permission(permission);
         let mut inner = self.lock();
         if let Some(redactor) = &inner.redactor {
@@ -427,6 +434,8 @@ impl<W: Workloads> Controller<W> {
                     last_stop_try: None,
                     journal_failed: false,
                     collecting: false,
+                    previewing: false,
+                    cancel_preview: None,
                 }),
                 cursor: watch::Sender::new(cursor),
                 stopping: AtomicBool::new(false),
@@ -538,6 +547,29 @@ impl<W: Workloads> Controller<W> {
                 .collect(&run_id, include, out_dir, image)
                 .await
                 .map(|manifest| Response::Collected { manifest }),
+            // A run this controller knows, before anything is made for it.
+            Request::Preview { run_id, .. } if self.run(&run_id).is_err() => Err(
+                AppError::not_found("The run controller does not know this run."),
+            ),
+            Request::Preview { run_id, out_dir } => {
+                let out_dir = match out_dir {
+                    Some(dir) => Ok(dir),
+                    None => {
+                        let dir = self.state.preview_dir(&run_id);
+                        std::fs::create_dir_all(&dir).map(|()| dir).map_err(|e| {
+                            AppError::io("The preview folder could not be created.")
+                                .with_details(e.to_string())
+                        })
+                    }
+                };
+                match out_dir {
+                    Ok(dir) => self
+                        .preview(&run_id, dir)
+                        .await
+                        .map(|manifest| Response::Collected { manifest }),
+                    Err(e) => Err(e),
+                }
+            }
             Request::Discard { run_id, image } => {
                 self.discard(&run_id, image).await.map(|()| Response::Done)
             }
@@ -556,8 +588,9 @@ impl<W: Workloads> Controller<W> {
                 run_id,
                 offset,
                 max,
+                preview,
             } => self
-                .read_bundle(&run_id, offset, max)
+                .read_bundle(&run_id, offset, max, preview)
                 .map(|(offset, total, hex)| Response::Chunk { offset, total, hex }),
             Request::CollectHere {
                 run_id,
@@ -677,6 +710,8 @@ impl<W: Workloads> Controller<W> {
                 last_stop_try: None,
                 journal_failed: false,
                 collecting: false,
+                previewing: false,
+                cancel_preview: None,
             }),
             cursor: watch::Sender::new(0),
             stopping: AtomicBool::new(false),
@@ -883,6 +918,9 @@ impl<W: Workloads> Controller<W> {
             if let Some(cancel) = &inner.cancel_launch {
                 // The container being made is not started; `prepare` then stops
                 // what was made.
+                let _ = cancel.send(true);
+            }
+            if let Some(cancel) = &inner.cancel_preview {
                 let _ = cancel.send(true);
             }
             Stop {
@@ -1187,10 +1225,64 @@ impl<W: Workloads> Controller<W> {
                 start_commit: inner.record.start_commit.clone(),
                 include,
                 out_dir,
+                live: false,
+                cancel: None,
             }
         };
         let result = self.workloads.collect(spec).await;
         run.lock().collecting = false;
+        result
+    }
+
+    /// A provisional snapshot of a running run's working tree (SPEC.md,
+    /// Changes so far): the same collector, reading the volume while the
+    /// agent writes to it. A file caught mid-write is taken as it was. The
+    /// collector's container carries the run's labels, so stopping the run
+    /// stops it too. One at a time per run.
+    async fn preview(&self, run_id: &str, out_dir: PathBuf) -> AppResult<CollectManifest> {
+        let run = self.run(run_id)?;
+        if !out_dir.is_absolute() || !out_dir.is_dir() {
+            return Err(AppError::validation(
+                "The preview needs an existing folder to write into.",
+            ));
+        }
+        let spec = {
+            let mut inner = run.lock();
+            if inner.record.phase != Phase::Running || inner.launching {
+                return Err(conflict(
+                    "Changes so far can be shown while the run is working.",
+                ));
+            }
+            if inner.record.start_commit.is_empty() {
+                return Err(conflict("This run's start commit is not known."));
+            }
+            if inner.previewing {
+                return Err(conflict("Changes so far are already being read."));
+            }
+            inner.previewing = true;
+            let (cancel, cancelled) = watch::channel(false);
+            inner.cancel_preview = Some(cancel);
+            CollectSpec {
+                engine_socket: inner.record.engine_socket.clone(),
+                image: inner.record.image.clone(),
+                fallback_image: None,
+                installation: self.installation.clone(),
+                run_id: run_id.to_string(),
+                attempt: inner.record.attempt,
+                volume: inner.record.volume.clone(),
+                memory_mib: COLLECTOR_MEMORY_MIB,
+                bundle: inner.record.bundle.clone(),
+                start_commit: inner.record.start_commit.clone(),
+                include: Vec::new(),
+                out_dir,
+                live: true,
+                cancel: Some(cancelled),
+            }
+        };
+        let result = self.workloads.collect(spec).await;
+        let mut inner = run.lock();
+        inner.previewing = false;
+        inner.cancel_preview = None;
         result
     }
 
@@ -1341,11 +1433,21 @@ impl<W: Workloads> Controller<W> {
         Ok((path.display().to_string(), size))
     }
 
-    fn read_bundle(&self, run_id: &str, offset: u64, max: u32) -> AppResult<(u64, u64, String)> {
+    fn read_bundle(
+        &self,
+        run_id: &str,
+        offset: u64,
+        max: u32,
+        preview: bool,
+    ) -> AppResult<(u64, u64, String)> {
         if !valid_id(run_id) || max == 0 || max as usize > TRANSFER_CHUNK {
             return Err(AppError::validation("That bundle read is not valid."));
         }
-        let path = self.state.result_bundle(run_id);
+        let path = if preview {
+            self.state.preview_dir(run_id).join("result.bundle")
+        } else {
+            self.state.result_bundle(run_id)
+        };
         let file = std::fs::File::open(&path)?;
         let total = file.metadata()?.len();
         if offset > total {
