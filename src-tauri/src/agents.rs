@@ -25,8 +25,9 @@
 //!   start, following the controller and mirroring its journal, the user's
 //!   actions, collection and review, Delete and retention, and Settings'
 //!   Test.
-//! - **`AgentHostService`** (`hosts.rs`) approves remote hosts and installs,
-//!   upgrades, and removes their run controller; **`HostJobService`**
+//! - **`AgentHostService`** (`hosts.rs`) is the run host role on an approved
+//!   machine (`crate::machines`): it installs, upgrades, and removes the run
+//!   controller there; **`HostJobService`**
 //!   (`host_jobs.rs`) runs those steps in the background as jobs the window
 //!   follows.
 
@@ -40,7 +41,6 @@ pub mod runner_binary;
 pub mod runs;
 pub mod runtime;
 pub mod settings;
-pub mod ssh;
 
 pub use repository::{ExportedStart, RunArtifacts};
 pub use runs::{AgentRunService, RepositoryLookup, RunEmitter};

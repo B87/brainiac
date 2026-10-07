@@ -1,6 +1,8 @@
-//! Approved remote hosts (SPEC.md, Remote hosts). SSH is the transport.
-//! Deploy installs the Linux run controller as a systemd service; the app
-//! reconnects to it and does not stop a healthy run by disconnecting.
+//! Remote run hosts (SPEC.md, Remote hosts): the run host role on an
+//! approved machine (`crate::machines`), which owns the connection and its
+//! key. Deploy installs the Linux run controller there as a systemd
+//! service; the app reconnects to it and does not stop a healthy run by
+//! disconnecting.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -13,14 +15,18 @@ use super::host_jobs::{self, install, JobProgress};
 use super::image;
 use super::runner_binary;
 use super::runtime::RunRuntime;
-use super::ssh::{self, Target};
 use crate::db::Db;
+use crate::machines::ssh::{self, Target};
+use crate::machines::{self, Approval, Machine, MachineService};
 use crate::models::{
     now_rfc3339, AgentHost, AgentHostPreview, AgentImage, AppError, AppResult,
     ApproveAgentHostRequest, ErrorCode,
 };
 
 pub const LOCAL_ID: &str = "local";
+const LOCAL_NAME: &str = "This Mac";
+/// The group the controller's socket belongs to on a host.
+const SERVICE_GROUP: &str = "brainiac";
 const DOCKER_SOCKET: &str = "/var/run/docker.sock";
 /// Where the program is copied before its digest is checked and installed.
 const UPLOAD: &str = "/tmp/brainiac-runner.upload";
@@ -68,6 +74,7 @@ pub struct AgentHostService {
     db: Db,
     history: Db,
     data_dir: PathBuf,
+    machines: Arc<MachineService>,
     /// Hosts with a Settings test in progress. That run has no history row,
     /// and Upgrade and Remove must still see it.
     live_tests: Mutex<HashSet<String>>,
@@ -77,11 +84,12 @@ pub struct AgentHostService {
 }
 
 impl AgentHostService {
-    pub fn new(db: Db, history: Db, data_dir: &Path) -> Self {
+    pub fn new(db: Db, history: Db, data_dir: &Path, machines: Arc<MachineService>) -> Self {
         Self {
             db,
             history,
             data_dir: data_dir.to_path_buf(),
+            machines,
             live_tests: Mutex::new(HashSet::new()),
             deploying: Mutex::new(HashSet::new()),
         }
@@ -112,8 +120,8 @@ impl AgentHostService {
         self.db
             .call(|conn| {
                 let mut stmt = conn.prepare(
-                    "SELECT id FROM agent_hosts
-                     WHERE kind = 'ssh' AND approved != 0 AND installation IS NOT NULL",
+                    "SELECT h.id FROM agent_hosts h JOIN machines m ON m.id = h.machine_id
+                     WHERE m.approved != 0 AND h.installation IS NOT NULL",
                 )?;
                 let ids = stmt.query_map([], |row| row.get(0))?;
                 Ok(ids.collect::<rusqlite::Result<Vec<String>>>()?)
@@ -134,86 +142,45 @@ impl AgentHostService {
     }
 
     pub async fn preview(&self, host: &str, port: u16) -> AppResult<AgentHostPreview> {
-        let prints = ssh::fingerprints(host, port).await?;
         Ok(AgentHostPreview {
-            fingerprint: prints
-                .into_iter()
-                .next()
-                .ok_or_else(|| AppError::dependency("The host did not present an SSH key."))?,
+            fingerprint: self.machines.fingerprint(host, port).await?,
             actions: install_actions(),
         })
     }
 
+    /// Approve the machine, then make it a run host. Confirming the key of
+    /// a saved machine keeps its run host and everything installed there.
     pub async fn approve(&self, request: ApproveAgentHostRequest) -> AppResult<AgentHost> {
-        let target = ssh::target(
-            &request.user,
-            &request.host,
-            request.port,
-            request.identity_path.as_deref(),
-            PathBuf::from("/dev/null"),
-        )?;
-        let lines = ssh::keyscan(&target.host, target.port).await?;
-        let prints = fingerprints_of(&lines)?;
-        // Only the key the user was shown. Other types from the same scan
-        // stay untrusted, even when they arrived beside the confirmed one.
-        let lines = lines_matching(&lines, &prints, &request.fingerprint);
-        if lines.is_empty() {
-            return Err(AppError::validation(
-                "The host key changed since it was shown. Look again before approving it.",
-            ));
-        }
-        let existing = self
-            .db
-            .call({
-                let user = target.user.clone();
-                let host = target.host.clone();
-                let port = target.port;
-                move |conn| find_host(conn, &user, &host, port)
+        let machine = self
+            .machines
+            .approve(Approval {
+                name: request.name,
+                user: request.user,
+                host: request.host,
+                port: request.port,
+                identity_path: request.identity_path,
+                fingerprint: request.fingerprint,
+                accept_changed_key: request.accept_changed_key,
             })
             .await?;
-        if let Some(row) = &existing {
-            if row.fingerprint.as_deref() != Some(request.fingerprint.as_str())
-                && !request.accept_changed_key
-            {
-                return Err(AppError::validation(
-                    "This host's key changed. Approve the new fingerprint to continue.",
-                ));
-            }
-        }
-        let id = existing
-            .as_ref()
-            .map(|r| r.id.clone())
-            .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
-        let known = self.host_dir(&id).join("known_hosts");
-        ssh::write_known_hosts(&known, &lines)?;
-        let name = {
-            let trimmed = request.name.trim();
-            if trimmed.is_empty() {
-                target.host.clone()
-            } else {
-                trimmed.to_string()
-            }
-        };
-        let now = now_rfc3339();
-        let saved = self
+        let id = self
             .db
             .call(move |conn| {
-                save_host(
-                    conn,
-                    &SavedHost {
-                        id: &id,
-                        name: &name,
-                        user: &request.user,
-                        host: &request.host,
-                        port: request.port,
-                        identity: request.identity_path.as_deref(),
-                        fingerprint: &request.fingerprint,
-                        now: &now,
-                    },
-                )
+                let now = now_rfc3339();
+                conn.execute(
+                    "INSERT INTO agent_hosts (id, kind, machine_id, created_at, updated_at)
+                     VALUES (?1, 'ssh', ?2, ?3, ?3)
+                     ON CONFLICT(machine_id) DO UPDATE SET version = version + 1, updated_at = ?3",
+                    params![uuid::Uuid::new_v4().simple().to_string(), machine.id, now],
+                )?;
+                Ok(conn.query_row(
+                    "SELECT id FROM agent_hosts WHERE machine_id = ?1",
+                    [&machine.id],
+                    |r| r.get::<_, String>(0),
+                )?)
             })
             .await?;
-        Ok(saved)
+        self.host(&id).await
     }
 
     /// Install or Upgrade (SPEC.md, Remote hosts), as the six steps of
@@ -221,12 +188,12 @@ impl AgentHostService {
     pub async fn deploy(&self, id: &str, job: &JobProgress, at: usize) -> AppResult<AgentHost> {
         use install::*;
         let row = self.require(id).await?;
-        if !row.approved {
+        if !row.approved() {
             return Err(AppError::validation(
                 "Confirm this host before installing on it.",
             ));
         }
-        let name = row.name.clone();
+        let name = row.name();
         // A service that is already running keeps its old process across
         // `enable --now`. Replacing its program has to restart it.
         let restart = row.installation.is_some();
@@ -335,7 +302,12 @@ impl AgentHostService {
         // From here the host changes: the job finishes on its own.
         job.close_cancel();
         job.begin(at + INSTALL);
-        let user = ssh::group_command(&row.ssh_user.clone().unwrap_or_default())?;
+        let user = group_command(
+            &row.machine
+                .as_ref()
+                .map(|m| m.user.clone())
+                .unwrap_or_default(),
+        )?;
         for command in [
             "id brainiac >/dev/null 2>&1 || sudo -n useradd --system --create-home --shell /usr/sbin/nologin brainiac",
             "getent group docker >/dev/null && sudo -n usermod -aG docker brainiac || true",
@@ -498,19 +470,25 @@ impl AgentHostService {
                 .await?;
             }
         }
+        let machine = row.machine.as_ref().map(|m| m.id.clone());
         let id = id.to_string();
         if keep_state(obligations.kept, obligations.cleanup) {
-            let id = id.clone();
+            // The run host stays, with its machine no longer trusted, until
+            // the user adds the machine again and collects or discards.
+            let kept = id.clone();
             self.db
                 .call(move |conn| {
                     conn.execute(
-                        "UPDATE agent_hosts SET approved = 0, state_kept = 1, version = version + 1,
+                        "UPDATE agent_hosts SET state_kept = 1, version = version + 1,
                             updated_at = ?2 WHERE id = ?1",
-                        params![id, now_rfc3339()],
+                        params![kept, now_rfc3339()],
                     )?;
                     Ok(())
                 })
                 .await?;
+            if let Some(machine) = &machine {
+                self.machines.withdraw(machine).await?;
+            }
         } else {
             let gone = id.clone();
             self.db
@@ -523,6 +501,10 @@ impl AgentHostService {
                 })
                 .await?;
             let _ = std::fs::remove_dir_all(self.host_dir(&id));
+            // The run host was the machine's only role.
+            if let Some(machine) = &machine {
+                self.machines.forget(machine).await?;
+            }
         }
         Ok(())
     }
@@ -631,13 +613,11 @@ impl AgentHostService {
     }
 
     fn ssh_target(&self, row: &HostRow) -> AppResult<Target> {
-        ssh::target(
-            row.ssh_user.as_deref().unwrap_or(""),
-            row.ssh_host.as_deref().unwrap_or(""),
-            row.ssh_port.unwrap_or(0),
-            row.identity_path.as_deref(),
-            self.host_dir(&row.id).join("known_hosts"),
-        )
+        let machine = row
+            .machine
+            .as_ref()
+            .ok_or_else(|| AppError::validation("This Mac uses the local run controller."))?;
+        self.machines.target(machine)
     }
 
     pub(crate) async fn host(&self, id: &str) -> AppResult<AgentHost> {
@@ -663,7 +643,7 @@ impl AgentHostService {
 
     async fn require_ready(&self, id: &str) -> AppResult<HostRow> {
         let row = self.require(id).await?;
-        if !row.approved || row.installation.is_none() {
+        if !row.approved() || row.installation.is_none() {
             return Err(AppError::validation("Deploy this host before using it."));
         }
         Ok(row)
@@ -769,28 +749,34 @@ struct Obligations {
 
 struct HostRow {
     id: String,
-    name: String,
-    ssh_user: Option<String>,
-    ssh_host: Option<String>,
-    ssh_port: Option<u16>,
-    identity_path: Option<String>,
-    fingerprint: Option<String>,
     installation: Option<String>,
-    approved: bool,
+    /// The machine a remote host runs on; `None` for this Mac.
+    machine: Option<Machine>,
 }
 
-fn fingerprints_of(lines: &[String]) -> AppResult<Vec<String>> {
-    lines.iter().map(|l| ssh::fingerprint(l)).collect()
+impl HostRow {
+    fn name(&self) -> String {
+        self.machine
+            .as_ref()
+            .map(|m| m.name.clone())
+            .unwrap_or_else(|| LOCAL_NAME.to_string())
+    }
+
+    /// A remote host is usable while its machine is approved.
+    fn approved(&self) -> bool {
+        self.machine.as_ref().is_none_or(|m| m.approved)
+    }
 }
 
-/// The `ssh-keyscan` lines whose fingerprint is the one the user confirmed.
-fn lines_matching(lines: &[String], prints: &[String], fingerprint: &str) -> Vec<String> {
-    lines
-        .iter()
-        .zip(prints.iter())
-        .filter(|(_, print)| ssh::same_fingerprint(fingerprint, print))
-        .map(|(line, _)| line.clone())
-        .collect()
+/// Add the SSH user to the controller's group. The name must pass
+/// [`ssh::valid_user`], so it is one token and not a shell expression.
+fn group_command(user: &str) -> AppResult<String> {
+    if !ssh::valid_user(user) {
+        return Err(AppError::validation(
+            "The SSH user is not a name Brainiac can use.",
+        ));
+    }
+    Ok(format!("sudo -n usermod -aG {SERVICE_GROUP} {user}"))
 }
 
 /// Deletes a copy that was not installed. Best effort: it is in `/tmp`.
@@ -861,75 +847,35 @@ impl Drop for DeployGuard<'_> {
     }
 }
 
-fn find_host(conn: &Connection, user: &str, host: &str, port: u16) -> AppResult<Option<HostRow>> {
-    Ok(conn
-        .query_row(
-            "SELECT id, ssh_user, ssh_host, ssh_port, identity_path, fingerprint, installation, approved, name
-             FROM agent_hosts WHERE kind = 'ssh' AND ssh_user = ?1 AND ssh_host = ?2 AND ssh_port = ?3",
-            params![user, host, port],
-            row_of,
-        )
-        .optional()?)
-}
-
 fn load_host(conn: &Connection, id: &str) -> AppResult<Option<HostRow>> {
-    Ok(conn
+    let row = conn
         .query_row(
-            "SELECT id, ssh_user, ssh_host, ssh_port, identity_path, fingerprint, installation, approved, name
-             FROM agent_hosts WHERE id = ?1",
+            "SELECT id, installation, machine_id FROM agent_hosts WHERE id = ?1",
             [id],
-            row_of,
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                ))
+            },
         )
-        .optional()?)
-}
-
-fn row_of(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
-    Ok(HostRow {
-        id: r.get(0)?,
-        ssh_user: r.get(1)?,
-        ssh_host: r.get(2)?,
-        ssh_port: r.get::<_, Option<i64>>(3)?.map(|p| p as u16),
-        identity_path: r.get(4)?,
-        fingerprint: r.get(5)?,
-        installation: r.get(6)?,
-        approved: r.get::<_, i64>(7)? != 0,
-        name: r.get(8)?,
-    })
-}
-
-struct SavedHost<'a> {
-    id: &'a str,
-    name: &'a str,
-    user: &'a str,
-    host: &'a str,
-    port: u16,
-    identity: Option<&'a str>,
-    fingerprint: &'a str,
-    now: &'a str,
-}
-
-fn save_host(conn: &Connection, saved: &SavedHost<'_>) -> AppResult<AgentHost> {
-    conn.execute(
-        "INSERT INTO agent_hosts (id, kind, name, ssh_user, ssh_host, ssh_port, identity_path,
-            fingerprint, approved, created_at, updated_at)
-         VALUES (?1, 'ssh', ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?8)
-         ON CONFLICT(id) DO UPDATE SET name = ?2, ssh_user = ?3, ssh_host = ?4, ssh_port = ?5,
-            identity_path = ?6, fingerprint = ?7, approved = 1, version = version + 1, updated_at = ?8",
-        params![
-            saved.id,
-            saved.name,
-            saved.user,
-            saved.host,
-            saved.port,
-            saved.identity,
-            saved.fingerprint,
-            saved.now
-        ],
-    )?;
-    list(conn)?
-        .into_iter()
-        .find(|h| h.id == saved.id)
-        .ok_or_else(|| AppError::db("The host was not saved."))
+        .optional()?;
+    let Some((id, installation, machine_id)) = row else {
+        return Ok(None);
+    };
+    let machine = match machine_id {
+        Some(machine_id) => Some(
+            machines::load(conn, &machine_id)?
+                .ok_or_else(|| AppError::db("A host's machine is missing."))?,
+        ),
+        None => None,
+    };
+    Ok(Some(HostRow {
+        id,
+        installation,
+        machine,
+    }))
 }
 
 pub fn list(conn: &Connection) -> AppResult<Vec<AgentHost>> {
@@ -942,15 +888,18 @@ pub fn list(conn: &Connection) -> AppResult<Vec<AgentHost>> {
         .optional()?
         .unwrap_or(0);
     let mut stmt = conn.prepare(
-        "SELECT id, kind, name, ssh_user, ssh_host, ssh_port, identity_path, fingerprint,
-            installation, approved, engine_name, loop_devices, image_id, image_recipe,
-            image_built_at, test_passed_at, test_image_id, state_kept, version,
-            test_credential_revision, controller_build, protocol, controller_installed_at
-         FROM agent_hosts ORDER BY kind, name",
+        "SELECT h.id, h.kind, COALESCE(m.name, ?1), m.ssh_user, m.ssh_host, m.ssh_port,
+            m.identity_path, m.fingerprint, h.installation, COALESCE(m.approved, 1),
+            h.engine_name, h.loop_devices, h.image_id, h.image_recipe, h.image_built_at,
+            h.test_passed_at, h.test_image_id, h.state_kept, h.version,
+            h.test_credential_revision, h.controller_build, h.protocol,
+            h.controller_installed_at
+         FROM agent_hosts h LEFT JOIN machines m ON m.id = h.machine_id
+         ORDER BY h.kind, 3",
     )?;
     let recipe = image::recipe();
     let available = runner_binary::current_build();
-    let rows = stmt.query_map([], |r| {
+    let rows = stmt.query_map([LOCAL_NAME], |r| {
         let kind: String = r.get(1)?;
         let user: Option<String> = r.get(3)?;
         let host: Option<String> = r.get(4)?;
@@ -1081,14 +1030,11 @@ mod tests {
     }
 
     #[test]
-    fn approval_keeps_only_the_confirmed_key() {
-        let lines = vec!["ed25519-line".into(), "rsa-line".into()];
-        let prints = vec!["SHA256:ed".into(), "SHA256:rsa".into()];
-        assert_eq!(
-            lines_matching(&lines, &prints, "SHA256:ed"),
-            vec!["ed25519-line".to_string()]
-        );
-        assert!(lines_matching(&lines, &prints, "SHA256:other").is_empty());
+    fn the_group_command_refuses_a_user_that_is_not_a_name() {
+        assert!(group_command("ada")
+            .unwrap()
+            .contains("usermod -aG brainiac ada"));
+        assert!(group_command("ada;id").is_err());
     }
 
     #[test]

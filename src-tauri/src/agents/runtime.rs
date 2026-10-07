@@ -22,6 +22,8 @@ use super::controller::{read_line, write_line};
 use crate::mcp::{current_uid, fallback_dir, MAX_SOCKET_PATH};
 use crate::models::{AppError, AppResult, ErrorCode, RunStartStep};
 
+/// The controller's socket on a remote host. It is not a TCP port.
+const REMOTE_SOCKET: &str = "/var/lib/brainiac-runner/runner.sock";
 /// How long a newly started controller has to answer.
 const START_WAIT: Duration = Duration::from_secs(10);
 const RETRY_EVERY: Duration = Duration::from_millis(100);
@@ -53,7 +55,7 @@ enum Link {
     /// A host's controller, through an SSH stream-local forward. The SSH
     /// process is only the transport (SPEC.md, Remote hosts).
     Remote {
-        target: super::ssh::Target,
+        target: crate::machines::ssh::Target,
         token: String,
         /// Empty until Deploy has recorded the installation.
         installation: String,
@@ -98,7 +100,7 @@ impl RunRuntime {
     /// A remote controller. `installation` is empty until the first Hello
     /// is recorded; after that a different installation is a failure.
     pub fn remote(
-        target: super::ssh::Target,
+        target: crate::machines::ssh::Target,
         token: String,
         installation: String,
         forward: PathBuf,
@@ -460,7 +462,7 @@ impl RunRuntime {
         // The `/tmp` fallback must be this user's and closed to others.
         // `create_dir_all` would leave that folder open.
         crate::mcp::prepare_socket_dir(forward)?;
-        let args = super::ssh::forward_args(target, forward);
+        let args = crate::machines::ssh::forward_args(target, forward, REMOTE_SOCKET);
         use std::os::unix::process::CommandExt;
         let child = std::process::Command::new("ssh")
             .args(&args)
@@ -473,7 +475,7 @@ impl RunRuntime {
                 AppError::dependency("SSH could not be started.").with_details(e.to_string())
             })?;
         let held = Forward { child };
-        let deadline = tokio::time::Instant::now() + super::ssh::CONNECT_TIMEOUT;
+        let deadline = tokio::time::Instant::now() + crate::machines::ssh::CONNECT_TIMEOUT;
         let stream = loop {
             if tokio::time::Instant::now() >= deadline {
                 return Err(AppError::dependency(

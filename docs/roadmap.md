@@ -175,6 +175,8 @@ Prove the remote controller architecture before production runtime implementatio
 
 Expand the v0.6 import adapters and consider pull requests on GitLab and Bitbucket Data Center; CI beyond the checks a pull request shows; the In flight view of each change from local branch to merged (Pull request follow-ups, below); Linear references; local calendar context; recurring tasks and reminders; daily/weekly review notes built on v0.6 templates; Kindle highlights from Amazon's cloud notebook or Readwise (`design/templates-and-kindle.md`, Where highlights come from); optional graph navigation; explicit branch/dev-server actions; multiple vaults; sync; automation or plugin APIs; a Linux build, whose secrets would go to the Secret Service (`design/secrets.md`, phase 3).
 
+Machines (`architecture.md`, Machines) are where later remote features attach, each as its own role on an approved machine rather than a copy of its address and key: database SSH tunnels (v0.4.x) through a machine, an SSH terminal, and a machine's health (disk, memory, Docker, the run controller's state) beside the run host's. Settings gets a Machines pane, with Run hosts pointing to it, when the second role ships.
+
 Remote services require their own authentication, rate-limit, cache, error, and privacy requirements. Polling with backoff is sufficient for an initial desktop integration; webhooks need an explicitly designed delivery mechanism. Do not make these dependencies of the core app.
 
 ## Open questions

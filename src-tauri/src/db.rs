@@ -66,7 +66,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0012_agent_host_controller",
         include_str!("../migrations/0012_agent_host_controller.sql"),
     ),
+    (
+        "0013_machines",
+        include_str!("../migrations/0013_machines.sql"),
+    ),
 ];
+
+/// Migrations that rebuild `agent_hosts`, a table other rows reference.
+const REBUILDS_PARENT: &[&str] = &["0011_agent_hosts_remote", "0013_machines"];
 
 /// How many daily backups to keep.
 const BACKUP_RETENTION: usize = 7;
@@ -397,8 +404,8 @@ pub fn migrate(conn: &mut Connection, store: &Store) -> AppResult<()> {
     for (index, (name, sql)) in store.migrations.iter().enumerate().skip(current) {
         // Rebuilding `agent_hosts` drops a table other rows reference.
         // SQLite ignores `foreign_keys` inside a transaction, so it is
-        // set around this one migration and the new table is checked after.
-        let rebuilds_parent = *name == "0011_agent_hosts_remote";
+        // set around these migrations and the new table is checked after.
+        let rebuilds_parent = REBUILDS_PARENT.contains(name);
         if rebuilds_parent {
             conn.pragma_update(None, "foreign_keys", false)?;
         }
@@ -415,9 +422,9 @@ pub fn migrate(conn: &mut Connection, store: &Store) -> AppResult<()> {
                     r.get(0)
                 })?;
             if broken != 0 {
-                return Err(AppError::db(
-                    "Migration 0011_agent_hosts_remote left a broken reference.",
-                ));
+                return Err(AppError::db(format!(
+                    "Migration {name} left a broken reference."
+                )));
             }
         }
         tracing::info!(migration = name, "applied database migration");

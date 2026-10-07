@@ -1,4 +1,4 @@
-//! SSH as a transport to a remote run controller (SPEC.md, Remote hosts).
+//! SSH as the transport to an approved machine (SPEC.md, Remote hosts).
 //! `ssh` and `scp` are invoked with argument arrays, the way Git is: nothing
 //! here is a shell, and a host name is never interpolated into a command
 //! string. The host key is whatever the user approved, in an app-owned
@@ -13,13 +13,6 @@ use crate::models::{AppError, AppResult};
 /// How long SSH may spend connecting. A stuck host ends here, on its own
 /// process, so another host is not waiting on it.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
-
-/// The controller's socket on the host. It is not a TCP port.
-pub const REMOTE_SOCKET: &str = "/var/lib/brainiac-runner/runner.sock";
-pub const REMOTE_STATE: &str = "/var/lib/brainiac-runner";
-pub const REMOTE_BIN: &str = "/usr/local/bin/brainiac-runner";
-pub const SERVICE_USER: &str = "brainiac";
-pub const SERVICE_NAME: &str = "brainiac-runner.service";
 
 /// Where to connect, and the host key the user already approved.
 #[derive(Clone)]
@@ -79,7 +72,8 @@ pub fn target(
     })
 }
 
-fn valid_user(user: &str) -> bool {
+/// A user name that is one token, safe inside a remote command.
+pub fn valid_user(user: &str) -> bool {
     let mut chars = user.chars();
     match chars.next() {
         Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
@@ -173,9 +167,10 @@ pub fn scp_args(target: &Target, local: &Path, remote_path: &str) -> Vec<String>
     args
 }
 
-/// A stream-local forward from `local_socket` on this Mac to the
-/// controller's socket on the host. `-N` does not run a remote command.
-pub fn forward_args(target: &Target, local_socket: &Path) -> Vec<String> {
+/// A stream-local forward from `local_socket` on this Mac to a socket on
+/// the machine. `-N` does not run a remote command; `remote_socket` is a
+/// constant of the feature that asks for it.
+pub fn forward_args(target: &Target, local_socket: &Path, remote_socket: &str) -> Vec<String> {
     let mut args = vec![
         "-N".into(),
         "-o".into(),
@@ -183,7 +178,7 @@ pub fn forward_args(target: &Target, local_socket: &Path) -> Vec<String> {
         "-o".into(),
         "StreamLocalBindUnlink=yes".into(),
         "-L".into(),
-        format!("{}:{REMOTE_SOCKET}", local_socket.display()),
+        format!("{}:{remote_socket}", local_socket.display()),
     ];
     args.extend(base_args(target));
     args.push(destination(target));
@@ -326,17 +321,6 @@ pub async fn output(program: &str, args: &[String]) -> AppResult<CmdOut> {
     })
 }
 
-/// Add the SSH user to the controller's group. The name was checked by
-/// [`valid_user`], so it is one token and not a shell expression.
-pub fn group_command(user: &str) -> AppResult<String> {
-    if !valid_user(user) {
-        return Err(AppError::validation(
-            "The SSH user is not a name Brainiac can use.",
-        ));
-    }
-    Ok(format!("sudo -n usermod -aG {SERVICE_USER} {user}"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -403,9 +387,15 @@ mod tests {
 
     #[test]
     fn the_forward_does_not_open_a_remote_shell() {
-        let args = forward_args(&sample(), Path::new("/tmp/forward.sock"));
+        let args = forward_args(
+            &sample(),
+            Path::new("/tmp/forward.sock"),
+            "/var/lib/brainiac-runner/runner.sock",
+        );
         assert!(args.contains(&"-N".into()));
-        assert!(args.iter().any(|a| a.contains(REMOTE_SOCKET)));
+        assert!(args
+            .iter()
+            .any(|a| a == "/tmp/forward.sock:/var/lib/brainiac-runner/runner.sock"));
         assert!(!args.iter().any(|a| a == "uname -m"));
     }
 
@@ -424,13 +414,5 @@ mod tests {
         assert!(args
             .iter()
             .any(|a| { a == "UserKnownHostsFile=\"/Users/ada/Application Support/known_hosts\"" }));
-    }
-
-    #[test]
-    fn the_group_command_refuses_a_user_that_is_not_a_name() {
-        assert!(group_command("ada")
-            .unwrap()
-            .contains("usermod -aG brainiac ada"));
-        assert!(group_command("ada;id").is_err());
     }
 }

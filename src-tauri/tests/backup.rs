@@ -368,3 +368,53 @@ async fn an_export_from_before_secret_sources_restores_with_every_source_to_allo
         .unwrap();
     assert_eq!((source.as_str(), approved), (r#"{"kind":"store"}"#, false));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restored_machine_waits_for_its_key_to_be_confirmed() {
+    let h = Harness::new(false).await;
+    h.core
+        .call(|conn| {
+            conn.execute_batch(
+                "INSERT INTO machines (id, name, ssh_user, ssh_host, ssh_port, fingerprint,
+                    created_at, updated_at)
+                 VALUES ('m1', 'build-01', 'ada', 'runner.example', 22, 'SHA256:abc',
+                    '2026-10-06T09:00:00Z', '2026-10-06T09:00:00Z');
+                 INSERT INTO agent_hosts (id, kind, machine_id, installation, created_at, updated_at)
+                 VALUES ('h1', 'ssh', 'm1', 'inst-1', '2026-10-06T09:00:00Z', '2026-10-06T09:00:00Z');",
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let exports = h.tmp.path().join("exports");
+    fs::create_dir_all(&exports).unwrap();
+    let result = backup::export(&h.notes, &exports).await.unwrap();
+    let other = tempfile::tempdir().unwrap();
+    let data = other.path().join("data");
+    let core = Db::open(&data.join(db::CORE_FILE)).unwrap();
+    let (notes, _) = Harness::service(&data, core.clone());
+    notes.disable_watching();
+    backup::restore(
+        &notes,
+        RestoreRequest {
+            export_path: result.path.clone(),
+            vault_path: other.path().join("Notes").display().to_string(),
+            use_existing_vault: false,
+        },
+    )
+    .await
+    .unwrap();
+    let pending = Connection::open(data.join(backup::PENDING_RESTORE)).unwrap();
+    let (fingerprint, approved, installation): (String, bool, Option<String>) = pending
+        .query_row(
+            "SELECT m.fingerprint, m.approved, h.installation
+             FROM machines m JOIN agent_hosts h ON h.machine_id = m.id WHERE m.id = 'm1'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (fingerprint.as_str(), approved, installation.as_deref()),
+        ("SHA256:abc", false, Some("inst-1"))
+    );
+}

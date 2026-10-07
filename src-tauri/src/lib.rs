@@ -12,6 +12,7 @@ pub mod fetcher;
 pub mod forge;
 pub mod git;
 pub mod index;
+pub mod machines;
 pub mod mcp;
 pub mod models;
 pub mod notes;
@@ -235,10 +236,15 @@ pub fn run() {
                     tracing::warn!(error = %e, "failed to emit agent_run_changed");
                 }
             });
+            let machines = Arc::new(machines::MachineService::new(
+                stores.core.clone(),
+                &data_dir,
+            ));
             let agent_hosts = Arc::new(agents::hosts::AgentHostService::new(
                 stores.core.clone(),
                 stores.history.clone(),
                 &data_dir,
+                machines,
             ));
             app.manage(Arc::clone(&agent_hosts));
             let runs = agents::AgentRunService::new(
