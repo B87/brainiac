@@ -448,6 +448,34 @@ async fn the_settings_test_fails_when_a_refused_key_comes_back_as_a_reply() {
 }
 
 #[tokio::test]
+async fn a_run_whose_image_is_gone_fails_with_nothing_to_collect() {
+    let h = Harness::new().await;
+    h.engine.get().image_missing = true;
+    let run = h.start("hello", RunPermissions::Act).await;
+    let run = h
+        .wait(&run.id, "the run fails", |r| {
+            r.phase == RunPhase::Ended && r.stop_confirmed
+        })
+        .await;
+    assert_eq!(run.outcome, Some(RunOutcome::Failed));
+    assert!(!run.kept);
+    assert_eq!(run.collection, RunCollection::None);
+    // Once its end is mirrored, the controller forgets it; the engine was
+    // never asked to remove anything.
+    for _ in 0..500 {
+        if h.runtime().runs().await.unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(h.runtime().runs().await.unwrap().is_empty());
+    assert!(h.engine.get().discarded.is_empty());
+    assert!(h.runs.collect(&run.id, Vec::new()).await.is_err());
+    h.runs.delete(&run.id).await.unwrap();
+    assert!(h.runs.get(&run.id).await.is_err());
+}
+
+#[tokio::test]
 async fn a_kept_run_the_controller_forgot_can_still_be_deleted() {
     let h = Harness::new().await;
     let run = h.start("edit", RunPermissions::Act).await;

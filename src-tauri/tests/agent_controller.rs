@@ -403,6 +403,40 @@ async fn a_refused_credential_fails_the_run_and_keeps_its_work() {
 }
 
 #[tokio::test]
+async fn a_run_whose_image_is_gone_fails_with_nothing_kept() {
+    let h = Harness::new().await;
+    h.engine.get().image_missing = true;
+    h.start("run-1", "hello", RunPermissions::Act).await;
+    let status = h
+        .wait("run-1", "the run fails", |s| ended(s) && s.stop_confirmed)
+        .await;
+    assert_eq!(status.outcome, Some(Outcome::Failed));
+    assert!(status.error.unwrap().contains("image"));
+    assert!(!status.kept);
+    assert_eq!(h.engine.get().launches, 0);
+    assert!(h.engine.get().frames.is_empty());
+
+    // Nothing to collect; Discard forgets the run without asking the engine.
+    let out = h.tmp.path().join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    let err = h
+        .runtime
+        .collect("run-1", Vec::new(), &out, None)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::Conflict);
+    h.runtime.discard("run-1", None).await.unwrap();
+    assert!(h.engine.get().discarded.is_empty());
+    assert!(h
+        .runtime
+        .runs()
+        .await
+        .unwrap()
+        .iter()
+        .all(|r| r.run_id != "run-1"));
+}
+
+#[tokio::test]
 async fn an_agent_that_exits_on_its_own_interrupts_the_run() {
     let h = Harness::new().await;
     h.start("run-1", "hello", RunPermissions::Act).await;

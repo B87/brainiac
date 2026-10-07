@@ -904,6 +904,40 @@ function RunCards({
         <div className="flex flex-wrap gap-2">{collectButtons}</div>
       </RunCard>,
     );
+  } else if (
+    run.outcome === "failed" &&
+    !run.kept &&
+    run.stop_confirmed &&
+    run.collection === "none"
+  ) {
+    // It failed before anything of it was made on the engine, or its work
+    // was discarded since.
+    const image = /\bimage\b/i.test(run.error ?? "");
+    cards.push(
+      <RunCard
+        key="failed"
+        tone="red"
+        badge="Failed"
+        title={run.error ?? "The run failed"}
+      >
+        <p className="m-0">
+          Nothing of this run is on the engine, so there is no work to collect.
+          {image || credential ? " Fix this in Settings, then" : " Then"} start
+          a new run.
+        </p>
+        {(image || credential) && (
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={onOpenSettings}
+            >
+              Settings → Agents…
+            </button>
+          </div>
+        )}
+      </RunCard>,
+    );
   } else if (run.error && !run.stop_confirmed) {
     // Shown with the stop card below.
   } else if (run.error && run.collection !== "failed") {
@@ -922,8 +956,8 @@ function RunCards({
         title="Couldn't collect the work"
       >
         <p className="m-0">
-          {run.collection_error ?? "The work could not be collected."} The
-          stopped container and its files are kept.
+          {run.collection_error ?? "The work could not be collected."} Nothing
+          was removed from the engine.
         </p>
         <div className="flex flex-wrap gap-2">
           <button

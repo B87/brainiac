@@ -738,6 +738,7 @@ A coding agent run in a container, started from a repository, followed live, ste
 - **Plan limit reached:** the plan's usage limit stopped the turn. The session stays open and its work is kept, the time limit keeps running, and the user can send again later or finish and collect. Brainiac does not claim to know when the limit resets.
 - **Workspace full:** the agent's writes fail for lack of space. The run is not stopped.
 - **A rejected token or key** fails the run with its work kept for collection. A run never asks for a new credential: the user updates it in Settings and starts another run.
+- **A run whose image is gone from the engine** fails before anything of it is made there; a cleanup of unused images on the engine's machine can remove the image between runs. It has no work to collect: the user builds the image in Settings → Agents and starts a new run.
 
 ### Leaving and coming back
 
@@ -752,7 +753,7 @@ A coding agent run in a container, started from a repository, followed live, ste
 - **Collecting** snapshots the agent's working tree, including edits it never committed: staged and unstaged changes, new files, binary files, symbolic links (as links), executable bits, and deletions. It is compared with the start commit as one new commit on top of it; the agent's own commits are not kept as history.
 - **Left out:** new files that the start commit's ignore rules or Brainiac's fixed rules exclude (generated output, caches, Git's own data, home folders). Review lists them with the reason; **Choose files to add…** collects again with the chosen regular files, and **Keep this snapshot** accepts the list. Until one of them, or a patch export that confirms the same list, the stopped container is kept.
 - **Interrupted** (the engine, the container, or the run controller stopped unexpectedly): the container is stopped and kept with its files; only Discard removes them. The conversation cannot continue; **Collect work** collects it for review. Updates after the last one recorded may be missing.
-- **Collection failed:** the stopped container and its files are kept, with the reason ("over the 200 MB limit for one file"), **Retry collection**, **Export files…**, and **Discard work…**.
+- **Collection failed:** nothing is removed from the engine; the stopped container and its files are kept, with the reason ("over the 200 MB limit for one file", or that the run's workspace is not on the engine), **Retry collection**, **Export files…**, and **Discard work…**.
 
 ### Review
 

@@ -156,6 +156,9 @@ pub enum Running {
 // `impl Future + Send` in a trait: each implementation returns its own
 // future type, and `Send` lets the controller run it on any worker thread.
 pub trait Workloads: Send + Sync + 'static {
+    /// Before anything of a run is made: the run's image is on the engine.
+    /// A cleanup of unused images on the engine's machine can remove it.
+    fn check_image(&self, socket: &str, image: &str) -> impl Future<Output = AppResult<()>> + Send;
     /// Create the volume and the container, copy the bundle in, start, attach.
     fn launch(&self, spec: LaunchSpec) -> impl Future<Output = AppResult<Attached>> + Send;
     /// Stop every container of the run, and keep them.
@@ -373,6 +376,25 @@ impl DockerEngine {
         run_id: &str,
         script: &str,
     ) -> AppResult<String> {
+        let (exit, printed) = self
+            .helper_status(docker, image, installation, run_id, script)
+            .await?;
+        if exit != 0 {
+            return Err(helper_failed(exit));
+        }
+        Ok(printed)
+    }
+
+    /// The helper's exit status and what it printed, for a caller whose
+    /// script says something with its status.
+    async fn helper_status(
+        &self,
+        docker: &Docker,
+        image: &str,
+        installation: &str,
+        run_id: &str,
+        script: &str,
+    ) -> AppResult<(i64, String)> {
         // The scripts interpolate the run ID: only a name, never a path.
         if !super::protocol::valid_id(run_id) {
             return Err(AppError::validation("Invalid run ID."));
@@ -440,7 +462,7 @@ impl DockerEngine {
         result
     }
 
-    async fn run_helper(&self, docker: &Docker, id: &str) -> AppResult<String> {
+    async fn run_helper(&self, docker: &Docker, id: &str) -> AppResult<(i64, String)> {
         let attach = AttachContainerOptionsBuilder::new()
             .stream(true)
             .stdout(true)
@@ -497,12 +519,7 @@ impl DockerEngine {
             }
             None => 0,
         };
-        if exit != 0 {
-            return Err(AppError::dependency(format!(
-                "Brainiac's workspace helper failed (exit status {exit}). The engine may not support loop devices."
-            )));
-        }
-        Ok(String::from_utf8_lossy(&printed).trim().to_string())
+        Ok((exit, String::from_utf8_lossy(&printed).trim().to_string()))
     }
 
     /// The image to run a kept run's helper and collector from: the run's
@@ -628,16 +645,31 @@ impl DockerEngine {
              d=$(losetup -j \"$f\" | head -n 1 | cut -d: -f1); \
              [ -n \"$d\" ] || d=$(losetup -f --show \"$f\"); echo \"$d\""
         );
-        let device = self
-            .helper(docker, image, installation, run_id, &script)
+        let device = match self
+            .helper_status(docker, image, installation, run_id, &script)
             .await
-            .map_err(|e| {
-                AppError::new(
-                    e.code,
-                    "The run's workspace is missing from the engine, so its work cannot be collected.",
+        {
+            Ok((0, device)) => device,
+            // The script's own answer: no workspace file for this run.
+            Ok((3, _)) => {
+                return Err(AppError::dependency(
+                    "The run's workspace is not on the engine, so there is no work to collect. The run may have ended before its workspace was made, or the engine's data was removed.",
+                ))
+            }
+            Ok((exit, _)) => {
+                return Err(AppError::dependency(
+                    "The run's workspace could not be reached, so its work was not collected.",
                 )
-                .with_details(e.message)
-            })?;
+                .with_details(helper_failed(exit).message))
+            }
+            Err(e) => {
+                return Err(AppError::new(
+                    e.code,
+                    "The run's workspace could not be reached, so its work was not collected.",
+                )
+                .with_details(e.message))
+            }
+        };
         let current = match docker.inspect_volume(volume).await {
             Ok(v) => Some(v),
             Err(bollard::errors::Error::DockerResponseServerError {
@@ -959,6 +991,19 @@ fn now_suffix() -> String {
 }
 
 impl Workloads for DockerEngine {
+    async fn check_image(&self, socket: &str, image: &str) -> AppResult<()> {
+        let docker = self.client(socket)?;
+        match docker.inspect_image(image).await {
+            Ok(_) => Ok(()),
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404, ..
+            }) => Err(AppError::dependency(
+                "The run's image is no longer on the engine, so the run did not start. A cleanup of unused images may have removed it: build the image in Settings → Agents, then start a new run.",
+            )),
+            Err(e) => Err(engine_error("The engine did not show the run's image.", e)),
+        }
+    }
+
     async fn launch(&self, spec: LaunchSpec) -> AppResult<Attached> {
         let docker = self.client(&spec.engine_socket)?;
         let mut cancel = spec.cancel.clone();
@@ -1260,6 +1305,12 @@ fn stopped_while_made() -> AppError {
         crate::models::ErrorCode::Cancelled,
         "The run was stopped before its container started.",
     )
+}
+
+fn helper_failed(exit: i64) -> AppError {
+    AppError::dependency(format!(
+        "Brainiac's workspace helper failed (exit status {exit}). The engine may not support loop devices."
+    ))
 }
 
 /// Engine errors keep the engine's words in the details, never the message.

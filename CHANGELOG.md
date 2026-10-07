@@ -11,6 +11,7 @@ into the release's section.
 
 ## [Unreleased]
 
+- A run whose image was removed from the engine, for instance by a cleanup of unused images on a host, fails at once and says to build the image again, instead of offering a collection that cannot work.
 - A run's replies are shown as Markdown, with headings, lists, and code blocks.
 - Runs can execute on an approved Linux host over SSH, and keep working while this Mac sleeps. Settings → Agents installs that host's run controller, and asks before it trusts a new or changed host key.
 - Settings → Agents, for runs of Claude Code in a container: choose the Docker engine, add an API key from the Keychain, a command, or a variable, and build the run image from a Dockerfile you can read.

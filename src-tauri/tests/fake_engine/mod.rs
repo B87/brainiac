@@ -48,6 +48,8 @@ pub struct Engine {
     pub unreachable: bool,
     /// How long making a container takes.
     pub launch_delay: Duration,
+    /// The run image is gone from the engine, as after a prune.
+    pub image_missing: bool,
 }
 
 #[derive(Clone, Default)]
@@ -60,6 +62,15 @@ impl FakeEngine {
 }
 
 impl Workloads for FakeEngine {
+    async fn check_image(&self, _: &str, _: &str) -> AppResult<()> {
+        if self.get().image_missing {
+            return Err(brainiac_lib::models::AppError::dependency(
+                "The run's image is no longer on the engine.",
+            ));
+        }
+        Ok(())
+    }
+
     async fn launch(&self, spec: LaunchSpec) -> AppResult<Attached> {
         assert!(spec.bundle.is_file());
         let delay = self.get().launch_delay;

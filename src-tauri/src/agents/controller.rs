@@ -729,11 +729,25 @@ impl<W: Workloads> Controller<W> {
             bundle: start.bundle.clone(),
             cancel: cancelled,
         };
-        let launched = match tokio::time::timeout(LAUNCH_WAIT, self.workloads.launch(spec)).await {
-            Ok(result) => result,
-            Err(_) => Err(AppError::timeout(
-                "The run's container did not start within 20 minutes.",
-            )),
+        let launched = match self
+            .workloads
+            .check_image(&start.engine_socket, &start.image)
+            .await
+        {
+            // Nothing of the run was made on the engine: there is no work to
+            // collect, and Discard has only the controller's files to remove.
+            Err(error) => {
+                let mut inner = run.lock();
+                inner.record.kept = false;
+                Run::save(&inner, &run.dir);
+                Err(error)
+            }
+            Ok(()) => match tokio::time::timeout(LAUNCH_WAIT, self.workloads.launch(spec)).await {
+                Ok(result) => result,
+                Err(_) => Err(AppError::timeout(
+                    "The run's container did not start within 20 minutes.",
+                )),
+            },
         };
         let (commands, receiver) = mpsc::unbounded_channel();
         // The lock is let go before anything below waits on the engine.
@@ -1182,7 +1196,7 @@ impl<W: Workloads> Controller<W> {
 
     async fn discard(&self, run_id: &str, fallback_image: Option<String>) -> AppResult<()> {
         let run = self.run(run_id)?;
-        let (socket, volume, image) = {
+        let (socket, volume, image, kept) = {
             let inner = run.lock();
             if inner.record.phase != Phase::Ended || !inner.record.stop_confirmed {
                 return Err(conflict(
@@ -1198,18 +1212,23 @@ impl<W: Workloads> Controller<W> {
                 inner.record.engine_socket.clone(),
                 inner.record.volume.clone(),
                 inner.record.image.clone(),
+                inner.record.kept,
             )
         };
-        self.workloads
-            .discard(
-                &socket,
-                &self.installation,
-                run_id,
-                &volume,
-                &image,
-                fallback_image.as_deref(),
-            )
-            .await?;
+        // A run that never made anything on the engine has nothing there to
+        // remove, and its image may be gone too.
+        if kept {
+            self.workloads
+                .discard(
+                    &socket,
+                    &self.installation,
+                    run_id,
+                    &volume,
+                    &image,
+                    fallback_image.as_deref(),
+                )
+                .await?;
+        }
         {
             let mut inner = run.lock();
             inner.record.kept = false;

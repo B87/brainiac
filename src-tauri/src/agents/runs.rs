@@ -917,12 +917,19 @@ impl AgentRunService {
     }
 
     /// Once a run ended and its stop is confirmed: collect its work, unless
-    /// it was interrupted (then Collect work is the user's).
+    /// it was interrupted (then Collect work is the user's). A run that
+    /// failed before anything was made on the engine has no work; the
+    /// controller's copy of its start and journal goes now, the journal
+    /// being mirrored.
     async fn after_end(self: &Arc<Self>, run_id: &str) {
         let Ok(row) = self.row(run_id).await else {
             return;
         };
-        if row.phase == RunPhase::Ended
+        if row.phase == RunPhase::Ended && row.stop_confirmed && !row.kept {
+            if let Err(e) = self.discard_at_controller(run_id).await {
+                tracing::warn!(run = %run_id, error = %e, "the controller's files for a run were not removed");
+            }
+        } else if row.phase == RunPhase::Ended
             && row.stop_confirmed
             && row.kept
             && row.collection == RunCollection::None
