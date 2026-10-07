@@ -62,6 +62,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0011_agent_hosts_remote",
         include_str!("../migrations/0011_agent_hosts_remote.sql"),
     ),
+    (
+        "0012_agent_host_controller",
+        include_str!("../migrations/0012_agent_host_controller.sql"),
+    ),
 ];
 
 /// How many daily backups to keep.

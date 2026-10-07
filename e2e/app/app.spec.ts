@@ -282,15 +282,23 @@ test("Settings shows the vault and turns note IDs off", async ({ page }) => {
   await expect(sections).toBeHidden();
 });
 
-test("Settings → Agents chooses the engine and saves a pasted key, never showing it again", async ({
+test("Settings → Agents chooses This Mac's engine on its page and saves a pasted key, never showing it again", async ({
   page,
 }) => {
   await openSettings(page, "Agents");
   await expect(page.getByText("Choose where runs execute.")).toBeVisible();
+  await page.getByRole("button", { name: /^This Mac,/ }).click();
+  await expect(
+    page.getByRole("navigation", { name: "Breadcrumb" }),
+  ).toContainText("Run hosts › This Mac");
   await page.getByRole("radio", { name: /OrbStack/ }).check();
   expect((await calls(page, "save_agent_settings")).at(-1)).toMatchObject({
     request: { engine_socket: "/Users/someone/.orbstack/run/docker.sock" },
   });
+  await page
+    .getByRole("navigation", { name: "Breadcrumb" })
+    .getByRole("button", { name: "Agents" })
+    .click();
   await expect(page.getByText("Choose where runs execute.")).toBeHidden();
 
   await page.getByRole("button", { name: "Add…" }).click();
@@ -306,48 +314,186 @@ test("Settings → Agents chooses the engine and saves a pasted key, never showi
   await expect(page.getByText(key)).toBeHidden();
 });
 
-test("Settings → Agents approves a remote host, and New run can choose it", async ({
+/** Add host…: the address, the key, then Trust this key and install. */
+async function addHost(page: Page) {
+  await page.getByRole("button", { name: "Add Host…" }).click();
+  const dialog = page.getByRole("dialog", { name: "Add host" });
+  await dialog.getByLabel("SSH user").fill("ada");
+  await dialog.getByLabel("SSH host").fill("runner.example");
+  await dialog.getByRole("button", { name: "Show Host Key" }).click();
+  await expect(dialog.getByText(/SHA256:preview/)).toBeVisible();
+  await expect(dialog.getByText(/Create the user brainiac/)).toBeVisible();
+  return dialog;
+}
+
+test("Add host trusts the key and follows its setup as steps, and New run waits for it", async ({
   page,
 }) => {
   await openSettings(page, "Agents");
-  await page.getByLabel("SSH user").fill("ada");
-  await page.getByLabel("SSH host").fill("runner.example");
-  await page.getByRole("button", { name: "Show host key" }).click();
-  await expect(page.getByText(/SHA256:preview/)).toBeVisible();
-  await page.getByRole("button", { name: "Approve this key" }).click();
-  await expect(page.getByText("ada@runner.example:22")).toBeVisible();
-  await page.getByRole("button", { name: "Deploy" }).click();
-  await expect(page.getByText(/Emergency stop/)).toBeVisible();
-  await page.keyboard.press("Escape");
+  const dialog = await addHost(page);
+  await dialog
+    .getByRole("button", { name: "Trust This Key and Install" })
+    .click();
+  expect((await calls(page, "start_agent_host_job")).at(-1)).toMatchObject({
+    id: "host-1",
+    kind: "setup",
+  });
 
-  await page.evaluate(() => window.emitEvent("menu", { id: "palette" }));
-  const palette = page.getByRole("dialog", { name: "Search and switch" });
-  await palette.getByRole("button", { name: "New Run…" }).click();
-  const dialog = page.getByRole("dialog", { name: "New run" });
-  await dialog.getByRole("button", { name: "runner.example · remote" }).click();
+  // The dialog closes on the host's page, where the job shows its steps.
+  await expect(dialog).toBeHidden();
+  const job = page.getByRole("region", { name: "Setting up" });
   await expect(
-    dialog.getByText(/Anyone who administers it can read them/),
+    job.getByText("Build the run controller for linux/amd64"),
   ).toBeVisible();
-  await expect(dialog.getByText(/over SSH/)).toBeVisible();
+  await expect(job.getByText("214 crates compiled")).toBeVisible();
+  await expect(job.getByLabel("Output, last lines")).toContainText(
+    "Compiling bollard",
+  );
+  await expect(
+    page.getByRole("button", { name: /runner\.example setting up/ }),
+  ).toBeVisible();
+
+  // New run shows the host with its step, and does not offer it.
+  await page.evaluate(() => window.emitEvent("menu", { id: "palette" }));
+  await page
+    .getByRole("dialog", { name: "Search and switch" })
+    .getByRole("button", { name: "New Run…" })
+    .click();
+  const newRun = page.getByRole("dialog", { name: "New run" });
+  await expect(newRun.getByText(/setting up · step 2 of 9/)).toBeVisible();
+  await expect(
+    newRun.getByRole("button", { name: "runner.example · remote" }),
+  ).toBeHidden();
+  await newRun.getByRole("button", { name: "Show progress" }).click();
+  await expect(job).toBeVisible();
+
+  await page.evaluate(() => window.fake.endJob("host-1", "succeeded"));
+  await expect(
+    page.getByRole("status").getByText(/runner\.example is ready/),
+  ).toBeVisible();
+  await expect(page.getByText(/Emergency stop/)).toBeVisible();
+
+  // A key is saved, so a run can start.
+  await page.evaluate(() => {
+    window.fake.agentSettings.missing = [];
+  });
+  await page.evaluate(() => window.emitEvent("menu", { id: "palette" }));
+  await page
+    .getByRole("dialog", { name: "Search and switch" })
+    .getByRole("button", { name: "New Run…" })
+    .click();
+  await newRun.getByRole("button", { name: "runner.example · remote" }).click();
+  await expect(
+    newRun.getByText(/Anyone who administers it can read them/),
+  ).toBeVisible();
+  await expect(newRun.getByText(/over SSH/)).toBeVisible();
+
+  // Start run opens the run at once, and its start shows as steps.
+  await newRun
+    .getByPlaceholder("What should the agent do?")
+    .fill("Fix the flaky test");
+  await newRun.getByRole("button", { name: "Start run" }).click();
+  await expect(newRun).toBeHidden();
+  const starting = page.getByRole("region", { name: "Starting the run" });
+  await expect(starting.getByText("Starting on runner.example")).toBeVisible();
+  await expect(
+    starting
+      .locator('[aria-current="step"]')
+      .getByText(/Copy the start commit/),
+  ).toBeVisible();
+  await page.evaluate(() => window.fake.advanceStart("run-1", "send"));
+  await expect(starting.locator('[aria-current="step"]')).toHaveText(
+    "Send it to runner.example",
+  );
+  await page.evaluate(() => window.fake.advanceStart("run-1", null));
+  await expect(starting.locator('[aria-current="step"]')).toHaveText(
+    "Start the container and Claude Code",
+  );
 });
 
-test("Settings → Agents can approve a host key that changed", async ({
+test("An upgrade can be cancelled before it installs, and a failed one says where and offers Try again", async ({
   page,
 }) => {
   await openSettings(page, "Agents");
-  await page.getByLabel("SSH user").fill("ada");
-  await page.getByLabel("SSH host").fill("runner.example");
-  await page.getByRole("button", { name: "Show host key" }).click();
-  await page.getByRole("button", { name: "Approve this key" }).click();
-  await expect(page.getByText("ada@runner.example:22")).toBeVisible();
+  const dialog = await addHost(page);
+  await dialog
+    .getByRole("button", { name: "Trust This Key and Install" })
+    .click();
+  await page.evaluate(() => {
+    window.fake.endJob("host-1", "succeeded");
+    const host = window.fake.agentSettings.hosts.find((h) => h.id === "host-1");
+    if (host) {
+      host.controller_build = "a1f3c9e";
+      host.upgrade_available = true;
+    }
+  });
+  await page
+    .getByRole("navigation", { name: "Breadcrumb" })
+    .getByRole("button", { name: "Run hosts" })
+    .click();
+  await page.getByRole("button", { name: /^runner\.example,/ }).click();
+
+  const offer = page.getByRole("region", {
+    name: "An upgrade of the run controller is available",
+  });
+  await expect(offer).toContainText("build a1f3c9e");
+  await expect(offer).toContainText("7c2e51a");
+  await offer.getByRole("button", { name: "Upgrade" }).click();
+  await expect(
+    page.getByRole("region", { name: "Upgrading the run controller" }),
+  ).toContainText("Build a1f3c9e → 7c2e51a");
+  await page.getByRole("button", { name: "Cancel upgrade" }).click();
+  expect(await calls(page, "cancel_agent_host_job")).toHaveLength(1);
+  await expect(
+    page.getByRole("region", {
+      name: "Upgrade of the run controller",
+      exact: true,
+    }),
+  ).toContainText("cancelled");
+
+  await offer.getByRole("button", { name: "Upgrade" }).click();
+  await page.evaluate(() => window.fake.endJob("host-1", "failed"));
+  await expect(
+    page.getByText("Upgrade failed · still on its previous controller").first(),
+  ).toBeVisible();
+  await expect(page.getByLabel("What happened")).toContainText(
+    "did not match the program Brainiac built",
+  );
+  await page.getByRole("button", { name: "Try Again" }).click();
+  expect((await calls(page, "start_agent_host_job")).at(-1)).toMatchObject({
+    kind: "upgrade",
+  });
+});
+
+test("Add host can trust a host key that changed", async ({ page }) => {
+  await openSettings(page, "Agents");
+  let dialog = await addHost(page);
+  await dialog
+    .getByRole("button", { name: "Trust This Key and Install" })
+    .click();
+  await expect(dialog).toBeHidden();
 
   await page.evaluate(() => {
     window.fake.hostKey = "SHA256:changed";
   });
-  await page.getByRole("button", { name: "Show host key" }).click();
-  await expect(page.getByText(/SHA256:changed/)).toBeVisible();
   await page
-    .getByRole("button", { name: "Approve the new fingerprint" })
+    .getByRole("navigation", { name: "Breadcrumb" })
+    .getByRole("button", { name: "Run hosts" })
+    .click();
+  await page.getByRole("button", { name: "Add Host…" }).click();
+  dialog = page.getByRole("dialog", { name: "Add host" });
+  await dialog.getByLabel("SSH user").fill("ada");
+  await dialog.getByLabel("SSH host").fill("runner.example");
+  await dialog.getByRole("button", { name: "Show Host Key" }).click();
+  await expect(dialog.getByText(/SHA256:changed/)).toBeVisible();
+  await dialog
+    .getByRole("button", { name: "Trust This Key and Install" })
+    .click();
+  await expect(dialog.getByRole("alert")).toContainText(
+    "Approve the new fingerprint",
+  );
+  await dialog
+    .getByRole("button", { name: "Trust the New Key and Install" })
     .click();
   expect((await calls(page, "approve_agent_host")).at(-1)).toMatchObject({
     request: { fingerprint: "SHA256:changed", accept_changed_key: true },

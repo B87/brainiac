@@ -607,6 +607,30 @@ fn missing(p: &AgentProfile) -> Vec<String> {
     if p.engine_socket.is_none() {
         missing.push("Choose where runs execute.".to_string());
     }
+    missing.extend(credential_missing(p));
+    match &p.image {
+        None => missing.push("Build the image.".to_string()),
+        Some(i) if !i.current => {
+            missing.push("Rebuild the image: this version of Brainiac changed it.".to_string())
+        }
+        Some(_) => {}
+    }
+    if !p.test_current {
+        missing.push(if p.test_passed_at.is_some() {
+            "Test again: the token or key, the image, or the engine changed since the last test."
+                .to_string()
+        } else {
+            "Pass a test run.".to_string()
+        });
+    }
+    missing
+}
+
+/// What stops any host from taking a run, wherever it runs: the restored
+/// setup, the token or key, and the agreement (SPEC.md, Settings → Agents).
+/// A remote host's own image and test are on its page.
+pub fn credential_missing(p: &AgentProfile) -> Vec<String> {
+    let mut missing = Vec::new();
     if p.credential.needs_approval {
         missing.push("Confirm this setup: it was restored from a backup.".to_string());
     }
@@ -628,21 +652,6 @@ fn missing(p: &AgentProfile) -> Vec<String> {
             "Agree to send code and prompts to {}.",
             destination(p.payment)
         ));
-    }
-    match &p.image {
-        None => missing.push("Build the image.".to_string()),
-        Some(i) if !i.current => {
-            missing.push("Rebuild the image: this version of Brainiac changed it.".to_string())
-        }
-        Some(_) => {}
-    }
-    if !p.test_current {
-        missing.push(if p.test_passed_at.is_some() {
-            "Test again: the token or key, the image, or the engine changed since the last test."
-                .to_string()
-        } else {
-            "Pass a test run.".to_string()
-        });
     }
     missing
 }

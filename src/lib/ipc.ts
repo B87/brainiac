@@ -69,6 +69,8 @@ import type { HealthSnapshot } from "./generated/HealthSnapshot";
 import type { HealthStatement } from "./generated/HealthStatement";
 import type { HealthTable } from "./generated/HealthTable";
 import type { HistoryEntry } from "./generated/HistoryEntry";
+import type { HostJob } from "./generated/HostJob";
+import type { HostJobKind } from "./generated/HostJobKind";
 import type { IndexStatus } from "./generated/IndexStatus";
 import type { ListCommitsRequest } from "./generated/ListCommitsRequest";
 import type { ListPullRequestsRequest } from "./generated/ListPullRequestsRequest";
@@ -202,6 +204,11 @@ export type { ForgeSource } from "./generated/ForgeSource";
 export type { ForgeTarget } from "./generated/ForgeTarget";
 export type { ForgeTokenKind } from "./generated/ForgeTokenKind";
 export type { ForgeUser } from "./generated/ForgeUser";
+export type { HostJob } from "./generated/HostJob";
+export type { HostJobKind } from "./generated/HostJobKind";
+export type { HostJobState } from "./generated/HostJobState";
+export type { HostJobStep } from "./generated/HostJobStep";
+export type { HostJobStepState } from "./generated/HostJobStepState";
 export type { Hunk } from "./generated/Hunk";
 export type { IndexState } from "./generated/IndexState";
 export type { LeftOutFile } from "./generated/LeftOutFile";
@@ -242,6 +249,7 @@ export type { RunPhase } from "./generated/RunPhase";
 export type { RunPlanEntry } from "./generated/RunPlanEntry";
 export type { RunPreview } from "./generated/RunPreview";
 export type { RunStartPreview } from "./generated/RunStartPreview";
+export type { RunStartStep } from "./generated/RunStartStep";
 export type { SearchGroup } from "./generated/SearchGroup";
 export type { SearchHit } from "./generated/SearchHit";
 export type { SearchKind } from "./generated/SearchKind";
@@ -602,15 +610,18 @@ export const ipc = {
   /** Approve that fingerprint and save the host. */
   approveAgentHost: (request: ApproveAgentHostRequest) =>
     invoke<AgentHost>("approve_agent_host", { request }),
-  deployAgentHost: (id: string) =>
-    invoke<AgentHost>("deploy_agent_host", { id }),
-  upgradeAgentHost: (id: string) =>
-    invoke<AgentHost>("upgrade_agent_host", { id }),
   removeAgentHost: (id: string) => invoke<void>("remove_agent_host", { id }),
-  buildAgentHostImage: (id: string) =>
-    invoke<AgentHost>("build_agent_host_image", { id }),
-  testAgentHost: (id: string) =>
-    invoke<AgentTestResult>("test_agent_host", { id }),
+  /** Install, Upgrade, Build image, Test, or Add host's setup, in the background. */
+  startAgentHostJob: (id: string, kind: HostJobKind) =>
+    invoke<HostJob>("start_agent_host_job", { id, kind }),
+  /** Until the install step begins. */
+  cancelAgentHostJob: (id: string) =>
+    invoke<HostJob>("cancel_agent_host_job", { id }),
+  /** Each host's last job, running or ended. */
+  listAgentHostJobs: () => invoke<HostJob[]>("list_agent_host_jobs"),
+  /** The whole output of a host's last job. */
+  getAgentHostJobLog: (id: string) =>
+    invoke<string>("get_agent_host_job_log", { id }),
 
   /** Where a repository's pull requests come from; `forge: null` goes back to `origin`. */
   setRepositoryForge: (request: SetRepositoryForgeRequest) =>
@@ -894,6 +905,12 @@ export function onPullRequestChanged(
   return listen<PullRequestChangedEvent>("pr_changed", (ev) =>
     handler(ev.payload),
   );
+}
+
+export function onAgentHostJob(
+  handler: (job: HostJob) => void,
+): Promise<UnlistenFn> {
+  return listen<HostJob>("agent_host_job", (ev) => handler(ev.payload));
 }
 
 export function onAgentRunChanged(

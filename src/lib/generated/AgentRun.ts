@@ -7,6 +7,7 @@ import type { RunOutcome } from "./RunOutcome";
 import type { RunPermissionRequest } from "./RunPermissionRequest";
 import type { RunPermissions } from "./RunPermissions";
 import type { RunPhase } from "./RunPhase";
+import type { RunStartStep } from "./RunStartStep";
 
 /**
  * One agent run (SPEC.md, section 13): its start, what it runs with, the
@@ -74,4 +75,8 @@ cleanup_pending: string | null,
 /**
  * The journal sequence mirrored so far.
  */
-cursor: number, created_at: string, updated_at: string, version: number, };
+cursor: number, created_at: string, updated_at: string, version: number, 
+/**
+ * Brainiac is still handing the run to its controller, at this step.
+ */
+starting: RunStartStep | null, };

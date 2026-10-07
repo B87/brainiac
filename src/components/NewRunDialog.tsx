@@ -8,6 +8,13 @@ import {
 } from "../lib/agentRuns";
 import { relativeTime } from "../lib/format";
 import {
+  jobElapsed,
+  jobVerb,
+  stepOf,
+  useHostJobsContext,
+  useNow,
+} from "../lib/hostJobs";
+import {
   type AgentHost,
   type AgentRun,
   type AgentSettings,
@@ -34,7 +41,8 @@ type Props = {
   repositoryId?: string;
   onClose: () => void;
   onStarted: (run: AgentRun) => void;
-  onOpenSettings: () => void;
+  /** Settings → Agents, at a run host's page when one is named. */
+  onOpenSettings: (host?: string) => void;
 };
 
 /** "This Mac · OrbStack", "build-01 · remote". */
@@ -76,6 +84,8 @@ export default function NewRunDialog({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const id = useId();
+  const jobs = useHostJobsContext();
+  const now = useNow(Object.values(jobs).some((j) => j.state === "running"));
 
   useEffect(() => {
     let alive = true;
@@ -116,12 +126,25 @@ export default function NewRunDialog({
   }, [repo, start]);
 
   const missing = settings?.missing ?? [];
-  const hosts = (settings?.hosts ?? []).filter(
-    (h) => h.kind === "local" || (h.approved && h.installed && !h.state_kept),
+  // A host with a job running is shown with its step, not offered (SPEC.md, New run).
+  const busyHosts = (settings?.hosts ?? []).filter(
+    (h) => h.kind === "ssh" && jobs[h.id]?.state === "running",
   );
-  const askHost = hosts.length > 1;
+  const hosts = (settings?.hosts ?? []).filter(
+    (h) =>
+      h.kind === "local" ||
+      (h.approved &&
+        h.installed &&
+        !h.state_kept &&
+        jobs[h.id]?.state !== "running"),
+  );
+  const askHost = hosts.length > 1 || busyHosts.length > 0;
   const chosen =
     hosts.find((h) => (h.kind === "local" ? "" : h.id) === hostId) ?? null;
+  // A host that starts a job while this is open is not chosen any more.
+  useEffect(() => {
+    if (settings && hostId && !chosen) setHostId("");
+  }, [settings, hostId, chosen]);
   const remote = chosen?.kind === "ssh";
   const hostName = remote && chosen ? chosen.name : "This Mac";
   const engine =
@@ -235,7 +258,7 @@ export default function NewRunDialog({
             <button
               type="button"
               className="btn btn-sm mt-2"
-              onClick={onOpenSettings}
+              onClick={() => onOpenSettings()}
             >
               Open Settings → Agents
             </button>
@@ -349,6 +372,34 @@ export default function NewRunDialog({
                 ? `Keeps working while this Mac sleeps, Brainiac is closed, or SSH drops. Questions wait on ${hostName} until you're back.`
                 : "Pauses while this Mac sleeps. When it wakes, a run past its time limit is stopped, possibly a few seconds after wake."}
             </span>
+            {busyHosts.map((h) => {
+              const job = jobs[h.id];
+              const step = job.steps.find((x) => x.state === "running");
+              return (
+                <span
+                  key={h.id}
+                  role="note"
+                  className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-muted"
+                >
+                  <span className="font-medium text-fg-2">{h.name}</span>
+                  <span className="state-pill" data-tone="blue">
+                    {jobVerb(job)} · {stepOf(job)}
+                  </span>
+                  <span>
+                    {step ? `${step.title}, ` : ""}
+                    {jobElapsed(job, now)} so far. Start the run on another
+                    host, or wait for {h.name}.
+                  </span>
+                  <button
+                    type="button"
+                    className="text-link hover:underline"
+                    onClick={() => onOpenSettings(h.id)}
+                  >
+                    Show progress
+                  </button>
+                </span>
+              );
+            })}
           </div>
         )}
         <div className="flex flex-col gap-1.5">

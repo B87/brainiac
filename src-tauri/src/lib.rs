@@ -48,6 +48,8 @@ pub const EVENT_INDEX_STATUS_CHANGED: &str = "index_status_changed";
 pub const EVENT_PR_CHANGED: &str = "pr_changed";
 pub const EVENT_DB_HEALTH_SAMPLE: &str = "db_health_sample";
 pub const EVENT_AGENT_RUN_CHANGED: &str = "agent_run_changed";
+/// A host job changed: a step, its output, or how it ended (SPEC.md, Host jobs).
+pub const EVENT_AGENT_HOST_JOB: &str = "agent_host_job";
 
 /// Minimum age of a vault scan before focus or wake triggers another.
 #[cfg(feature = "app")]
@@ -248,8 +250,38 @@ pub fn run() {
                 Arc::clone(&service) as Arc<dyn agents::RepositoryLookup>,
                 run_emitter,
             );
-            runs.set_hosts(agent_hosts);
+            runs.set_hosts(Arc::clone(&agent_hosts));
             app.manage(Arc::clone(&runs));
+            let job_handle = handle.clone();
+            let job_emitter: agents::host_jobs::HostJobEmitter = Arc::new(move |job| {
+                if let Err(e) = job_handle.emit(EVENT_AGENT_HOST_JOB, job) {
+                    tracing::warn!(error = %e, "failed to emit agent_host_job");
+                }
+            });
+            // The window says it too; a notification is for when Brainiac
+            // is not the active app (SPEC.md, Host jobs).
+            let job_notify = handle.clone();
+            let job_notifier: agents::host_jobs::HostJobNotifier = Arc::new(move |title, body| {
+                use tauri_plugin_notification::NotificationExt;
+                let active = job_notify
+                    .webview_windows()
+                    .values()
+                    .any(|w| w.is_focused().unwrap_or(false));
+                if active {
+                    return;
+                }
+                if let Err(e) = job_notify.notification().builder().title(title).body(body).show() {
+                    tracing::warn!(error = %e, "could not show a notification");
+                }
+            });
+            app.manage(Arc::new(agents::host_jobs::HostJobService::new(
+                agent_hosts,
+                Arc::clone(&runs),
+                Arc::clone(&agent_settings),
+                &data_dir,
+                job_emitter,
+                job_notifier,
+            )));
             // Reconnect to runs left live or uncollected, and apply retention
             // once an hour (SPEC.md, Leaving and coming back; Deleting and keeping).
             let reconnecting = Arc::clone(&runs);
@@ -521,11 +553,11 @@ pub fn run() {
             commands::test_agent_setup,
             commands::preview_agent_host,
             commands::approve_agent_host,
-            commands::deploy_agent_host,
-            commands::upgrade_agent_host,
+            commands::start_agent_host_job,
+            commands::cancel_agent_host_job,
+            commands::list_agent_host_jobs,
+            commands::get_agent_host_job_log,
             commands::remove_agent_host,
-            commands::build_agent_host_image,
-            commands::test_agent_host,
             commands::get_run_controller_status,
             commands::set_repository_forge,
             commands::update_workspace_pull_requests,

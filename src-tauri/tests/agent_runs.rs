@@ -25,8 +25,8 @@ use brainiac_lib::db::{self, Db};
 use brainiac_lib::git::GitService;
 use brainiac_lib::models::{
     AgentPayment, AgentRun, AgentRunChangedEvent, ErrorCode, RunActivity, RunCollection,
-    RunDiffRequest, RunEventBody, RunOutcome, RunPermissions, RunPhase, SaveAgentCredentialRequest,
-    SecretSource, StartRunRequest,
+    RunDiffRequest, RunEventBody, RunOutcome, RunPermissions, RunPhase, RunStartStep,
+    SaveAgentCredentialRequest, SecretSource, StartRunRequest,
 };
 use fake_engine::{git, FakeEngine, KEY};
 
@@ -278,6 +278,16 @@ async fn a_run_is_started_followed_finished_collected_and_reviewed() {
     assert_eq!(run.payment, AgentPayment::ApiKey);
     assert!(run.credential_source.contains("Keychain"));
     assert_eq!(run.image_name, image::name_for(&image::recipe()));
+    // Start run answers before the controller has the run: the window
+    // opens it at once and follows the steps.
+    assert_eq!(run.phase, RunPhase::Preparing);
+    assert_eq!(run.starting, Some(RunStartStep::Copy));
+    assert!(run.connected);
+    let run = h
+        .wait(&run.id, "the controller has the run", |r| {
+            r.starting.is_none()
+        })
+        .await;
     assert!(run.deadline_at.is_some());
     // The key went to the agent, once, and the model it was asked for
     // went with it; the session reported the one it opened with.
@@ -835,6 +845,23 @@ async fn the_settings_test_runs_prompts_cancels_and_collects() {
     assert_eq!(h.runs.list().await.unwrap().runs.len(), before);
     assert_eq!(h.engine.get().discarded.len(), 1);
     assert!(h.settings.get().await.unwrap().profile.test_current);
+}
+
+#[tokio::test]
+async fn a_run_cancelled_while_it_starts_ends_cancelled() {
+    let h = Harness::new().await;
+    let run = h.start("hello", RunPermissions::Act).await;
+    // Before the controller is asked, the start stops there; after, the
+    // Cancel is sent once it has the run. Either way the run is cancelled.
+    let cancelled = h.runs.cancel(&run.id).await.unwrap();
+    assert!(cancelled.cancel_requested);
+    let run = h
+        .wait(&run.id, "the run is cancelled", |r| {
+            r.phase == RunPhase::Ended && r.stop_confirmed && r.starting.is_none()
+        })
+        .await;
+    assert_eq!(run.outcome, Some(RunOutcome::Cancelled));
+    assert!(!run.cancel_requested);
 }
 
 #[tokio::test]

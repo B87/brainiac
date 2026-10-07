@@ -13,6 +13,7 @@ import {
   samePreview,
   settingsRequest,
   spanLabel,
+  startSteps,
   timeLeft,
   turnSummary,
   visibilityLabel,
@@ -135,6 +136,7 @@ describe("Runs", () => {
     created_at: "2026-10-05T10:00:00Z",
     updated_at: "2026-10-05T10:30:00Z",
     version: 4,
+    starting: null,
   };
 
   it("groups runs by what they wait for", () => {
@@ -378,5 +380,32 @@ describe("samePreview", () => {
       samePreview(preview, { ...preview, taken_at: "2026-10-07T10:05:00Z" }),
     ).toBe(false);
     expect(samePreview(preview, { ...preview, error: "failed" })).toBe(false);
+  });
+
+  it("shows a remote start as steps up to the session", () => {
+    const remote = { host_id: "host-1", host_name: "build-01" };
+    const states = (starting: AgentRun["starting"]) =>
+      startSteps({ ...remote, starting }).map((s) => s.state);
+    expect(startSteps({ ...remote, starting: "send" })[1].label).toBe(
+      "Send it to build-01",
+    );
+    expect(states("copy")).toEqual([
+      "running",
+      "waiting",
+      "waiting",
+      "waiting",
+    ]);
+    expect(states("send")).toEqual(["done", "running", "waiting", "waiting"]);
+    expect(states("start")).toEqual(["done", "done", "running", "waiting"]);
+    // The controller has the run: only its own preparing is left.
+    expect(states(null)).toEqual(["done", "done", "done", "running"]);
+    // This Mac sends nothing anywhere.
+    expect(
+      startSteps({
+        host_id: "local",
+        host_name: "This Mac",
+        starting: "start",
+      }),
+    ).toHaveLength(3);
   });
 });

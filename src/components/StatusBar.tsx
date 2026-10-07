@@ -1,6 +1,14 @@
 import { relativeTime, shortPath } from "../lib/format";
+import {
+  jobElapsed,
+  jobVerb,
+  stepOf,
+  useHostJobsContext,
+  useNow,
+} from "../lib/hostJobs";
 import type { AppSnapshot, RepositorySummary } from "../lib/ipc";
 import { totals } from "../lib/workspace";
+import { Spinner } from "./HostJobView";
 import type { View } from "./Sidebar";
 
 /** Shortcuts that work in each view (SPEC.md, Keyboard defaults). */
@@ -72,6 +80,7 @@ export default function StatusBar({
   view,
   notice,
   onRetry,
+  onOpenHost,
 }: {
   snapshot: AppSnapshot | null;
   /** Repositories the main area shows; one when a repository is open. */
@@ -81,7 +90,13 @@ export default function StatusBar({
   /** A short-lived message, such as the outcome of a fetch. */
   notice: string | null;
   onRetry: () => void;
+  /** Settings → Agents, at a run host's page. */
+  onOpenHost: (hostId: string) => void;
 }) {
+  const jobs = Object.values(useHostJobsContext()).filter(
+    (j) => j.state === "running",
+  );
+  const now = useNow(jobs.length > 0);
   let state = "unknown";
   let label = "Loading…";
   let retry = false;
@@ -148,6 +163,20 @@ export default function StatusBar({
         </span>
       )}
       <span className="flex-1" />
+      {jobs.map((job) => (
+        <button
+          key={job.id}
+          type="button"
+          className="flex shrink-0 items-center gap-1.5 text-fg-2 hover:text-fg"
+          title={`${job.host_name}: ${stepOf(job)}. Show its progress.`}
+          onClick={() => onOpenHost(job.host_id)}
+        >
+          <Spinner />
+          <span className="tabular">
+            {job.host_name} {jobVerb(job)} · {jobElapsed(job, now)}
+          </span>
+        </button>
+      ))}
       <span className="hidden items-center gap-2.5 xl:flex">
         {hints(view).map(([keys, label]) => (
           <span key={label} className="flex items-center gap-1">

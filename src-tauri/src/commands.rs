@@ -866,41 +866,44 @@ pub async fn approve_agent_host(
     hosts.approve(request).await
 }
 
+pub type HostJobs = Arc<crate::agents::host_jobs::HostJobService>;
+
+/// Install, Upgrade, Build image, Test, or Add host's setup on a remote
+/// host: starts the job and returns it at once (SPEC.md, Host jobs).
 #[tauri::command]
-pub async fn deploy_agent_host(
+pub async fn start_agent_host_job(
     id: String,
-    hosts: State<'_, AgentHosts>,
-) -> AppResult<crate::models::AgentHost> {
-    hosts.deploy(&id).await
+    kind: crate::models::HostJobKind,
+    jobs: State<'_, HostJobs>,
+) -> AppResult<crate::models::HostJob> {
+    jobs.start(&id, kind).await
 }
 
 #[tauri::command]
-pub async fn upgrade_agent_host(
+pub async fn cancel_agent_host_job(
     id: String,
-    hosts: State<'_, AgentHosts>,
-) -> AppResult<crate::models::AgentHost> {
-    hosts.upgrade(&id).await
+    jobs: State<'_, HostJobs>,
+) -> AppResult<crate::models::HostJob> {
+    jobs.cancel(&id)
+}
+
+/// Each host's last job, running or ended.
+#[tauri::command]
+pub async fn list_agent_host_jobs(
+    jobs: State<'_, HostJobs>,
+) -> AppResult<Vec<crate::models::HostJob>> {
+    Ok(jobs.list())
+}
+
+/// The whole output of a host's last job, for Show the whole log and Copy.
+#[tauri::command]
+pub async fn get_agent_host_job_log(id: String, jobs: State<'_, HostJobs>) -> AppResult<String> {
+    jobs.log(&id)
 }
 
 #[tauri::command]
-pub async fn remove_agent_host(id: String, hosts: State<'_, AgentHosts>) -> AppResult<()> {
-    hosts.remove(&id).await
-}
-
-#[tauri::command]
-pub async fn build_agent_host_image(
-    id: String,
-    hosts: State<'_, AgentHosts>,
-) -> AppResult<crate::models::AgentHost> {
-    hosts.build_image(&id).await
-}
-
-#[tauri::command]
-pub async fn test_agent_host(
-    id: String,
-    runs: State<'_, Runs>,
-) -> AppResult<crate::models::AgentTestResult> {
-    runs.test_host(&id).await
+pub async fn remove_agent_host(id: String, jobs: State<'_, HostJobs>) -> AppResult<()> {
+    jobs.remove(&id).await
 }
 
 /// Runs: every run, newest first, and whether the controller is running.

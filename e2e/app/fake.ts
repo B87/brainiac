@@ -17,6 +17,7 @@ import type {
   FolderEntry,
   ForgeAccountSlot,
   HealthSample,
+  HostJob,
   ListPullRequestsRequest,
   MergeRequest,
   NoteContent,
@@ -475,6 +476,7 @@ function sampleRun(fields: Partial<AgentRun>): AgentRun {
     created_at: minutesFromNow(-20),
     updated_at: minutesFromNow(0),
     version: 1,
+    starting: null,
     ...fields,
   };
 }
@@ -772,6 +774,71 @@ export class FakeBackend {
     for (const r of runs)
       this.emit("agent_run_changed", { run_id: r.id, deleted: false });
   }
+  /** Moves a starting run to its next step; null once its controller has it. */
+  advanceStart(runId: string, step: AgentRun["starting"]) {
+    const run = this.runs.find((r) => r.id === runId);
+    if (!run) return;
+    Object.assign(run, { starting: step, version: run.version + 1 });
+    this.emit("agent_run_changed", { run_id: runId, deleted: false });
+  }
+  /** Each host's last job (SPEC.md, Host jobs). */
+  hostJobs: Record<string, HostJob> = {};
+  /**
+   * Ends a host's running job as a test says: a success sets the host up
+   * as far as the job went; a failure stops at the running step.
+   */
+  endJob(hostId: string, state: "succeeded" | "failed" | "cancelled") {
+    const job = this.hostJobs[hostId];
+    const host = this.agentSettings.hosts.find((h) => h.id === hostId);
+    if (!job || !host) return;
+    const now = new Date().toISOString();
+    const running = job.steps.findIndex((s) => s.state === "running");
+    const steps = job.steps.map((s, i) => ({
+      ...s,
+      progress: null,
+      ended_at: s.state === "waiting" ? null : now,
+      state:
+        state === "succeeded"
+          ? ("done" as const)
+          : i < running
+            ? s.state
+            : i === running && state === "failed"
+              ? ("failed" as const)
+              : ("skipped" as const),
+    }));
+    this.hostJobs[hostId] = {
+      ...job,
+      state,
+      ended_at: now,
+      cancellable: false,
+      steps,
+      error:
+        state === "failed"
+          ? `The copy on ${host.name} did not match the program Brainiac built. The copy was deleted; nothing was installed or restarted.`
+          : null,
+    };
+    if (state === "succeeded") {
+      if (job.kind !== "build_image" && job.kind !== "test") {
+        host.installed = true;
+        host.controller_build = job.to_build;
+        host.protocol = 2;
+        host.upgrade_available = false;
+        host.emergency_stop = `ssh -p ${host.ssh_port} ${host.ssh_user}@${host.ssh_host} sudo -n -u brainiac /usr/local/bin/brainiac-runner emergency-stop --state /var/lib/brainiac-runner`;
+      }
+      if (job.kind === "build_image" || job.kind === "setup") {
+        host.image = {
+          name: "brainiac-claude:4d1e",
+          id: "sha256:4d1e",
+          built_at: now,
+          current: true,
+        };
+        host.loop_devices = true;
+        host.engine_name = "Docker 27.3";
+      }
+      if (job.kind === "test" || job.kind === "setup") host.test_current = true;
+    }
+    this.emit("agent_host_job", this.hostJobs[hostId]);
+  }
   /** Settings → Agents: nothing set up yet, OrbStack running. */
   hostKey = "SHA256:preview";
   agentSettings: AgentSettings = {
@@ -815,6 +882,11 @@ export class FakeBackend {
         test_current: false,
         emergency_stop: null,
         state_kept: false,
+        controller_build: null,
+        protocol: null,
+        controller_installed_at: null,
+        upgrade_available: false,
+        available_build: null,
         version: 1,
       },
     ],
@@ -1604,6 +1676,11 @@ export class FakeBackend {
           test_current: false,
           emergency_stop: null,
           state_kept: false,
+          controller_build: null as string | null,
+          protocol: null as number | null,
+          controller_installed_at: null as string | null,
+          upgrade_available: false,
+          available_build: "7c2e51a",
           version: 1,
         };
         this.agentSettings.hosts = [
@@ -1612,14 +1689,85 @@ export class FakeBackend {
         ];
         return saved;
       }
-      case "deploy_agent_host": {
+      case "start_agent_host_job": {
         const host = this.agentSettings.hosts.find((h) => h.id === args.id);
-        if (host) {
-          host.installed = true;
-          host.emergency_stop = `ssh -p ${host.ssh_port} ${host.ssh_user}@${host.ssh_host} sudo -n -u brainiac /usr/local/bin/brainiac-runner emergency-stop --state /var/lib/brainiac-runner`;
-        }
-        return host;
+        if (!host)
+          throw { code: "NOT_FOUND", message: "That host is not saved." };
+        const kind = args.kind as HostJob["kind"];
+        const install = [
+          `Reach ${host.name}`,
+          "Build the run controller for linux/amd64",
+          `Copy it to ${host.name} and check its SHA-256`,
+          `Wait until no run is live on ${host.name}`,
+          "Install the program and its service",
+          "Check that it answers",
+        ];
+        const image = [
+          `Build the image on ${host.name}`,
+          "Check its Docker engine",
+        ];
+        const titles =
+          kind === "build_image"
+            ? image
+            : kind === "test"
+              ? ["Test a run"]
+              : kind === "setup"
+                ? [...install, ...image, "Test a run"]
+                : install;
+        const now = new Date().toISOString();
+        const job: HostJob = {
+          id: `job-${Object.keys(this.hostJobs).length + 1}`,
+          host_id: host.id,
+          host_name: host.name,
+          kind,
+          state: "running",
+          started_at: now,
+          ended_at: null,
+          steps: titles.map((title, i) => ({
+            title,
+            detail: "",
+            state: i === 0 ? "done" : i === 1 ? "running" : "waiting",
+            started_at: i < 2 ? now : null,
+            ended_at: i === 0 ? now : null,
+            progress: i === 1 ? "214 crates compiled" : null,
+          })),
+          log_tail: [
+            "   Compiling tokio-util v0.7.16",
+            "   Compiling bollard v0.19.2",
+          ],
+          error: null,
+          error_details: null,
+          cancellable: kind !== "build_image" && kind !== "test",
+          from_build: host.controller_build,
+          to_build:
+            kind === "build_image" || kind === "test"
+              ? null
+              : host.available_build,
+        };
+        this.hostJobs[host.id] = job;
+        this.later("agent_host_job", job);
+        return job;
       }
+      case "cancel_agent_host_job": {
+        const job = this.hostJobs[args.id as string];
+        if (!job?.cancellable)
+          throw {
+            code: "CONFLICT",
+            message: "The install has begun, so this job finishes on its own.",
+          };
+        this.endJob(job.host_id, "cancelled");
+        return this.hostJobs[job.host_id];
+      }
+      case "list_agent_host_jobs":
+        return Object.values(this.hostJobs);
+      case "get_agent_host_job_log":
+        return "   Compiling tokio-util v0.7.16\n   Compiling bollard v0.19.2\n";
+      case "remove_agent_host":
+        this.agentSettings.hosts = this.agentSettings.hosts.filter(
+          (h) => h.id !== args.id,
+        );
+        delete this.hostJobs[args.id as string];
+        return null;
       case "list_agent_engines":
         return [
           {
@@ -1665,6 +1813,35 @@ export class FakeBackend {
         return "FROM node:22-bookworm-slim\n";
       case "list_agent_runs":
         return { runs: this.runs, controller_running: this.runs.length > 0 };
+      case "start_agent_run": {
+        const request = args.request as {
+          repository_id: string;
+          start_commit: string;
+          prompt: string;
+          host_id: string;
+        };
+        const host = this.agentSettings.hosts.find(
+          (h) => h.id === request.host_id,
+        );
+        const run = sampleRun({
+          id: `run-${this.runs.length + 1}`,
+          repository_id: request.repository_id,
+          title: request.prompt.split("\n")[0],
+          start_commit: request.start_commit,
+          host_id: host?.id ?? "local",
+          host_name: host?.name ?? "This Mac",
+          phase: "preparing",
+          activity: "preparing",
+          turn: 0,
+          accepted_at: null,
+          deadline_at: null,
+          created_at: new Date().toISOString(),
+          starting: "copy",
+        });
+        this.runs.push(run);
+        this.runEvents[run.id] = [];
+        return run;
+      }
       case "get_agent_run": {
         const run = this.runs.find((r) => r.id === args.id);
         if (!run) throw { code: "NOT_FOUND", message: "No such run." };

@@ -775,6 +775,10 @@
     border-color: color-mix(in srgb, var(--conflict) 35%, transparent);
     background: color-mix(in srgb, var(--av3-bg) 30%, var(--app));
   }
+  .run-card[data-tone="blue"] {
+    border-color: var(--info-line);
+    background: var(--info-bg);
+  }
 
   /* Underlined view tabs (a run's Conversation and Changes). */
   .tab {

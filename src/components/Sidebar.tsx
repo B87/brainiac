@@ -47,7 +47,13 @@ export type View =
   /** One pull request (v0.3), and the view to go back to. */
   | { kind: "pullRequest"; reference: string; back: View }
   /** Settings, in place of the sidebar and the view, and the view to go back to. */
-  | { kind: "settings"; section: SettingsSection; back: View };
+  | {
+      kind: "settings";
+      section: SettingsSection;
+      back: View;
+      /** Agents › Run hosts › this host's page. */
+      host?: string;
+    };
 
 type Props = {
   snapshot: AppSnapshot | null;

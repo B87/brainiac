@@ -26,6 +26,7 @@ import UpdateBanner from "./components/UpdateBanner";
 import { needsYou } from "./lib/agentRuns";
 import { listenForClose } from "./lib/closeGuard";
 import { shortPath } from "./lib/format";
+import { HostJobsContext, jobOutcome, useHostJobs } from "./lib/hostJobs";
 import {
   type AgentRun,
   type AppSnapshot,
@@ -122,6 +123,11 @@ export default function App() {
   const [fetching, setFetching] = useState<ReadonlySet<string>>(new Set());
   /** Short-lived outcome shown in the status bar, such as "2 refs updated". */
   const [notice, setNotice] = useState<string | null>(null);
+  /** Each run host's last job; one that ends says so in the status bar. */
+  const hostJobs = useHostJobs((job) => {
+    const outcome = jobOutcome(job);
+    if (outcome) setNotice(`${outcome.title}.`);
+  });
   /** Pull requests waiting on your review, per workspace, for the sidebar. */
   const [reviewCounts, setReviewCounts] = useState<ReadonlyMap<string, number>>(
     new Map(),
@@ -351,14 +357,18 @@ export default function App() {
   }, []);
 
   /** Settings in place of the sidebar and the view; Back returns to the view. */
-  const openSettings = useCallback((section: SettingsSection = "general") => {
-    setPaletteOpen(false);
-    setView((v) => ({
-      kind: "settings",
-      section,
-      back: v.kind === "settings" ? v.back : v,
-    }));
-  }, []);
+  const openSettings = useCallback(
+    (section: SettingsSection = "general", host?: string) => {
+      setPaletteOpen(false);
+      setView((v) => ({
+        kind: "settings",
+        section,
+        back: v.kind === "settings" ? v.back : v,
+        host,
+      }));
+    },
+    [],
+  );
   const openAccounts = useCallback(
     () => openSettings("accounts"),
     [openSettings],
@@ -749,7 +759,7 @@ export default function App() {
     </>
   );
 
-  return (
+  const app = (
     <SidePanelState open={contextOpen} toggle={flipSidePanel}>
       <div className="flex h-full flex-col">
         {view.kind === "settings" && snapshot ? (
@@ -758,7 +768,12 @@ export default function App() {
             section={view.section}
             vault={vault}
             top={banners}
-            onSection={(section) => setView({ ...view, section })}
+            onSection={(section) =>
+              setView({ ...view, section, host: undefined })
+            }
+            host={view.host}
+            onHost={(host) => setView({ ...view, host: host ?? undefined })}
+            onOpenRun={(runId) => showView({ kind: "runs", runId })}
             onBack={() => setView(view.back)}
             onVault={(state) => {
               setVault(state);
@@ -846,7 +861,7 @@ export default function App() {
                   }
                   onNewRun={() => setNewRun({})}
                   onOpenRepo={openRepo}
-                  onOpenSettings={() => openSettings("agents")}
+                  onOpenSettings={() => openSettings("runs")}
                   onError={setBanner}
                   onNotice={setNotice}
                 />
@@ -999,6 +1014,7 @@ export default function App() {
           view={view}
           notice={notice}
           onRetry={() => void refresh()}
+          onOpenHost={(host) => openSettings("runs", host)}
         />
         {paletteOpen && snapshot && (
           <CommandPalette
@@ -1077,9 +1093,9 @@ export default function App() {
               void reloadRuns();
               showView({ kind: "runs", runId: run.id });
             }}
-            onOpenSettings={() => {
+            onOpenSettings={(host) => {
               setNewRun(null);
-              openSettings("agents");
+              openSettings("runs", host);
             }}
           />
         )}
@@ -1106,5 +1122,8 @@ export default function App() {
         )}
       </div>
     </SidePanelState>
+  );
+  return (
+    <HostJobsContext.Provider value={hostJobs}>{app}</HostJobsContext.Provider>
   );
 }

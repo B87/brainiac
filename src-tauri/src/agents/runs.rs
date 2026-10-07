@@ -35,7 +35,7 @@ use crate::models::{
     AgentTestResult, AgentTestStep, AppError, AppResult, DiffResult, ErrorCode, LeftOutFile,
     RunActivity, RunBranchCommand, RunChanges, RunCollection, RunControllerStatus, RunDiffRequest,
     RunEvent, RunEventPage, RunOutcome, RunPermissionRequest, RunPermissions, RunPhase, RunPreview,
-    StartRunRequest,
+    RunStartStep, StartRunRequest,
 };
 use crate::workspaces::RepositoryService;
 
@@ -104,6 +104,13 @@ struct Journal {
     loaded: bool,
 }
 
+/// A run being handed to its controller (`AgentRunService::launch`).
+struct Starting {
+    step: RunStartStep,
+    /// Cancel was asked for meanwhile.
+    cancelled: bool,
+}
+
 pub struct AgentRunService {
     history: Db,
     settings: Arc<AgentSettingsService>,
@@ -129,6 +136,8 @@ pub struct AgentRunService {
     /// Runs whose turn ended while a preview was being taken: one more
     /// follows it, so the last turn is always read.
     preview_again: Mutex<std::collections::HashSet<String>>,
+    /// Runs Start run answered for and still hands to their controller.
+    starting: Mutex<HashMap<String, Starting>>,
     /// The last controller call answered.
     connected: std::sync::atomic::AtomicBool,
 }
@@ -159,6 +168,7 @@ impl AgentRunService {
             collecting: Mutex::new(HashMap::new()),
             previewing: Mutex::new(HashMap::new()),
             preview_again: Mutex::new(std::collections::HashSet::new()),
+            starting: Mutex::new(HashMap::new()),
             connected: std::sync::atomic::AtomicBool::new(false),
         })
     }
@@ -175,14 +185,16 @@ impl AgentRunService {
     // -----------------------------------------------------------------------
 
     pub async fn list(&self) -> AppResult<AgentRunList> {
+        // Steps first: a start's answer is in its row before its step goes.
+        let steps = self.starting_steps();
         let runs = self.history.call(store::list).await?;
         let connected = self.connected.load(std::sync::atomic::Ordering::SeqCst);
         Ok(AgentRunList {
             runs: runs
                 .into_iter()
                 .map(|r| {
-                    let up = self.link_up(&r.host_id);
-                    r.into_run(up)
+                    let step = steps.get(&r.id).copied();
+                    self.present(r, step)
                 })
                 .collect(),
             // The local controller. A remote host that is down does not
@@ -192,9 +204,9 @@ impl AgentRunService {
     }
 
     pub async fn get(&self, run_id: &str) -> AppResult<AgentRun> {
+        let step = self.starting_steps().get(run_id).copied();
         let row = self.row(run_id).await?;
-        let up = self.link_up(&row.host_id);
-        Ok(row.into_run(up))
+        Ok(self.present(row, step))
     }
 
     fn link_up(&self, host_id: &str) -> bool {
@@ -436,10 +448,6 @@ impl AgentRunService {
             ));
         }
         let run_id = uuid::Uuid::new_v4().to_string();
-        let exported = self
-            .artifacts
-            .export(&request.repository_id, &root, &preview.commit, &run_id)
-            .await?;
         let (socket, image_name, image_id, engine_name, host_name) = if remote {
             let host = settings
                 .hosts
@@ -514,13 +522,29 @@ impl AgentRunService {
             model: model.clone(),
         });
         // The row is written before the controller is asked, so a start
-        // whose answer is lost is still a run Brainiac knows.
-        self.history
+        // whose answer is lost is still a run Brainiac knows. Its step is
+        // set first, so the window never sees the run without one.
+        self.starting
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(
+                run_id.clone(),
+                Starting {
+                    step: RunStartStep::Copy,
+                    cancelled: false,
+                },
+            );
+        if let Err(e) = self
+            .history
             .call({
                 let row = row.clone();
                 move |conn| store::insert(conn, &row)
             })
-            .await?;
+            .await
+        {
+            self.end_starting(&run_id);
+            return Err(e);
+        }
         self.emit(&run_id, false);
         let start = StartRun {
             run_id: run_id.clone(),
@@ -533,50 +557,193 @@ impl AgentRunService {
             time_limit_secs: u64::from(time_limit) * 60,
             permissions: request.permissions,
             start_commit: preview.commit,
-            bundle: exported.bundle,
+            // Set once the start is copied, after this answers.
+            bundle: PathBuf::new(),
             prompt_id: format!("{run_id}-prompt-1"),
             prompt,
             credential,
             model,
         };
-        let runtime = self.runtime_for(&host_id).await?;
-        if remote {
-            if let Err(e) = self.refuse_if_upgrading(&host_id) {
-                let (id, message) = (run_id.clone(), e.message.clone());
-                self.history
-                    .call(move |conn| store::mark_refused(conn, &id, &message))
-                    .await?;
-                self.emit(&run_id, false);
-                return Err(e);
-            }
-        }
-        match runtime.start(start).await {
-            Ok(status) => {
-                self.set_link(&host_id, true);
-                self.apply_status(&run_id, &status).await?;
-            }
-            // An answered error means nothing was made. An unanswered start
-            // (a timeout, the socket) may have been accepted before the
-            // failure, so the run stays live and is followed: the controller
-            // answers a start it never saw with "unknown run", which ends it.
-            Err(StartError::Refused(e)) => {
-                tracing::warn!(error = %e, details = ?e.details, "the run controller refused a run");
-                let (id, message) = (run_id.clone(), e.message.clone());
-                self.history
-                    .call(move |conn| store::mark_refused(conn, &id, &message))
-                    .await?;
-                self.emit(&run_id, false);
-                return Err(e);
-            }
-            Err(StartError::Unanswered(e)) => {
-                tracing::warn!(error = %e, details = ?e.details, "a start was not answered");
-                self.set_link(&host_id, false);
-                self.spawn_sync(&run_id);
-                return Err(e);
-            }
-        }
-        self.spawn_sync(&run_id);
+        // Copying the start and reaching a remote host can take minutes, so
+        // they go on after this answers: the window opens the run at once
+        // and shows each step (SPEC.md, The run: Starting).
+        let service = Arc::clone(self);
+        let repository_id = request.repository_id.clone();
+        tokio::spawn(async move {
+            service.launch(start, host_id, repository_id, root).await;
+        });
         self.get(&run_id).await
+    }
+
+    /// The rest of Start run: copy the start, hand the run to its
+    /// controller, and record how that went. A refusal ends the run as
+    /// failed with the reason; a Cancel that came first ends it as
+    /// cancelled; one that came while the controller was asked is sent now.
+    async fn launch(
+        self: Arc<Self>,
+        start: StartRun,
+        host_id: String,
+        repository_id: String,
+        root: PathBuf,
+    ) {
+        let run_id = start.run_id.clone();
+        let result = self.hand_over(start, &host_id, &repository_id, &root).await;
+        let id = run_id.clone();
+        // The controller's answer goes into the row before the step is
+        // dropped, so the window never sees a started run without either.
+        let applied = match &result {
+            Ok(status) => self.apply_status(&run_id, status).await,
+            Err(_) => Ok(()),
+        };
+        let cancelled = self.end_starting(&run_id);
+        let recorded = match result {
+            Ok(_) => {
+                self.set_link(&host_id, true);
+                let flagged = if cancelled {
+                    self.history
+                        .call(move |conn| store::set_cancel_requested(conn, &id, true))
+                        .await
+                } else {
+                    Ok(())
+                };
+                self.spawn_sync(&run_id);
+                applied.and(flagged)
+            }
+            Err(StartError::Refused(_)) if cancelled => {
+                self.history
+                    .call(move |conn| store::mark_cancelled_unstarted(conn, &id))
+                    .await
+            }
+            // An answered error means nothing was made.
+            Err(StartError::Refused(e)) => {
+                tracing::warn!(run = %run_id, error = %e, details = ?e.details, "the run was not started");
+                let message = e.message;
+                self.history
+                    .call(move |conn| store::mark_refused(conn, &id, &message))
+                    .await
+            }
+            // An unanswered start (a timeout, the socket) may have been
+            // accepted before the failure, so the run stays live and is
+            // followed: the controller answers a start it never saw with
+            // "unknown run", which ends it.
+            Err(StartError::Unanswered(e)) => {
+                tracing::warn!(run = %run_id, error = %e, details = ?e.details, "a start was not answered");
+                self.set_link(&host_id, false);
+                if cancelled {
+                    let _ = self
+                        .history
+                        .call(move |conn| store::set_cancel_requested(conn, &id, true))
+                        .await;
+                }
+                self.spawn_sync(&run_id);
+                Ok(())
+            }
+        };
+        if let Err(e) = recorded {
+            tracing::warn!(run = %run_id, error = %e, "the run's start could not be recorded");
+        }
+        self.emit(&run_id, false);
+    }
+
+    /// Copy the start, reach the host, and ask its controller, saying each
+    /// step as it begins.
+    async fn hand_over(
+        &self,
+        mut start: StartRun,
+        host_id: &str,
+        repository_id: &str,
+        root: &Path,
+    ) -> Result<RunStatus, StartError> {
+        let run_id = start.run_id.clone();
+        let exported = self
+            .artifacts
+            .export(repository_id, root, &start.start_commit, &run_id)
+            .await
+            .map_err(StartError::Refused)?;
+        start.bundle = exported.bundle;
+        let remote = host_id != super::hosts::LOCAL_ID;
+        if remote && !self.set_starting(&run_id, RunStartStep::Send) {
+            return Err(StartError::Refused(super::runtime::cancelled_start()));
+        }
+        let runtime = self
+            .runtime_for(host_id)
+            .await
+            .map_err(StartError::Refused)?;
+        // An upgrade that began while the start was copied.
+        if remote {
+            self.refuse_if_upgrading(host_id)
+                .map_err(StartError::Refused)?;
+        }
+        runtime
+            .start_reporting(start, &|step| self.set_starting(&run_id, step))
+            .await
+    }
+
+    /// Record the step a starting run is on, and emit it. False once Cancel
+    /// was asked for: the start stops before that step.
+    fn set_starting(&self, run_id: &str, step: RunStartStep) -> bool {
+        let go = match self
+            .starting
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get_mut(run_id)
+        {
+            Some(starting) => {
+                starting.step = step;
+                !starting.cancelled
+            }
+            None => false,
+        };
+        self.emit(run_id, false);
+        go
+    }
+
+    /// The start is over, one way or another. True when Cancel was asked
+    /// for while it went on.
+    fn end_starting(&self, run_id: &str) -> bool {
+        self.starting
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(run_id)
+            .is_some_and(|s| s.cancelled)
+    }
+
+    /// Cancel a run still being handed to its controller. False when its
+    /// start is over, and Cancel goes to the controller as usual.
+    fn cancel_starting(&self, run_id: &str) -> bool {
+        match self
+            .starting
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get_mut(run_id)
+        {
+            Some(starting) => {
+                starting.cancelled = true;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The step of each start that goes on. Read before the rows: `launch`
+    /// writes the controller's answer into the row before it drops the
+    /// step, so a run is never seen with neither.
+    fn starting_steps(&self) -> HashMap<String, RunStartStep> {
+        self.starting
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .map(|(id, s)| (id.clone(), s.step))
+            .collect()
+    }
+
+    /// The row as the window sees it, with the step of a start that goes on.
+    fn present(&self, row: RunRow, step: Option<RunStartStep>) -> AgentRun {
+        // A starting run is being talked to, not lost.
+        let up = step.is_some() || self.link_up(&row.host_id);
+        let mut run = row.into_run(up);
+        run.starting = step;
+        run
     }
 
     /// The current image's name, handed to the controller with a collection
@@ -1028,6 +1195,16 @@ impl AgentRunService {
         let row = self.row(run_id).await?;
         if row.phase == RunPhase::Ended {
             return Ok(row.into_run(true));
+        }
+        // Still being handed to its controller: the start stops before its
+        // next step, or the Cancel is sent once the controller has it.
+        if self.cancel_starting(run_id) {
+            let id = run_id.to_string();
+            self.history
+                .call(move |conn| store::set_cancel_requested(conn, &id, true))
+                .await?;
+            self.emit(run_id, false);
+            return self.get(run_id).await;
         }
         match self
             .rt(run_id)
@@ -2020,7 +2197,7 @@ impl AgentRunService {
 fn upgrading_conflict() -> AppError {
     AppError::new(
         ErrorCode::Conflict,
-        "This host is being upgraded. Wait until that finishes.",
+        "This host's run controller is being installed or upgraded. Follow it in Settings → Agents, or start the run on another host.",
     )
 }
 

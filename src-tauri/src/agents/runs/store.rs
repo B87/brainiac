@@ -199,6 +199,7 @@ impl RunRow {
             created_at: self.created_at,
             updated_at: self.updated_at,
             version: self.version,
+            starting: None,
         }
     }
 
@@ -489,6 +490,20 @@ pub fn set_cancel_requested(conn: &mut Connection, id: &str, requested: bool) ->
         "UPDATE agent_runs SET cancel_requested = ?2, version = version + 1, updated_at = ?3
          WHERE id = ?1",
         params![id, requested, now_rfc3339()],
+    )?;
+    Ok(())
+}
+
+/// Cancel came before the controller was asked: nothing of the run exists
+/// anywhere, and it ends as cancelled.
+pub fn mark_cancelled_unstarted(conn: &mut Connection, id: &str) -> AppResult<()> {
+    let now = now_rfc3339();
+    conn.execute(
+        "UPDATE agent_runs SET phase = 'ended', activity = 'ended', outcome = 'cancelled',
+           stop_confirmed = 1, kept = 0, cancel_requested = 0, ended_at = ?2,
+           version = version + 1, updated_at = ?2
+         WHERE id = ?1",
+        params![id, now],
     )?;
     Ok(())
 }

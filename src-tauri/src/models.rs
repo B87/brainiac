@@ -3453,6 +3453,16 @@ pub struct AgentHost {
     pub emergency_stop: Option<String>,
     /// Remove finished, and the host still holds a container or a volume.
     pub state_kept: bool,
+    /// The installed run controller's build, short; `None` before the
+    /// first install, or when it was installed before builds were recorded.
+    pub controller_build: Option<String>,
+    pub protocol: Option<u32>,
+    pub controller_installed_at: Option<String>,
+    /// This Brainiac builds a different controller than the installed one.
+    pub upgrade_available: bool,
+    /// The build this Brainiac would install, short; `None` when it cannot
+    /// build one (not run from a checkout).
+    pub available_build: Option<String>,
     #[ts(type = "number")]
     pub version: i64,
 }
@@ -3464,6 +3474,83 @@ pub struct AgentHostPreview {
     pub fingerprint: String,
     /// What Deploy will run with `sudo`, shown first.
     pub actions: Vec<String>,
+}
+
+/// What a host job does (SPEC.md, Remote hosts, Host jobs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum HostJobKind {
+    /// The first install of the run controller, or Reinstall.
+    Install,
+    Upgrade,
+    BuildImage,
+    Test,
+    /// Add host: install, build the image, and test, one after another.
+    Setup,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum HostJobState {
+    Running,
+    Succeeded,
+    Failed,
+    Cancelled,
+    /// Brainiac quit while it ran.
+    Interrupted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum HostJobStepState {
+    Waiting,
+    Running,
+    Done,
+    Failed,
+    /// Not run: an earlier step failed, the job was cancelled, or it was
+    /// not needed.
+    Skipped,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct HostJobStep {
+    pub title: String,
+    /// What the step does, or once it ended, what it found.
+    pub detail: String,
+    pub state: HostJobStepState,
+    pub started_at: Option<String>,
+    pub ended_at: Option<String>,
+    /// While it runs: how far it got, in words ("214 crates compiled").
+    pub progress: Option<String>,
+}
+
+/// A host's install, upgrade, image build, or test, run in the background
+/// (SPEC.md, Remote hosts, Host jobs). The last one per host is kept.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct HostJob {
+    pub id: String,
+    pub host_id: String,
+    pub host_name: String,
+    pub kind: HostJobKind,
+    pub state: HostJobState,
+    pub started_at: String,
+    pub ended_at: Option<String>,
+    pub steps: Vec<HostJobStep>,
+    /// The last lines of its output; the whole log is read on request.
+    pub log_tail: Vec<String>,
+    /// Why it failed, and what the host or the build answered.
+    pub error: Option<String>,
+    pub error_details: Option<String>,
+    /// Cancel still leaves the host as it was.
+    pub cancellable: bool,
+    /// The controller build replaced and the one installed, short.
+    pub from_build: Option<String>,
+    pub to_build: Option<String>,
 }
 
 /// Approve a host key and save the host.
@@ -3556,6 +3643,21 @@ pub struct RunStartPreview {
     pub committed_at: String,
     /// Commits the container gets: this one and its history.
     pub history_commits: u32,
+}
+
+/// Where Brainiac is in handing a new run to its controller (SPEC.md, The
+/// run: Starting). Only while that goes on; the controller's own
+/// preparing follows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum RunStartStep {
+    /// Copying the start commit and its history on this Mac.
+    Copy,
+    /// Connecting to the remote host and sending it that copy.
+    Send,
+    /// Asking the controller to start the container.
+    Start,
 }
 
 /// What the agent is doing (SPEC.md, The run: States).
@@ -3734,6 +3836,8 @@ pub struct AgentRun {
     pub updated_at: String,
     #[ts(type = "number")]
     pub version: i64,
+    /// Brainiac is still handing the run to its controller, at this step.
+    pub starting: Option<RunStartStep>,
 }
 
 /// Runs, and whether the run controller is running.

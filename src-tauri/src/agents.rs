@@ -25,9 +25,14 @@
 //!   start, following the controller and mirroring its journal, the user's
 //!   actions, collection and review, Delete and retention, and Settings'
 //!   Test.
+//! - **`AgentHostService`** (`hosts.rs`) approves remote hosts and installs,
+//!   upgrades, and removes their run controller; **`HostJobService`**
+//!   (`host_jobs.rs`) runs those steps in the background as jobs the window
+//!   follows.
 
 pub mod controller;
 pub mod engine;
+pub mod host_jobs;
 pub mod hosts;
 pub mod image;
 pub mod repository;

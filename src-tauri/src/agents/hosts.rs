@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use super::controller::protocol::{Phase, RunStatus};
+use super::host_jobs::{self, install, JobProgress};
 use super::image;
 use super::runner_binary;
 use super::runtime::RunRuntime;
@@ -16,11 +17,15 @@ use super::ssh::{self, Target};
 use crate::db::Db;
 use crate::models::{
     now_rfc3339, AgentHost, AgentHostPreview, AgentImage, AppError, AppResult,
-    ApproveAgentHostRequest,
+    ApproveAgentHostRequest, ErrorCode,
 };
 
 pub const LOCAL_ID: &str = "local";
 const DOCKER_SOCKET: &str = "/var/run/docker.sock";
+/// Where the program is copied before its digest is checked and installed.
+const UPLOAD: &str = "/tmp/brainiac-runner.upload";
+/// How often an upgrade that waits for a live run looks again.
+const LIVE_POLL: std::time::Duration = std::time::Duration::from_secs(10);
 
 const UNIT: &str = r#"[Unit]
 Description=Brainiac run controller
@@ -211,25 +216,125 @@ impl AgentHostService {
         Ok(saved)
     }
 
-    pub async fn deploy(&self, id: &str) -> AppResult<AgentHost> {
+    /// Install or Upgrade (SPEC.md, Remote hosts), as the six steps of
+    /// `host_jobs::install`, numbered from `at` in `job`.
+    pub async fn deploy(&self, id: &str, job: &JobProgress, at: usize) -> AppResult<AgentHost> {
+        use install::*;
         let row = self.require(id).await?;
         if !row.approved {
             return Err(AppError::validation(
-                "Confirm this host before deploying to it.",
+                "Confirm this host before installing on it.",
             ));
         }
-        self.refuse_live(id).await?;
-        // Held until this function returns, so a run cannot start while the
-        // binary is built and the service is about to restart.
-        let _deploying = self.begin_deploy(id);
+        let name = row.name.clone();
         // A service that is already running keeps its old process across
         // `enable --now`. Replacing its program has to restart it.
         let restart = row.installation.is_some();
         let target = self.ssh_target(&row)?;
+
+        job.begin(at + REACH);
         ssh::run("ssh", &ssh::ssh_args(&target, "sudo -n true")).await?;
         let uname = ssh::run("ssh", &ssh::ssh_args(&target, "uname -m")).await?;
-        let binary = runner_binary::ensure(&self.cache_dir(), &uname).await?;
+        let uname = uname.trim().to_string();
+        let platform = runner_binary::platform(&uname)?;
+        job.finish(
+            at + REACH,
+            Some(format!(
+                "SSH as {}, sudo without a password, an {uname} processor",
+                target.user
+            )),
+        );
+        // Held until this function returns, so a run or a test cannot start
+        // on this host while its controller is being replaced. It is taken
+        // before the build, so an upgrade the user chose is not overtaken by
+        // a run started while it compiles.
+        let _deploying = self.begin_deploy(id);
+
+        job.retitle(
+            at + BUILD,
+            format!("Build the run controller for {platform}"),
+            if runner_binary::emulated(&uname) {
+                format!("On this Mac, in Docker, imitating an {uname} processor. The first build after a Brainiac update takes many minutes.")
+            } else {
+                "On this Mac, in Docker. The first build after a Brainiac update takes a few minutes.".to_string()
+            },
+        );
+        job.begin(at + BUILD);
+        let mut compiled = 0usize;
+        let progress = job.clone();
+        let mut on_line = move |line: &str| {
+            progress.line(line);
+            if runner_binary::compiled_crate(line).is_some() {
+                compiled += 1;
+                progress.progress(
+                    at + BUILD,
+                    format!(
+                        "{compiled} {} compiled",
+                        if compiled == 1 { "crate" } else { "crates" }
+                    ),
+                );
+            }
+        };
+        let built =
+            runner_binary::ensure(&self.cache_dir(), &uname, &mut on_line, job.cancel_signal())
+                .await?;
+        job.finish(
+            at + BUILD,
+            Some(if built.reused {
+                "Already built by this Brainiac: reused".to_string()
+            } else {
+                "Built on this Mac, in Docker, and kept for the next host".to_string()
+            }),
+        );
+        let binary = built.path;
         let digest = runner_binary::file_digest(&binary)?;
+        job.check_cancelled()?;
+
+        job.begin(at + COPY);
+        ssh::run("scp", &ssh::scp_args(&target, &binary, UPLOAD)).await?;
+        let uploaded = ssh::run(
+            "ssh",
+            &ssh::ssh_args(&target, &format!("sha256sum {UPLOAD}")),
+        )
+        .await?;
+        if !digest_matches(&uploaded, &digest) {
+            remove_upload(&target).await;
+            return Err(AppError::dependency(format!(
+                "The copy on {name} did not match the program Brainiac built. The copy was deleted; nothing was installed or restarted."
+            ))
+            .with_details(format!(
+                "expected {digest}  brainiac-runner\n{name}: {}",
+                uploaded.trim()
+            )));
+        }
+        let size = std::fs::metadata(&binary).map(|m| m.len()).unwrap_or(0);
+        job.finish(
+            at + COPY,
+            Some(format!(
+                "{:.1} MB · SHA-256 {}… matches",
+                size as f64 / 1_000_000.0,
+                &digest[..12]
+            )),
+        );
+        if job.cancelled() {
+            remove_upload(&target).await;
+            return Err(host_jobs::cancelled());
+        }
+
+        job.begin(at + WAIT);
+        if restart {
+            if let Err(e) = self.wait_for_no_live_run(id, &name, job, at + WAIT).await {
+                remove_upload(&target).await;
+                return Err(e);
+            }
+            job.finish(at + WAIT, Some(format!("No run is live on {name}")));
+        } else {
+            job.finish(at + WAIT, Some("No controller there yet".to_string()));
+        }
+
+        // From here the host changes: the job finishes on its own.
+        job.close_cancel();
+        job.begin(at + INSTALL);
         let user = ssh::group_command(&row.ssh_user.clone().unwrap_or_default())?;
         for command in [
             "id brainiac >/dev/null 2>&1 || sudo -n useradd --system --create-home --shell /usr/sbin/nologin brainiac",
@@ -240,30 +345,10 @@ impl AgentHostService {
             ssh::run("ssh", &ssh::ssh_args(&target, command)).await?;
         }
         ssh::run(
-            "scp",
-            &ssh::scp_args(&target, &binary, "/tmp/brainiac-runner.upload"),
-        )
-        .await?;
-        let uploaded = ssh::run(
-            "ssh",
-            &ssh::ssh_args(&target, "sha256sum /tmp/brainiac-runner.upload"),
-        )
-        .await?;
-        if !digest_matches(&uploaded, &digest) {
-            let _ = ssh::run(
-                "ssh",
-                &ssh::ssh_args(&target, "rm -f /tmp/brainiac-runner.upload"),
-            )
-            .await;
-            return Err(AppError::dependency(
-                "The program on the host does not match the one Brainiac built.",
-            ));
-        }
-        ssh::run(
             "ssh",
             &ssh::ssh_args(
                 &target,
-                "sudo -n install -o root -g root -m 755 /tmp/brainiac-runner.upload /usr/local/bin/brainiac-runner && rm -f /tmp/brainiac-runner.upload",
+                &format!("sudo -n install -o root -g root -m 755 {UPLOAD} /usr/local/bin/brainiac-runner && rm -f {UPLOAD}"),
             ),
         )
         .await?;
@@ -278,9 +363,13 @@ impl AgentHostService {
                 &ssh::ssh_args(&target, "sudo -n rm -f /usr/local/bin/brainiac-runner"),
             )
             .await;
-            return Err(AppError::dependency(
-                "The program on the host does not match the one Brainiac built.",
-            ));
+            return Err(AppError::dependency(format!(
+                "The program installed on {name} did not match the one Brainiac built, so it was removed."
+            ))
+            .with_details(format!(
+                "expected {digest}  brainiac-runner\n{name}: {}",
+                installed.trim()
+            )));
         }
         // The unit is a constant. It is written on the host, not assembled
         // from the host name.
@@ -290,10 +379,20 @@ impl AgentHostService {
             UNIT.as_bytes(),
         )
         .await?;
-        // The build above can take minutes. A run that started before this
-        // install began is still there, and must not be restarted away.
+        // A run that started in the moment before this job took the host
+        // is still there, and must not be restarted away.
         self.refuse_live(id).await?;
         ssh::run("ssh", &ssh::ssh_args(&target, service_command(restart))).await?;
+        job.finish(
+            at + INSTALL,
+            Some(if restart {
+                "Installed, and the service restarted".to_string()
+            } else {
+                "Installed, and the service started".to_string()
+            }),
+        );
+
+        job.begin(at + CHECK);
         let token = ssh::run(
             "ssh",
             &ssh::ssh_args(&target, "sudo -n cat /var/lib/brainiac-runner/token"),
@@ -312,13 +411,26 @@ impl AgentHostService {
         })?;
         let installation = info.installation;
         let protocol = info.protocol as i64;
+        let build = runner_binary::current_build();
+        job.finish(
+            at + CHECK,
+            Some(format!(
+                "Build {} · protocol {protocol}",
+                build
+                    .as_deref()
+                    .map(runner_binary::short_build)
+                    .unwrap_or_else(|| "unknown".into())
+            )),
+        );
         let id = id.to_string();
         self.db
             .call(move |conn| {
+                let now = now_rfc3339();
                 conn.execute(
-                    "UPDATE agent_hosts SET installation = ?2, protocol = ?3, version = version + 1,
-                        updated_at = ?4 WHERE id = ?1",
-                    params![id, installation, protocol, now_rfc3339()],
+                    "UPDATE agent_hosts SET installation = ?2, protocol = ?3, controller_build = ?4,
+                        controller_installed_at = ?5, version = version + 1, updated_at = ?5
+                     WHERE id = ?1",
+                    params![id, installation, protocol, build, now],
                 )?;
                 Ok(())
             })
@@ -326,10 +438,34 @@ impl AgentHostService {
         self.host(&row.id).await
     }
 
-    pub async fn upgrade(&self, id: &str) -> AppResult<AgentHost> {
-        // Deploy restarts a service that is already installed, which
-        // interrupts its sessions. A live run is refused first.
-        self.deploy(id).await
+    /// Upgrade waits while a run is live, checking every few seconds, and
+    /// stops waiting when the job is cancelled.
+    async fn wait_for_no_live_run(
+        &self,
+        id: &str,
+        name: &str,
+        job: &JobProgress,
+        index: usize,
+    ) -> AppResult<()> {
+        let mut cancel = job.cancel_signal();
+        loop {
+            match self.refuse_live(id).await {
+                Ok(()) => return Ok(()),
+                Err(e) if e.code == ErrorCode::Conflict => {
+                    job.progress(
+                        index,
+                        format!("A run is live on {name}. The upgrade goes on when it ends; new runs there wait for it."),
+                    );
+                }
+                Err(e) => return Err(e),
+            }
+            job.check_cancelled()?;
+            tokio::select! {
+                _ = tokio::time::sleep(LIVE_POLL) => {}
+                _ = cancel.changed() => {}
+            }
+            job.check_cancelled()?;
+        }
     }
 
     pub async fn remove(&self, id: &str) -> AppResult<()> {
@@ -391,13 +527,26 @@ impl AgentHostService {
         Ok(())
     }
 
-    pub async fn build_image(&self, id: &str) -> AppResult<AgentHost> {
+    /// Build image on a host, as the two steps of `host_jobs::image`,
+    /// numbered from `at` in `job`.
+    pub async fn build_image(
+        &self,
+        id: &str,
+        job: &JobProgress,
+        at: usize,
+    ) -> AppResult<AgentHost> {
         let row = self.require_ready(id).await?;
+        job.begin(at + host_jobs::image::BUILD);
         let runtime = self.connected(&row).await?;
         let tag = image::name_for(&image::recipe());
         let built = runtime
             .build_image_remote(DOCKER_SOCKET, &tag, &image::context())
             .await?;
+        job.finish(
+            at + host_jobs::image::BUILD,
+            Some(format!("{tag} · {}", short_id(&built))),
+        );
+        job.begin(at + host_jobs::image::PROBE);
         let recipe = image::recipe();
         let now = now_rfc3339();
         let host_id = id.to_string();
@@ -415,6 +564,8 @@ impl AgentHostService {
         let runtime = self.connected(&row).await?;
         let report = runtime.probe_engine(DOCKER_SOCKET, Some(tag)).await?;
         let id = row.id.clone();
+        let engine = report.name.clone();
+        let loops = report.loop_devices;
         self.db
             .call(move |conn| {
                 conn.execute(
@@ -425,11 +576,15 @@ impl AgentHostService {
                 Ok(())
             })
             .await?;
-        if !report.loop_devices {
+        if !loops {
             return Err(AppError::dependency(
                 "This host's Docker engine cannot attach loop devices, so it cannot take a run.",
             ));
         }
+        job.finish(
+            at + host_jobs::image::PROBE,
+            Some(format!("{engine} · loop devices work")),
+        );
         self.host(&row.id).await
     }
 
@@ -485,7 +640,7 @@ impl AgentHostService {
         )
     }
 
-    async fn host(&self, id: &str) -> AppResult<AgentHost> {
+    pub(crate) async fn host(&self, id: &str) -> AppResult<AgentHost> {
         let id = id.to_string();
         self.db
             .call(move |conn| {
@@ -614,6 +769,7 @@ struct Obligations {
 
 struct HostRow {
     id: String,
+    name: String,
     ssh_user: Option<String>,
     ssh_host: Option<String>,
     ssh_port: Option<u16>,
@@ -635,6 +791,17 @@ fn lines_matching(lines: &[String], prints: &[String], fingerprint: &str) -> Vec
         .filter(|(_, print)| ssh::same_fingerprint(fingerprint, print))
         .map(|(line, _)| line.clone())
         .collect()
+}
+
+/// Deletes a copy that was not installed. Best effort: it is in `/tmp`.
+async fn remove_upload(target: &Target) {
+    let _ = ssh::run("ssh", &ssh::ssh_args(target, &format!("rm -f {UPLOAD}"))).await;
+}
+
+/// `sha256:4d1e…` → `4d1e…`, short enough for a line of Settings.
+fn short_id(id: &str) -> String {
+    let id = id.strip_prefix("sha256:").unwrap_or(id);
+    format!("{}…", id.chars().take(12).collect::<String>())
 }
 
 /// `sha256sum` output matches the digest of the binary Brainiac built.
@@ -697,7 +864,7 @@ impl Drop for DeployGuard<'_> {
 fn find_host(conn: &Connection, user: &str, host: &str, port: u16) -> AppResult<Option<HostRow>> {
     Ok(conn
         .query_row(
-            "SELECT id, ssh_user, ssh_host, ssh_port, identity_path, fingerprint, installation, approved
+            "SELECT id, ssh_user, ssh_host, ssh_port, identity_path, fingerprint, installation, approved, name
              FROM agent_hosts WHERE kind = 'ssh' AND ssh_user = ?1 AND ssh_host = ?2 AND ssh_port = ?3",
             params![user, host, port],
             row_of,
@@ -708,7 +875,7 @@ fn find_host(conn: &Connection, user: &str, host: &str, port: u16) -> AppResult<
 fn load_host(conn: &Connection, id: &str) -> AppResult<Option<HostRow>> {
     Ok(conn
         .query_row(
-            "SELECT id, ssh_user, ssh_host, ssh_port, identity_path, fingerprint, installation, approved
+            "SELECT id, ssh_user, ssh_host, ssh_port, identity_path, fingerprint, installation, approved, name
              FROM agent_hosts WHERE id = ?1",
             [id],
             row_of,
@@ -726,6 +893,7 @@ fn row_of(r: &rusqlite::Row<'_>) -> rusqlite::Result<HostRow> {
         fingerprint: r.get(5)?,
         installation: r.get(6)?,
         approved: r.get::<_, i64>(7)? != 0,
+        name: r.get(8)?,
     })
 }
 
@@ -777,10 +945,11 @@ pub fn list(conn: &Connection) -> AppResult<Vec<AgentHost>> {
         "SELECT id, kind, name, ssh_user, ssh_host, ssh_port, identity_path, fingerprint,
             installation, approved, engine_name, loop_devices, image_id, image_recipe,
             image_built_at, test_passed_at, test_image_id, state_kept, version,
-            test_credential_revision
+            test_credential_revision, controller_build, protocol, controller_installed_at
          FROM agent_hosts ORDER BY kind, name",
     )?;
     let recipe = image::recipe();
+    let available = runner_binary::current_build();
     let rows = stmt.query_map([], |r| {
         let kind: String = r.get(1)?;
         let user: Option<String> = r.get(3)?;
@@ -792,6 +961,9 @@ pub fn list(conn: &Connection) -> AppResult<Vec<AgentHost>> {
         let test_image: Option<String> = r.get(16)?;
         let test_passed: Option<String> = r.get(15)?;
         let test_revision: Option<i64> = r.get(19)?;
+        let controller_build: Option<String> = r.get(20)?;
+        let installed = r.get::<_, Option<String>>(8)?.is_some();
+        let kind_is_ssh = kind == "ssh";
         let image = match (image_id.clone(), built_at) {
             (Some(id), Some(built_at)) => Some(AgentImage {
                 name: image::name_for(image_recipe.as_deref().unwrap_or("")),
@@ -821,7 +993,7 @@ pub fn list(conn: &Connection) -> AppResult<Vec<AgentHost>> {
             identity_path: r.get(6)?,
             fingerprint: r.get(7)?,
             approved: r.get::<_, i64>(9)? != 0,
-            installed: r.get::<_, Option<String>>(8)?.is_some(),
+            installed,
             engine_name: r.get(10)?,
             loop_devices: r.get::<_, i64>(11)? != 0,
             // A passed test counts only for the credential and image it used.
@@ -832,6 +1004,15 @@ pub fn list(conn: &Connection) -> AppResult<Vec<AgentHost>> {
             image,
             emergency_stop: emergency,
             state_kept: r.get::<_, i64>(17)? != 0,
+            controller_build: controller_build.as_deref().map(runner_binary::short_build),
+            protocol: r.get::<_, Option<i64>>(21)?.map(|p| p as u32),
+            controller_installed_at: r.get(22)?,
+            upgrade_available: upgrade_available(installed, controller_build.as_deref(), available.as_deref()),
+            available_build: if kind_is_ssh {
+                available.as_deref().map(runner_binary::short_build)
+            } else {
+                None
+            },
             version: r.get(18)?,
         })
     })?;
@@ -862,6 +1043,16 @@ async fn write_remote_file(target: &Target, path: &str, bytes: &[u8]) -> AppResu
         );
     }
     Ok(())
+}
+
+/// An installed controller is behind when this Brainiac builds another one.
+/// One installed before builds were recorded counts as behind; a Brainiac
+/// that cannot build one offers nothing.
+fn upgrade_available(installed: bool, build: Option<&str>, available: Option<&str>) -> bool {
+    match (installed, available) {
+        (true, Some(available)) => build != Some(available),
+        _ => false,
+    }
 }
 
 /// Status phases from a controller, for the upgrade check the service also
@@ -908,6 +1099,15 @@ mod tests {
             "abc"
         ));
         assert!(!digest_matches("abc  file", ""));
+    }
+
+    #[test]
+    fn an_upgrade_is_offered_for_another_build() {
+        assert!(upgrade_available(true, Some("a1"), Some("b2")));
+        assert!(upgrade_available(true, None, Some("b2")));
+        assert!(!upgrade_available(true, Some("b2"), Some("b2")));
+        assert!(!upgrade_available(false, None, Some("b2")));
+        assert!(!upgrade_available(true, Some("a1"), None));
     }
 
     #[test]

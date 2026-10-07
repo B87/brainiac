@@ -25,6 +25,7 @@ import {
   samePreview,
   shortClock,
   spanLabel,
+  startSteps,
   type ToolState,
   type Turn,
   timeLeft,
@@ -33,6 +34,7 @@ import {
   visibilityLabel,
 } from "../lib/agentRuns";
 import { editCounts, editLines, workspacePath } from "../lib/editDiff";
+import { clock, useNow } from "../lib/hostJobs";
 import {
   type AgentRun,
   type AppSnapshot,
@@ -48,6 +50,7 @@ import {
 } from "../lib/ipc";
 import { KIND_LETTER, kindTone, plural, splitPath } from "../lib/repo";
 import DiffView from "./DiffView";
+import { StepIcon } from "./HostJobView";
 import {
   CheckIcon,
   ChevronDown,
@@ -442,9 +445,11 @@ function RunView({
   };
 
   const cancel = async () => {
-    const message = run.connected
-      ? "Cancel this run? The agent stops, and its work so far is collected for review."
-      : "Cancel this run? Brainiac can't reach it now, so the cancel is sent when it reconnects. Until then, the time limit still ends the run.";
+    const message = run.starting
+      ? "Cancel this run? It has not reached the agent yet, so nothing is collected."
+      : run.connected
+        ? "Cancel this run? The agent stops, and its work so far is collected for review."
+        : "Cancel this run? Brainiac can't reach it now, so the cancel is sent when it reconnects. Until then, the time limit still ends the run.";
     if (
       !(await ask(message, {
         title: "Cancel Run",
@@ -1233,6 +1238,47 @@ function reportedFiles(
   return [...seen.values()];
 }
 
+/**
+ * A run that has not reached the agent yet (SPEC.md, The run: Starting):
+ * Brainiac's steps, then the controller's, with the time since Start run.
+ */
+function RunStarting({ run }: { run: AgentRun }) {
+  const now = useNow(true);
+  const steps = startSteps(run);
+  const elapsed = clock((now - Date.parse(run.created_at)) / 1000);
+  return (
+    <section
+      aria-label="Starting the run"
+      className="flex flex-col gap-3 rounded-lg border bg-app px-4 py-3.5 text-[12.5px]"
+    >
+      <div className="flex items-baseline gap-2">
+        <span className="font-semibold">Starting on {hostLabel(run)}</span>
+        <span className="mono text-[12px] text-muted">{elapsed}</span>
+      </div>
+      <ol className="m-0 flex list-none flex-col gap-2 p-0">
+        {steps.map((step) => (
+          <li
+            key={step.label}
+            aria-current={step.state === "running" ? "step" : undefined}
+            className={`flex items-center gap-2 ${
+              step.state === "waiting" ? "text-muted" : ""
+            }`}
+          >
+            <StepIcon state={step.state} />
+            {step.label}
+          </li>
+        ))}
+      </ol>
+      <p className="m-0 text-[12px] text-muted">
+        Nothing has reached the provider yet.
+        {isRemote(run) &&
+          " Copying a large repository to a remote host can take a few minutes."}{" "}
+        You can leave this page; the run keeps starting.
+      </p>
+    </section>
+  );
+}
+
 function Conversation({
   run,
   turns,
@@ -1291,12 +1337,8 @@ function Conversation({
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4 pl-lead">
         <div className="flex max-w-[720px] flex-col gap-4">
-          {run.activity === "preparing" && turns.length === 0 && (
-            <p className="m-0 flex items-center gap-2 text-[12.5px] text-muted">
-              <ProgressIcon size={13} className="motion-safe:animate-spin" />
-              Preparing: copying the start commit and starting the container.
-              Nothing has reached the provider yet.
-            </p>
+          {live && run.activity === "preparing" && turns.length === 0 && (
+            <RunStarting run={run} />
           )}
           {notices.map((n) => (
             <p key={n} className="m-0 text-[12px] text-muted">

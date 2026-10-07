@@ -20,7 +20,7 @@ use super::controller::protocol::{
 use super::controller::state::StateDir;
 use super::controller::{read_line, write_line};
 use crate::mcp::{current_uid, fallback_dir, MAX_SOCKET_PATH};
-use crate::models::{AppError, AppResult, ErrorCode};
+use crate::models::{AppError, AppResult, ErrorCode, RunStartStep};
 
 /// How long a newly started controller has to answer.
 const START_WAIT: Duration = Duration::from_secs(10);
@@ -313,8 +313,24 @@ impl RunRuntime {
     /// Hand a run to the controller. It answers once the run is accepted and
     /// its deadline armed; preparing it goes on there.
     pub async fn start(&self, start: StartRun) -> Result<RunStatus, StartError> {
+        self.start_reporting(start, &|_| true).await
+    }
+
+    /// `start`, saying each step before it begins. `step` answers false to
+    /// stop there (a Cancel came): the start is then refused as cancelled,
+    /// and the controller is not asked.
+    // `&(dyn Fn … + Sync)`: a borrowed callback that may be called from
+    // whichever thread runs this future, so it must be shareable.
+    pub async fn start_reporting(
+        &self,
+        start: StartRun,
+        step: &(dyn Fn(RunStartStep) -> bool + Send + Sync),
+    ) -> Result<RunStatus, StartError> {
         if self.is_remote() {
-            return self.start_remote(start).await;
+            return self.start_remote(start, step).await;
+        }
+        if !step(RunStartStep::Start) {
+            return Err(StartError::Refused(cancelled_start()));
         }
         match self
             .exchange(Request::Start(start), self.call_timeout)
@@ -511,12 +527,19 @@ impl RunRuntime {
         }
     }
 
-    async fn start_remote(&self, mut start: StartRun) -> Result<RunStatus, StartError> {
+    async fn start_remote(
+        &self,
+        mut start: StartRun,
+        step: &(dyn Fn(RunStartStep) -> bool + Send + Sync),
+    ) -> Result<RunStatus, StartError> {
         let bytes = tokio::fs::read(&start.bundle).await.map_err(|e| {
             StartError::Refused(
                 AppError::io("The run's start was not exported.").with_details(e.to_string()),
             )
         })?;
+        if !step(RunStartStep::Send) {
+            return Err(StartError::Refused(cancelled_start()));
+        }
         let (mut connection, _) = self.connect_remote().await.map_err(StartError::Refused)?;
         let path =
             match upload_bundle(&mut connection, &start.run_id, &bytes, self.call_timeout).await {
@@ -524,6 +547,9 @@ impl RunRuntime {
                 Err(e) => return Err(StartError::Refused(e)),
             };
         start.bundle = PathBuf::from(path);
+        if !step(RunStartStep::Start) {
+            return Err(StartError::Refused(cancelled_start()));
+        }
         match connection
             .call(&Request::Start(start), self.call_timeout)
             .await
@@ -725,6 +751,14 @@ async fn upload_bundle(
         return Err(AppError::dependency("The host did not accept the bundle."));
     }
     Ok(path)
+}
+
+/// A start stopped by Cancel before the controller was asked.
+pub(crate) fn cancelled_start() -> AppError {
+    AppError::new(
+        ErrorCode::Cancelled,
+        "The run was cancelled before it started.",
+    )
 }
 
 /// Why a start did not give a run. A refusal means the controller saw the

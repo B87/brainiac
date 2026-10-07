@@ -57,9 +57,16 @@ export default function SettingsPage({
   onExport,
   onRestore,
   top,
+  host,
+  onHost,
+  onOpenRun,
 }: {
   settings: Settings;
   section: SettingsSection;
+  /** Settings → Agents: the run host whose page is open. */
+  host?: string;
+  onHost: (host: string | null) => void;
+  onOpenRun: (runId: string) => void;
   vault: VaultState | null;
   onSection: (section: SettingsSection) => void;
   onBack: () => void;
@@ -193,7 +200,13 @@ export default function SettingsPage({
             {section === "agents" && (
               <AgentsPane settings={shown} save={save} />
             )}
-            {section === "runs" && <AgentRunsPane />}
+            {section === "runs" && (
+              <AgentRunsPane
+                hostId={host ?? null}
+                onHost={onHost}
+                onOpenRun={onOpenRun}
+              />
+            )}
             {section === "backup" && (
               <BackupPane onExport={onExport} onRestore={onRestore} />
             )}

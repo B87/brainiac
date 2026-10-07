@@ -1,10 +1,8 @@
-import { useCallback, useEffect, useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import {
   dayLabel,
   destinationLabel,
   durationLabel,
-  engineSummary,
-  imageSummary,
   MODEL_SUGGESTIONS,
   parseModel,
   paymentLabel,
@@ -13,14 +11,20 @@ import {
 } from "../lib/agentRuns";
 import type { SaveAgentSettingsRequest } from "../lib/generated/SaveAgentSettingsRequest";
 import {
-  type AgentEngine,
+  hostState,
+  hostSummary,
+  jobElapsed,
+  stepOf,
+  useHostJobsContext,
+  useNow,
+} from "../lib/hostJobs";
+import {
   type AgentHost,
   type AgentPayment,
   type AgentSettings,
-  type AgentTestResult,
   errorMessage,
+  type HostJob,
   ipc,
-  type RunControllerStatus,
 } from "../lib/ipc";
 import {
   commandPreview,
@@ -32,66 +36,38 @@ import {
   sourceOf,
 } from "../lib/secrets";
 import { parseInRange } from "../lib/settings";
+import AddHostDialog from "./AddHostDialog";
 import Dialog from "./Dialog";
+import { HostPill, JobBar } from "./HostJobView";
+import { LocalHostPage, RemoteHostPage } from "./RunHostPage";
 import SecretSourceFields from "./SecretSourceFields";
 import { CommitField, Group, Hint, Lede } from "./SettingsPanes";
 
 /**
- * Settings → Agents (SPEC.md, Agent runs — v0.5): where runs execute, how
- * Claude Code is paid for, the agreement to send code, the image, and new
- * runs' defaults. The token or key is read only when a run starts; this
- * pane never shows it.
+ * Settings → Agents (SPEC.md, Agent runs — v0.5): how Claude Code is paid
+ * for and the agreement to send code, the run hosts (This Mac and approved
+ * Linux hosts, each with its own page), and new runs' defaults. The token
+ * or key is read only when a run starts; this pane never shows it.
  */
-export default function AgentRunsPane() {
+export default function AgentRunsPane({
+  hostId,
+  onHost,
+  onOpenRun,
+}: {
+  /** The host whose page is open (Agents › Run hosts › host), or none. */
+  hostId?: string | null;
+  onHost: (hostId: string | null) => void;
+  onOpenRun?: (runId: string) => void;
+}) {
   const [settings, setSettings] = useState<AgentSettings | null>(null);
-  const [engines, setEngines] = useState<AgentEngine[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [building, setBuilding] = useState(false);
   const [dockerfile, setDockerfile] = useState<string | null>(null);
-  const [controller, setController] = useState<RunControllerStatus | null>(
-    null,
-  );
-  const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<AgentTestResult | null>(null);
+  /** Add host…, or confirming a saved host's key again. */
+  const [adding, setAdding] = useState<{ existing?: AgentHost } | null>(null);
 
-  useEffect(() => {
-    let alive = true;
-    const load = () =>
-      ipc
-        .getRunControllerStatus()
-        .then((c) => alive && setController(c))
-        .catch(() => {});
-    void load();
-    const timer = setInterval(load, 10_000);
-    return () => {
-      alive = false;
-      clearInterval(timer);
-    };
-  }, []);
-
-  /** Test: minutes when a wrong token is retried; the pane stays usable. */
-  const runTest = async () => {
-    setTesting(true);
-    setError(null);
-    setTestResult(null);
-    try {
-      setTestResult(await ipc.testAgentSetup());
-      setSettings(await ipc.getAgentSettings());
-    } catch (e) {
-      setError(errorMessage(e));
-    } finally {
-      setTesting(false);
-    }
-  };
-
-  const loadEngines = useCallback(() => {
-    setEngines(null);
-    ipc
-      .listAgentEngines()
-      .then(setEngines)
-      .catch((e) => setError(errorMessage(e)));
-  }, []);
+  const reload = () =>
+    ipc.getAgentSettings().then(setSettings, (e) => setError(errorMessage(e)));
 
   useEffect(() => {
     let alive = true;
@@ -99,11 +75,14 @@ export default function AgentRunsPane() {
       .getAgentSettings()
       .then((s) => alive && setSettings(s))
       .catch((e) => alive && setError(errorMessage(e)));
-    loadEngines();
     return () => {
       alive = false;
     };
-  }, [loadEngines]);
+  }, []);
+
+  // A page opened from elsewhere starts without the pane's last error.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: clear on navigation only
+  useEffect(() => setError(null), [hostId]);
 
   /** Run a change; the pane shows what it returned, or why it failed. */
   const act = async (action: () => Promise<AgentSettings>) => {
@@ -136,31 +115,78 @@ export default function AgentRunsPane() {
   const save = (patch: Partial<SaveAgentSettingsRequest>) =>
     act(() => ipc.saveAgentSettings(settingsRequest(profile, patch)));
 
-  // A build takes minutes: the rest of the pane stays usable meanwhile.
-  const build = async () => {
-    setBuilding(true);
-    setError(null);
-    try {
-      setSettings(await ipc.buildAgentImage());
-    } catch (e) {
-      setError(errorMessage(e));
-      ipc.getAgentSettings().then(setSettings, () => {});
-    } finally {
-      setBuilding(false);
-    }
-  };
+  const dialogs = (
+    <>
+      {dockerfile !== null && (
+        <Dialog
+          title="Dockerfile"
+          width={720}
+          onClose={() => setDockerfile(null)}
+        >
+          <pre className="mono selectable m-0 overflow-auto px-4 py-3 text-[11.5px] leading-relaxed">
+            {dockerfile}
+          </pre>
+        </Dialog>
+      )}
+      {adding && (
+        <AddHostDialog
+          existing={adding.existing}
+          onClose={() => setAdding(null)}
+          onAdded={(id) => {
+            setAdding(null);
+            void reload();
+            onHost(id);
+          }}
+        />
+      )}
+    </>
+  );
+
+  const open = hostId ? settings.hosts.find((h) => h.id === hostId) : null;
+  const errorLine = error && (
+    <div role="alert" className="text-[12.5px] text-conflict">
+      {error}
+    </div>
+  );
+  if (open?.kind === "local") {
+    return (
+      <>
+        {errorLine}
+        <LocalHostPage
+          host={open}
+          settings={settings}
+          busy={busy}
+          onBack={() => onHost(null)}
+          onChooseEngine={(socket) => void save({ engine_socket: socket })}
+          onSettings={setSettings}
+          onError={setError}
+        />
+        {dialogs}
+      </>
+    );
+  }
+  if (open) {
+    return (
+      <>
+        <RemoteHostPage
+          host={open}
+          onBack={() => onHost(null)}
+          onChanged={() => void reload()}
+          onConfirmKey={(existing) => setAdding({ existing })}
+          onOpenRun={onOpenRun}
+        />
+        {dialogs}
+      </>
+    );
+  }
 
   return (
     <>
       <Lede>
-        Hand a repository to Claude Code running in a container on this Mac. Its
-        work comes back for you to review; nothing is pushed.
+        Hand a repository to Claude Code in a container. Its work comes back for
+        you to review; nothing is pushed.
       </Lede>
-      {error && (
-        <div role="alert" className="text-[12.5px] text-conflict">
-          {error}
-        </div>
-      )}
+      {errorLine}
 
       {profile.credential.needs_approval && (
         <div className="settings-group">
@@ -233,67 +259,6 @@ export default function AgentRunsPane() {
         </Group>
       )}
 
-      <Group label="Where runs execute">
-        <div className="settings-group">
-          {engines === null ? (
-            <div className="settings-row">
-              <Hint>Looking for Docker engines…</Hint>
-            </div>
-          ) : engines.length === 0 ? (
-            <div className="settings-row">
-              <Hint>
-                No Docker engine was found on this Mac. Install and start
-                OrbStack or Docker Desktop.
-              </Hint>
-            </div>
-          ) : (
-            engines.map((engine) => (
-              <EngineRow
-                key={engine.socket}
-                engine={engine}
-                chosen={profile.engine_socket === engine.socket}
-                disabled={busy}
-                onChoose={() => void save({ engine_socket: engine.socket })}
-              />
-            ))
-          )}
-        </div>
-        <div className="flex items-start gap-2">
-          <Hint>
-            Brainiac starts and stops its own containers on this engine. Runs
-            pause while this Mac sleeps; when it wakes, a run past its time
-            limit is stopped. Choosing another engine means building the image
-            there.{" "}
-            {controller?.running
-              ? `The run controller is running (process ${controller.pid}${
-                  controller.live_runs
-                    ? `, ${controller.live_runs} live ${controller.live_runs === 1 ? "run" : "runs"}`
-                    : ""
-                }).`
-              : "The run controller is not running; it starts with the next run."}
-          </Hint>
-          <button
-            type="button"
-            className="btn btn-sm shrink-0"
-            onClick={loadEngines}
-          >
-            Look Again
-          </button>
-        </div>
-      </Group>
-
-      <RemoteHosts
-        hosts={settings.hosts}
-        busy={busy}
-        onBusy={setBusy}
-        onError={setError}
-        onChanged={() =>
-          ipc
-            .getAgentSettings()
-            .then(setSettings, (e) => setError(errorMessage(e)))
-        }
-      />
-
       <Group label="Claude Code">
         <CredentialSection
           settings={settings}
@@ -310,9 +275,6 @@ export default function AgentRunsPane() {
             })
           }
         />
-      </Group>
-
-      <Group label="Sends code to">
         <div className="settings-group">
           <label className="settings-row">
             <span className="flex min-w-55 flex-1 flex-col gap-0.5">
@@ -340,66 +302,56 @@ export default function AgentRunsPane() {
               }
             />
           </label>
+          <div className="settings-row">
+            <span className="flex min-w-55 flex-1 flex-col gap-0.5">
+              <span className="font-medium">Image recipe</span>
+              <Hint>
+                Claude Code and its ACP adapter, each at a pinned version, from
+                a Dockerfile you can read. Each run host builds it for itself.
+              </Hint>
+            </span>
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={() =>
+                ipc
+                  .agentDockerfile()
+                  .then(setDockerfile)
+                  .catch((e) => setError(errorMessage(e)))
+              }
+            >
+              View Dockerfile
+            </button>
+          </div>
         </div>
       </Group>
 
-      <Group label="Image">
-        <div className="settings-group">
-          <div className="settings-row">
-            <span className="flex min-w-55 flex-1 flex-col gap-0.5">
-              <span className="font-medium">
-                {profile.image ? (
-                  <span className="mono text-[12px]">
-                    {imageSummary(profile.image)}
-                  </span>
-                ) : (
-                  "Not built"
-                )}
-              </span>
-              <Hint>
-                Claude Code and its ACP adapter, each at a pinned version, from
-                a Dockerfile you can read.
-                {profile.image && ` Built ${dayLabel(profile.image.built_at)}.`}
-                {profile.image &&
-                  !profile.image.current &&
-                  " This version of Brainiac changed the Dockerfile: rebuild it."}
-                {building &&
-                  " Building downloads the base image and packages; it takes a few minutes."}
-              </Hint>
-            </span>
-            <span className="flex shrink-0 gap-2">
-              <button
-                type="button"
-                className="btn btn-sm"
-                onClick={() =>
-                  ipc
-                    .agentDockerfile()
-                    .then(setDockerfile)
-                    .catch((e) => setError(errorMessage(e)))
-                }
-              >
-                View Dockerfile
-              </button>
-              <button
-                type="button"
-                className="btn btn-sm"
-                disabled={
-                  building ||
-                  busy ||
-                  !profile.engine_socket ||
-                  profile.credential.needs_approval
-                }
-                onClick={() => void build()}
-              >
-                {building
-                  ? "Building…"
-                  : profile.image
-                    ? "Rebuild"
-                    : "Build Image"}
-              </button>
-            </span>
-          </div>
+      <Group label="Run hosts">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <Hint>
+            Where runs execute: this Mac's Docker engine, and Linux machines
+            Brainiac installs its run controller on. Each builds the image and
+            passes the test for itself.
+          </Hint>
+          <button
+            type="button"
+            className="btn btn-sm"
+            disabled={profile.credential.needs_approval}
+            onClick={() => setAdding({})}
+          >
+            Add Host…
+          </button>
         </div>
+        <ul aria-label="Run hosts" className="settings-group m-0 list-none p-0">
+          {settings.hosts.map((host) => (
+            <HostRow key={host.id} host={host} onOpen={() => onHost(host.id)} />
+          ))}
+        </ul>
+        <Hint>
+          A remote host's administrator can see the repository and the
+          credential. Brainiac reaches it with your SSH setup and keeps no
+          private key.
+        </Hint>
       </Group>
 
       <Group label="New runs">
@@ -506,114 +458,59 @@ export default function AgentRunsPane() {
         </div>
       </Group>
 
-      <Group label="Test">
-        <div className="settings-group">
-          <div className="settings-row">
-            <span className="flex min-w-55 flex-1 flex-col gap-0.5">
-              <span className="font-medium">
-                {profile.test_passed_at && profile.test_current
-                  ? `Passed on ${dayLabel(profile.test_passed_at)}`
-                  : profile.test_passed_at
-                    ? `Passed on ${dayLabel(profile.test_passed_at)}, before the token or key, the image, or the engine changed`
-                    : "Not tested"}
-              </span>
-              <Hint>
-                A test starts a short run, sends a prompt, cancels, and
-                collects. A run cannot start until one passes for this token or
-                key, image, and engine: a wrong token can come back looking like
-                an ordinary reply. A wrong token or key can take a few minutes
-                to be refused: Claude Code retries it first.
-              </Hint>
-            </span>
-            <button
-              type="button"
-              className="btn btn-sm"
-              disabled={busy || testing}
-              onClick={() => void runTest()}
-            >
-              {testing ? "Testing…" : "Test"}
-            </button>
-          </div>
-          {testResult && (
-            <div className="settings-row flex-col items-stretch gap-1">
-              {testResult.steps.map((step) => (
-                <div key={step.name} className="flex gap-2 text-[12.5px]">
-                  <span
-                    className={step.passed ? "text-added" : "text-conflict"}
-                  >
-                    {step.passed ? "✓" : "✕"}
-                  </span>
-                  <span>{step.name}</span>
-                  {step.detail && (
-                    <span className="truncate text-muted">{step.detail}</span>
-                  )}
-                </div>
-              ))}
-              <Hint>
-                {testResult.passed
-                  ? `Passed at ${dayLabel(testResult.tested_at)}.`
-                  : "The test did not pass; runs cannot start yet."}
-              </Hint>
-            </div>
-          )}
-        </div>
-      </Group>
-
-      {dockerfile !== null && (
-        <Dialog
-          title="Dockerfile"
-          width={720}
-          onClose={() => setDockerfile(null)}
-        >
-          <pre className="mono selectable m-0 overflow-auto px-4 py-3 text-[11.5px] leading-relaxed">
-            {dockerfile}
-          </pre>
-        </Dialog>
-      )}
+      {dialogs}
     </>
   );
 }
 
-function EngineRow({
-  engine,
-  chosen,
-  disabled,
-  onChoose,
-}: {
-  engine: AgentEngine;
-  chosen: boolean;
-  disabled: boolean;
-  onChoose: () => void;
-}) {
-  const id = useId();
-  const usable = engine.reachable && engine.supported;
+/** A host in Run hosts: its state, and a running job's step and time. */
+function HostRow({ host, onOpen }: { host: AgentHost; onOpen: () => void }) {
+  const jobs = useHostJobsContext();
+  const job: HostJob | undefined = jobs[host.id];
+  const running = job?.state === "running";
+  const now = useNow(running);
+  const state = hostState(host, job);
+  const step = running ? job.steps.find((s) => s.state === "running") : null;
   return (
-    <label className="settings-row" htmlFor={id}>
-      <input
-        id={id}
-        type="radio"
-        name="agent-engine"
-        checked={chosen}
-        disabled={disabled || (!usable && !chosen)}
-        onChange={onChoose}
-      />
-      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <span className="font-medium">
-          {engine.name}
-          {usable ? " · Ready" : ""}
+    <li className="border-line-soft border-b last:border-b-0">
+      <button
+        type="button"
+        className="flex w-full flex-col gap-2.5 px-3.5 py-3 text-left hover:bg-control"
+        aria-label={`${host.name}, ${state.label}`}
+        onClick={onOpen}
+      >
+        <span className="flex w-full items-center gap-3">
+          <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+            <span className="text-[13px] font-semibold">{host.name}</span>
+            <span className="truncate text-[12px] text-muted">
+              {hostSummary(host) ||
+                (host.kind === "local"
+                  ? "Choose its Docker engine"
+                  : "Not set up")}
+            </span>
+          </span>
+          <HostPill label={state.label} tone={state.tone} />
+          <span aria-hidden="true" className="text-[16px] text-muted">
+            ›
+          </span>
         </span>
-        <span className="mono truncate text-[11.5px] text-muted">
-          {engine.socket}
-        </span>
-        <span
-          className={`text-[12px] ${usable ? "text-fg-2" : "text-conflict"}`}
-        >
-          {usable
-            ? engineSummary(engine)
-            : (engine.problem ?? "Not answering.")}
-        </span>
-      </span>
-    </label>
+        {running && job && (
+          <span className="flex w-full flex-col gap-1.5">
+            <JobBar job={job} />
+            <span className="flex flex-wrap gap-x-3 gap-y-1 text-[12px]">
+              <span className="text-fg-2">
+                {step?.progress
+                  ? `${step.title}: ${step.progress}`
+                  : step?.title}
+              </span>
+              <span className="tabular text-muted">
+                {jobElapsed(job, now)} so far · {stepOf(job)}
+              </span>
+            </span>
+          </span>
+        )}
+      </button>
+    </li>
   );
 }
 
@@ -836,243 +733,5 @@ function CredentialSection({
         )}
       </div>
     </div>
-  );
-}
-
-function RemoteHosts({
-  hosts,
-  busy,
-  onBusy,
-  onError,
-  onChanged,
-}: {
-  hosts: AgentHost[];
-  busy: boolean;
-  onBusy: (busy: boolean) => void;
-  onError: (message: string | null) => void;
-  onChanged: () => void;
-}) {
-  const [name, setName] = useState("");
-  const [user, setUser] = useState("");
-  const [host, setHost] = useState("");
-  const [port, setPort] = useState("22");
-  const [identity, setIdentity] = useState("");
-  const [preview, setPreview] = useState<{
-    fingerprint: string;
-    actions: string[];
-  } | null>(null);
-  const [confirmChange, setConfirmChange] = useState(false);
-  const remote = hosts.filter((h) => h.kind === "ssh");
-  const saved = remote.find(
-    (item) =>
-      item.ssh_user === user.trim() &&
-      item.ssh_host === host.trim() &&
-      (item.ssh_port ?? 22) === (Number(port) || 22),
-  );
-  const keyChanged =
-    confirmChange ||
-    (preview != null &&
-      saved?.fingerprint != null &&
-      saved.fingerprint !== preview.fingerprint);
-
-  const look = async () => {
-    onBusy(true);
-    onError(null);
-    setConfirmChange(false);
-    try {
-      setPreview(await ipc.previewAgentHost(host.trim(), Number(port) || 22));
-    } catch (e) {
-      setPreview(null);
-      onError(errorMessage(e));
-    } finally {
-      onBusy(false);
-    }
-  };
-
-  const approve = async (acceptChanged: boolean) => {
-    if (!preview) return;
-    onBusy(true);
-    onError(null);
-    try {
-      await ipc.approveAgentHost({
-        name: name.trim(),
-        user: user.trim(),
-        host: host.trim(),
-        port: Number(port) || 22,
-        identity_path: identity.trim() || null,
-        fingerprint: preview.fingerprint,
-        accept_changed_key: acceptChanged,
-      });
-      setPreview(null);
-      setConfirmChange(false);
-      onChanged();
-    } catch (e) {
-      const message = errorMessage(e);
-      if (!acceptChanged && message.includes("Approve the new fingerprint")) {
-        setConfirmChange(true);
-      }
-      onError(message);
-    } finally {
-      onBusy(false);
-    }
-  };
-
-  const run = async (action: () => Promise<unknown>) => {
-    onBusy(true);
-    onError(null);
-    try {
-      await action();
-      onChanged();
-    } catch (e) {
-      onError(errorMessage(e));
-    } finally {
-      onBusy(false);
-    }
-  };
-
-  return (
-    <Group label="Remote hosts">
-      <p className="m-0 text-[12px] text-muted">
-        A Linux machine with systemd and Docker. Brainiac installs its run
-        controller there. The host's administrator can see the repository and
-        the credential. The private key stays in your SSH setup.
-      </p>
-      {remote.map((item) => (
-        <div key={item.id} className="settings-group">
-          <div className="settings-row">
-            <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-              <span className="font-medium">{item.name}</span>
-              <Hint>
-                {item.ssh_user}@{item.ssh_host}:{item.ssh_port}
-                {item.fingerprint ? ` · ${item.fingerprint}` : ""}
-                {!item.approved ? " · waiting for confirmation" : ""}
-                {item.state_kept ? " · files remain on the host" : ""}
-              </Hint>
-            </span>
-          </div>
-          <div className="flex flex-wrap gap-2 px-3 pb-3">
-            <button
-              type="button"
-              className="btn btn-sm"
-              disabled={busy || !item.approved}
-              onClick={() => void run(() => ipc.deployAgentHost(item.id))}
-            >
-              {item.installed ? "Deploy again" : "Deploy"}
-            </button>
-            <button
-              type="button"
-              className="btn btn-sm"
-              disabled={busy || !item.installed}
-              onClick={() => void run(() => ipc.upgradeAgentHost(item.id))}
-            >
-              Upgrade
-            </button>
-            <button
-              type="button"
-              className="btn btn-sm"
-              disabled={busy || !item.installed}
-              onClick={() => void run(() => ipc.buildAgentHostImage(item.id))}
-            >
-              Build image
-            </button>
-            <button
-              type="button"
-              className="btn btn-sm"
-              disabled={busy || !item.image}
-              onClick={() => void run(() => ipc.testAgentHost(item.id))}
-            >
-              Test
-            </button>
-            <button
-              type="button"
-              className="btn btn-sm"
-              disabled={busy}
-              onClick={() => void run(() => ipc.removeAgentHost(item.id))}
-            >
-              Remove
-            </button>
-          </div>
-          {item.emergency_stop && (
-            <p className="m-0 px-3 pb-3 font-mono text-[11px] text-muted">
-              Emergency stop, on the host: {item.emergency_stop}
-            </p>
-          )}
-        </div>
-      ))}
-      <div className="flex flex-col gap-2">
-        <div className="grid grid-cols-2 gap-2">
-          <input
-            className="field"
-            placeholder="Name"
-            aria-label="Host name"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-          />
-          <input
-            className="field"
-            placeholder="SSH user"
-            aria-label="SSH user"
-            value={user}
-            onChange={(e) => setUser(e.target.value)}
-          />
-          <input
-            className="field"
-            placeholder="Host"
-            aria-label="SSH host"
-            value={host}
-            onChange={(e) => setHost(e.target.value)}
-          />
-          <input
-            className="field"
-            placeholder="Port"
-            aria-label="SSH port"
-            value={port}
-            onChange={(e) => setPort(e.target.value)}
-          />
-        </div>
-        <input
-          className="field"
-          placeholder="Identity file, optional absolute path"
-          aria-label="Identity file"
-          value={identity}
-          onChange={(e) => setIdentity(e.target.value)}
-        />
-        <button
-          type="button"
-          className="btn btn-sm self-start"
-          disabled={busy || !user.trim() || !host.trim()}
-          onClick={() => void look()}
-        >
-          Show host key
-        </button>
-        {preview && (
-          <div className="rounded-lg border px-3 py-2 text-[12.5px]">
-            <p className="m-0 font-medium">Host key {preview.fingerprint}</p>
-            <ul className="m-0 pl-5">
-              {preview.actions.map((action) => (
-                <li key={action}>{action}</li>
-              ))}
-            </ul>
-            <p className="m-0 text-muted">
-              Deploy runs these with sudo and no password prompt.
-            </p>
-            {keyChanged && (
-              <p className="m-0 text-muted">
-                This replaces the host key Brainiac had saved. SSH will not
-                connect until you approve it.
-              </p>
-            )}
-            <button
-              type="button"
-              className="btn btn-sm btn-primary mt-2"
-              disabled={busy}
-              onClick={() => void approve(keyChanged)}
-            >
-              {keyChanged ? "Approve the new fingerprint" : "Approve this key"}
-            </button>
-          </div>
-        )}
-      </div>
-    </Group>
   );
 }

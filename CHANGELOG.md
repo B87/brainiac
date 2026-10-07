@@ -11,6 +11,11 @@ into the release's section.
 
 ## [Unreleased]
 
+- Installing, upgrading, building the image on, and testing a remote host now show each step as it happens, with the build's output and how long it has taken; an install or upgrade can be cancelled until it changes the host, and a failure says at which step and offers Try again.
+- Upgrading a host with a live run now waits for the run to end instead of refusing, and later upgrades build the run controller much faster.
+- Settings → Agents lists This Mac and your remote hosts under Run hosts, each with its own page; Add host… walks through the key, the install, the image, and the test in one go.
+- The status bar and New run show a host that is being installed or upgraded, with a link to its progress, and Brainiac says when it ends.
+- Start run opens the run straight away and shows its start as steps while the repository is copied and sent to the host; it can be cancelled meanwhile.
 - A run's edits show what changed, as removed and added lines, in the conversation and in its permission requests.
 - Changes so far shows a live run's working tree in the diff viewer, read after each turn and on Refresh, while the agent keeps working.
 - Copy branch command gives a Git command that brings a run's reviewed result into your repository as a new branch.

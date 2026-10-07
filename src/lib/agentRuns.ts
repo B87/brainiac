@@ -15,6 +15,7 @@ import type {
   RunPermissionRequest,
   RunPlanEntry,
   RunPreview,
+  RunStartStep,
 } from "./ipc";
 
 /** New run's time limits offered by default, in minutes (30 minutes to 8 hours). */
@@ -259,6 +260,31 @@ export function hostLabel(run: Pick<AgentRun, "host_id" | "host_name">) {
 
 export function isRemote(run: Pick<AgentRun, "host_id">): boolean {
   return run.host_id !== "" && run.host_id !== "local";
+}
+
+/**
+ * A preparing run's start as steps (SPEC.md, The run: Starting): Brainiac
+ * copies the start, sends it to a remote host, and hands the run to the
+ * controller; then the controller starts the container and Claude Code.
+ */
+export function startSteps(
+  run: Pick<AgentRun, "host_id" | "host_name" | "starting">,
+): { label: string; state: "done" | "running" | "waiting" }[] {
+  const remote = isRemote(run);
+  const order: RunStartStep[] = remote
+    ? ["copy", "send", "start"]
+    : ["copy", "start"];
+  const labels = [
+    "Copy the start commit and its history",
+    ...(remote ? [`Send it to ${run.host_name}`] : []),
+    "Hand the run to the run controller",
+    "Start the container and Claude Code",
+  ];
+  const at = run.starting ? order.indexOf(run.starting) : labels.length - 1;
+  return labels.map((label, i) => ({
+    label,
+    state: i < at ? "done" : i === at ? "running" : "waiting",
+  }));
 }
 
 /** "under a minute", "31 min", "1 h 10 min". */

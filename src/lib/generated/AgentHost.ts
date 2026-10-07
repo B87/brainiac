@@ -33,4 +33,18 @@ emergency_stop: string | null,
 /**
  * Remove finished, and the host still holds a container or a volume.
  */
-state_kept: boolean, version: number, };
+state_kept: boolean, 
+/**
+ * The installed run controller's build, short; `None` before the
+ * first install, or when it was installed before builds were recorded.
+ */
+controller_build: string | null, protocol: number | null, controller_installed_at: string | null, 
+/**
+ * This Brainiac builds a different controller than the installed one.
+ */
+upgrade_available: boolean, 
+/**
+ * The build this Brainiac would install, short; `None` when it cannot
+ * build one (not run from a checkout).
+ */
+available_build: string | null, version: number, };
