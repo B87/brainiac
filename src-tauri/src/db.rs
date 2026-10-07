@@ -47,33 +47,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../migrations/0007_secret_sources.sql"),
     ),
     (
-        "0008_agent_runs",
-        include_str!("../migrations/0008_agent_runs.sql"),
+        "0008_machines",
+        include_str!("../migrations/0008_machines.sql"),
     ),
     (
-        "0009_agent_test",
-        include_str!("../migrations/0009_agent_test.sql"),
-    ),
-    (
-        "0010_agent_model",
-        include_str!("../migrations/0010_agent_model.sql"),
-    ),
-    (
-        "0011_agent_hosts_remote",
-        include_str!("../migrations/0011_agent_hosts_remote.sql"),
-    ),
-    (
-        "0012_agent_host_controller",
-        include_str!("../migrations/0012_agent_host_controller.sql"),
-    ),
-    (
-        "0013_machines",
-        include_str!("../migrations/0013_machines.sql"),
+        "0009_agent_runs",
+        include_str!("../migrations/0009_agent_runs.sql"),
     ),
 ];
-
-/// Migrations that rebuild `agent_hosts`, a table other rows reference.
-const REBUILDS_PARENT: &[&str] = &["0011_agent_hosts_remote", "0013_machines"];
 
 /// How many daily backups to keep.
 const BACKUP_RETENTION: usize = 7;
@@ -156,14 +137,6 @@ pub const HISTORY: Store = Store {
         (
             "0004_agent_runs",
             include_str!("../migrations/history/0004_agent_runs.sql"),
-        ),
-        (
-            "0005_agent_run_model",
-            include_str!("../migrations/history/0005_agent_run_model.sql"),
-        ),
-        (
-            "0006_agent_run_host",
-            include_str!("../migrations/history/0006_agent_run_host.sql"),
         ),
     ],
     backups: Backups::Every { days: 7, keep: 2 },
@@ -402,31 +375,12 @@ fn check_compatible(conn: &Connection, path: &Path, store: &Store) -> AppResult<
 pub fn migrate(conn: &mut Connection, store: &Store) -> AppResult<()> {
     let current = schema_version(conn)? as usize;
     for (index, (name, sql)) in store.migrations.iter().enumerate().skip(current) {
-        // Rebuilding `agent_hosts` drops a table other rows reference.
-        // SQLite ignores `foreign_keys` inside a transaction, so it is
-        // set around these migrations and the new table is checked after.
-        let rebuilds_parent = REBUILDS_PARENT.contains(name);
-        if rebuilds_parent {
-            conn.pragma_update(None, "foreign_keys", false)?;
-        }
         let tx = conn.transaction()?;
         tx.execute_batch(sql).map_err(|e| {
             AppError::db(format!("Migration {name} failed.")).with_details(e.to_string())
         })?;
         tx.pragma_update(None, "user_version", (index + 1) as i64)?;
         tx.commit()?;
-        if rebuilds_parent {
-            conn.pragma_update(None, "foreign_keys", true)?;
-            let broken: i64 =
-                conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
-                    r.get(0)
-                })?;
-            if broken != 0 {
-                return Err(AppError::db(format!(
-                    "Migration {name} left a broken reference."
-                )));
-            }
-        }
         tracing::info!(migration = name, "applied database migration");
     }
     Ok(())

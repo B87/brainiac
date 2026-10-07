@@ -13,12 +13,20 @@ CREATE TABLE agent_runs (
   start_commit        TEXT NOT NULL,
   start_subject       TEXT NOT NULL DEFAULT '',
   profile_id          TEXT NOT NULL,
+  -- Where it ran. The name is a snapshot, so a renamed host does not
+  -- rewrite it.
+  host_id             TEXT NOT NULL DEFAULT 'local',
+  host_name           TEXT NOT NULL DEFAULT 'This Mac',
   payment             TEXT NOT NULL,
   credential_source   TEXT NOT NULL,
   engine_socket       TEXT NOT NULL,
   engine_name         TEXT NOT NULL,
   image_name          TEXT NOT NULL,
   image_id            TEXT NOT NULL,
+  -- What the user asked Claude Code for (empty: its default), and the
+  -- model the session reported it opened with, once the agent is ready.
+  model               TEXT NOT NULL DEFAULT '',
+  model_used          TEXT,
   permissions         TEXT NOT NULL,
   time_limit_minutes  INTEGER NOT NULL,
   cpus                INTEGER NOT NULL,
