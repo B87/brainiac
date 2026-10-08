@@ -5,16 +5,20 @@ import type { AgentProfile } from "./AgentProfile";
 /**
  * Settings → Agents.
  */
-export type AgentSettings = { profile: AgentProfile, 
+export type AgentSettings = { 
+/**
+ * Claude Code, then OpenCode with each provider.
+ */
+profiles: Array<AgentProfile>, 
+/**
+ * The Docker socket of this Mac's engine; `None` until chosen.
+ */
+engine_socket: string | null, 
 /**
  * Whether this build offers paying with a Claude plan (SPEC.md,
  * Settings → Agents: it ships only once Anthropic's answer is recorded).
  */
 plan_offered: boolean, 
-/**
- * What still stops a run from starting, in the order to do it.
- */
-missing: Array<string>, 
 /**
  * This Mac, then every remote host (SPEC.md, Remote hosts).
  */

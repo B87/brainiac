@@ -4,13 +4,13 @@
 //! service; the app reconnects to it and does not stop a healthy run by
 //! disconnecting.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use super::controller::protocol::{Phase, RunStatus};
+use super::controller::protocol::{Phase, RunStatus, PROTOCOL};
 use super::host_jobs::{self, install, JobProgress};
 use super::image;
 use super::runner_binary;
@@ -19,7 +19,7 @@ use crate::db::Db;
 use crate::machines::ssh::{self, Target};
 use crate::machines::{self, Approval, Machine, MachineService};
 use crate::models::{
-    now_rfc3339, AgentHost, AgentHostPreview, AgentImage, AppError, AppResult,
+    now_rfc3339, AgentHost, AgentHostPreview, AgentImage, AgentTest, AppError, AppResult,
     ApproveAgentHostRequest, ErrorCode,
 };
 
@@ -570,22 +570,6 @@ impl AgentHostService {
         self.host(&row.id).await
     }
 
-    pub async fn record_test(&self, id: &str, credential_revision: i64) -> AppResult<()> {
-        let now = now_rfc3339();
-        let id = id.to_string();
-        self.db
-            .call(move |conn| {
-                conn.execute(
-                    "UPDATE agent_hosts SET test_passed_at = ?2, test_credential_revision = ?3,
-                        test_image_id = image_id, version = version + 1, updated_at = ?2
-                     WHERE id = ?1",
-                    params![id, now, credential_revision],
-                )?;
-                Ok(())
-            })
-            .await
-    }
-
     pub async fn runtime(&self, id: &str) -> AppResult<Arc<RunRuntime>> {
         if id.is_empty() || id == LOCAL_ID {
             return Err(AppError::validation(
@@ -879,20 +863,33 @@ fn load_host(conn: &Connection, id: &str) -> AppResult<Option<HostRow>> {
 }
 
 pub fn list(conn: &Connection) -> AppResult<Vec<AgentHost>> {
-    let revision: i64 = conn
-        .query_row(
-            "SELECT credential_revision FROM agent_profiles WHERE id = ?1",
-            [super::settings::PROFILE_ID],
-            |r| r.get(0),
-        )
-        .optional()?
-        .unwrap_or(0);
+    let revisions: HashMap<String, i64> = conn
+        .prepare("SELECT id, credential_revision FROM agent_profiles")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    // (host, profile, passed at, credential revision, image, engine)
+    type TestRow = (String, String, String, i64, String, Option<String>);
+    let tests: Vec<TestRow> = conn
+        .prepare(
+            "SELECT host_id, profile_id, passed_at, credential_revision, image_id, engine_socket
+             FROM agent_tests ORDER BY profile_id",
+        )?
+        .query_map([], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
     let mut stmt = conn.prepare(
         "SELECT h.id, h.kind, COALESCE(m.name, ?1), m.ssh_user, m.ssh_host, m.ssh_port,
             m.identity_path, m.fingerprint, h.installation, COALESCE(m.approved, 1),
             h.engine_name, h.loop_devices, h.image_id, h.image_recipe, h.image_built_at,
-            h.test_passed_at, h.test_image_id, h.state_kept, h.version,
-            h.test_credential_revision, h.controller_build, h.protocol,
+            h.socket, h.state_kept, h.version, h.controller_build, h.protocol,
             h.controller_installed_at
          FROM agent_hosts h LEFT JOIN machines m ON m.id = h.machine_id
          ORDER BY h.kind, 3",
@@ -900,17 +897,19 @@ pub fn list(conn: &Connection) -> AppResult<Vec<AgentHost>> {
     let recipe = image::recipe();
     let available = runner_binary::current_build();
     let rows = stmt.query_map([LOCAL_NAME], |r| {
+        let id: String = r.get(0)?;
         let kind: String = r.get(1)?;
         let user: Option<String> = r.get(3)?;
         let host: Option<String> = r.get(4)?;
         let port: Option<i64> = r.get(5)?;
+        let approved = r.get::<_, i64>(9)? != 0;
+        let loop_devices = r.get::<_, i64>(11)? != 0;
         let image_id: Option<String> = r.get(12)?;
         let image_recipe: Option<String> = r.get(13)?;
         let built_at: Option<String> = r.get(14)?;
-        let test_image: Option<String> = r.get(16)?;
-        let test_passed: Option<String> = r.get(15)?;
-        let test_revision: Option<i64> = r.get(19)?;
-        let controller_build: Option<String> = r.get(20)?;
+        let socket: Option<String> = r.get(15)?;
+        let controller_build: Option<String> = r.get(18)?;
+        let protocol = r.get::<_, Option<i64>>(19)?.map(|p| p as u32);
         let installed = r.get::<_, Option<String>>(8)?.is_some();
         let kind_is_ssh = kind == "ssh";
         let image = match (image_id.clone(), built_at) {
@@ -932,8 +931,30 @@ pub fn list(conn: &Connection) -> AppResult<Vec<AgentHost>> {
         } else {
             None
         };
+        // A passed test counts only for the credential and image it used,
+        // and on this Mac, the engine.
+        let tests = tests
+            .iter()
+            .filter(|t| t.0 == id)
+            .map(|(_, profile, passed_at, revision, image, engine)| AgentTest {
+                profile_id: profile.clone(),
+                passed_at: passed_at.clone(),
+                current: revisions.get(profile) == Some(revision)
+                    && image_id.as_ref() == Some(image)
+                    && (kind_is_ssh || engine.is_some() && *engine == socket),
+            })
+            .collect();
+        let missing = host_missing(HostState {
+            ssh: kind_is_ssh,
+            socket: socket.is_some(),
+            approved,
+            installed,
+            protocol,
+            image: image.as_ref(),
+            loop_devices,
+        });
         Ok(AgentHost {
-            id: r.get(0)?,
+            id,
             kind,
             name: r.get(2)?,
             ssh_user: r.get(3)?,
@@ -941,31 +962,71 @@ pub fn list(conn: &Connection) -> AppResult<Vec<AgentHost>> {
             ssh_port: r.get::<_, Option<i64>>(5)?.map(|p| p as u16),
             identity_path: r.get(6)?,
             fingerprint: r.get(7)?,
-            approved: r.get::<_, i64>(9)? != 0,
+            approved,
             installed,
             engine_name: r.get(10)?,
-            loop_devices: r.get::<_, i64>(11)? != 0,
-            // A passed test counts only for the credential and image it used.
-            test_current: test_passed.is_some()
-                && test_revision == Some(revision)
-                && test_image.is_some()
-                && test_image == image_id,
+            loop_devices,
             image,
+            missing,
+            tests,
             emergency_stop: emergency,
-            state_kept: r.get::<_, i64>(17)? != 0,
+            state_kept: r.get::<_, i64>(16)? != 0,
             controller_build: controller_build.as_deref().map(runner_binary::short_build),
-            protocol: r.get::<_, Option<i64>>(21)?.map(|p| p as u32),
-            controller_installed_at: r.get(22)?,
+            protocol,
+            controller_installed_at: r.get(20)?,
             upgrade_available: upgrade_available(installed, controller_build.as_deref(), available.as_deref()),
             available_build: if kind_is_ssh {
                 available.as_deref().map(runner_binary::short_build)
             } else {
                 None
             },
-            version: r.get(18)?,
+            version: r.get(17)?,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// What [`host_missing`] looks at.
+struct HostState<'a> {
+    ssh: bool,
+    socket: bool,
+    approved: bool,
+    installed: bool,
+    protocol: Option<u32>,
+    image: Option<&'a AgentImage>,
+    loop_devices: bool,
+}
+
+/// What still stops a host from taking any run, in the order to do it. A
+/// profile's own test there comes after.
+fn host_missing(h: HostState<'_>) -> Vec<String> {
+    let mut missing = Vec::new();
+    if !h.ssh && !h.socket {
+        missing.push("Choose where runs execute.".to_string());
+    }
+    if h.ssh && !h.approved {
+        missing.push("Confirm this host's key.".to_string());
+    }
+    if h.ssh && !h.installed {
+        missing.push("Install the run controller.".to_string());
+    } else if h.ssh && h.protocol != Some(PROTOCOL) {
+        missing.push(
+            "Upgrade the run controller: this version of Brainiac speaks to it differently."
+                .to_string(),
+        );
+    }
+    match h.image {
+        None => missing.push("Build the image.".to_string()),
+        Some(i) if !i.current => {
+            missing.push("Rebuild the image: this version of Brainiac changed it.".to_string())
+        }
+        Some(_) if h.ssh && !h.loop_devices => missing.push(
+            "This host's Docker engine cannot attach loop devices, so it cannot take a run."
+                .to_string(),
+        ),
+        Some(_) => {}
+    }
+    missing
 }
 
 /// Send `bytes` to a fixed path on the host. The path is not user input.

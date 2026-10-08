@@ -4,6 +4,8 @@ import {
   dayLabel,
   engineSummary,
   imageSummary,
+  profileName,
+  profileTestState,
 } from "../lib/agentRuns";
 import {
   hostState,
@@ -13,6 +15,7 @@ import {
 import {
   type AgentEngine,
   type AgentHost,
+  type AgentProfile,
   type AgentRun,
   type AgentSettings,
   type AgentTestResult,
@@ -24,8 +27,20 @@ import {
 import HostJobView, { HostPill } from "./HostJobView";
 import { Group, Hint } from "./SettingsPanes";
 
-/** Agents › Run hosts › a host: where the breadcrumb goes back to. */
-function Breadcrumb({ name, onBack }: { name: string; onBack: () => void }) {
+/**
+ * Agents › Run hosts › a host, or Agents › a profile: where the breadcrumb
+ * goes back to.
+ */
+export function Breadcrumb({
+  name,
+  via,
+  onBack,
+}: {
+  name: string;
+  /** The list between Agents and the page, such as "Run hosts". */
+  via?: string;
+  onBack: () => void;
+}) {
   return (
     <nav aria-label="Breadcrumb" className="text-[12px] text-muted">
       <button
@@ -36,14 +51,19 @@ function Breadcrumb({ name, onBack }: { name: string; onBack: () => void }) {
         Agents
       </button>{" "}
       ›{" "}
-      <button
-        type="button"
-        className="text-link hover:underline"
-        onClick={onBack}
-      >
-        Run hosts
-      </button>{" "}
-      › {name}
+      {via && (
+        <>
+          <button
+            type="button"
+            className="text-link hover:underline"
+            onClick={onBack}
+          >
+            {via}
+          </button>{" "}
+          ›{" "}
+        </>
+      )}
+      {name}
     </nav>
   );
 }
@@ -156,6 +176,166 @@ function useLiveRuns(hostId: string): AgentRun[] {
   return runs;
 }
 
+/** What the host still lacks before any run, in the order to do it. */
+function HostMissing({ host }: { host: AgentHost }) {
+  if (host.missing.length === 0) return null;
+  return (
+    <Group label="Before the first run">
+      <ul className="m-0 flex flex-col gap-1 pl-5 text-[12.5px] text-fg-2">
+        {host.missing.map((m) => (
+          <li key={m}>{m}</li>
+        ))}
+      </ul>
+    </Group>
+  );
+}
+
+/** The image's row: what it holds, when it was built, and its Dockerfile. */
+function ImageRow({
+  host,
+  building,
+  onViewDockerfile,
+  children,
+}: {
+  host: AgentHost;
+  building?: boolean;
+  onViewDockerfile: () => void;
+  children: ReactNode;
+}) {
+  const recipe = "Claude Code, its ACP adapter, and OpenCode";
+  return (
+    <SetupRow
+      done={!!host.image?.current}
+      title={host.image ? "Image built" : "Image not built"}
+      detail={
+        host.image ? (
+          <>
+            <span className="mono">{imageSummary(host.image)}</span> ·{" "}
+            {dayLabel(host.image.built_at)}
+            {!host.image.current &&
+              " · this Brainiac changed the Dockerfile: rebuild it"}
+            {host.kind === "ssh" &&
+              host.engine_name &&
+              ` · ${host.engine_name}`}
+            {building &&
+              " · building downloads the base image and packages; it takes a few minutes"}
+          </>
+        ) : building ? (
+          "Building downloads the base image and packages; it takes a few minutes."
+        ) : (
+          `${recipe}, each at a pinned version.`
+        )
+      }
+    >
+      <button
+        type="button"
+        className="btn btn-sm btn-ghost text-link"
+        title={`${recipe}, from a Dockerfile you can read`}
+        onClick={onViewDockerfile}
+      >
+        View Dockerfile
+      </button>
+      {children}
+    </SetupRow>
+  );
+}
+
+/**
+ * One test line per profile on a host: passed, to run again, not run, or
+ * what the profile lacks first (SPEC.md, Settings → Agents, Test).
+ */
+function ProfileTests({
+  host,
+  profiles,
+  disabled,
+  testing,
+  onTest,
+  result,
+}: {
+  host: AgentHost;
+  profiles: AgentProfile[];
+  /** Nothing can be tested now: the host is busy or not ready. */
+  disabled: boolean;
+  /** The profile being tested now, if any. */
+  testing?: string | null;
+  onTest: (profileId: string) => void;
+  /** This Mac's last test, under its profile's line. */
+  result?: { profileId: string; result: AgentTestResult } | null;
+}) {
+  return (
+    <>
+      {profiles.map((profile) => {
+        const name = profileName(profile);
+        const state = profileTestState(profile, host);
+        const title =
+          state.kind === "passed"
+            ? `${name} · test passed ${dayLabel(state.at)}`
+            : state.kind === "stale"
+              ? `${name} · test to run again`
+              : `${name} · not tested`;
+        const detail =
+          state.kind === "passed"
+            ? "With this token or key, image, and engine."
+            : state.kind === "stale"
+              ? `Passed ${dayLabel(state.at)}, before the token or key, the image, or the engine changed.`
+              : state.kind === "blocked"
+                ? state.reason
+                : "Runs of it start here once it passes.";
+        const shown = result?.profileId === profile.id ? result.result : null;
+        return (
+          <li
+            key={profile.id}
+            className="settings-row flex-col items-stretch gap-2"
+          >
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+              <Check done={state.kind === "passed"} />
+              <span className="flex min-w-55 flex-1 flex-col gap-0.5">
+                <span className="font-medium">{title}</span>
+                <Hint>{detail}</Hint>
+              </span>
+              <button
+                type="button"
+                className="btn btn-sm"
+                aria-label={`Test ${name}`}
+                disabled={disabled || state.kind === "blocked" || !!testing}
+                onClick={() => onTest(profile.id)}
+              >
+                {testing === profile.id
+                  ? "Testing…"
+                  : state.kind === "passed" || state.kind === "stale"
+                    ? "Test Again"
+                    : "Test"}
+              </button>
+            </div>
+            {shown && (
+              <div className="flex flex-col gap-1 pl-8">
+                {shown.steps.map((step) => (
+                  <div key={step.name} className="flex gap-2 text-[12.5px]">
+                    <span
+                      className={step.passed ? "text-added" : "text-conflict"}
+                    >
+                      {step.passed ? "✓" : "✕"}
+                    </span>
+                    <span>{step.name}</span>
+                    {step.detail && (
+                      <span className="truncate text-muted">{step.detail}</span>
+                    )}
+                  </div>
+                ))}
+                <Hint>
+                  {shown.passed
+                    ? `Passed at ${dayLabel(shown.tested_at)}.`
+                    : `The test did not pass; runs of ${name} cannot start here yet.`}
+                </Hint>
+              </div>
+            )}
+          </li>
+        );
+      })}
+    </>
+  );
+}
+
 const CANCEL_LABEL: Partial<Record<HostJobKind, string>> = {
   install: "Cancel install",
   upgrade: "Cancel upgrade",
@@ -169,16 +349,20 @@ const CANCEL_LABEL: Partial<Record<HostJobKind, string>> = {
  */
 export function RemoteHostPage({
   host,
+  profiles,
   onBack,
   onChanged,
   onConfirmKey,
+  onViewDockerfile,
   onOpenRun,
 }: {
   host: AgentHost;
+  profiles: AgentProfile[];
   onBack: () => void;
   onChanged: () => void;
   /** Opens Add host for this host, to approve its key again. */
   onConfirmKey: (host: AgentHost) => void;
+  onViewDockerfile: () => void;
   onOpenRun?: (runId: string) => void;
 }) {
   const jobs = useHostJobsContext();
@@ -198,11 +382,12 @@ export function RemoteHostPage({
     if (jobState && jobState !== "running") onChanged();
   }, [jobState]);
 
-  const start = async (kind: HostJobKind) => {
+  /** A job; Test is of one profile. */
+  const start = async (kind: HostJobKind, profileId?: string) => {
     setError(null);
     setBusy(true);
     try {
-      await ipc.startAgentHostJob(host.id, kind);
+      await ipc.startAgentHostJob(host.id, kind, profileId);
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -239,7 +424,7 @@ export function RemoteHostPage({
 
   return (
     <div className="flex flex-col gap-5">
-      <Breadcrumb name={host.name} onBack={onBack} />
+      <Breadcrumb name={host.name} via="Run hosts" onBack={onBack} />
       <PageHeader
         host={host}
         subtitle={
@@ -273,7 +458,12 @@ export function RemoteHostPage({
                 type="button"
                 className="btn btn-sm btn-primary"
                 disabled={busy}
-                onClick={() => void start(job.kind)}
+                onClick={() =>
+                  void start(
+                    job.kind,
+                    job.kind === "test" ? job.profile_ids[0] : undefined,
+                  )
+                }
               >
                 Try Again
               </button>
@@ -361,6 +551,8 @@ export function RemoteHostPage({
 
       {job && <HostJobView job={job} />}
 
+      {host.approved && host.installed && <HostMissing host={host} />}
+
       {running &&
         job &&
         (job.kind === "upgrade" ||
@@ -441,23 +633,7 @@ export function RemoteHostPage({
               {host.installed ? "Reinstall" : "Install"}
             </button>
           </SetupRow>
-          <SetupRow
-            done={!!host.image?.current}
-            title={host.image ? "Image built" : "Image not built"}
-            detail={
-              host.image ? (
-                <>
-                  <span className="mono">{imageSummary(host.image)}</span> ·{" "}
-                  {dayLabel(host.image.built_at)}
-                  {!host.image.current &&
-                    " · this Brainiac changed the Dockerfile: rebuild it"}
-                  {host.engine_name && ` · ${host.engine_name}`}
-                </>
-              ) : (
-                "Claude Code and its ACP adapter, built on the host from the Dockerfile in Settings."
-              )
-            }
-          >
+          <ImageRow host={host} onViewDockerfile={onViewDockerfile}>
             <button
               type="button"
               className="btn btn-sm btn-ghost text-link"
@@ -466,26 +642,23 @@ export function RemoteHostPage({
             >
               {host.image ? "Rebuild" : "Build Image"}
             </button>
-          </SetupRow>
-          <SetupRow
-            done={host.test_current}
-            title={host.test_current ? "Test passed" : "Not tested"}
-            detail={
-              host.test_current
-                ? "With this token or key and this image."
-                : "A short run: the first time the token or key goes to the host. Runs start once it passes."
+          </ImageRow>
+          <ProfileTests
+            host={host}
+            profiles={profiles}
+            disabled={
+              blocked || !host.image?.current || host.missing.length > 0
             }
-          >
-            <button
-              type="button"
-              className="btn btn-sm btn-ghost text-link"
-              disabled={blocked || !host.image?.current}
-              onClick={() => void start("test")}
-            >
-              {host.test_current ? "Test Again" : "Test"}
-            </button>
-          </SetupRow>
+            testing={
+              running && job?.kind === "test" ? job.profile_ids[0] : null
+            }
+            onTest={(profileId) => void start("test", profileId)}
+          />
         </ol>
+        <Hint>
+          A test starts a short run, sends a prompt, cancels, and collects. It
+          is the first time that token or key goes to {host.name}.
+        </Hint>
       </Group>
 
       {live.length > 0 && (
@@ -619,6 +792,7 @@ export function LocalHostPage({
   busy,
   onBack,
   onChooseEngine,
+  onViewDockerfile,
   onSettings,
   onError,
 }: {
@@ -627,17 +801,21 @@ export function LocalHostPage({
   busy: boolean;
   onBack: () => void;
   onChooseEngine: (socket: string) => void;
+  onViewDockerfile: () => void;
   onSettings: (settings: AgentSettings) => void;
   onError: (message: string | null) => void;
 }) {
-  const profile = settings.profile;
   const [engines, setEngines] = useState<AgentEngine[] | null>(null);
   const [controller, setController] = useState<RunControllerStatus | null>(
     null,
   );
   const [building, setBuilding] = useState(false);
-  const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<AgentTestResult | null>(null);
+  /** The profile being tested, and the last test's result under its line. */
+  const [testing, setTesting] = useState<string | null>(null);
+  const [testResult, setTestResult] = useState<{
+    profileId: string;
+    result: AgentTestResult;
+  } | null>(null);
 
   const loadEngines = useCallback(() => {
     setEngines(null);
@@ -677,23 +855,24 @@ export function LocalHostPage({
     }
   };
   /** Test: minutes when a wrong token is retried; the page stays usable. */
-  const runTest = async () => {
-    setTesting(true);
+  const runTest = async (profileId: string) => {
+    setTesting(profileId);
     onError(null);
     setTestResult(null);
     try {
-      setTestResult(await ipc.testAgentSetup());
+      const result = await ipc.testAgentSetup(profileId);
+      setTestResult({ profileId, result });
       onSettings(await ipc.getAgentSettings());
     } catch (e) {
       onError(errorMessage(e));
     } finally {
-      setTesting(false);
+      setTesting(null);
     }
   };
 
   return (
     <div className="flex flex-col gap-5">
-      <Breadcrumb name="This Mac" onBack={onBack} />
+      <Breadcrumb name="This Mac" via="Run hosts" onBack={onBack} />
       <PageHeader
         host={host}
         subtitle="Runs pause while this Mac sleeps; when it wakes, a run past its time limit is stopped."
@@ -717,7 +896,7 @@ export function LocalHostPage({
               <EngineRow
                 key={engine.socket}
                 engine={engine}
-                chosen={profile.engine_socket === engine.socket}
+                chosen={settings.engine_socket === engine.socket}
                 disabled={busy}
                 onChoose={() => onChooseEngine(engine.socket)}
               />
@@ -746,89 +925,39 @@ export function LocalHostPage({
         </div>
       </Group>
 
+      <HostMissing host={host} />
+
       <Group label="Setup">
         <ol className="settings-group m-0 list-none p-0">
-          <SetupRow
-            done={!!profile.image?.current}
-            title={profile.image ? "Image built" : "Image not built"}
-            detail={
-              profile.image ? (
-                <>
-                  <span className="mono">{imageSummary(profile.image)}</span> ·{" "}
-                  {dayLabel(profile.image.built_at)}
-                  {!profile.image.current &&
-                    " · this Brainiac changed the Dockerfile: rebuild it"}
-                  {building &&
-                    " · building downloads the base image and packages; it takes a few minutes"}
-                </>
-              ) : building ? (
-                "Building downloads the base image and packages; it takes a few minutes."
-              ) : (
-                "Claude Code and its ACP adapter, from the Dockerfile in Settings."
-              )
-            }
+          <ImageRow
+            host={host}
+            building={building}
+            onViewDockerfile={onViewDockerfile}
           >
             <button
               type="button"
               className="btn btn-sm"
-              disabled={
-                building ||
-                busy ||
-                !profile.engine_socket ||
-                profile.credential.needs_approval
-              }
+              disabled={building || busy || !settings.engine_socket}
               onClick={() => void build()}
             >
-              {building
-                ? "Building…"
-                : profile.image
-                  ? "Rebuild"
-                  : "Build Image"}
+              {building ? "Building…" : host.image ? "Rebuild" : "Build Image"}
             </button>
-          </SetupRow>
-          <SetupRow
-            done={profile.test_current}
-            title={
-              profile.test_passed_at && profile.test_current
-                ? `Test passed ${dayLabel(profile.test_passed_at)}`
-                : profile.test_passed_at
-                  ? `Passed on ${dayLabel(profile.test_passed_at)}, before the token or key, the image, or the engine changed`
-                  : "Not tested"
-            }
-            detail="A test starts a short run, sends a prompt, cancels, and collects. A run cannot start until one passes for this token or key, image, and engine. A wrong token or key can take a few minutes to be refused: Claude Code retries it first."
-          >
-            <button
-              type="button"
-              className="btn btn-sm"
-              disabled={busy || testing}
-              onClick={() => void runTest()}
-            >
-              {testing ? "Testing…" : "Test"}
-            </button>
-          </SetupRow>
-          {testResult && (
-            <li className="settings-row flex-col items-stretch gap-1">
-              {testResult.steps.map((step) => (
-                <div key={step.name} className="flex gap-2 text-[12.5px]">
-                  <span
-                    className={step.passed ? "text-added" : "text-conflict"}
-                  >
-                    {step.passed ? "✓" : "✕"}
-                  </span>
-                  <span>{step.name}</span>
-                  {step.detail && (
-                    <span className="truncate text-muted">{step.detail}</span>
-                  )}
-                </div>
-              ))}
-              <Hint>
-                {testResult.passed
-                  ? `Passed at ${dayLabel(testResult.tested_at)}.`
-                  : "The test did not pass; runs cannot start yet."}
-              </Hint>
-            </li>
-          )}
+          </ImageRow>
+          <ProfileTests
+            host={host}
+            profiles={settings.profiles}
+            disabled={busy || building || host.missing.length > 0}
+            testing={testing}
+            onTest={(profileId) => void runTest(profileId)}
+            result={testResult}
+          />
         </ol>
+        <Hint>
+          A test starts a short run, sends a prompt, cancels, and collects. A
+          run of an agent cannot start until its test passes for this token or
+          key, image, and engine. A wrong token or key can take a few minutes to
+          be refused: the agent retries it first.
+        </Hint>
       </Group>
     </div>
   );

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   activityLabel,
   activityTone,
+  agentName,
   agoLabel,
   costLabel,
   destinationLabel,
@@ -12,6 +13,7 @@ import {
   groupOf,
   hostLabel,
   isRemote,
+  keyLabel,
   leftOutUndecided,
   listResult,
   listWhen,
@@ -36,6 +38,7 @@ import {
 import { editCounts, editLines, workspacePath } from "../lib/editDiff";
 import { clock, useNow } from "../lib/hostJobs";
 import {
+  type AgentKind,
   type AgentRun,
   type AppSnapshot,
   type CommitFile,
@@ -231,8 +234,8 @@ function RunList({ snapshot, runs, onSelect, onNewRun }: Props) {
         ) : runs.length === 0 ? (
           <div className="flex max-w-[560px] flex-col items-start gap-2 py-8 text-[13px] text-fg-2">
             <p className="m-0">
-              No runs yet. A run hands a commit of one of your repositories to
-              Claude Code in a container. Its work comes back as changes you
+              No runs yet. A run hands a commit of one of your repositories to a
+              coding agent in a container. Its work comes back as changes you
               review before anything leaves Brainiac.
             </p>
             <button type="button" className="btn btn-sm" onClick={onNewRun}>
@@ -318,7 +321,9 @@ function RunRow({
         <span className="truncate font-medium">{run.title}</span>
         <span className="flex min-w-0 items-center gap-1.5 text-[11.5px] text-muted">
           <RepoChip repo={repo} fallbackName={run.repository_name} />
-          <span className="truncate">· Claude Code on {hostLabel(run)}</span>
+          <span className="truncate">
+            · {agentName(run.agent)} on {hostLabel(run)}
+          </span>
         </span>
       </span>
       <span className="flex min-w-0 flex-wrap items-center gap-1">
@@ -580,7 +585,7 @@ function RunView({
                 </code>
               </span>
               <span>
-                Claude Code on {hostLabel(run)} · {modelLabel(run)}
+                {agentName(run.agent)} on {hostLabel(run)} · {modelLabel(run)}
               </span>
               <span>
                 {run.permissions === "ask"
@@ -1126,11 +1131,12 @@ function RunDetails({
             : "Pauses while this Mac sleeps."}
         </Note>
       </Fact>
+      <Fact label="Agent">{agentName(run.agent)}</Fact>
       <Fact label="Code and prompts go to">
-        {destinationLabel(run.payment)}
+        {destinationLabel(run)}
         <Note>
-          {run.payment === "claude_plan" ? "Token" : "Key"} from{" "}
-          {run.credential_source}.
+          {run.payment === "claude_plan" ? "Token" : keyLabel(run.provider)}{" "}
+          from {run.credential_source}.
         </Note>
       </Fact>
       <Fact label="Network">
@@ -1349,6 +1355,7 @@ function Conversation({
             <TurnView
               key={t.turn}
               turn={t}
+              agent={run.agent}
               latest={t === last}
               pending={pending}
               busy={busy}
@@ -1363,7 +1370,7 @@ function Conversation({
                 size={13}
                 className="text-accent motion-safe:animate-spin"
               />
-              Claude Code is working
+              {agentName(run.agent)} is working
               {last.lastAt
                 ? ` · last update ${agoLabel(last.lastAt, now)}`
                 : ""}
@@ -1477,6 +1484,7 @@ function Divider({ children }: { children: React.ReactNode }) {
  */
 function TurnView({
   turn: t,
+  agent,
   latest,
   pending,
   busy,
@@ -1485,6 +1493,7 @@ function TurnView({
   onPermit,
 }: {
   turn: Turn;
+  agent: AgentKind;
   latest: boolean;
   pending: Set<string>;
   busy: boolean;
@@ -1530,7 +1539,9 @@ function TurnView({
         waiting.length > 0) && (
         <div className="flex flex-col gap-2.5">
           <span className="text-[12px] text-muted">
-            <strong className="font-semibold text-fg">Claude Code</strong>
+            <strong className="font-semibold text-fg">
+              {agentName(agent)}
+            </strong>
             {t.lastAt ? ` · ${shortClock(t.ended?.at ?? t.lastAt)}` : ""}
             {t.ended ? ` · turn ${t.turn} ended` : ""}
           </span>
@@ -1563,6 +1574,7 @@ function TurnView({
           {waiting.map((p) => (
             <PermissionCard
               key={p.permission_id}
+              agent={agent}
               permission={p}
               busy={busy}
               connected={connected}
@@ -1807,12 +1819,14 @@ function AnsweredRow({ permission: p }: { permission: PermissionState }) {
 }
 
 function PermissionCard({
+  agent,
   permission: p,
   busy,
   connected,
   deadline,
   onPermit,
 }: {
+  agent: AgentKind;
   permission: PermissionState;
   busy: boolean;
   connected: boolean;
@@ -1830,7 +1844,7 @@ function PermissionCard({
       <div className="flex items-center gap-2">
         <TerminalIcon size={15} className="text-dirty" />
         <h3 id={heading} className="m-0 text-[13px] font-semibold">
-          {permissionHeading(p.kind)}
+          {permissionHeading(agent, p.kind)}
         </h3>
       </div>
       {(p.diffs.length === 0 ||

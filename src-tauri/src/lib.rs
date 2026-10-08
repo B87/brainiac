@@ -530,6 +530,7 @@ pub fn run() {
             commands::save_agent_settings,
             commands::save_agent_credential,
             commands::remove_agent_credential,
+            commands::choose_agent_engine,
             commands::approve_agent_settings,
             commands::list_agent_engines,
             commands::agent_dockerfile,

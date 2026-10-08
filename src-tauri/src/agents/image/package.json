@@ -1,9 +1,10 @@
 {
-  "name": "brainiac-claude-runner",
+  "name": "brainiac-agents-runner",
   "private": true,
   "description": "The packages of Brainiac's run image, each at a pinned version.",
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.85.1",
-    "@anthropic-ai/claude-code": "2.1.286"
+    "@anthropic-ai/claude-code": "2.1.286",
+    "opencode-ai": "1.18.35"
   }
 }

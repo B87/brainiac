@@ -1,14 +1,18 @@
 /**
  * Settings → Agents (SPEC.md, Agent runs — v0.5): how the pane reads a
- * profile, an engine, and an image, and the request a change saves.
+ * profile (an agent and its model provider), an engine, and an image, what
+ * stops a profile's runs on a host, and the request a change saves.
  */
 
 import type { SaveAgentSettingsRequest } from "./generated/SaveAgentSettingsRequest";
 import type {
   AgentEngine,
+  AgentHost,
   AgentImage,
+  AgentKind,
   AgentPayment,
   AgentProfile,
+  AgentProvider,
   AgentRun,
   RunEvent,
   RunFileDiff,
@@ -29,30 +33,186 @@ export function durationLabel(minutes: number): string {
   return `${Math.floor(hours)} h ${minutes % 60} min`;
 }
 
-/**
- * Models offered as suggestions: Claude Code's aliases, which follow its
- * releases; a full model name is accepted too. Empty is its default.
- */
-export const MODEL_SUGGESTIONS = ["opus", "sonnet", "haiku", "opusplan"];
+const AGENT_NAME: Record<AgentKind, string> = {
+  claude_code: "Claude Code",
+  opencode: "OpenCode",
+};
 
-/** A model as typed: trimmed; an alias or a name without spaces, up to 64. */
+const PROVIDER_NAME: Record<AgentProvider, string> = {
+  anthropic: "Anthropic",
+  openai: "OpenAI",
+  openrouter: "OpenRouter",
+};
+
+/** "Claude Code", "OpenCode". */
+export function agentName(agent: AgentKind): string {
+  return AGENT_NAME[agent];
+}
+
+/** "Anthropic", "OpenAI", "OpenRouter". */
+export function providerName(provider: AgentProvider): string {
+  return PROVIDER_NAME[provider];
+}
+
+/**
+ * A profile's name, as Settings and New run show it: "Claude Code", or
+ * "OpenCode · OpenRouter" (Rust `settings::profile_name`).
+ */
+export function profileName(
+  profile: Pick<AgentProfile, "agent" | "provider">,
+): string {
+  return profile.agent === "claude_code"
+    ? AGENT_NAME.claude_code
+    : `${AGENT_NAME[profile.agent]} · ${PROVIDER_NAME[profile.provider]}`;
+}
+
+/** "OpenRouter API key". */
+export function keyLabel(provider: AgentProvider): string {
+  return `${PROVIDER_NAME[provider]} API key`;
+}
+
+/** Pay with's choices: Claude Code's plan when offered, else the provider's key. */
+export function paymentsOffered(
+  profile: Pick<AgentProfile, "agent">,
+  planOffered: boolean,
+): AgentPayment[] {
+  return profile.agent === "claude_code" && planOffered
+    ? ["claude_plan", "api_key"]
+    : ["api_key"];
+}
+
+/** "Claude plan" or "API key"; OpenCode names the provider's key. */
+export function paymentLabel(
+  profile: Pick<AgentProfile, "agent" | "provider">,
+  payment: AgentPayment,
+): string {
+  if (payment === "claude_plan") return "Claude plan";
+  return profile.agent === "claude_code"
+    ? "API key"
+    : keyLabel(profile.provider);
+}
+
+/** New run's Agent choice: "Claude Code · API key", "OpenCode · OpenRouter". */
+export function profileChoice(profile: AgentProfile): string {
+  return profile.agent === "claude_code"
+    ? `${profileName(profile)} · ${paymentLabel(profile, profile.payment)}`
+    : profileName(profile);
+}
+
+/** Where code and prompts go (Rust `settings::destination`). */
+export function destinationLabel(
+  profile: Pick<AgentProfile, "provider" | "payment">,
+): string {
+  return profile.payment === "claude_plan"
+    ? "Anthropic, under your Claude plan"
+    : `${PROVIDER_NAME[profile.provider]}, with an API key`;
+}
+
+/** "token" or "API key", for sentences about the credential. */
+export function credentialWord(payment: AgentPayment): string {
+  return payment === "claude_plan" ? "token" : "API key";
+}
+
+/**
+ * What stops a run of this profile on this host, in the order to do it:
+ * the profile's own setup, the host's, then a passed test of the profile
+ * there that still matches (Rust `settings::run_missing`).
+ */
+export function runMissing(profile: AgentProfile, host: AgentHost): string[] {
+  const missing = [...profile.missing, ...host.missing];
+  const name = profileName(profile);
+  const test = host.tests.find((t) => t.profile_id === profile.id);
+  if (!test) missing.push(`Pass a test of ${name} on ${host.name}.`);
+  else if (!test.current)
+    missing.push(
+      `Test ${name} on ${host.name} again: the token or key, the image, or the engine changed since.`,
+    );
+  return missing;
+}
+
+/** A profile's test on a host, as its page shows it. */
+export type ProfileTestState =
+  | { kind: "passed"; at: string }
+  | { kind: "stale"; at: string }
+  | { kind: "untested" }
+  | { kind: "blocked"; reason: string };
+
+export function profileTestState(
+  profile: AgentProfile,
+  host: AgentHost,
+): ProfileTestState {
+  const test = host.tests.find((t) => t.profile_id === profile.id);
+  if (test?.current) return { kind: "passed", at: test.passed_at };
+  const blocked = profile.missing[0];
+  if (blocked) return { kind: "blocked", reason: blocked };
+  return test ? { kind: "stale", at: test.passed_at } : { kind: "untested" };
+}
+
+/**
+ * Models offered as suggestions, per profile: Claude Code's aliases, which
+ * follow its releases, and for OpenCode the provider's model names. Any
+ * other name is accepted too.
+ */
+export function modelSuggestions(
+  profile: Pick<AgentProfile, "agent" | "provider">,
+): string[] {
+  if (profile.agent === "claude_code")
+    return ["opus", "sonnet", "haiku", "opusplan"];
+  switch (profile.provider) {
+    case "anthropic":
+      return ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-4-5"];
+    case "openai":
+      return ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol"];
+    case "openrouter":
+      return ["anthropic/claude-sonnet-5-5", "openai/gpt-6.1-sol"];
+  }
+}
+
+/** Whether the agent has a model of its own when none is given. */
+export function modelRequired(agent: AgentKind): boolean {
+  return agent === "opencode";
+}
+
+/** The model field's placeholder: Claude Code's default, or what OpenCode needs. */
+export function modelPlaceholder(agent: AgentKind): string {
+  return agent === "claude_code" ? "Claude Code's default" : "Required";
+}
+
+/** What the model field takes, for its hint. */
+export function modelHint(
+  profile: Pick<AgentProfile, "agent" | "provider">,
+): string {
+  if (profile.agent === "claude_code")
+    return "An alias (opus, sonnet, haiku, opusplan) or a full model name; empty for Claude Code's default. The agent reports the model it opened with, so a name the plan or key cannot use shows there.";
+  const example = modelSuggestions(profile)[0];
+  return `Required: ${PROVIDER_NAME[profile.provider]}'s model name, such as ${example}. The test runs with it, so a name the key cannot use fails there.`;
+}
+
+/**
+ * A model as typed: trimmed, with only the characters model names use
+ * (OpenRouter's carry a slash), up to 96 (Rust `settings::check_model`).
+ */
 export function parseModel(
+  agent: AgentKind,
   text: string,
 ): { value: string } | { error: string } {
   const model = text.trim();
-  return model.length <= 64 && /^[A-Za-z0-9._:[\]-]*$/.test(model)
-    ? { value: model }
-    : {
-        error: "An alias such as sonnet, or a full model name, with no spaces.",
-      };
+  if (model.length <= 96 && /^[A-Za-z0-9._:[\]/-]*$/.test(model))
+    return { value: model };
+  return {
+    error:
+      agent === "claude_code"
+        ? "An alias such as sonnet, or a full model name, with no spaces."
+        : "The provider's model name, with no spaces.",
+  };
 }
 
 /** What a run's model shows: the one the agent reported, else the one asked for. */
 export function modelLabel(
-  run: Pick<AgentRun, "model" | "model_used">,
+  run: Pick<AgentRun, "agent" | "model" | "model_used">,
 ): string {
   if (run.model_used) return run.model_used;
-  return run.model === "" ? "Claude Code's default" : run.model;
+  return run.model === "" ? `${agentName(run.agent)}'s default` : run.model;
 }
 
 /** The pane's request for a profile with some fields changed. */
@@ -61,8 +221,8 @@ export function settingsRequest(
   patch: Partial<SaveAgentSettingsRequest> = {},
 ): SaveAgentSettingsRequest {
   return {
+    profile_id: profile.id,
     expected_version: profile.version,
-    engine_socket: profile.engine_socket,
     sends_code_agreed: profile.sends_code_agreed,
     permissions: profile.permissions,
     time_limit_minutes: profile.time_limit_minutes,
@@ -72,17 +232,6 @@ export function settingsRequest(
     model: profile.model,
     ...patch,
   };
-}
-
-/** Where code and prompts go, by payment. */
-export function destinationLabel(payment: AgentPayment): string {
-  return payment === "claude_plan"
-    ? "Anthropic, under your Claude plan"
-    : "Anthropic, with an API key";
-}
-
-export function paymentLabel(payment: AgentPayment): string {
-  return payment === "claude_plan" ? "Claude plan" : "API key";
 }
 
 /** "Docker 28.3.2 · API 1.51 · 8 CPUs · 16 GB", or why it cannot be used. */
@@ -98,7 +247,7 @@ export function engineSummary(engine: AgentEngine): string {
   return parts.join(" · ");
 }
 
-/** "brainiac-claude:3f9c41e1a2b0 · sha256:9f3c41e1…" */
+/** "brainiac-agents:3f9c41e1a2b0 · sha256:9f3c41e1…" */
 export function imageSummary(image: AgentImage): string {
   const id = image.id.replace(/^sha256:/, "");
   return `${image.name} · sha256:${id.slice(0, 12)}…`;
@@ -265,7 +414,7 @@ export function isRemote(run: Pick<AgentRun, "host_id">): boolean {
 /**
  * A preparing run's start as steps (SPEC.md, The run: Starting): Brainiac
  * copies the start, sends it to a remote host, and hands the run to the
- * controller; then the controller starts the container and Claude Code.
+ * controller; then the controller starts the container and the agent.
  */
 export function startSteps(
   run: Pick<AgentRun, "host_id" | "host_name" | "starting">,
@@ -278,7 +427,7 @@ export function startSteps(
     "Copy the start commit and its history",
     ...(remote ? [`Send it to ${run.host_name}`] : []),
     "Hand the run to the run controller",
-    "Start the container and Claude Code",
+    "Start the container and the agent",
   ];
   const at = run.starting ? order.indexOf(run.starting) : labels.length - 1;
   return labels.map((label, i) => ({
@@ -563,20 +712,24 @@ export function toolVerb(tool: Pick<ToolState, "kind" | "status">): string {
 }
 
 /** What a permission request asks for, as its card's heading. */
-export function permissionHeading(kind: string | null): string {
+export function permissionHeading(
+  agent: AgentKind,
+  kind: string | null,
+): string {
+  const who = agentName(agent);
   switch (kind) {
     case "execute":
-      return "Claude Code asks to run a command";
+      return `${who} asks to run a command`;
     case "edit":
-      return "Claude Code asks to edit a file";
+      return `${who} asks to edit a file`;
     case "delete":
-      return "Claude Code asks to delete a file";
+      return `${who} asks to delete a file`;
     case "move":
-      return "Claude Code asks to move a file";
+      return `${who} asks to move a file`;
     case "fetch":
-      return "Claude Code asks to fetch a page";
+      return `${who} asks to fetch a page`;
     default:
-      return "Claude Code asks for permission";
+      return `${who} asks for permission`;
   }
 }
 

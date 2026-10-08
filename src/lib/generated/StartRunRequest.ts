@@ -10,10 +10,14 @@ export type StartRunRequest = { repository_id: string,
  */
 start_commit: string, prompt: string, permissions: RunPermissions, time_limit_minutes: number, cpus: number, memory_mib: number, workspace_gib: number, 
 /**
- * The model for this run; empty for Claude Code's default.
+ * The model for this run; empty for the agent's default, where it has one.
  */
 model: string, 
 /**
  * Empty means this Mac.
  */
-host_id: string, };
+host_id: string, 
+/**
+ * The agent and provider: one of Settings → Agents' profiles.
+ */
+profile_id: string, };

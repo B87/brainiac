@@ -17,13 +17,16 @@ CREATE TABLE agent_runs (
   -- rewrite it.
   host_id             TEXT NOT NULL DEFAULT 'local',
   host_name           TEXT NOT NULL DEFAULT 'This Mac',
+  -- The agent and provider it ran with, a snapshot of its profile.
+  agent               TEXT NOT NULL DEFAULT 'claude_code',
+  provider            TEXT NOT NULL DEFAULT 'anthropic',
   payment             TEXT NOT NULL,
   credential_source   TEXT NOT NULL,
   engine_socket       TEXT NOT NULL,
   engine_name         TEXT NOT NULL,
   image_name          TEXT NOT NULL,
   image_id            TEXT NOT NULL,
-  -- What the user asked Claude Code for (empty: its default), and the
+  -- What the user asked the agent for (empty: its default), and the
   -- model the session reported it opened with, once the agent is ready.
   model               TEXT NOT NULL DEFAULT '',
   model_used          TEXT,

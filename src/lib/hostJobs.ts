@@ -280,10 +280,17 @@ export function hostState(
   if (!host.image) return { label: "No image yet", tone: "attention" };
   if (!host.image.current)
     return { label: "Image to rebuild", tone: "attention" };
-  if (!host.test_current) return { label: "Test needed", tone: "attention" };
+  if (host.missing.length > 0) return { label: "Not ready", tone: "attention" };
+  // Ready once any profile's test there still matches (SPEC.md, Settings → Agents, Test).
+  if (!testedProfiles(host)) return { label: "Test needed", tone: "attention" };
   if (host.upgrade_available)
     return { label: "Ready · upgrade available", tone: "ready" };
   return { label: "Ready", tone: "ready" };
+}
+
+/** How many profiles passed a test on the host that still matches. */
+export function testedProfiles(host: AgentHost): number {
+  return host.tests.filter((t) => t.current).length;
 }
 
 /** The address and what a host has, for its row. */
@@ -293,7 +300,9 @@ export function hostSummary(host: AgentHost): string {
     parts.push(`${host.ssh_user}@${host.ssh_host}:${host.ssh_port ?? 22}`);
   if (host.engine_name) parts.push(host.engine_name);
   if (host.image) parts.push(`image built ${dayLabel(host.image.built_at)}`);
-  if (host.test_current) parts.push("test passed");
+  const tested = testedProfiles(host);
+  if (tested)
+    parts.push(`${tested} ${tested === 1 ? "agent" : "agents"} tested`);
   if (host.kind === "local") parts.push("pauses while this Mac sleeps");
   else if (host.installed) parts.push("keeps working while this Mac sleeps");
   return parts.join(" · ");

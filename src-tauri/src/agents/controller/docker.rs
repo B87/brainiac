@@ -32,7 +32,7 @@ use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 
 use super::archive::{Expected, Sink, TarReader};
 use super::protocol::CollectManifest;
-use crate::models::{AppError, AppResult};
+use crate::models::{AgentKind, AgentProvider, AppError, AppResult, RunPermissions};
 
 pub const LABEL_INSTALLATION: &str = "org.brainiac.installation";
 pub const LABEL_RUN: &str = "org.brainiac.run";
@@ -80,14 +80,51 @@ pub struct LaunchSpec {
     pub memory_mib: u32,
     /// The workspace's filesystem is made at exactly this size.
     pub workspace_gib: u32,
-    /// The model Claude Code is asked for, as `ANTHROPIC_MODEL`; empty for
-    /// its default. A model name is not a secret, unlike the credential.
-    pub model: String,
+    /// The container's environment, from [`launch_env`]: which agent to
+    /// start and its model and settings. Never the credential.
+    pub env: Vec<String>,
     /// Copied to `/opt/brainiac/input/input.bundle` before the container starts.
     pub bundle: PathBuf,
     /// Becomes `true` when the run is stopped while its container is being
     /// made: the container is then not started.
     pub cancel: tokio::sync::watch::Receiver<bool>,
+}
+
+/// The run container's environment (docs/architecture.md, Agent runs —
+/// v0.5, Agents): which agent the entrypoint starts, and how. Nothing in it
+/// is a secret; the credential goes once to stdin.
+///
+/// Claude Code reads its model from `ANTHROPIC_MODEL`, which wins over the
+/// repository's settings. OpenCode reads `OPENCODE_CONFIG_CONTENT`, which
+/// the image's managed configuration (`/etc/opencode/opencode.json`) still
+/// overrides, so the providers' addresses stay pinned: the model as
+/// `<provider>/<model>`, only that provider, and in Ask before actions, its
+/// edits, commands, and fetches asked for first. In Act without asking it
+/// keeps its own defaults, and the controller allows what it still asks.
+pub fn launch_env(
+    agent: AgentKind,
+    provider: AgentProvider,
+    model: &str,
+    permissions: RunPermissions,
+) -> Vec<String> {
+    match agent {
+        AgentKind::ClaudeCode if model.is_empty() => Vec::new(),
+        AgentKind::ClaudeCode => vec![format!("ANTHROPIC_MODEL={model}")],
+        AgentKind::Opencode => {
+            let mut config = serde_json::json!({ "enabled_providers": [provider.as_str()] });
+            if !model.is_empty() {
+                config["model"] = format!("{}/{model}", provider.as_str()).into();
+            }
+            if permissions == RunPermissions::Ask {
+                config["permission"] =
+                    serde_json::json!({ "edit": "ask", "bash": "ask", "webfetch": "ask" });
+            }
+            vec![
+                "BRAINIAC_AGENT=opencode".to_string(),
+                format!("OPENCODE_CONFIG_CONTENT={config}"),
+            ]
+        }
+    }
 }
 
 /// What the collector's container is made from.
@@ -323,9 +360,7 @@ impl DockerEngine {
             attach_stderr: Some(true),
             user: Some("node".to_string()),
             working_dir: Some("/workspace".to_string()),
-            // The model wins over the repository's settings, as Claude Code
-            // resolves it: this variable, then settings.json, then its default.
-            env: (!spec.model.is_empty()).then(|| vec![format!("ANTHROPIC_MODEL={}", spec.model)]),
+            env: (!spec.env.is_empty()).then(|| spec.env.clone()),
             labels: Some(labels),
             host_config: Some(host),
             ..Default::default()

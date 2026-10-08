@@ -1,9 +1,15 @@
 import { useEffect, useId, useState } from "react";
 import {
+  agentName,
   durationLabel,
-  MODEL_SUGGESTIONS,
+  keyLabel,
+  modelPlaceholder,
+  modelRequired,
+  modelSuggestions,
   parseModel,
-  paymentLabel,
+  profileChoice,
+  providerName,
+  runMissing,
   TIME_LIMITS,
 } from "../lib/agentRuns";
 import { relativeTime } from "../lib/format";
@@ -16,6 +22,7 @@ import {
 } from "../lib/hostJobs";
 import {
   type AgentHost,
+  type AgentProfile,
   type AgentRun,
   type AgentSettings,
   type AppSnapshot,
@@ -41,8 +48,8 @@ type Props = {
   repositoryId?: string;
   onClose: () => void;
   onStarted: (run: AgentRun) => void;
-  /** Settings → Agents, at a run host's page when one is named. */
-  onOpenSettings: (host?: string) => void;
+  /** Settings → Agents, at a run host's or a profile's page when one is named. */
+  onOpenSettings: (page?: { host?: string; profile?: string }) => void;
 };
 
 /** "This Mac · OrbStack", "build-01 · remote". */
@@ -79,6 +86,7 @@ export default function NewRunDialog({
   const [memoryGb, setMemoryGb] = useState(8);
   const [workspaceGb, setWorkspaceGb] = useState(20);
   const [model, setModel] = useState("");
+  const [profileId, setProfileId] = useState("");
   const [hostId, setHostId] = useState("");
   const [limits, setLimits] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -87,20 +95,22 @@ export default function NewRunDialog({
   const jobs = useHostJobsContext();
   const now = useNow(Object.values(jobs).some((j) => j.state === "running"));
 
+  /** Choosing a profile fills the rest with its new runs' defaults. */
+  const chooseProfile = (p: AgentProfile) => {
+    setProfileId(p.id);
+    setPermissions(p.permissions);
+    setTimeLimit(p.time_limit_minutes);
+    setCpus(p.cpus);
+    setMemoryGb(Math.round(p.memory_mib / 1024));
+    setWorkspaceGb(p.workspace_gib);
+    setModel(p.model);
+  };
+
   useEffect(() => {
     let alive = true;
     ipc
       .getAgentSettings()
-      .then((s) => {
-        if (!alive) return;
-        setSettings(s);
-        setPermissions(s.profile.permissions);
-        setTimeLimit(s.profile.time_limit_minutes);
-        setCpus(s.profile.cpus);
-        setMemoryGb(Math.round(s.profile.memory_mib / 1024));
-        setWorkspaceGb(s.profile.workspace_gib);
-        setModel(s.profile.model);
-      })
+      .then((s) => alive && setSettings(s))
       .catch((e) => alive && setError(errorMessage(e)));
     return () => {
       alive = false;
@@ -125,7 +135,6 @@ export default function NewRunDialog({
     };
   }, [repo, start]);
 
-  const missing = settings?.missing ?? [];
   // A host with a job running is shown with its step, not offered (SPEC.md, New run).
   const busyHosts = (settings?.hosts ?? []).filter(
     (h) => h.kind === "ssh" && jobs[h.id]?.state === "running",
@@ -149,18 +158,24 @@ export default function NewRunDialog({
   const hostName = remote && chosen ? chosen.name : "This Mac";
   const engine =
     hosts.find((h) => h.kind === "local")?.engine_name ?? "its Docker engine";
-  const blocked = remote
-    ? missing.filter(
-        (m) =>
-          !m.startsWith("Choose where") &&
-          !m.startsWith("Build the image") &&
-          !m.startsWith("Rebuild the image") &&
-          !m.startsWith("Test again") &&
-          !m.startsWith("Pass a test") &&
-          !m.startsWith("Run the test"),
-      )
-    : missing;
-  const ready = !!preview && prompt.trim().length > 0 && blocked.length === 0;
+  const profiles = settings?.profiles ?? [];
+  /** What stops each profile's runs on the chosen host. */
+  const missingOf = (p: AgentProfile) =>
+    chosen ? runMissing(p, chosen) : p.missing;
+  const profile = profiles.find((p) => p.id === profileId) ?? null;
+  // The first profile ready on the host, until one is chosen; a host that
+  // cannot run the chosen one moves to the first that it can.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: follows the host and the loaded settings
+  useEffect(() => {
+    if (!settings || !chosen) return;
+    if (profile && missingOf(profile).length === 0) return;
+    const first =
+      settings.profiles.find((p) => runMissing(p, chosen).length === 0) ??
+      (profile ? null : settings.profiles[0]);
+    if (first) chooseProfile(first);
+  }, [settings, chosen?.id]);
+  const blocked = profile ? missingOf(profile) : [];
+  const agent = profile?.agent ?? "claude_code";
   const ends = new Date(Date.now() + timeLimit * 60_000).toLocaleTimeString(
     "en-GB",
     { hour: "2-digit", minute: "2-digit" },
@@ -170,16 +185,21 @@ export default function NewRunDialog({
   const branch = repoSummary?.head?.branch ?? null;
 
   const modelProblem = (() => {
-    const parsed = parseModel(model);
-    return "error" in parsed ? parsed.error : null;
+    const parsed = parseModel(agent, model);
+    if ("error" in parsed) return parsed.error;
+    return modelRequired(agent) && parsed.value === ""
+      ? `Choose a model: ${agentName(agent)} has no default.`
+      : null;
   })();
+  const ready =
+    !!preview &&
+    !!profile &&
+    prompt.trim().length > 0 &&
+    blocked.length === 0 &&
+    !modelProblem;
 
   const startRun = async () => {
-    if (!preview || !ready || busy) return;
-    if (modelProblem) {
-      setError(modelProblem);
-      return;
-    }
+    if (!preview || !profile || !ready || busy) return;
     setBusy(true);
     setError(null);
     try {
@@ -194,6 +214,7 @@ export default function NewRunDialog({
         workspace_gib: workspaceGb,
         model: model.trim(),
         host_id: hostId,
+        profile_id: profile.id,
       });
       onStarted(run);
     } catch (e) {
@@ -203,9 +224,10 @@ export default function NewRunDialog({
     }
   };
 
-  const payment = settings?.profile.payment ?? "api_key";
+  const payment = profile?.payment ?? "api_key";
+  const provider = profile?.provider ?? "anthropic";
   const credential =
-    payment === "claude_plan" ? "Claude Code token" : "API key";
+    payment === "claude_plan" ? "Claude Code token" : keyLabel(provider);
   return (
     <Dialog
       title="New run"
@@ -247,9 +269,12 @@ export default function NewRunDialog({
             {error}
           </div>
         )}
-        {settings && blocked.length > 0 && (
+        {profile && blocked.length > 0 && (
           <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-[12.5px] text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-100">
-            <p className="m-0">Before the first run, in Settings → Agents:</p>
+            <p className="m-0">
+              Before a run of {profileChoice(profile)} on {hostName}, in
+              Settings → Agents:
+            </p>
             <ul className="m-0 pl-5">
               {blocked.map((m) => (
                 <li key={m}>{m}</li>
@@ -258,7 +283,13 @@ export default function NewRunDialog({
             <button
               type="button"
               className="btn btn-sm mt-2"
-              onClick={() => onOpenSettings()}
+              onClick={() =>
+                onOpenSettings(
+                  profile.missing.length > 0
+                    ? { profile: profile.id }
+                    : { host: chosen?.id },
+                )
+              }
             >
               Open Settings → Agents
             </button>
@@ -393,7 +424,7 @@ export default function NewRunDialog({
                   <button
                     type="button"
                     className="text-link hover:underline"
-                    onClick={() => onOpenSettings(h.id)}
+                    onClick={() => onOpenSettings({ host: h.id })}
                   >
                     Show progress
                   </button>
@@ -406,26 +437,43 @@ export default function NewRunDialog({
           <div className="flex flex-wrap items-end gap-3.5">
             <label className="flex min-w-[180px] flex-1 flex-col gap-1">
               <FieldLabel>Agent</FieldLabel>
-              <select className="field" defaultValue="claude">
-                <option value="claude">
-                  Claude Code · {paymentLabel(payment)}
-                </option>
+              <select
+                className="field"
+                value={profileId}
+                onChange={(e) => {
+                  const p = profiles.find((x) => x.id === e.target.value);
+                  if (p) chooseProfile(p);
+                }}
+              >
+                {profiles.map((p) => {
+                  const lacks = missingOf(p)[0];
+                  return (
+                    <option
+                      key={p.id}
+                      value={p.id}
+                      disabled={!!lacks && p.id !== profileId}
+                    >
+                      {profileChoice(p)}
+                      {lacks ? ` — ${lacks}` : ""}
+                    </option>
+                  );
+                })}
               </select>
             </label>
-            <label className="flex w-[170px] flex-col gap-1">
+            <label className="flex w-[200px] flex-col gap-1">
               <FieldLabel>Model</FieldLabel>
               <input
                 className="field"
                 value={model}
                 list={`${id}-models`}
-                placeholder="Claude Code's default"
+                placeholder={modelPlaceholder(agent)}
                 spellCheck={false}
                 aria-invalid={modelProblem ? true : undefined}
                 title={modelProblem ?? undefined}
                 onChange={(e) => setModel(e.target.value)}
               />
               <datalist id={`${id}-models`}>
-                {MODEL_SUGGESTIONS.map((m) => (
+                {(profile ? modelSuggestions(profile) : []).map((m) => (
                   <option key={m} value={m} />
                 ))}
               </datalist>
@@ -532,8 +580,8 @@ export default function NewRunDialog({
               </>
             ) : (
               <>
-                Code and prompts go to <strong>Anthropic</strong>, paid with
-                your <strong>API key</strong>.
+                Code and prompts go to <strong>{providerName(provider)}</strong>
+                , paid with your <strong>API key</strong>.
               </>
             )}
           </Disclosure>
@@ -548,9 +596,12 @@ export default function NewRunDialog({
           </Disclosure>
           <Disclosure icon={<KeyIcon size={15} />}>
             The agent can read your {credential}, and so can the repository's
-            code and its Claude Code settings, and anyone who{" "}
+            code{agent === "claude_code" ? " and its Claude Code settings" : ""}
+            , and anyone who{" "}
             {remote ? `administers ${hostName}` : "controls this Docker engine"}
             . Run only repositories you would trust with it.
+            {agent === "opencode" &&
+              " The repository's AGENTS.md applies; its own OpenCode settings are not used."}
           </Disclosure>
         </section>
       </div>

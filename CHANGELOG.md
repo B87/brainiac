@@ -11,6 +11,7 @@ into the release's section.
 
 ## [Unreleased]
 
+- Runs can use OpenCode as well as Claude Code, with an Anthropic, OpenAI, or OpenRouter API key and the model you choose; Settings → Agents sets up and tests each agent and provider on its own page, and New run asks which one to use.
 - Installing, upgrading, building the image on, and testing a remote host now show each step as it happens, with the build's output and how long it has taken; an install or upgrade can be cancelled until it changes the host, and a failure says at which step and offers Try again.
 - Upgrading a host with a live run now waits for the run to end instead of refusing, and later upgrades build the run controller much faster.
 - Settings → Agents lists This Mac and your remote hosts under Run hosts, each with its own page; Add host… walks through the key, the install, the image, and the test in one go.

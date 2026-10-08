@@ -412,6 +412,20 @@ Checked on 5 October 2026 on OrbStack with the Docker CLI, then with the control
 
 Not covered: Docker Desktop (its VM supports privileged containers and loop devices, to be confirmed with the packaged app), what the engine's VM does when its own disk fills, and Colima.
 
+## Record: OpenCode in a run's container
+
+Checked on 8 October 2026 on OrbStack with OpenCode 1.18.35 (`opencode-ai` on npm, MIT) in a container run like a run's (non-TTY, every capability dropped, tmpfs home), driven over ACP, with fake keys and a stand-in server on a private Docker network; then in the image with the controller (`tests/agent_controller.rs`, `an_opencode_run_on_a_real_engine`, opt-in). Codex (`codex-acp` 2.1.1) was checked the same way and not taken: only OpenAI's models, and its sandbox needs user namespaces the container does not grant, so it could run only without asking.
+
+- `opencode acp` speaks ACP over stdio. Its only authentication method is a terminal login, so the key comes from the provider's environment variable, which the commands it runs then see, as with Claude Code.
+- With no key it offers OpenCode's own free models and picks one by default: code would go to OpenCode's service. `enabled_providers` in the managed configuration removes them.
+- A repository's `opencode.json` pointing Anthropic's `baseURL` at the stand-in got the key on the first prompt. The root-owned `/etc/opencode/opencode.json` wins over it: with the providers' addresses pinned there, the stand-in got nothing and Anthropic refused the fake key itself ("API key is invalid."). A provider the repository defines is not enabled.
+- Pinning the providers did not stop a repository's MCP server with `{env:ANTHROPIC_API_KEY}` in its headers: the key reached the stand-in before the first prompt. `OPENCODE_DISABLE_PROJECT_CONFIG=1` stops it; `opencode.json`, `opencode.jsonc`, and `.opencode/opencode.json` were all ignored with it.
+- `permission: {"bash": "ask"}` from `OPENCODE_CONFIG_CONTENT` made it send `session/request_permission` with the command and options of kind `allow_once`, `allow_always`, and `reject_once`; with a stand-in model asking for `env | grep`, the command saw the key in its environment.
+- `session/new` reports the model as the current value of the `model` configuration option. OpenRouter refused a fake key with "User not found.", as the prompt's error.
+- It writes only to its home (a database, logs, a model list fetched from models.dev); no key was found in any file. It also keeps a snapshot repository of the workspace there, turned off (`snapshot: false`) so a large repository cannot fill the tmpfs home.
+
+Not covered: a real model's reply, AGENTS.md reaching the model, and OpenAI with a real key.
+
 ## Sources
 
 Primary documentation checked during review; container/adapter compatibility still requires the spikes above.

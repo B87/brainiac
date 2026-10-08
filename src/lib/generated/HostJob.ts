@@ -23,4 +23,9 @@ cancellable: boolean,
 /**
  * The controller build replaced and the one installed, short.
  */
-from_build: string | null, to_build: string | null, };
+from_build: string | null, to_build: string | null, 
+/**
+ * The profiles its test steps are for: Test's one, or each profile
+ * Add host's setup found ready.
+ */
+profile_ids: Array<string>, };

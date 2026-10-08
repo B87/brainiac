@@ -1,31 +1,56 @@
 // The run's entrypoint (docs/architecture.md, Agent runs — v0.5,
 // Credentials). It reads one credential frame from stdin, clones the run's
-// start into the workspace, then starts the Claude ACP adapter with that one
-// value in its environment.
+// start into the workspace, then starts the run's agent with that one value
+// in its environment: Claude Code's ACP adapter, or OpenCode when the
+// container's BRAINIAC_AGENT says so.
 //
 // The frame is "BRB1", a 4-byte big-endian length, then JSON with exactly
-// one key: CLAUDE_CODE_OAUTH_TOKEN (a Claude plan token) or
-// ANTHROPIC_API_KEY. The read is exact, so the ACP bytes after it stay in
-// the pipe for the adapter. Node strings cannot be wiped; the frame buffer
-// is zeroed and the value is never written to a file.
+// one key, one the agent reads: for Claude Code CLAUDE_CODE_OAUTH_TOKEN (a
+// Claude plan token) or ANTHROPIC_API_KEY; for OpenCode the provider's
+// ANTHROPIC_API_KEY, OPENAI_API_KEY, or OPENROUTER_API_KEY. The read is
+// exact, so the ACP bytes after it stay in the pipe for the agent. Node
+// strings cannot be wiped; the frame buffer is zeroed and the value is never
+// written to a file.
 
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 
 const ADAPTER =
   "/opt/claude/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js";
+const OPENCODE = "/opt/claude/node_modules/.bin/opencode";
 const MAX_FRAME = 8192;
 // The run's start, copied in by the run controller before this container
 // started: one commit and its history, advertising refs/heads/start.
 const INPUT = "/opt/brainiac/input/input.bundle";
 const WORKSPACE = "/workspace";
-const KEYS = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"];
-// Every variable that could carry another credential to Claude Code.
+// Each agent: how it starts, and the keys it reads.
+const AGENTS = {
+  claude: {
+    command: process.execPath,
+    args: [ADAPTER],
+    keys: ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
+  },
+  opencode: {
+    command: OPENCODE,
+    args: ["acp"],
+    keys: ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"],
+  },
+};
+const AGENT = AGENTS[process.env.BRAINIAC_AGENT === "opencode" ? "opencode" : "claude"];
+const KEYS = AGENT.keys;
+// Every variable that could carry another credential to an agent.
 const CLEARED = [
-  ...KEYS,
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "ANTHROPIC_API_KEY",
+  "OPENAI_API_KEY",
+  "OPENROUTER_API_KEY",
   "ANTHROPIC_AUTH_TOKEN",
   "CLAUDE_CODE_API_KEY",
   "CLAUDE_AGENT_LOGS",
+  "OPENCODE_API_KEY",
+  "OPENCODE_AUTH_CONTENT",
+  "OPENCODE_CONSOLE_TOKEN",
+  "OPENCODE_SERVER_PASSWORD",
 ];
 
 function readExact(fd, length) {
@@ -110,9 +135,11 @@ if (
 // non-secret flag exists. It is not a login file and holds no credential.
 const home = process.env.HOME || "/home/node";
 fs.mkdirSync(home, { recursive: true });
-fs.writeFileSync(`${home}/.claude.json`, '{"hasCompletedOnboarding":true}\n', {
-  mode: 0o600,
-});
+if (AGENT === AGENTS.claude) {
+  fs.writeFileSync(`${home}/.claude.json`, '{"hasCompletedOnboarding":true}\n', {
+    mode: 0o600,
+  });
+}
 fs.writeSync(1, "bootstrap:ready\n");
 
 const env = { ...process.env };
@@ -122,7 +149,7 @@ for (const name of CLEARED) {
 env[key] = value;
 value = "";
 
-const child = spawn(process.execPath, [ADAPTER], {
+const child = spawn(AGENT.command, AGENT.args, {
   env,
   stdio: "inherit",
 });

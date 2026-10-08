@@ -255,7 +255,9 @@ async function openSettings(page: Page, section: string) {
     .getByRole("navigation", { name: "Settings" })
     .getByRole("button", { name: section })
     .click();
-  await expect(page.getByRole("heading", { name: section })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: section, level: 1 }),
+  ).toBeVisible();
 }
 
 test("Settings shows the vault and turns note IDs off", async ({ page }) => {
@@ -286,21 +288,26 @@ test("Settings → Agents chooses This Mac's engine on its page and saves a past
   page,
 }) => {
   await openSettings(page, "Agents");
-  await expect(page.getByText("Choose where runs execute.")).toBeVisible();
+  const breadcrumb = page.getByRole("navigation", { name: "Breadcrumb" });
   await page.getByRole("button", { name: /^This Mac,/ }).click();
-  await expect(
-    page.getByRole("navigation", { name: "Breadcrumb" }),
-  ).toContainText("Run hosts › This Mac");
+  await expect(breadcrumb).toContainText("Run hosts › This Mac");
+  await expect(page.getByText("Choose where runs execute.")).toBeVisible();
   await page.getByRole("radio", { name: /OrbStack/ }).check();
-  expect((await calls(page, "save_agent_settings")).at(-1)).toMatchObject({
-    request: { engine_socket: "/Users/someone/.orbstack/run/docker.sock" },
+  expect((await calls(page, "choose_agent_engine")).at(-1)).toEqual({
+    socket: "/Users/someone/.orbstack/run/docker.sock",
   });
-  await page
-    .getByRole("navigation", { name: "Breadcrumb" })
-    .getByRole("button", { name: "Agents" })
-    .click();
   await expect(page.getByText("Choose where runs execute.")).toBeHidden();
+  // A test line per agent; one without its key cannot be tested yet.
+  await expect(
+    page.getByText("OpenCode · OpenRouter · not tested"),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Test OpenCode · OpenRouter" }),
+  ).toBeDisabled();
+  await breadcrumb.getByRole("button", { name: "Agents" }).click();
 
+  await page.getByRole("button", { name: /^Claude Code,/ }).click();
+  await expect(breadcrumb).toHaveText("Agents › Claude Code");
   await page.getByRole("button", { name: "Add…" }).click();
   const key = "sk-ant-api03-test-key-for-the-fake-backend-only";
   await page
@@ -308,10 +315,121 @@ test("Settings → Agents chooses This Mac's engine on its page and saves a past
     .fill(`${key.slice(0, 20)}\n${key.slice(20)}`);
   await page.getByRole("button", { name: "Save", exact: true }).click();
   expect((await calls(page, "save_agent_credential")).at(-1)).toMatchObject({
-    request: { payment: "api_key", source: { kind: "store" } },
+    request: {
+      profile_id: "claude-code",
+      payment: "api_key",
+      source: { kind: "store" },
+    },
   });
   await expect(page.getByText("API key · Keychain")).toBeVisible();
   await expect(page.getByText(key)).toBeHidden();
+});
+
+test("Settings → Agents lists four agents, and OpenCode · OpenRouter's page saves its key, agreement, and model", async ({
+  page,
+}) => {
+  await openSettings(page, "Agents");
+  const agents = page.getByRole("list", { name: "Agents" });
+  for (const name of [
+    /^Claude Code, Add an Anthropic API key\.$/,
+    /^OpenCode · Anthropic,/,
+    /^OpenCode · OpenAI,/,
+    /^OpenCode · OpenRouter,/,
+  ])
+    await expect(agents.getByRole("button", { name })).toBeVisible();
+  await agents.getByRole("button", { name: /^OpenCode · OpenRouter,/ }).click();
+  await expect(page.getByRole("navigation", { name: "Breadcrumb" })).toHaveText(
+    "Agents › OpenCode · OpenRouter",
+  );
+  await expect(page.getByText("Add an OpenRouter API key.")).toBeVisible();
+
+  await page.getByRole("button", { name: "Add…" }).click();
+  const key = "sk-or-v1-test-key-for-the-fake-backend-only";
+  await page.getByLabel("OpenRouter API key").fill(key);
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  expect((await calls(page, "save_agent_credential")).at(-1)).toMatchObject({
+    request: {
+      profile_id: "opencode-openrouter",
+      payment: "api_key",
+      source: { kind: "store" },
+      secret: key,
+    },
+  });
+  await expect(page.getByText("API key · Keychain")).toBeVisible();
+  await expect(page.getByText("Add an OpenRouter API key.")).toBeHidden();
+
+  await page
+    .getByRole("switch", {
+      name: /Send code and prompts from runs to OpenRouter, with an API key/,
+    })
+    .check();
+  expect((await calls(page, "save_agent_settings")).at(-1)).toMatchObject({
+    request: { profile_id: "opencode-openrouter", sends_code_agreed: true },
+  });
+  await expect(page.getByText("Choose the model new runs use.")).toBeVisible();
+  const model = page.getByLabel("Model");
+  await expect(model).toHaveAttribute("placeholder", "Required");
+  await model.fill("anthropic/claude-sonnet-5-5");
+  await model.press("Enter");
+  expect((await calls(page, "save_agent_settings")).at(-1)).toMatchObject({
+    request: {
+      profile_id: "opencode-openrouter",
+      model: "anthropic/claude-sonnet-5-5",
+    },
+  });
+  await expect(page.getByText("Choose the model new runs use.")).toBeHidden();
+  await expect(page.getByText("Ready", { exact: true })).toBeVisible();
+});
+
+test("New run offers an OpenCode agent once it is ready on This Mac, and needs its model", async ({
+  page,
+}) => {
+  await page.evaluate(() => {
+    window.fake.readyThisMac();
+    window.fake.readyProfile("opencode-openrouter", ["local"]);
+  });
+  await page.evaluate(() => window.emitEvent("menu", { id: "palette" }));
+  await page
+    .getByRole("dialog", { name: "Search and switch" })
+    .getByRole("button", { name: "New Run…" })
+    .click();
+  const newRun = page.getByRole("dialog", { name: "New run" });
+  const agent = newRun.getByLabel("Agent");
+  await expect(agent).toHaveValue("opencode-openrouter");
+  // Claude Code has no key yet, so it is not offered and says why.
+  const claude = agent.locator("option", { hasText: "Claude Code · API key" });
+  await expect(claude).toHaveAttribute("disabled");
+  await expect(claude).toContainText("Add an Anthropic API key.");
+  await expect(
+    newRun.getByText(/Code and prompts go to OpenRouter/),
+  ).toBeVisible();
+  await expect(
+    newRun.getByText(/its own OpenCode settings are not used/),
+  ).toBeVisible();
+
+  const model = newRun.getByLabel("Model");
+  await expect(model).toHaveValue("anthropic/claude-sonnet-5-5");
+  await newRun
+    .getByPlaceholder("What should the agent do?")
+    .fill("Fix the flaky test");
+  await model.fill("");
+  await expect(
+    newRun.getByText("Choose a model: OpenCode has no default."),
+  ).toBeVisible();
+  await expect(
+    newRun.getByRole("button", { name: "Start run" }),
+  ).toBeDisabled();
+  await model.fill("openai/gpt-6.1-sol");
+  await newRun.getByRole("button", { name: "Start run" }).click();
+  expect((await calls(page, "start_agent_run")).at(-1)).toMatchObject({
+    request: {
+      profile_id: "opencode-openrouter",
+      model: "openai/gpt-6.1-sol",
+      host_id: "",
+    },
+  });
+  await expect(newRun).toBeHidden();
+  await expect(page.getByText(/OpenCode on This Mac/).first()).toBeVisible();
 });
 
 /** Add host…: the address, the key, then Trust this key and install. */
@@ -373,9 +491,9 @@ test("Add host trusts the key and follows its setup as steps, and New run waits 
   ).toBeVisible();
   await expect(page.getByText(/Emergency stop/)).toBeVisible();
 
-  // A key is saved, so a run can start.
+  // A key is saved and its test passed there, so a run can start.
   await page.evaluate(() => {
-    window.fake.agentSettings.missing = [];
+    window.fake.readyProfile("claude-code", ["host-1"]);
   });
   await page.evaluate(() => window.emitEvent("menu", { id: "palette" }));
   await page
@@ -407,7 +525,7 @@ test("Add host trusts the key and follows its setup as steps, and New run waits 
   );
   await page.evaluate(() => window.fake.advanceStart("run-1", null));
   await expect(starting.locator('[aria-current="step"]')).toHaveText(
-    "Start the container and Claude Code",
+    "Start the container and the agent",
   );
 });
 

@@ -36,8 +36,8 @@ pub struct Engine {
     /// Each prompt the agents were sent.
     pub prompts: Vec<String>,
     pub launches: usize,
-    /// The model each launch asked for, in order.
-    pub models: Vec<String>,
+    /// The container environment of each launch, in order.
+    pub envs: Vec<Vec<String>>,
     pub discarded: Vec<String>,
     /// The current image each collection and discard named, in order.
     pub fallback_images: Vec<Option<String>>,
@@ -100,10 +100,18 @@ impl Workloads for FakeEngine {
         assert!(cloned.success(), "the fake engine clones the bundle");
         let (stdin, stdin_rx) = mpsc::unbounded_channel();
         let (output_tx, output) = mpsc::channel(64);
-        let agent = tokio::spawn(fake_agent(self.clone(), work, stdin_rx, output_tx.clone()));
+        // OpenCode answers as itself (`launch_env` says which agent starts).
+        let opencode = spec.env.iter().any(|e| e == "BRAINIAC_AGENT=opencode");
+        let agent = tokio::spawn(fake_agent(
+            self.clone(),
+            work,
+            stdin_rx,
+            output_tx.clone(),
+            opencode,
+        ));
         let mut engine = self.get();
         engine.launches += 1;
-        engine.models.push(spec.model.clone());
+        engine.envs.push(spec.env.clone());
         engine.containers.insert(
             spec.run_id.clone(),
             Container {
@@ -237,7 +245,9 @@ impl Workloads for FakeEngine {
     }
 }
 
-/// A stand-in for the entrypoint and the Claude ACP adapter. Prompts steer it:
+/// A stand-in for the entrypoint and the agent: Claude Code's ACP adapter,
+/// or OpenCode, which reports its model as a configuration option. Prompts
+/// steer it:
 /// "ask" asks a permission, "hang" works until cancelled, "die" exits,
 /// "fail-auth" is refused, "echo-secret" repeats the key in two pieces,
 /// "edit" changes files in the workspace ("edit and report" also reports
@@ -247,6 +257,7 @@ pub async fn fake_agent(
     work: PathBuf,
     mut stdin: mpsc::UnboundedReceiver<Vec<u8>>,
     out: mpsc::Sender<Output>,
+    opencode: bool,
 ) {
     let mut buffer = Vec::new();
     // The frame: BRB1, a length, the JSON.
@@ -261,8 +272,12 @@ pub async fn fake_agent(
     assert_eq!(&buffer[..4], b"BRB1");
     let len = u32::from_be_bytes(buffer[4..8].try_into().unwrap()) as usize;
     let frame: Value = serde_json::from_slice(&buffer[8..8 + len]).unwrap();
-    let key = frame
-        .get("ANTHROPIC_API_KEY")
+    // Exactly one key, whichever the agent reads.
+    let object = frame.as_object().unwrap();
+    assert_eq!(object.len(), 1, "one credential per frame");
+    let key = object
+        .values()
+        .next()
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
@@ -296,6 +311,14 @@ pub async fn fake_agent(
                     say(json!({ "jsonrpc": "2.0", "id": id, "result": {
                         "protocolVersion": 1, "agentInfo": { "name": "fake-agent", "version": "1.0" } } }))
                     .await;
+                }
+                Some("session/new") if opencode => {
+                    assert_eq!(message["params"]["mcpServers"], json!([]));
+                    // OpenCode names the model in use as a configuration option.
+                    say(json!({ "jsonrpc": "2.0", "id": id, "result": { "sessionId": "sess-1",
+                        "configOptions": [{ "id": "model", "category": "model", "type": "select",
+                            "currentValue": "openrouter/anthropic/claude-sonnet-5-5", "options": [] }] } }))
+                        .await;
                 }
                 Some("session/new") => {
                     assert_eq!(message["params"]["mcpServers"], json!([]));

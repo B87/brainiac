@@ -358,13 +358,14 @@ export default function App() {
 
   /** Settings in place of the sidebar and the view; Back returns to the view. */
   const openSettings = useCallback(
-    (section: SettingsSection = "general", host?: string) => {
+    (section: SettingsSection = "general", host?: string, profile?: string) => {
       setPaletteOpen(false);
       setView((v) => ({
         kind: "settings",
         section,
         back: v.kind === "settings" ? v.back : v,
         host,
+        profile,
       }));
     },
     [],
@@ -769,10 +770,20 @@ export default function App() {
             vault={vault}
             top={banners}
             onSection={(section) =>
-              setView({ ...view, section, host: undefined })
+              setView({ ...view, section, host: undefined, profile: undefined })
             }
             host={view.host}
-            onHost={(host) => setView({ ...view, host: host ?? undefined })}
+            onHost={(host) =>
+              setView({ ...view, host: host ?? undefined, profile: undefined })
+            }
+            profile={view.profile}
+            onProfile={(profile) =>
+              setView({
+                ...view,
+                profile: profile ?? undefined,
+                host: undefined,
+              })
+            }
             onOpenRun={(runId) => showView({ kind: "runs", runId })}
             onBack={() => setView(view.back)}
             onVault={(state) => {
@@ -1093,9 +1104,9 @@ export default function App() {
               void reloadRuns();
               showView({ kind: "runs", runId: run.id });
             }}
-            onOpenSettings={(host) => {
+            onOpenSettings={(page) => {
               setNewRun(null);
-              openSettings("runs", host);
+              openSettings("runs", page?.host, page?.profile);
             }}
           />
         )}

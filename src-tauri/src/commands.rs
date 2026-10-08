@@ -774,7 +774,7 @@ pub async fn get_agent_settings(
     agents.get().await
 }
 
-/// Settings → Agents: everything but the token or key.
+/// Settings → Agents, one profile: everything but the token or key.
 #[tauri::command]
 pub async fn save_agent_settings(
     request: crate::models::SaveAgentSettingsRequest,
@@ -792,13 +792,23 @@ pub async fn save_agent_credential(
     agents.save_credential(request).await
 }
 
-/// Settings → Agents, **Remove** the token or key.
+/// Settings → Agents, **Remove** a profile's token or key.
 #[tauri::command]
 pub async fn remove_agent_credential(
+    id: String,
     expected_version: i64,
     agents: State<'_, AgentSettingsState>,
 ) -> AppResult<crate::models::AgentSettings> {
-    agents.remove_credential(expected_version).await
+    agents.remove_credential(&id, expected_version).await
+}
+
+/// Settings → Agents, This Mac, **Engine**: the Docker engine runs use here.
+#[tauri::command]
+pub async fn choose_agent_engine(
+    socket: Option<String>,
+    agents: State<'_, AgentSettingsState>,
+) -> AppResult<crate::models::AgentSettings> {
+    agents.choose_engine(socket).await
 }
 
 /// Settings → Agents, **Confirm** a setup restored from a backup.
@@ -816,7 +826,7 @@ pub async fn approve_agent_settings(
 pub async fn list_agent_engines(
     agents: State<'_, AgentSettingsState>,
 ) -> AppResult<Vec<crate::models::AgentEngine>> {
-    let chosen = agents.get().await?.profile.engine_socket;
+    let chosen = agents.get().await?.engine_socket;
     Ok(crate::agents::engine::list(chosen.as_deref()).await)
 }
 
@@ -874,9 +884,10 @@ pub type HostJobs = Arc<crate::agents::host_jobs::HostJobService>;
 pub async fn start_agent_host_job(
     id: String,
     kind: crate::models::HostJobKind,
+    profile_id: Option<String>,
     jobs: State<'_, HostJobs>,
 ) -> AppResult<crate::models::HostJob> {
-    jobs.start(&id, kind).await
+    jobs.start(&id, kind, profile_id).await
 }
 
 #[tauri::command]
@@ -1084,10 +1095,13 @@ pub async fn save_run_patch(id: String, path: String, runs: State<'_, Runs>) -> 
     Ok(())
 }
 
-/// Settings → Agents, **Test**.
+/// Settings → Agents, This Mac, **Test** a profile.
 #[tauri::command]
-pub async fn test_agent_setup(runs: State<'_, Runs>) -> AppResult<crate::models::AgentTestResult> {
-    runs.test().await
+pub async fn test_agent_setup(
+    profile_id: String,
+    runs: State<'_, Runs>,
+) -> AppResult<crate::models::AgentTestResult> {
+    runs.test(&profile_id).await
 }
 
 /// Settings → Agents: whether the run controller is running.

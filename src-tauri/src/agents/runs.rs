@@ -23,7 +23,7 @@ use std::time::Duration;
 use serde::de::DeserializeOwned;
 
 use super::controller::protocol::{
-    Credential, CredentialKey, EventBody, RunStatus, StartRun, StopReason, MAX_PROMPT_BYTES,
+    Credential, EventBody, RunStatus, StartRun, StopReason, MAX_PROMPT_BYTES,
 };
 use super::runtime::StartError;
 use super::settings::{self, AgentSettingsService};
@@ -31,11 +31,11 @@ use super::{RunArtifacts, RunRuntime};
 use crate::credentials::{CredentialService, Resolution};
 use crate::db::Db;
 use crate::models::{
-    now_rfc3339, AgentPayment, AgentProfile, AgentRun, AgentRunChangedEvent, AgentRunList,
-    AgentTestResult, AgentTestStep, AppError, AppResult, DiffResult, ErrorCode, LeftOutFile,
-    RunActivity, RunBranchCommand, RunChanges, RunCollection, RunControllerStatus, RunDiffRequest,
-    RunEvent, RunEventPage, RunOutcome, RunPermissionRequest, RunPermissions, RunPhase, RunPreview,
-    RunStartStep, StartRunRequest,
+    now_rfc3339, AgentHost, AgentKind, AgentProfile, AgentRun, AgentRunChangedEvent, AgentRunList,
+    AgentSettings, AgentTestResult, AgentTestStep, AppError, AppResult, DiffResult, ErrorCode,
+    LeftOutFile, RunActivity, RunBranchCommand, RunChanges, RunCollection, RunControllerStatus,
+    RunDiffRequest, RunEvent, RunEventPage, RunOutcome, RunPermissionRequest, RunPermissions,
+    RunPhase, RunPreview, RunStartStep, StartRunRequest,
 };
 use crate::workspaces::RepositoryService;
 
@@ -398,25 +398,23 @@ impl AgentRunService {
             request.host_id.clone()
         };
         let remote = host_id != super::hosts::LOCAL_ID;
-        if !remote {
-            if let Some(first) = settings.missing.first() {
-                return Err(AppError::validation(format!(
-                    "Settings → Agents is not ready: {first}"
-                )));
-            }
-        } else if let Some(first) = settings.missing.iter().find(|m| {
-            !m.starts_with("Choose where")
-                && !m.starts_with("Build the image")
-                && !m.starts_with("Rebuild the image")
-                && !m.starts_with("Test again")
-                && !m.starts_with("Pass a test")
-                && !m.starts_with("Run the test")
-        }) {
+        let profile = settings
+            .profiles
+            .iter()
+            .find(|p| p.id == request.profile_id)
+            .cloned()
+            .ok_or_else(|| AppError::validation("Choose an agent for the run."))?;
+        let host = settings
+            .hosts
+            .iter()
+            .find(|h| h.id == host_id)
+            .cloned()
+            .ok_or_else(|| AppError::validation("Choose a host for the run."))?;
+        if let Some(first) = settings::run_missing(&profile, &host).first() {
             return Err(AppError::validation(format!(
                 "Settings → Agents is not ready: {first}"
             )));
         }
-        let profile = settings.profile;
         let prompt = request.prompt.trim().to_string();
         if prompt.is_empty() {
             return Err(AppError::validation("Write a prompt for the agent."));
@@ -436,7 +434,10 @@ impl AgentRunService {
             request.workspace_gib,
             settings::WORKSPACE_GIB,
         )?;
-        let model = settings::check_model(&request.model)?;
+        let model = settings::check_model(profile.agent, &request.model)?;
+        if model.is_empty() && profile.agent == AgentKind::Opencode {
+            return Err(AppError::validation("Choose the model for the run."));
+        }
         let (name, root) = self.repositories.locate(&request.repository_id).await?;
         let preview = self
             .artifacts
@@ -448,49 +449,26 @@ impl AgentRunService {
             ));
         }
         let run_id = uuid::Uuid::new_v4().to_string();
-        let (socket, image_name, image_id, engine_name, host_name) = if remote {
-            let host = settings
-                .hosts
-                .iter()
-                .find(|h| h.id == host_id)
-                .cloned()
-                .ok_or_else(|| AppError::validation("Choose a host for the run."))?;
-            if !host.approved {
-                return Err(AppError::validation(
-                    "Confirm this host before starting a run on it.",
-                ));
-            }
-            if !host.installed || !host.loop_devices {
-                return Err(AppError::validation(
-                    "Deploy this host and build its image before starting a run.",
-                ));
-            }
-            let image = host.image.clone().filter(|i| i.current).ok_or_else(|| {
-                AppError::validation("Build the image on this host before starting a run.")
-            })?;
-            if !host.test_current {
-                return Err(AppError::validation(
-                    "Test this host before starting a run. The host's administrator can see the repository and the credential.",
-                ));
-            }
+        // `run_missing` above promised the image, and on this Mac the engine.
+        let image = host
+            .image
+            .clone()
+            .ok_or_else(|| AppError::validation("Build the image first."))?;
+        let (socket, engine_name) = if remote {
             self.refuse_if_upgrading(&host_id)?;
             (
                 "/var/run/docker.sock".to_string(),
-                image.name,
-                image.id,
-                host.engine_name.unwrap_or_else(|| "Docker".into()),
-                host.name,
+                host.engine_name.clone().unwrap_or_else(|| "Docker".into()),
             )
         } else {
-            let (socket, image) = engine_and_image(&profile)?;
-            (
-                socket.clone(),
-                image.name,
-                image.id,
-                super::engine::name_of(&socket),
-                "This Mac".to_string(),
-            )
+            let socket = settings
+                .engine_socket
+                .clone()
+                .ok_or_else(|| AppError::validation("Choose where runs execute first."))?;
+            let name = super::engine::name_of(&socket);
+            (socket, name)
         };
+        let (image_name, image_id, host_name) = (image.name, image.id, host.name);
         // The credential is read on the Mac, after everything that could be
         // refused, and goes once to the controller.
         let credential = self.credential(&profile).await?;
@@ -503,6 +481,8 @@ impl AgentRunService {
             start_commit: preview.commit.clone(),
             start_subject: preview.subject.clone(),
             profile_id: profile.id.clone(),
+            agent: profile.agent,
+            provider: profile.provider,
             payment: profile.payment,
             credential_source: crate::credentials::describe(
                 &profile.credential_source,
@@ -562,6 +542,8 @@ impl AgentRunService {
             prompt_id: format!("{run_id}-prompt-1"),
             prompt,
             credential,
+            agent: profile.agent,
+            provider: profile.provider,
             model,
         };
         // Copying the start and reaching a remote host can take minutes, so
@@ -754,8 +736,12 @@ impl AgentRunService {
         self.settings
             .get()
             .await
-            .ok()
-            .and_then(|s| s.profile.image.map(|i| i.name))
+            .ok()?
+            .hosts
+            .into_iter()
+            .find(|h| h.id == super::hosts::LOCAL_ID)?
+            .image
+            .map(|i| i.name)
     }
 
     async fn current_image_for(&self, run_id: &str) -> Option<String> {
@@ -793,12 +779,11 @@ impl AgentRunService {
         let value = String::from_utf8(lease.bytes().expose().to_vec()).map_err(|_| {
             AppError::new(ErrorCode::Unauthenticated, "The token or key is not text.")
         })?;
-        let value = settings::normalize_credential(profile.payment, &value)?;
-        let key = match profile.payment {
-            AgentPayment::ClaudePlan => CredentialKey::ClaudeCodeOauthToken,
-            AgentPayment::ApiKey => CredentialKey::AnthropicApiKey,
-        };
-        Ok(Credential { key, value })
+        let value = settings::normalize_credential(profile.provider, profile.payment, &value)?;
+        Ok(Credential {
+            key: settings::credential_key(profile),
+            value,
+        })
     }
 
     // -----------------------------------------------------------------------
@@ -1846,21 +1831,12 @@ impl AgentRunService {
     // Settings → Agents, Test
     // -----------------------------------------------------------------------
 
-    /// **Test**: a short run on a tiny repository of its own, a prompt, a
-    /// cancel, and a collection. Records the pass on the profile.
-    pub async fn test(self: &Arc<Self>) -> AppResult<AgentTestResult> {
+    /// **Test** of a profile on this Mac: a short run on a tiny repository
+    /// of its own, a prompt, a cancel, and a collection. Records the pass for
+    /// the profile and this Mac.
+    pub async fn test(self: &Arc<Self>, profile_id: &str) -> AppResult<AgentTestResult> {
         let settings = self.settings.get().await?;
-        let profile = settings.profile.clone();
-        let blocking: Vec<&String> = settings
-            .missing
-            .iter()
-            .filter(|m| !m.starts_with("Pass a test") && !m.starts_with("Test again"))
-            .collect();
-        if let Some(first) = blocking.first() {
-            return Err(AppError::validation(format!(
-                "Settings → Agents is not ready: {first}"
-            )));
-        }
+        let (profile, host) = test_subject(&settings, super::hosts::LOCAL_ID, profile_id)?;
         let mut steps = Vec::new();
         let mut step = |name: &str, result: AppResult<String>| -> bool {
             let passed = result.is_ok();
@@ -1875,7 +1851,14 @@ impl AgentRunService {
             });
             passed
         };
-        let (socket, image) = engine_and_image(&profile)?;
+        let socket = settings
+            .engine_socket
+            .clone()
+            .ok_or_else(|| AppError::validation("Choose where runs execute first."))?;
+        let image = host
+            .image
+            .clone()
+            .ok_or_else(|| AppError::validation("Build the image first."))?;
         let run_id = format!("test-{}", uuid::Uuid::new_v4());
         let started = self
             .test_start(&profile, &socket, &image.name, &run_id)
@@ -1896,7 +1879,9 @@ impl AgentRunService {
         let _ = self.artifacts.remove_run("test", &run_id).await;
         let passed = outcome.is_ok();
         if passed {
-            self.settings.record_test(&profile).await?;
+            self.settings
+                .record_test(&host.id, &profile, &image.id, Some(&socket))
+                .await?;
         }
         Ok(AgentTestResult {
             steps,
@@ -1905,27 +1890,19 @@ impl AgentRunService {
         })
     }
 
-    /// **Test** on an approved host. The token or key is sent to that host.
-    pub async fn test_host(self: &Arc<Self>, host_id: &str) -> AppResult<AgentTestResult> {
+    /// **Test** of a profile on an approved host. The token or key is sent
+    /// to that host.
+    pub async fn test_host(
+        self: &Arc<Self>,
+        host_id: &str,
+        profile_id: &str,
+    ) -> AppResult<AgentTestResult> {
         let settings = self.settings.get().await?;
-        let host = settings
-            .hosts
-            .iter()
-            .find(|h| h.id == host_id)
-            .cloned()
-            .ok_or_else(|| AppError::validation("Choose a host."))?;
-        if !host.approved || !host.installed {
-            return Err(AppError::validation("Deploy this host before testing it."));
-        }
-        let image = host.image.clone().filter(|i| i.current).ok_or_else(|| {
-            AppError::validation("Build the image on this host before testing it.")
-        })?;
-        if !host.loop_devices {
-            return Err(AppError::validation(
-                "This host's Docker engine cannot attach loop devices, so it cannot take a run.",
-            ));
-        }
-        let profile = settings.profile.clone();
+        let (profile, host) = test_subject(&settings, host_id, profile_id)?;
+        let image = host
+            .image
+            .clone()
+            .ok_or_else(|| AppError::validation("Build the image on this host first."))?;
         let hosts = self
             .hosts
             .lock()
@@ -1977,8 +1954,8 @@ impl AgentRunService {
             .remove(&run_id);
         let passed = outcome.is_ok();
         if passed {
-            hosts
-                .record_test(host_id, profile.credential.revision)
+            self.settings
+                .record_test(host_id, &profile, &image.id, None)
                 .await?;
         }
         Ok(AgentTestResult {
@@ -2015,6 +1992,8 @@ impl AgentRunService {
             prompt_id: format!("{run_id}-prompt-1"),
             prompt: TEST_PROMPT.to_string(),
             credential,
+            agent: profile.agent,
+            provider: profile.provider,
             // The profile's model, so a name the plan or key cannot use fails here.
             model: profile.model.clone(),
         };
@@ -2201,17 +2180,31 @@ fn upgrading_conflict() -> AppError {
     )
 }
 
-/// The profile's engine socket and image, which Settings' checks promised.
-fn engine_and_image(profile: &AgentProfile) -> AppResult<(String, crate::models::AgentImage)> {
-    let socket = profile
-        .engine_socket
-        .clone()
-        .ok_or_else(|| AppError::validation("Choose where runs execute first."))?;
-    let image = profile
-        .image
-        .clone()
-        .ok_or_else(|| AppError::validation("Build the image first."))?;
-    Ok((socket, image))
+/// The profile and host a Test runs, refused while anything but the test
+/// itself is missing.
+fn test_subject(
+    settings: &AgentSettings,
+    host_id: &str,
+    profile_id: &str,
+) -> AppResult<(AgentProfile, AgentHost)> {
+    let profile = settings
+        .profiles
+        .iter()
+        .find(|p| p.id == profile_id)
+        .cloned()
+        .ok_or_else(|| AppError::validation("Choose the agent to test."))?;
+    let host = settings
+        .hosts
+        .iter()
+        .find(|h| h.id == host_id)
+        .cloned()
+        .ok_or_else(|| AppError::validation("Choose a host."))?;
+    if let Some(first) = profile.missing.iter().chain(&host.missing).next() {
+        return Err(AppError::validation(format!(
+            "Settings → Agents is not ready: {first}"
+        )));
+    }
+    Ok((profile, host))
 }
 
 /// Sixteen hex digits of a SHA-256, for IDs that must stay short.

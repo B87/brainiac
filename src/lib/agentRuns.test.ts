@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   activityLabel,
   activityTone,
+  destinationLabel,
   durationLabel,
   engineSummary,
   foldTurns,
@@ -9,7 +10,17 @@ import {
   imageSummary,
   listResult,
   listWhen,
+  modelLabel,
+  modelSuggestions,
+  parseModel,
+  paymentLabel,
+  paymentsOffered,
+  permissionHeading,
   producedLabel,
+  profileChoice,
+  profileName,
+  profileTestState,
+  runMissing,
   samePreview,
   settingsRequest,
   spanLabel,
@@ -18,18 +29,23 @@ import {
   turnSummary,
   visibilityLabel,
 } from "./agentRuns";
-import type { AgentEngine, AgentProfile, AgentRun, RunEvent } from "./ipc";
+import type {
+  AgentEngine,
+  AgentHost,
+  AgentProfile,
+  AgentRun,
+  RunEvent,
+} from "./ipc";
 
 const profile: AgentProfile = {
   id: "claude-code",
-  engine_socket: null,
+  agent: "claude_code",
+  provider: "anthropic",
   payment: "api_key",
   credential_source: { kind: "none" },
   credential: { needs_approval: false, pending: null, revision: 1 },
   credential_saved_at: null,
   credential_ageing: false,
-  test_passed_at: null,
-  test_current: false,
   sends_code_agreed: false,
   permissions: "ask",
   time_limit_minutes: 60,
@@ -37,8 +53,42 @@ const profile: AgentProfile = {
   memory_mib: 8192,
   workspace_gib: 20,
   model: "",
-  image: null,
+  missing: [],
   version: 3,
+};
+
+const openrouter: AgentProfile = {
+  ...profile,
+  id: "opencode-openrouter",
+  agent: "opencode",
+  provider: "openrouter",
+  model: "anthropic/claude-sonnet-5-5",
+};
+
+const thisMac: AgentHost = {
+  id: "local",
+  kind: "local",
+  name: "This Mac",
+  ssh_user: null,
+  ssh_host: null,
+  ssh_port: null,
+  identity_path: null,
+  fingerprint: null,
+  approved: true,
+  installed: true,
+  engine_name: "OrbStack",
+  loop_devices: false,
+  image: null,
+  missing: [],
+  tests: [],
+  emergency_stop: null,
+  state_kept: false,
+  controller_build: null,
+  protocol: null,
+  controller_installed_at: null,
+  upgrade_available: false,
+  available_build: null,
+  version: 1,
 };
 
 describe("Settings → Agents", () => {
@@ -51,9 +101,89 @@ describe("Settings → Agents", () => {
 
   it("saves the shown version with the change", () => {
     const request = settingsRequest(profile, { permissions: "act" });
+    expect(request.profile_id).toBe("claude-code");
     expect(request.expected_version).toBe(3);
     expect(request.permissions).toBe("act");
     expect(request.time_limit_minutes).toBe(60);
+  });
+
+  it("names a profile, where it sends code, and how it is paid", () => {
+    expect(profileName(profile)).toBe("Claude Code");
+    expect(profileName(openrouter)).toBe("OpenCode · OpenRouter");
+    expect(destinationLabel({ ...profile, payment: "claude_plan" })).toBe(
+      "Anthropic, under your Claude plan",
+    );
+    expect(destinationLabel(openrouter)).toBe("OpenRouter, with an API key");
+    expect(paymentLabel(profile, "api_key")).toBe("API key");
+    expect(paymentLabel(openrouter, "api_key")).toBe("OpenRouter API key");
+    expect(paymentsOffered(profile, true)).toEqual(["claude_plan", "api_key"]);
+    expect(paymentsOffered(profile, false)).toEqual(["api_key"]);
+    expect(paymentsOffered(openrouter, true)).toEqual(["api_key"]);
+    expect(profileChoice(profile)).toBe("Claude Code · API key");
+    expect(profileChoice(openrouter)).toBe("OpenCode · OpenRouter");
+  });
+
+  it("says what stops a profile's run on a host, the profile first", () => {
+    const lacking = { ...openrouter, missing: ["Add an OpenRouter API key."] };
+    const host = { ...thisMac, missing: ["Build the image."] };
+    expect(runMissing(lacking, host)).toEqual([
+      "Add an OpenRouter API key.",
+      "Build the image.",
+      "Pass a test of OpenCode · OpenRouter on This Mac.",
+    ]);
+    const tested = (current: boolean): AgentHost => ({
+      ...thisMac,
+      tests: [
+        {
+          profile_id: openrouter.id,
+          passed_at: "2026-10-05T10:00:00Z",
+          current,
+        },
+      ],
+    });
+    expect(runMissing(openrouter, tested(true))).toEqual([]);
+    expect(runMissing(openrouter, tested(false))).toEqual([
+      "Test OpenCode · OpenRouter on This Mac again: the token or key, the image, or the engine changed since.",
+    ]);
+    // Another profile's test does not count.
+    expect(runMissing(profile, tested(true))).toHaveLength(1);
+  });
+
+  it("gives each profile's test on a host one state", () => {
+    expect(profileTestState(openrouter, thisMac)).toEqual({ kind: "untested" });
+    expect(
+      profileTestState({ ...openrouter, missing: ["Add a key."] }, thisMac),
+    ).toEqual({ kind: "blocked", reason: "Add a key." });
+    const at = "2026-10-05T10:00:00Z";
+    const host = (current: boolean): AgentHost => ({
+      ...thisMac,
+      tests: [{ profile_id: openrouter.id, passed_at: at, current }],
+    });
+    expect(profileTestState(openrouter, host(true))).toEqual({
+      kind: "passed",
+      at,
+    });
+    expect(profileTestState(openrouter, host(false))).toEqual({
+      kind: "stale",
+      at,
+    });
+  });
+
+  it("suggests and checks models per agent", () => {
+    expect(modelSuggestions(profile)).toContain("opusplan");
+    expect(modelSuggestions({ ...openrouter, provider: "openai" })).toContain(
+      "gpt-6.1-sol",
+    );
+    expect(modelSuggestions(openrouter)).toContain(
+      "anthropic/claude-sonnet-5-5",
+    );
+    expect(parseModel("opencode", " anthropic/claude-sonnet-5-5 ")).toEqual({
+      value: "anthropic/claude-sonnet-5-5",
+    });
+    expect(parseModel("claude_code", "opus[1m]")).toEqual({
+      value: "opus[1m]",
+    });
+    expect("error" in parseModel("opencode", "gpt 6")).toBe(true);
   });
 
   it("summarizes an engine, or says why it cannot be used", () => {
@@ -79,12 +209,12 @@ describe("Settings → Agents", () => {
   it("shortens an image ID", () => {
     expect(
       imageSummary({
-        name: "brainiac-claude:3f9c41e1a2b0",
+        name: "brainiac-agents:3f9c41e1a2b0",
         id: "sha256:9f3c41e1aaaaaaaaaaaaaaaa",
         built_at: "2026-10-05T12:00:00Z",
         current: true,
       }),
-    ).toBe("brainiac-claude:3f9c41e1a2b0 · sha256:9f3c41e1aaaa…");
+    ).toBe("brainiac-agents:3f9c41e1a2b0 · sha256:9f3c41e1aaaa…");
   });
 });
 
@@ -96,12 +226,15 @@ describe("Runs", () => {
     title: "Fix the build",
     start_commit: "0123456789abcdef0123456789abcdef01234567",
     start_subject: "Start",
+    profile_id: "claude-code",
+    agent: "claude_code",
+    provider: "anthropic",
     payment: "api_key",
     credential_source: "the Keychain",
     host_id: "local",
     host_name: "This Mac",
     engine_name: "OrbStack",
-    image_name: "brainiac-claude:abc",
+    image_name: "brainiac-agents:abc",
     permissions: "ask",
     time_limit_minutes: 60,
     cpus: 4,
@@ -138,6 +271,22 @@ describe("Runs", () => {
     version: 4,
     starting: null,
   };
+
+  it("names the run's agent in its model and its questions", () => {
+    expect(modelLabel(run)).toBe("Claude Code's default");
+    expect(
+      modelLabel({ ...run, agent: "opencode", model: "gpt-6.1-sol" }),
+    ).toBe("gpt-6.1-sol");
+    expect(modelLabel({ ...run, model_used: "claude-sonnet-5-5" })).toBe(
+      "claude-sonnet-5-5",
+    );
+    expect(permissionHeading("opencode", "execute")).toBe(
+      "OpenCode asks to run a command",
+    );
+    expect(permissionHeading("claude_code", null)).toBe(
+      "Claude Code asks for permission",
+    );
+  });
 
   it("groups runs by what they wait for", () => {
     expect(groupOf(run)).toBe("active");

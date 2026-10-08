@@ -93,7 +93,7 @@ pub fn image_steps(name: &str) -> Vec<HostJobStep> {
     vec![
         step(
             format!("Build the image on {name}"),
-            "Claude Code and its ACP adapter, from the Dockerfile in Settings",
+            "Claude Code, its ACP adapter, and OpenCode, from the Dockerfile in Settings",
         ),
         step(
             "Check its Docker engine".into(),
@@ -102,24 +102,36 @@ pub fn image_steps(name: &str) -> Vec<HostJobStep> {
     ]
 }
 
-pub fn test_steps(name: &str) -> Vec<HostJobStep> {
-    vec![step(
-        "Test a run".into(),
-        &format!(
-            "Starts a short run, sends a prompt, cancels, and collects; the token or key goes to {name}"
-        ),
-    )]
+/// One step per profile to test, named for it; one "Test a run" when Add
+/// host's setup found none ready.
+pub fn test_steps(name: &str, profiles: &[String]) -> Vec<HostJobStep> {
+    let detail = format!(
+        "Starts a short run, sends a prompt, cancels, and collects; the token or key goes to {name}"
+    );
+    if profiles.is_empty() {
+        return vec![step("Test a run".into(), &detail)];
+    }
+    profiles
+        .iter()
+        .map(|profile| step(format!("Test {profile}"), &detail))
+        .collect()
 }
 
-pub fn steps_for(kind: HostJobKind, name: &str, user: &str) -> Vec<HostJobStep> {
+/// A job's steps. `profiles` names the profiles its tests are for.
+pub fn steps_for(
+    kind: HostJobKind,
+    name: &str,
+    user: &str,
+    profiles: &[String],
+) -> Vec<HostJobStep> {
     match kind {
         HostJobKind::Install | HostJobKind::Upgrade => install_steps(name, user),
         HostJobKind::BuildImage => image_steps(name),
-        HostJobKind::Test => test_steps(name),
+        HostJobKind::Test => test_steps(name, profiles),
         HostJobKind::Setup => {
             let mut steps = install_steps(name, user);
             steps.extend(image_steps(name));
-            steps.extend(test_steps(name));
+            steps.extend(test_steps(name, profiles));
             steps
         }
     }
@@ -567,10 +579,41 @@ impl HostJobService {
 
     /// Starts a job and returns at once; the window follows it by events.
     // `self: &Arc<Self>` lets the background task keep the service alive.
-    pub async fn start(self: &Arc<Self>, host_id: &str, kind: HostJobKind) -> AppResult<HostJob> {
+    /// `profile_id` is the profile Test runs; Add host's setup tests every
+    /// profile that is ready (its token or key, agreement, and model).
+    pub async fn start(
+        self: &Arc<Self>,
+        host_id: &str,
+        kind: HostJobKind,
+        profile_id: Option<String>,
+    ) -> AppResult<HostJob> {
         let host = self.hosts.host(host_id).await?;
         check_start(&host, kind)?;
         let dir = self.hosts_dir.join(safe_id(host_id)?);
+        let profiles = self.settings.profiles().await?;
+        let tested: Vec<_> = match kind {
+            HostJobKind::Test => {
+                let id =
+                    profile_id.ok_or_else(|| AppError::validation("Choose the agent to test."))?;
+                let profile = profiles
+                    .into_iter()
+                    .find(|p| p.id == id)
+                    .ok_or_else(|| AppError::not_found("There is no such agent profile."))?;
+                if let Some(first) = profile.missing.first() {
+                    return Err(AppError::validation(format!(
+                        "Settings → Agents is not ready: {first}"
+                    )));
+                }
+                vec![profile]
+            }
+            HostJobKind::Setup => profiles
+                .into_iter()
+                .filter(|p| p.missing.is_empty())
+                .collect(),
+            _ => Vec::new(),
+        };
+        let profile_ids: Vec<String> = tested.iter().map(|p| p.id.clone()).collect();
+        let names: Vec<String> = tested.iter().map(super::settings::profile_name).collect();
         let job = HostJob {
             id: uuid::Uuid::new_v4().simple().to_string(),
             host_id: host.id.clone(),
@@ -583,6 +626,7 @@ impl HostJobService {
                 kind,
                 &host.name,
                 host.ssh_user.as_deref().unwrap_or("the SSH user"),
+                &names,
             ),
             log_tail: Vec::new(),
             error: None,
@@ -598,6 +642,7 @@ impl HostJobService {
                 }
                 _ => None,
             },
+            profile_ids: profile_ids.clone(),
         };
         let progress = {
             // Checked and inserted under one lock, so two clicks start one job.
@@ -616,7 +661,7 @@ impl HostJobService {
         let id = host_id.to_string();
         let running = progress.clone();
         tokio::spawn(async move {
-            let result = service.run(&id, kind, &running).await;
+            let result = service.run(&id, kind, &profile_ids, &running).await;
             running.end(&result);
             let job = running.snapshot();
             if let Some((title, body)) = outcome(&job) {
@@ -626,31 +671,69 @@ impl HostJobService {
         Ok(progress.snapshot())
     }
 
-    async fn run(&self, id: &str, kind: HostJobKind, job: &JobProgress) -> AppResult<()> {
+    async fn run(
+        &self,
+        id: &str,
+        kind: HostJobKind,
+        profiles: &[String],
+        job: &JobProgress,
+    ) -> AppResult<()> {
         match kind {
             HostJobKind::Install | HostJobKind::Upgrade => {
                 self.hosts.deploy(id, job, 0).await.map(|_| ())
             }
             HostJobKind::BuildImage => self.hosts.build_image(id, job, 0).await.map(|_| ()),
-            HostJobKind::Test => self.test(id, job, 0).await,
+            HostJobKind::Test => match profiles.first() {
+                Some(profile) => self.test(id, profile, job, 0, true).await,
+                None => Err(AppError::validation("Choose the agent to test.")),
+            },
             HostJobKind::Setup => {
                 self.hosts.deploy(id, job, 0).await?;
                 self.hosts.build_image(id, job, install::COUNT).await?;
                 let at = install::COUNT + image::COUNT;
-                let settings = self.settings.get().await?;
-                let missing = super::settings::credential_missing(&settings.profile);
-                if let Some(first) = missing.first() {
-                    job.skip(at, &format!("Not run yet: {first}"));
+                if profiles.is_empty() {
+                    job.skip(
+                        at,
+                        "Not run yet: no agent is set up. Add a token or key, and agree to send code, in Settings → Agents.",
+                    );
                     return Ok(());
                 }
-                self.test(id, job, at).await
+                for (i, profile) in profiles.iter().enumerate() {
+                    let last = i + 1 == profiles.len();
+                    self.test(id, profile, job, at + i, last).await?;
+                }
+                Ok(())
             }
         }
     }
 
-    async fn test(&self, id: &str, job: &JobProgress, at: usize) -> AppResult<()> {
+    /// One profile's test, as the step at `at`. The job's last step opens
+    /// into the test's own steps; an earlier one keeps its place, so the
+    /// steps after it stay where they are.
+    async fn test(
+        &self,
+        id: &str,
+        profile: &str,
+        job: &JobProgress,
+        at: usize,
+        last: bool,
+    ) -> AppResult<()> {
         job.begin(at);
-        let result = self.runs.test_host(id).await?;
+        let result = self.runs.test_host(id, profile).await?;
+        if !last {
+            let failed = result.steps.iter().find(|s| !s.passed);
+            return match failed {
+                None => {
+                    job.finish(at, Some("Passed".into()));
+                    Ok(())
+                }
+                Some(step) => Err(AppError::dependency(format!(
+                    "The test did not pass, so runs cannot start on this host yet. {}: {}",
+                    step.name,
+                    step.detail.clone().unwrap_or_default()
+                ))),
+            };
+        }
         let started = job
             .snapshot()
             .steps
@@ -831,13 +914,14 @@ mod tests {
             state: HostJobState::Running,
             started_at: "2026-10-07T19:02:00Z".into(),
             ended_at: None,
-            steps: steps_for(kind, "build-01", "ci"),
+            steps: steps_for(kind, "build-01", "ci", &[]),
             log_tail: Vec::new(),
             error: None,
             error_details: None,
             cancellable: true,
             from_build: Some("a1f3c9e".into()),
             to_build: Some("7c2e51a".into()),
+            profile_ids: Vec::new(),
         }
     }
 

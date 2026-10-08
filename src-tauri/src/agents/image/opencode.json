@@ -1,0 +1,12 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "enabled_providers": ["anthropic", "openai", "openrouter"],
+  "provider": {
+    "anthropic": { "options": { "baseURL": "https://api.anthropic.com/v1" } },
+    "openai": { "options": { "baseURL": "https://api.openai.com/v1" } },
+    "openrouter": { "options": { "baseURL": "https://openrouter.ai/api/v1" } }
+  },
+  "autoupdate": false,
+  "share": "disabled",
+  "snapshot": false
+}

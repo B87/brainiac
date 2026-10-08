@@ -53,6 +53,8 @@ export type View =
       back: View;
       /** Agents › Run hosts › this host's page. */
       host?: string;
+      /** Agents › this profile's page. */
+      profile?: string;
     };
 
 type Props = {

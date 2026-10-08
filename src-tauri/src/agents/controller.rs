@@ -760,7 +760,7 @@ impl<W: Workloads> Controller<W> {
             cpus: start.cpus,
             memory_mib: start.memory_mib,
             workspace_gib: start.workspace_gib,
-            model: start.model.clone(),
+            env: docker::launch_env(start.agent, start.provider, &start.model, start.permissions),
             bundle: start.bundle.clone(),
             cancel: cancelled,
         };

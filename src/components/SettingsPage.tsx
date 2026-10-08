@@ -59,6 +59,8 @@ export default function SettingsPage({
   top,
   host,
   onHost,
+  profile,
+  onProfile,
   onOpenRun,
 }: {
   settings: Settings;
@@ -66,6 +68,9 @@ export default function SettingsPage({
   /** Settings → Agents: the run host whose page is open. */
   host?: string;
   onHost: (host: string | null) => void;
+  /** Settings → Agents: the profile whose page is open. */
+  profile?: string;
+  onProfile: (profile: string | null) => void;
   onOpenRun: (runId: string) => void;
   vault: VaultState | null;
   onSection: (section: SettingsSection) => void;
@@ -204,6 +209,8 @@ export default function SettingsPage({
               <AgentRunsPane
                 hostId={host ?? null}
                 onHost={onHost}
+                profileId={profile ?? null}
+                onProfile={onProfile}
                 onOpenRun={onOpenRun}
               />
             )}

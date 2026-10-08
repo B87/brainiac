@@ -1,26 +1,45 @@
-//! Settings → Agents (SPEC.md, section 13): the token or key through the
-//! credentials layer (the Keychain is in memory here), what still stops a
-//! run, a payment change asking again to agree to send code, an interrupted
-//! save staying blocked, cleanup of an old item, confirmation of a restored
-//! setup, and an engine change forgetting the image.
+//! Settings → Agents (SPEC.md, section 13): the profiles, each an agent and
+//! a provider; the token or key through the credentials layer (the Keychain
+//! is in memory here), what still stops a run, a payment change asking again
+//! to agree to send code, an interrupted save staying blocked, cleanup of an
+//! old item, confirmation of a restored setup, and an engine change
+//! forgetting the image.
 
 use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
 use std::sync::Arc;
 
+use brainiac_lib::agents::settings::run_missing;
 use brainiac_lib::agents::AgentSettingsService;
 use brainiac_lib::credentials::{CommandRunner, CredentialService, MemoryStore, Resolution};
 use brainiac_lib::db::{self, Db};
 use brainiac_lib::models::{
-    AgentPayment, AgentSettings, CredentialOwner, CredentialPending, ErrorCode, RunPermissions,
-    SaveAgentCredentialRequest, SaveAgentSettingsRequest, SecretSource,
+    AgentKind, AgentPayment, AgentProfile, AgentProvider, AgentSettings, CredentialOwner,
+    CredentialPending, ErrorCode, RunPermissions, SaveAgentCredentialRequest,
+    SaveAgentSettingsRequest, SecretSource,
 };
 use brainiac_lib::secrets::SecretsService;
 
 const KEY: &str = "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-AbCd";
 const PLAN: &str = "sk-ant-oat01-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-AbCd";
 const ITEM: &str = "agent:claude-code";
+const CLAUDE_CODE: &str = "claude-code";
+const OPENROUTER_KEY: &str = "sk-or-v1-0123456789abcdef0123456789abcdef0123456789abcdef";
+
+/// The Claude Code profile, as Settings shows it.
+fn claude(s: &AgentSettings) -> &AgentProfile {
+    profile(s, CLAUDE_CODE)
+}
+
+fn profile<'a>(s: &'a AgentSettings, id: &str) -> &'a AgentProfile {
+    s.profiles.iter().find(|p| p.id == id).unwrap()
+}
+
+/// What stops a Claude Code run on this Mac.
+fn missing(s: &AgentSettings) -> Vec<String> {
+    run_missing(claude(s), &s.hosts[0])
+}
 
 struct Harness {
     tmp: tempfile::TempDir,
@@ -61,7 +80,7 @@ impl Harness {
 
     /// What a run would be handed, read through the credentials layer.
     async fn credential(&self) -> Option<String> {
-        let profile = self.agents.get().await.unwrap().profile;
+        let profile = self.agents.profile(CLAUDE_CODE).await.unwrap();
         match self
             .credentials
             .resolve(&AgentSettingsService::binding(&profile))
@@ -82,8 +101,19 @@ fn credential(
     source: SecretSource,
     secret: Option<&str>,
 ) -> SaveAgentCredentialRequest {
+    credential_for(settings, CLAUDE_CODE, payment, source, secret)
+}
+
+fn credential_for(
+    settings: &AgentSettings,
+    id: &str,
+    payment: AgentPayment,
+    source: SecretSource,
+    secret: Option<&str>,
+) -> SaveAgentCredentialRequest {
     SaveAgentCredentialRequest {
-        expected_version: settings.profile.version,
+        profile_id: id.to_string(),
+        expected_version: profile(settings, id).version,
         payment,
         source,
         secret: secret.map(str::to_string),
@@ -91,10 +121,14 @@ fn credential(
 }
 
 fn settings_request(settings: &AgentSettings) -> SaveAgentSettingsRequest {
-    let p = &settings.profile;
+    settings_request_for(settings, CLAUDE_CODE)
+}
+
+fn settings_request_for(settings: &AgentSettings, id: &str) -> SaveAgentSettingsRequest {
+    let p = profile(settings, id);
     SaveAgentSettingsRequest {
+        profile_id: id.to_string(),
         expected_version: p.version,
-        engine_socket: p.engine_socket.clone(),
         sends_code_agreed: p.sends_code_agreed,
         permissions: p.permissions,
         time_limit_minutes: p.time_limit_minutes,
@@ -145,20 +179,56 @@ fn command(program: &str) -> SecretSource {
 async fn a_new_setup_lists_everything_a_run_still_needs() {
     let h = Harness::new();
     let s = h.agents.get().await.unwrap();
-    assert_eq!(s.profile.payment, AgentPayment::ApiKey);
-    assert_eq!(s.profile.credential_source, SecretSource::None);
-    assert_eq!(s.profile.permissions, RunPermissions::Ask);
-    assert_eq!(s.profile.time_limit_minutes, 60);
-    assert!(s.profile.image.is_none());
-    let missing = s.missing.join(" | ");
+    // Claude Code, then OpenCode with each provider.
+    let profiles: Vec<_> = s
+        .profiles
+        .iter()
+        .map(|p| (p.id.as_str(), p.agent, p.provider))
+        .collect();
+    assert_eq!(
+        profiles,
+        [
+            (CLAUDE_CODE, AgentKind::ClaudeCode, AgentProvider::Anthropic),
+            (
+                "opencode-anthropic",
+                AgentKind::Opencode,
+                AgentProvider::Anthropic
+            ),
+            (
+                "opencode-openai",
+                AgentKind::Opencode,
+                AgentProvider::Openai
+            ),
+            (
+                "opencode-openrouter",
+                AgentKind::Opencode,
+                AgentProvider::Openrouter
+            ),
+        ]
+    );
+    let p = claude(&s);
+    assert_eq!(p.payment, AgentPayment::ApiKey);
+    assert_eq!(p.credential_source, SecretSource::None);
+    assert_eq!(p.permissions, RunPermissions::Ask);
+    assert_eq!(p.time_limit_minutes, 60);
+    assert!(s.hosts[0].image.is_none());
+    let missing = missing(&s).join(" | ");
     for want in [
-        "Choose where",
-        "Add an API key",
+        "Add an Anthropic API key",
         "Agree to send",
+        "Choose where",
         "Build the image",
+        "Pass a test of Claude Code on This Mac",
     ] {
         assert!(missing.contains(want), "{missing}");
     }
+    // OpenCode has no model of its own to fall back to.
+    let openrouter = profile(&s, "opencode-openrouter");
+    assert!(openrouter.missing.iter().any(|m| m.contains("model")));
+    assert!(
+        openrouter.missing[0].contains("OpenRouter API key"),
+        "{openrouter:?}"
+    );
     // Nothing to list in Settings → Secrets until there is a key.
     assert!(h.agents.secret_entries().await.unwrap().is_empty());
 }
@@ -177,11 +247,11 @@ async fn a_pasted_key_goes_to_the_keychain_and_reaches_a_run() {
     assert!(!format!("{request:?}").contains("sk-ant"));
     let saved = h.agents.save_credential(request).await.unwrap();
     assert_eq!(h.store.text(ITEM).as_deref(), Some(KEY));
-    assert_eq!(saved.profile.credential_source, SecretSource::Store);
-    assert!(saved.profile.credential_saved_at.is_some());
-    assert!(saved.profile.credential.revision > s.profile.credential.revision);
+    assert_eq!(claude(&saved).credential_source, SecretSource::Store);
+    assert!(claude(&saved).credential_saved_at.is_some());
+    assert!(claude(&saved).credential.revision > claude(&s).credential.revision);
     assert_eq!(h.credential().await.as_deref(), Some(KEY));
-    assert!(!saved.missing.iter().any(|m| m.contains("Add an API key")));
+    assert!(!missing(&saved).iter().any(|m| m.contains("Add an")));
 
     // Saving over an older version of the pane is refused.
     let stale = credential(&s, AgentPayment::ApiKey, SecretSource::Store, Some(KEY));
@@ -217,7 +287,7 @@ async fn a_new_payment_needs_a_new_paste_and_a_new_agreement() {
     let mut agree = settings_request(&s);
     agree.sends_code_agreed = true;
     let s = h.agents.save(agree).await.unwrap();
-    assert!(s.profile.sends_code_agreed);
+    assert!(claude(&s).sends_code_agreed);
 
     // A key pasted as a plan token is refused without echoing it.
     let err = h
@@ -257,15 +327,15 @@ async fn a_new_payment_needs_a_new_paste_and_a_new_agreement() {
         ))
         .await
         .unwrap();
-    assert_eq!(s.profile.payment, AgentPayment::ClaudePlan);
-    assert!(!s.profile.sends_code_agreed);
-    assert!(!s.profile.credential_ageing);
+    assert_eq!(claude(&s).payment, AgentPayment::ClaudePlan);
+    assert!(!claude(&s).sends_code_agreed);
+    assert!(!claude(&s).credential_ageing);
     assert_eq!(h.credential().await.as_deref(), Some(PLAN));
 
     // Saved eleven months ago: Settings warns.
     h.sql("UPDATE agent_profiles SET credential_saved_at = '2020-01-01T00:00:00Z'")
         .await;
-    assert!(h.agents.get().await.unwrap().profile.credential_ageing);
+    assert!(claude(&h.agents.get().await.unwrap()).credential_ageing);
 }
 
 #[tokio::test]
@@ -285,8 +355,8 @@ async fn an_interrupted_keychain_save_stays_blocked_until_saved_again() {
         .unwrap_err();
     assert!(err.message.contains("saved again"), "{err:?}");
     let s = h.agents.get().await.unwrap();
-    assert_eq!(s.profile.credential.pending, Some(CredentialPending::Save));
-    assert!(s.missing.iter().any(|m| m.contains("did not finish")));
+    assert_eq!(claude(&s).credential.pending, Some(CredentialPending::Save));
+    assert!(missing(&s).iter().any(|m| m.contains("did not finish")));
     assert_eq!(h.credential().await, None);
 
     h.store.fail_writes(false);
@@ -300,7 +370,7 @@ async fn an_interrupted_keychain_save_stays_blocked_until_saved_again() {
         ))
         .await
         .unwrap();
-    assert_eq!(s.profile.credential.pending, None);
+    assert_eq!(claude(&s).credential.pending, None);
     assert_eq!(h.credential().await.as_deref(), Some(KEY));
 }
 
@@ -334,7 +404,7 @@ async fn moving_to_a_command_deletes_the_old_item_and_a_failed_delete_is_retried
         .await
         .unwrap();
     assert_eq!(
-        s.profile.credential.pending,
+        claude(&s).credential.pending,
         Some(CredentialPending::Cleanup)
     );
     assert!(h.store.text(ITEM).is_some());
@@ -362,15 +432,21 @@ async fn moving_to_a_command_deletes_the_old_item_and_a_failed_delete_is_retried
     secrets.retry(&owner).await.unwrap();
     assert!(h.store.text(ITEM).is_none());
     assert_eq!(
-        h.agents.get().await.unwrap().profile.credential.pending,
+        claude(&h.agents.get().await.unwrap()).credential.pending,
         None
     );
 
     // Remove: no key at all.
     let s = h.agents.get().await.unwrap();
-    let s = h.agents.remove_credential(s.profile.version).await.unwrap();
-    assert_eq!(s.profile.credential_source, SecretSource::None);
-    assert!(s.missing.iter().any(|m| m.contains("Add an API key")));
+    let s = h
+        .agents
+        .remove_credential(CLAUDE_CODE, claude(&s).version)
+        .await
+        .unwrap();
+    assert_eq!(claude(&s).credential_source, SecretSource::None);
+    assert!(missing(&s)
+        .iter()
+        .any(|m| m.contains("Add an Anthropic API key")));
 }
 
 #[tokio::test]
@@ -390,23 +466,16 @@ async fn a_restored_setup_is_not_read_until_confirmed() {
     h.sql("UPDATE agent_profiles SET source_approved = 0").await;
     h.credentials.invalidate(ITEM);
     let s = h.agents.get().await.unwrap();
-    assert!(s.profile.credential.needs_approval);
-    assert!(s.missing.iter().any(|m| m.contains("Confirm")));
+    assert!(claude(&s).credential.needs_approval);
+    assert!(missing(&s).iter().any(|m| m.contains("Confirm")));
     assert_eq!(h.credential().await, None);
-    assert!(h
-        .agents
-        .build_image()
-        .await
-        .unwrap_err()
-        .message
-        .contains("Confirm"));
 
     let s = h
         .agents
-        .approve("claude-code", s.profile.credential.revision)
+        .approve(CLAUDE_CODE, claude(&s).credential.revision)
         .await
         .unwrap();
-    assert!(!s.profile.credential.needs_approval);
+    assert!(!claude(&s).credential.needs_approval);
     assert_eq!(h.credential().await.as_deref(), Some(KEY));
 }
 
@@ -432,68 +501,125 @@ async fn limits_are_checked_and_another_engine_forgets_the_image() {
     let mut alias = settings_request(&s);
     alias.model = " opus[1m] ".into();
     let s = h.agents.save(alias).await.unwrap();
-    assert_eq!(s.profile.model, "opus[1m]");
+    assert_eq!(claude(&s).model, "opus[1m]");
     let mut none = settings_request(&s);
     none.model = String::new();
     let s = h.agents.save(none).await.unwrap();
-    assert_eq!(s.profile.model, "");
+    assert_eq!(claude(&s).model, "");
 
-    let mut missing = settings_request(&s);
-    missing.engine_socket = Some(h.tmp.path().join("none.sock").display().to_string());
+    let path = |name: &str| Some(h.tmp.path().join(name).display().to_string());
     assert_eq!(
-        h.agents.save(missing).await.unwrap_err().code,
+        h.agents
+            .choose_engine(path("none.sock"))
+            .await
+            .unwrap_err()
+            .code,
         ErrorCode::NotFound
     );
 
     let socket = h.tmp.path().join("a.sock");
     // An engine runs were not tested on is not offered.
-    let untested = h.tmp.path().join("untested.sock");
-    fake_engine(&untested, "Ubuntu 24.04");
-    let mut other = settings_request(&s);
-    other.engine_socket = Some(untested.display().to_string());
-    let err = h.agents.save(other).await.unwrap_err();
+    fake_engine(&h.tmp.path().join("untested.sock"), "Ubuntu 24.04");
+    let err = h
+        .agents
+        .choose_engine(path("untested.sock"))
+        .await
+        .unwrap_err();
     assert!(err.message.contains("cannot run agents"), "{err:?}");
 
     fake_engine(&socket, "OrbStack");
+    let s = h.agents.choose_engine(path("a.sock")).await.unwrap();
+    assert_eq!(s.engine_socket.as_deref(), socket.to_str());
+    assert!(!missing(&s).iter().any(|m| m.contains("Choose where")));
     let mut chosen = settings_request(&s);
-    chosen.engine_socket = Some(socket.display().to_string());
     chosen.permissions = RunPermissions::Act;
     chosen.time_limit_minutes = 120;
     let s = h.agents.save(chosen).await.unwrap();
-    assert_eq!(s.profile.engine_socket.as_deref(), socket.to_str());
-    assert_eq!(s.profile.permissions, RunPermissions::Act);
-    assert!(!s.missing.iter().any(|m| m.contains("Choose where")));
+    assert_eq!(claude(&s).permissions, RunPermissions::Act);
 
-    // The chosen engine stopped: other changes are still saved.
+    // The chosen engine stopped: it stays chosen.
     let stopped = h.tmp.path().join("stopped.sock");
     fake_engine(&stopped, "OrbStack");
-    let mut chosen = settings_request(&s);
-    chosen.engine_socket = Some(stopped.display().to_string());
-    let s = h.agents.save(chosen).await.unwrap();
+    h.agents.choose_engine(path("stopped.sock")).await.unwrap();
     std::fs::remove_file(&stopped).unwrap();
-    let mut longer = settings_request(&s);
-    longer.time_limit_minutes = 240;
-    let s = h.agents.save(longer).await.unwrap();
-    assert_eq!(s.profile.time_limit_minutes, 240);
-    let mut back = settings_request(&s);
-    back.engine_socket = Some(socket.display().to_string());
-    h.agents.save(back).await.unwrap();
+    let s = h.agents.choose_engine(path("stopped.sock")).await.unwrap();
+    assert_eq!(s.engine_socket.as_deref(), stopped.to_str());
+    h.agents.choose_engine(path("a.sock")).await.unwrap();
 
     h.sql(
-        "UPDATE agent_profiles SET image_id = 'sha256:1', image_recipe = 'old', image_built_at = '2026-10-05T00:00:00Z'",
+        "UPDATE agent_hosts SET image_id = 'sha256:1', image_recipe = 'old', image_built_at = '2026-10-05T00:00:00Z' WHERE id = 'local'",
     )
     .await;
     let s = h.agents.get().await.unwrap();
-    assert!(s.profile.image.as_ref().is_some_and(|i| !i.current));
-    assert!(s.missing.iter().any(|m| m.contains("Rebuild")));
+    assert!(s.hosts[0].image.as_ref().is_some_and(|i| !i.current));
+    assert!(missing(&s).iter().any(|m| m.contains("Rebuild")));
 
     // The same engine again keeps it; another one does not.
-    let s = h.agents.save(settings_request(&s)).await.unwrap();
-    assert!(s.profile.image.is_some());
-    let other = h.tmp.path().join("b.sock");
-    fake_engine(&other, "Docker Desktop");
-    let mut moved = settings_request(&s);
-    moved.engine_socket = Some(other.display().to_string());
-    let s = h.agents.save(moved).await.unwrap();
-    assert!(s.profile.image.is_none());
+    let s = h.agents.choose_engine(path("a.sock")).await.unwrap();
+    assert!(s.hosts[0].image.is_some());
+    fake_engine(&h.tmp.path().join("b.sock"), "Docker Desktop");
+    let s = h.agents.choose_engine(path("b.sock")).await.unwrap();
+    assert!(s.hosts[0].image.is_none());
+}
+
+#[tokio::test]
+async fn each_opencode_profile_takes_its_own_providers_key_and_a_model() {
+    let h = Harness::new();
+    let s = h.agents.get().await.unwrap();
+    let id = "opencode-openrouter";
+    // Another provider's key, or a plan token, is refused without echoing it.
+    let err = h
+        .agents
+        .save_credential(credential_for(
+            &s,
+            id,
+            AgentPayment::ApiKey,
+            SecretSource::Store,
+            Some(KEY),
+        ))
+        .await
+        .unwrap_err();
+    assert!(
+        err.message.contains("OpenRouter") && !err.message.contains("sk-ant"),
+        "{err:?}"
+    );
+    let err = h
+        .agents
+        .save_credential(credential_for(
+            &s,
+            id,
+            AgentPayment::ClaudePlan,
+            SecretSource::Store,
+            Some(PLAN),
+        ))
+        .await
+        .unwrap_err();
+    assert!(err.message.contains("Claude"), "{err:?}");
+    let s = h
+        .agents
+        .save_credential(credential_for(
+            &s,
+            id,
+            AgentPayment::ApiKey,
+            SecretSource::Store,
+            Some(OPENROUTER_KEY),
+        ))
+        .await
+        .unwrap();
+    // Its own Keychain item: Claude Code's is untouched.
+    assert_eq!(
+        h.store.text("agent:opencode-openrouter").as_deref(),
+        Some(OPENROUTER_KEY)
+    );
+    assert!(h.store.text(ITEM).is_none());
+    let mut agree = settings_request_for(&s, id);
+    agree.sends_code_agreed = true;
+    agree.model = "anthropic/claude-sonnet-5-5".into();
+    let s = h.agents.save(agree).await.unwrap();
+    assert_eq!(profile(&s, id).missing, Vec::<String>::new());
+    assert_eq!(profile(&s, id).model, "anthropic/claude-sonnet-5-5");
+    let entries = h.agents.secret_entries().await.unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].label, "OpenCode · OpenRouter runs");
+    assert_eq!(entries[0].destination, "OpenRouter, with an API key");
 }

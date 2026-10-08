@@ -11,8 +11,10 @@
 --                            offer Upgrade; and when it was installed
 --   engine_name, loop_devices  the host's engine, and whether it can attach
 --                            the workspace's loop devices
---   image_*, test_*          the image built on the host's engine, and the
---                            last passed test with what it ran with
+--   image_*                  the image built on the host's engine: its ID,
+--                            the recipe (hash of the Dockerfile and its
+--                            files) it was built from, and when; this
+--                            Mac's is cleared when its engine changes
 --   state_kept               Remove finished, but the host still holds a
 --                            container, volume, or ledger
 CREATE TABLE agent_hosts (
@@ -29,9 +31,6 @@ CREATE TABLE agent_hosts (
   image_id                 TEXT,
   image_recipe             TEXT,
   image_built_at           TEXT,
-  test_passed_at           TEXT,
-  test_credential_revision INTEGER,
-  test_image_id            TEXT,
   state_kept               INTEGER NOT NULL DEFAULT 0,
   version                  INTEGER NOT NULL DEFAULT 1,
   created_at               TEXT NOT NULL,
@@ -39,25 +38,22 @@ CREATE TABLE agent_hosts (
   CHECK ((kind = 'ssh') = (machine_id IS NOT NULL))
 );
 
--- How one agent's runs are paid for and started. v0.5 has one profile,
--- Claude Code. Its token or key is never here: like an account's
--- (0007_secret_sources), the row keeps where it is read from, under the
--- credential owner `agent:<id>`; `{"kind":"none"}` means none yet.
---   payment              'claude_plan' (a `claude setup-token` token) or 'api_key'
+-- How one agent's runs are paid for and started: an agent, Claude Code
+-- or OpenCode, with one model provider. Each profile has its own token or
+-- key, never here: like an account's (0007_secret_sources), the row keeps
+-- where it is read from, under the credential owner `agent:<id>`;
+-- `{"kind":"none"}` means none yet.
+--   payment              'claude_plan' (a `claude setup-token` token, Claude
+--                        Code only) or 'api_key' (the provider's API key)
 --   credential_saved_at  when the token or key was last saved, for the expiry warning
 --   sends_code_agreed    the user agreed that runs send code and prompts to the
 --                        provider under this payment; cleared when it changes
---   model                the model new runs ask for; empty is Claude Code's default
---   image_*              the image built on this Mac's engine: its ID, the
---                        recipe (hash of the Dockerfile and its files) it was
---                        built from, and when; cleared when the engine changes
---   test_*               the last passed test on this Mac, with the credential
---                        revision, image, and engine it ran with. A run cannot
---                        start until it matches the current ones.
+--   model                the model new runs ask for; empty is the agent's
+--                        default (Claude Code only: OpenCode needs one)
 CREATE TABLE agent_profiles (
   id                       TEXT PRIMARY KEY,
-  agent                    TEXT NOT NULL CHECK (agent IN ('claude_code')),
-  host_id                  TEXT NOT NULL REFERENCES agent_hosts (id),
+  agent                    TEXT NOT NULL CHECK (agent IN ('claude_code', 'opencode')),
+  provider                 TEXT NOT NULL CHECK (provider IN ('anthropic', 'openai', 'openrouter')),
   payment                  TEXT NOT NULL DEFAULT 'api_key'
                            CHECK (payment IN ('claude_plan', 'api_key')),
   secret_source            TEXT NOT NULL DEFAULT '{"kind":"none"}',
@@ -72,20 +68,32 @@ CREATE TABLE agent_profiles (
   memory_mib               INTEGER NOT NULL DEFAULT 8192,
   workspace_gib            INTEGER NOT NULL DEFAULT 20,
   model                    TEXT NOT NULL DEFAULT '',
-  image_id                 TEXT,
-  image_recipe             TEXT,
-  image_built_at           TEXT,
-  test_passed_at           TEXT,
-  test_credential_revision INTEGER,
-  test_image_id            TEXT,
-  test_engine_socket       TEXT,
   version                  INTEGER NOT NULL DEFAULT 1,
   created_at               TEXT NOT NULL,
-  updated_at               TEXT NOT NULL
+  updated_at               TEXT NOT NULL,
+  CHECK (payment = 'api_key' OR agent = 'claude_code'),
+  CHECK (provider = 'anthropic' OR agent = 'opencode')
+);
+
+-- The last passed test of a profile on a host, with what it ran with: the
+-- credential revision, the image, and on this Mac the engine. A run of
+-- that profile cannot start on that host until they match the current ones.
+CREATE TABLE agent_tests (
+  host_id             TEXT NOT NULL REFERENCES agent_hosts (id) ON DELETE CASCADE,
+  profile_id          TEXT NOT NULL REFERENCES agent_profiles (id) ON DELETE CASCADE,
+  passed_at           TEXT NOT NULL,
+  credential_revision INTEGER NOT NULL,
+  image_id            TEXT NOT NULL,
+  engine_socket       TEXT,
+  PRIMARY KEY (host_id, profile_id)
 );
 
 INSERT INTO agent_hosts (id, kind, created_at, updated_at)
 VALUES ('local', 'local', strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
 
-INSERT INTO agent_profiles (id, agent, host_id, created_at, updated_at)
-VALUES ('claude-code', 'claude_code', 'local', strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
+INSERT INTO agent_profiles (id, agent, provider, created_at, updated_at)
+VALUES
+  ('claude-code', 'claude_code', 'anthropic', strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  ('opencode-anthropic', 'opencode', 'anthropic', strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  ('opencode-openai', 'opencode', 'openai', strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  ('opencode-openrouter', 'opencode', 'openrouter', strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));

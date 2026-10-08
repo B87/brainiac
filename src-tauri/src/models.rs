@@ -3319,6 +3319,63 @@ pub struct ForgeAccountTestResult {
 // Agent runs — v0.5 (SPEC.md, section 13)
 // ---------------------------------------------------------------------------
 
+/// The agent a profile runs (SPEC.md, Settings → Agents).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum AgentKind {
+    /// Claude Code through its ACP adapter.
+    #[default]
+    ClaudeCode,
+    /// OpenCode, which speaks ACP itself (`opencode acp`).
+    Opencode,
+}
+
+impl AgentKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AgentKind::ClaudeCode => "claude_code",
+            AgentKind::Opencode => "opencode",
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            AgentKind::ClaudeCode => "Claude Code",
+            AgentKind::Opencode => "OpenCode",
+        }
+    }
+}
+
+/// The model provider a profile's code and prompts go to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum AgentProvider {
+    #[default]
+    Anthropic,
+    Openai,
+    Openrouter,
+}
+
+impl AgentProvider {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AgentProvider::Anthropic => "anthropic",
+            AgentProvider::Openai => "openai",
+            AgentProvider::Openrouter => "openrouter",
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            AgentProvider::Anthropic => "Anthropic",
+            AgentProvider::Openai => "OpenAI",
+            AgentProvider::Openrouter => "OpenRouter",
+        }
+    }
+}
+
 /// How a profile's runs are paid for: exactly one of them reaches a run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
@@ -3326,7 +3383,7 @@ pub struct ForgeAccountTestResult {
 pub enum AgentPayment {
     /// A token the user made with `claude setup-token`, on their Claude plan.
     ClaudePlan,
-    /// An Anthropic API key.
+    /// The provider's API key.
     ApiKey,
 }
 
@@ -3360,11 +3417,11 @@ impl RunPermissions {
     }
 }
 
-/// The image built for a profile on its engine.
+/// The image built on a host's engine. It holds every agent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct AgentImage {
-    /// Such as `brainiac-claude:3f9c41e1a2b0`.
+    /// Such as `brainiac-agents:3f9c41e1a2b0`.
     pub name: String,
     /// The engine's image ID, `sha256:…`.
     pub id: String,
@@ -3374,14 +3431,14 @@ pub struct AgentImage {
     pub current: bool,
 }
 
-/// Settings → Agents for one agent (phase 1: Claude Code). Never holds the
-/// token or key, only where it is read from.
+/// Settings → Agents for one agent and provider. Never holds the token or
+/// key, only where it is read from.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct AgentProfile {
     pub id: String,
-    /// The Docker socket of this Mac's engine; `None` until chosen.
-    pub engine_socket: Option<String>,
+    pub agent: AgentKind,
+    pub provider: AgentProvider,
     pub payment: AgentPayment,
     /// Where the token or key is read from; `None` when there is none yet.
     pub credential_source: SecretSource,
@@ -3398,15 +3455,14 @@ pub struct AgentProfile {
     pub cpus: u32,
     pub memory_mib: u32,
     pub workspace_gib: u32,
-    /// The model new runs ask Claude Code for: an alias such as `sonnet` or
-    /// a full name; empty for Claude Code's own default.
+    /// The model new runs ask for. Claude Code: an alias such as `sonnet`
+    /// or a full name, empty for its own default. OpenCode: the provider's
+    /// model name, such as `gpt-6.1-sol` or, on OpenRouter,
+    /// `anthropic/claude-sonnet-5-5`.
     pub model: String,
-    pub image: Option<AgentImage>,
-    /// When the last test passed.
-    pub test_passed_at: Option<String>,
-    /// That test ran with the current token or key, image, and engine, so
-    /// runs may start.
-    pub test_current: bool,
+    /// What this profile still lacks before any host can run it (the
+    /// token or key, the agreement, the model), in the order to do it.
+    pub missing: Vec<String>,
     #[ts(type = "number")]
     pub version: i64,
 }
@@ -3415,14 +3471,27 @@ pub struct AgentProfile {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct AgentSettings {
-    pub profile: AgentProfile,
+    /// Claude Code, then OpenCode with each provider.
+    pub profiles: Vec<AgentProfile>,
+    /// The Docker socket of this Mac's engine; `None` until chosen.
+    pub engine_socket: Option<String>,
     /// Whether this build offers paying with a Claude plan (SPEC.md,
     /// Settings → Agents: it ships only once Anthropic's answer is recorded).
     pub plan_offered: bool,
-    /// What still stops a run from starting, in the order to do it.
-    pub missing: Vec<String>,
     /// This Mac, then every remote host (SPEC.md, Remote hosts).
     pub hosts: Vec<AgentHost>,
+}
+
+/// A profile's last passed test on a host.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AgentTest {
+    pub profile_id: String,
+    pub passed_at: String,
+    /// It ran with the profile's current token or key and the host's current
+    /// image (and on this Mac, its engine), so runs of the profile may start
+    /// there.
+    pub current: bool,
 }
 
 /// A machine that can run an agent (SPEC.md, Remote hosts). Never a private
@@ -3448,7 +3517,11 @@ pub struct AgentHost {
     /// The engine can attach the workspace's loop devices.
     pub loop_devices: bool,
     pub image: Option<AgentImage>,
-    pub test_current: bool,
+    /// What still stops this host from taking a run, whatever the profile
+    /// (the engine, the install, the image), in the order to do it.
+    pub missing: Vec<String>,
+    /// The last passed test of each profile tested here.
+    pub tests: Vec<AgentTest>,
     /// A command the host's administrator can run to stop containers.
     pub emergency_stop: Option<String>,
     /// Remove finished, and the host still holds a container or a volume.
@@ -3551,6 +3624,10 @@ pub struct HostJob {
     /// The controller build replaced and the one installed, short.
     pub from_build: Option<String>,
     pub to_build: Option<String>,
+    /// The profiles its test steps are for: Test's one, or each profile
+    /// Add host's setup found ready.
+    #[serde(default)]
+    pub profile_ids: Vec<String>,
 }
 
 /// Approve a host key and save the host.
@@ -3572,10 +3649,10 @@ pub struct ApproveAgentHostRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct SaveAgentSettingsRequest {
+    pub profile_id: String,
     /// The version the pane shows; a save over a newer one is refused.
     #[ts(type = "number")]
     pub expected_version: i64,
-    pub engine_socket: Option<String>,
     pub sends_code_agreed: bool,
     pub permissions: RunPermissions,
     pub time_limit_minutes: u32,
@@ -3589,6 +3666,7 @@ pub struct SaveAgentSettingsRequest {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct SaveAgentCredentialRequest {
+    pub profile_id: String,
     #[ts(type = "number")]
     pub expected_version: i64,
     pub payment: AgentPayment,
@@ -3602,6 +3680,7 @@ pub struct SaveAgentCredentialRequest {
 impl std::fmt::Debug for SaveAgentCredentialRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SaveAgentCredentialRequest")
+            .field("profile_id", &self.profile_id)
             .field("expected_version", &self.expected_version)
             .field("payment", &self.payment)
             .field("source", &self.source)
@@ -3779,6 +3858,9 @@ pub struct AgentRun {
     pub title: String,
     pub start_commit: String,
     pub start_subject: String,
+    pub profile_id: String,
+    pub agent: AgentKind,
+    pub provider: AgentProvider,
     pub payment: AgentPayment,
     /// Where the credential came from, in words ("the Keychain").
     pub credential_source: String,
@@ -3791,7 +3873,7 @@ pub struct AgentRun {
     pub cpus: u32,
     pub memory_mib: u32,
     pub workspace_gib: u32,
-    /// The model the run asked for; empty for Claude Code's default.
+    /// The model the run asked for; empty for the agent's default.
     pub model: String,
     /// The model the agent reported once its session opened.
     pub model_used: Option<String>,
@@ -3861,11 +3943,13 @@ pub struct StartRunRequest {
     pub cpus: u32,
     pub memory_mib: u32,
     pub workspace_gib: u32,
-    /// The model for this run; empty for Claude Code's default.
+    /// The model for this run; empty for the agent's default, where it has one.
     pub model: String,
     /// Empty means this Mac.
     #[serde(default)]
     pub host_id: String,
+    /// The agent and provider: one of Settings → Agents' profiles.
+    pub profile_id: String,
 }
 
 /// One entry of a run's conversation, as the journal recorded it:

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   clock,
   hostState,
+  hostSummary,
   jobOutcome,
   shortFingerprint,
   stepOf,
@@ -23,12 +24,19 @@ const host: AgentHost = {
   engine_name: "Docker 27.3",
   loop_devices: true,
   image: {
-    name: "brainiac-claude:4d1e",
+    name: "brainiac-agents:4d1e",
     id: "sha256:4d1e",
     built_at: "2026-10-06T10:00:00Z",
     current: true,
   },
-  test_current: true,
+  missing: [],
+  tests: [
+    {
+      profile_id: "claude-code",
+      passed_at: "2026-10-06T11:00:00Z",
+      current: true,
+    },
+  ],
   emergency_stop: null,
   state_kept: false,
   controller_build: "a1f3c9e",
@@ -67,6 +75,7 @@ const job = (patch: Partial<HostJob>): HostJob => ({
   cancellable: true,
   from_build: "a1f3c9e",
   to_build: "7c2e51a",
+  profile_ids: [],
   ...patch,
 });
 
@@ -109,6 +118,21 @@ describe("host jobs", () => {
     expect(hostState({ ...host, approved: false }, undefined).label).toBe(
       "Waiting for confirmation",
     );
+    // Ready once one profile's test there still matches.
+    const stale = [{ ...host.tests[0], current: false }];
+    expect(hostState({ ...host, tests: stale }, undefined).label).toBe(
+      "Test needed",
+    );
+    expect(
+      hostState(
+        {
+          ...host,
+          missing: ["This host's Docker engine cannot attach loop devices."],
+        },
+        undefined,
+      ).label,
+    ).toBe("Not ready");
+    expect(hostSummary(host)).toContain("1 agent tested");
     expect(hostState({ ...host, upgrade_available: true }, undefined)).toEqual({
       label: "Ready · upgrade available",
       tone: "ready",

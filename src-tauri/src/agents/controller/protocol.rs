@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::models::{AppError, RunPermissions};
+use crate::models::{AgentKind, AgentProvider, AppError, RunPermissions};
 
 /// Bumped when a request or response changes shape. A controller with
 /// another protocol is replaced only when it has no live runs, and is not
@@ -21,8 +21,10 @@ use crate::models::{AppError, RunPermissions};
 /// keeps the number.
 /// 2 adds bundle upload and download, remote image build, and the engine
 /// probe (docs/architecture.md, Remote hosts); `Preview` and edits' diffs
-/// came later without a bump.
-pub const PROTOCOL: u32 = 2;
+/// came later without a bump. 3 adds the run's agent and provider, and the
+/// OpenAI and OpenRouter keys: an older controller would start Claude Code
+/// with them.
+pub const PROTOCOL: u32 = 3;
 
 /// One piece of a bundle copied to or from the controller. Hex doubles it,
 /// and the line must stay under [`MAX_LINE_BYTES`].
@@ -157,6 +159,10 @@ pub enum CredentialKey {
     ClaudeCodeOauthToken,
     #[serde(rename = "ANTHROPIC_API_KEY")]
     AnthropicApiKey,
+    #[serde(rename = "OPENAI_API_KEY")]
+    OpenaiApiKey,
+    #[serde(rename = "OPENROUTER_API_KEY")]
+    OpenrouterApiKey,
 }
 
 impl CredentialKey {
@@ -164,6 +170,8 @@ impl CredentialKey {
         match self {
             CredentialKey::ClaudeCodeOauthToken => "CLAUDE_CODE_OAUTH_TOKEN",
             CredentialKey::AnthropicApiKey => "ANTHROPIC_API_KEY",
+            CredentialKey::OpenaiApiKey => "OPENAI_API_KEY",
+            CredentialKey::OpenrouterApiKey => "OPENROUTER_API_KEY",
         }
     }
 }
@@ -193,7 +201,7 @@ pub struct StartRun {
     pub attempt: u32,
     /// The engine's socket, chosen in Settings.
     pub engine_socket: String,
-    /// The image name, `brainiac-claude:<recipe>`.
+    /// The image name, `brainiac-agents:<recipe>`.
     pub image: String,
     pub cpus: u32,
     pub memory_mib: u32,
@@ -208,8 +216,13 @@ pub struct StartRun {
     pub prompt_id: String,
     pub prompt: String,
     pub credential: Credential,
-    /// The model to ask Claude Code for, as `ANTHROPIC_MODEL` in the
-    /// container's environment; empty for its default. Not a secret.
+    /// The agent the container starts, and the provider its model is from.
+    #[serde(default)]
+    pub agent: AgentKind,
+    #[serde(default)]
+    pub provider: AgentProvider,
+    /// The model to ask the agent for, in the container's environment
+    /// (`docker::launch_env`); empty for Claude Code's default. Not a secret.
     #[serde(default)]
     pub model: String,
 }

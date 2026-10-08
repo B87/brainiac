@@ -175,12 +175,15 @@ export type { AgentEngine } from "./generated/AgentEngine";
 export type { AgentHost } from "./generated/AgentHost";
 export type { AgentHostPreview } from "./generated/AgentHostPreview";
 export type { AgentImage } from "./generated/AgentImage";
+export type { AgentKind } from "./generated/AgentKind";
 export type { AgentPayment } from "./generated/AgentPayment";
 export type { AgentProfile } from "./generated/AgentProfile";
+export type { AgentProvider } from "./generated/AgentProvider";
 export type { AgentRun } from "./generated/AgentRun";
 export type { AgentRunChangedEvent } from "./generated/AgentRunChangedEvent";
 export type { AgentRunList } from "./generated/AgentRunList";
 export type { AgentSettings } from "./generated/AgentSettings";
+export type { AgentTest } from "./generated/AgentTest";
 export type { AgentTestResult } from "./generated/AgentTestResult";
 export type { AgentTestStep } from "./generated/AgentTestStep";
 export type { Backlink } from "./generated/Backlink";
@@ -537,15 +540,18 @@ export const ipc = {
   // v0.5: agent runs
   /** Settings → Agents. */
   getAgentSettings: () => invoke<AgentSettings>("get_agent_settings"),
-  /** Everything but the token or key; another engine forgets the image. */
+  /** One profile: everything but the token or key. */
   saveAgentSettings: (request: SaveAgentSettingsRequest) =>
     invoke<AgentSettings>("save_agent_settings", { request }),
   /** Pay with: the token or key and where it comes from. */
   saveAgentCredential: (request: SaveAgentCredentialRequest) =>
     invoke<AgentSettings>("save_agent_credential", { request }),
-  /** Also deletes a token or key kept in the Keychain. */
-  removeAgentCredential: (expectedVersion: number) =>
-    invoke<AgentSettings>("remove_agent_credential", { expectedVersion }),
+  /** A profile's token or key; also deletes one kept in the Keychain. */
+  removeAgentCredential: (id: string, expectedVersion: number) =>
+    invoke<AgentSettings>("remove_agent_credential", { id, expectedVersion }),
+  /** This Mac's Docker engine; another engine forgets the image. */
+  chooseAgentEngine: (socket: string | null) =>
+    invoke<AgentSettings>("choose_agent_engine", { socket }),
   /** Confirm a setup restored from a backup, at the revision shown. */
   approveAgentSettings: (id: string, revision: number) =>
     invoke<AgentSettings>("approve_agent_settings", { id, revision }),
@@ -600,8 +606,9 @@ export const ipc = {
   copyRunPatch: (id: string) => invoke<string>("copy_run_patch", { id }),
   saveRunPatch: (id: string, path: string) =>
     invoke<void>("save_run_patch", { id, path }),
-  /** Settings → Agents, Test: a short run, a prompt, a cancel, a collection. */
-  testAgentSetup: () => invoke<AgentTestResult>("test_agent_setup"),
+  /** This Mac's Test of one profile: a short run, a prompt, a cancel, a collection. */
+  testAgentSetup: (profileId: string) =>
+    invoke<AgentTestResult>("test_agent_setup", { profileId }),
   getRunControllerStatus: () =>
     invoke<RunControllerStatus>("get_run_controller_status"),
   /** The host key, before anything is saved. */
@@ -611,9 +618,16 @@ export const ipc = {
   approveAgentHost: (request: ApproveAgentHostRequest) =>
     invoke<AgentHost>("approve_agent_host", { request }),
   removeAgentHost: (id: string) => invoke<void>("remove_agent_host", { id }),
-  /** Install, Upgrade, Build image, Test, or Add host's setup, in the background. */
-  startAgentHostJob: (id: string, kind: HostJobKind) =>
-    invoke<HostJob>("start_agent_host_job", { id, kind }),
+  /**
+   * Install, Upgrade, Build image, Test, or Add host's setup, in the
+   * background. Test is of one profile; setup tests each ready one.
+   */
+  startAgentHostJob: (id: string, kind: HostJobKind, profileId?: string) =>
+    invoke<HostJob>("start_agent_host_job", {
+      id,
+      kind,
+      profileId: profileId ?? null,
+    }),
   /** Until the install step begins. */
   cancelAgentHostJob: (id: string) =>
     invoke<HostJob>("cancel_agent_host_job", { id }),

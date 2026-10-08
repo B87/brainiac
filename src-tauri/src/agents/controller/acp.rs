@@ -351,12 +351,22 @@ impl<S: RunSink> Session<S> {
                     return self.fail("The agent opened a session without an ID.".into());
                 };
                 let (agent, version) = self.agent.clone();
-                // The adapter reports the models it offers and the one the
-                // session opened with; a name it could not use shows here as
-                // its default.
+                // The agent reports the model the session opened with, a
+                // name it could not use showing as its default: Claude
+                // Code's adapter in ACP's `models`, OpenCode as the current
+                // value of its `model` configuration option.
                 let model = result
                     .pointer("/models/currentModelId")
                     .and_then(Value::as_str)
+                    .or_else(|| {
+                        result
+                            .get("configOptions")?
+                            .as_array()?
+                            .iter()
+                            .find(|o| o.get("id").and_then(Value::as_str) == Some("model"))?
+                            .get("currentValue")?
+                            .as_str()
+                    })
                     .map(str::to_string);
                 self.session_id = Some(session_id.to_string());
                 self.state = State::Idle;
@@ -811,19 +821,28 @@ fn cancelled(id: &Value) -> Value {
 }
 
 fn refused_credential() -> String {
-    "Anthropic did not accept the token or key. Update it in Settings → Agents and start another run.".into()
+    "The provider did not accept the token or key. Update it in Settings → Agents and start another run.".into()
 }
 
-/// How the adapter words a refused credential: an ACP error
-/// "Authentication required", or a reply "Failed to authenticate. API Error:
-/// 401 …" (docs/design/agent-runs.md, Spike record: Claude subscription adapter).
-/// A refused key or token, by the wording the API and Claude Code use.
+/// How the agents word a refused credential. Claude Code's adapter: an ACP
+/// error "Authentication required", or a reply "Failed to authenticate. API
+/// Error: 401 …" (docs/design/agent-runs.md, Spike record: Claude
+/// subscription adapter). OpenCode: the prompt's error, with the provider's
+/// own words ("API key is invalid.", "Incorrect API key provided", "No auth
+/// credentials found", "User not found."), or "Authentication required"
+/// for a provider with no key (Record: OpenCode in a run's container).
 pub(crate) fn credential_refused(text: &str) -> bool {
     let text = text.to_lowercase();
     text.contains("authentication required")
         || text.contains("failed to authenticate")
         || text.contains("invalid x-api-key")
         || text.contains("oauth access token is invalid")
+        || text.contains("api key is invalid")
+        || text.contains("invalid api key")
+        || text.contains("incorrect api key")
+        || text.contains("invalid_api_key")
+        || text.contains("no auth credentials found")
+        || text.contains("user not found.")
 }
 
 /// A plan's usage limit, by its wording; Brainiac does not claim to know when

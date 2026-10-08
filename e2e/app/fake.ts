@@ -5,6 +5,10 @@
  * backend's own behavior is tested by `cargo test`.
  */
 import type {
+  AgentHost,
+  AgentKind,
+  AgentProfile,
+  AgentProvider,
   AgentRun,
   AgentSettings,
   AppSnapshot,
@@ -436,12 +440,15 @@ function sampleRun(fields: Partial<AgentRun>): AgentRun {
     title: "A run",
     start_commit: "4e1c9a2".padEnd(40, "0"),
     start_subject: "Fix currency labels",
+    profile_id: "claude-code",
+    agent: "claude_code",
+    provider: "anthropic",
     payment: "claude_plan",
     credential_source: "the Keychain",
     host_id: "local",
     host_name: "This Mac",
     engine_name: "OrbStack",
-    image_name: "brainiac-claude:3f9c41e1a2b0",
+    image_name: "brainiac-agents:3f9c41e1a2b0",
     permissions: "ask",
     time_limit_minutes: 120,
     cpus: 4,
@@ -757,6 +764,115 @@ let counter = 0;
 const uid = (prefix: string) => `${prefix}-${++counter}`;
 const versionOf = (text: string) => `v${text.length}-${++counter}`;
 
+const PROVIDER_NAME: Record<AgentProvider, string> = {
+  anthropic: "Anthropic",
+  openai: "OpenAI",
+  openrouter: "OpenRouter",
+};
+
+/** A profile as a fresh install has it: no key, nothing agreed. */
+function agentProfile(
+  id: string,
+  agent: AgentKind,
+  provider: AgentProvider,
+): AgentProfile {
+  return {
+    id,
+    agent,
+    provider,
+    payment: "api_key",
+    credential_source: { kind: "none" },
+    credential: { needs_approval: false, pending: null, revision: 1 },
+    credential_saved_at: null,
+    credential_ageing: false,
+    sends_code_agreed: false,
+    permissions: "ask",
+    time_limit_minutes: 60,
+    cpus: 4,
+    memory_mib: 8192,
+    workspace_gib: 20,
+    model: "",
+    missing: [],
+    version: 1,
+  };
+}
+
+/** The profile's name, as Rust's `settings::profile_name` gives it. */
+function fakeProfileName(p: AgentProfile): string {
+  return p.agent === "claude_code"
+    ? "Claude Code"
+    : `OpenCode · ${PROVIDER_NAME[p.provider]}`;
+}
+
+/** What a profile lacks, the way Rust's `settings::profile_missing` says it. */
+function profileMissing(p: AgentProfile): string[] {
+  const missing: string[] = [];
+  if (p.credential_source.kind === "none")
+    missing.push(
+      p.payment === "claude_plan"
+        ? "Add the token from claude setup-token."
+        : `Add an ${PROVIDER_NAME[p.provider]} API key.`,
+    );
+  if (!p.sends_code_agreed)
+    missing.push(
+      `Agree to send code and prompts to ${
+        p.payment === "claude_plan"
+          ? "Anthropic, under your Claude plan"
+          : `${PROVIDER_NAME[p.provider]}, with an API key`
+      }.`,
+    );
+  if (p.agent === "opencode" && p.model === "")
+    missing.push("Choose the model new runs use.");
+  return missing;
+}
+
+/** What a host lacks, the way Rust's `hosts::host_missing` says it. */
+function hostMissing(h: AgentHost, socket: string | null): string[] {
+  const missing: string[] = [];
+  const ssh = h.kind === "ssh";
+  if (!ssh && !socket) missing.push("Choose where runs execute.");
+  if (ssh && !h.approved) missing.push("Confirm this host's key.");
+  if (ssh && !h.installed) missing.push("Install the run controller.");
+  if (!h.image) missing.push("Build the image.");
+  else if (!h.image.current)
+    missing.push("Rebuild the image: this version of Brainiac changed it.");
+  else if (ssh && !h.loop_devices)
+    missing.push(
+      "This host's Docker engine cannot attach loop devices, so it cannot take a run.",
+    );
+  return missing;
+}
+
+/** A host as `approve_agent_host` or a fresh install saves it. */
+function agentHost(fields: Partial<AgentHost>): AgentHost {
+  return {
+    id: "local",
+    kind: "local",
+    name: "This Mac",
+    ssh_user: null,
+    ssh_host: null,
+    ssh_port: null,
+    identity_path: null,
+    fingerprint: null,
+    approved: true,
+    installed: true,
+    engine_name: null,
+    loop_devices: false,
+    image: null,
+    missing: [],
+    tests: [],
+    emergency_stop: null,
+    state_kept: false,
+    controller_build: null,
+    protocol: null,
+    controller_installed_at: null,
+    upgrade_available: false,
+    available_build: null,
+    version: 1,
+    ...fields,
+  };
+}
+
 export class FakeBackend {
   calls: Array<{ cmd: string; args: Record<string, unknown> }> = [];
   /** Settings → Accounts: no GitHub account; a Bitbucket token stored from Terminal. */
@@ -827,7 +943,7 @@ export class FakeBackend {
       }
       if (job.kind === "build_image" || job.kind === "setup") {
         host.image = {
-          name: "brainiac-claude:4d1e",
+          name: "brainiac-agents:4d1e",
           id: "sha256:4d1e",
           built_at: now,
           current: true,
@@ -835,62 +951,81 @@ export class FakeBackend {
         host.loop_devices = true;
         host.engine_name = "Docker 27.3";
       }
-      if (job.kind === "test" || job.kind === "setup") host.test_current = true;
+      if (job.kind === "test" || job.kind === "setup")
+        for (const id of job.profile_ids) this.passTest(host, id);
     }
+    this.refreshAgents();
     this.emit("agent_host_job", this.hostJobs[hostId]);
   }
   /** Settings → Agents: nothing set up yet, OrbStack running. */
   hostKey = "SHA256:preview";
   agentSettings: AgentSettings = {
-    profile: {
-      id: "claude-code",
-      engine_socket: null,
-      payment: "api_key",
-      credential_source: { kind: "none" },
-      credential: { needs_approval: false, pending: null, revision: 1 },
-      credential_saved_at: null,
-      credential_ageing: false,
-      test_passed_at: null,
-      test_current: false,
-      sends_code_agreed: false,
-      permissions: "ask",
-      time_limit_minutes: 60,
-      cpus: 4,
-      memory_mib: 8192,
-      workspace_gib: 20,
-      model: "",
-      image: null,
-      version: 1,
-    },
-    plan_offered: true,
-    missing: ["Choose where runs execute.", "Add an API key."],
-    hosts: [
-      {
-        id: "local",
-        kind: "local",
-        name: "This Mac",
-        ssh_user: null,
-        ssh_host: null,
-        ssh_port: null,
-        identity_path: null,
-        fingerprint: null,
-        approved: true,
-        installed: true,
-        engine_name: null,
-        loop_devices: false,
-        image: null,
-        test_current: false,
-        emergency_stop: null,
-        state_kept: false,
-        controller_build: null,
-        protocol: null,
-        controller_installed_at: null,
-        upgrade_available: false,
-        available_build: null,
-        version: 1,
-      },
+    profiles: [
+      agentProfile("claude-code", "claude_code", "anthropic"),
+      agentProfile("opencode-anthropic", "opencode", "anthropic"),
+      agentProfile("opencode-openai", "opencode", "openai"),
+      agentProfile("opencode-openrouter", "opencode", "openrouter"),
     ],
+    engine_socket: null,
+    plan_offered: true,
+    hosts: [agentHost({})],
   };
+  /** What each profile and host lacks, from their state, as the backend says it. */
+  refreshAgents() {
+    for (const p of this.agentSettings.profiles) p.missing = profileMissing(p);
+    for (const h of this.agentSettings.hosts)
+      h.missing = hostMissing(h, this.agentSettings.engine_socket);
+  }
+  /** A passed test of a profile on a host, current. */
+  passTest(host: AgentHost, profileId: string) {
+    host.tests = [
+      ...host.tests.filter((t) => t.profile_id !== profileId),
+      {
+        profile_id: profileId,
+        passed_at: new Date().toISOString(),
+        current: true,
+      },
+    ];
+  }
+  /**
+   * A profile set up as a test needs it: a key in the Keychain, the
+   * agreement, a model for OpenCode, and a passed test on each host named.
+   */
+  readyProfile(profileId: string, hostIds: string[] = []) {
+    const profile = this.agentSettings.profiles.find((p) => p.id === profileId);
+    if (!profile) return;
+    Object.assign(profile, {
+      credential_source: { kind: "store" },
+      credential_saved_at: "2026-10-05T12:00:00Z",
+      sends_code_agreed: true,
+      model:
+        profile.model ||
+        (profile.agent === "opencode" ? "anthropic/claude-sonnet-5-5" : ""),
+      version: profile.version + 1,
+    });
+    for (const id of hostIds) {
+      const host = this.agentSettings.hosts.find((h) => h.id === id);
+      if (host) this.passTest(host, profileId);
+    }
+    this.refreshAgents();
+  }
+  /** This Mac with OrbStack chosen and the image built. */
+  readyThisMac() {
+    const local = this.agentSettings.hosts.find((h) => h.kind === "local");
+    if (!local) return;
+    this.agentSettings.engine_socket =
+      "/Users/someone/.orbstack/run/docker.sock";
+    Object.assign(local, {
+      engine_name: "OrbStack",
+      image: {
+        name: "brainiac-agents:3f9c41e1a2b0",
+        id: "sha256:3f9c41e1a2b0",
+        built_at: "2026-10-05T12:00:00Z",
+        current: true,
+      },
+    });
+    this.refreshAgents();
+  }
   /** Settings → Secrets, from the accounts and connections. */
   secrets(): SecretsOverview {
     const accounts = this.accounts.flatMap((s) =>
@@ -1624,6 +1759,7 @@ export class FakeBackend {
           problem: null,
         };
       case "get_agent_settings":
+        this.refreshAgents();
         return this.agentSettings;
       case "preview_agent_host":
         return {
@@ -1659,34 +1795,22 @@ export class FakeBackend {
               "This host's key changed. Approve the new fingerprint to continue.",
           };
         }
-        const saved = {
+        const saved = agentHost({
           id: "host-1",
           kind: "ssh",
           name: request.name || request.host,
           ssh_user: request.user,
           ssh_host: request.host,
           ssh_port: request.port,
-          identity_path: null,
           fingerprint: request.fingerprint,
-          approved: true,
           installed: false,
-          engine_name: null,
-          loop_devices: false,
-          image: null,
-          test_current: false,
-          emergency_stop: null,
-          state_kept: false,
-          controller_build: null as string | null,
-          protocol: null as number | null,
-          controller_installed_at: null as string | null,
-          upgrade_available: false,
           available_build: "7c2e51a",
-          version: 1,
-        };
+        });
         this.agentSettings.hosts = [
           ...this.agentSettings.hosts.filter((h) => h.kind === "local"),
           saved,
         ];
+        this.refreshAgents();
         return saved;
       }
       case "start_agent_host_job": {
@@ -1706,13 +1830,23 @@ export class FakeBackend {
           `Build the image on ${host.name}`,
           "Check its Docker engine",
         ];
+        // Test is of one profile; setup tests each profile that is ready.
+        this.refreshAgents();
+        const tested = this.agentSettings.profiles.filter((p) =>
+          kind === "test"
+            ? p.id === args.profileId
+            : kind === "setup" && p.missing.length === 0,
+        );
+        const tests = tested.length
+          ? tested.map((p) => `Test ${fakeProfileName(p)}`)
+          : ["Test a run"];
         const titles =
           kind === "build_image"
             ? image
             : kind === "test"
-              ? ["Test a run"]
+              ? tests
               : kind === "setup"
-                ? [...install, ...image, "Test a run"]
+                ? [...install, ...image, ...tests]
                 : install;
         const now = new Date().toISOString();
         const job: HostJob = {
@@ -1743,6 +1877,7 @@ export class FakeBackend {
             kind === "build_image" || kind === "test"
               ? null
               : host.available_build,
+          profile_ids: tested.map((p) => p.id),
         };
         this.hostJobs[host.id] = job;
         this.later("agent_host_job", job);
@@ -1783,32 +1918,76 @@ export class FakeBackend {
           },
         ];
       case "save_agent_settings": {
-        const { expected_version: _, ...fields } = args.request as Record<
-          string,
-          unknown
-        >;
-        const profile = this.agentSettings.profile;
+        const {
+          expected_version: _,
+          profile_id,
+          ...fields
+        } = args.request as Record<string, unknown>;
+        const profile = this.agentSettings.profiles.find(
+          (p) => p.id === profile_id,
+        );
+        if (!profile)
+          throw { code: "NOT_FOUND", message: "No such agent profile." };
         Object.assign(profile, fields, { version: profile.version + 1 });
-        this.agentSettings.missing = profile.engine_socket
-          ? ["Add an API key."]
-          : this.agentSettings.missing;
+        this.refreshAgents();
+        return this.agentSettings;
+      }
+      case "choose_agent_engine": {
+        const local = this.agentSettings.hosts.find((h) => h.kind === "local");
+        const socket = (args.socket as string | null) ?? null;
+        if (local && socket !== this.agentSettings.engine_socket) {
+          // Another engine forgets the image built on the old one.
+          Object.assign(local, {
+            engine_name: socket ? "OrbStack" : null,
+            image: null,
+            version: local.version + 1,
+          });
+        }
+        this.agentSettings.engine_socket = socket;
+        this.refreshAgents();
         return this.agentSettings;
       }
       case "save_agent_credential": {
         const request = args.request as {
+          profile_id: string;
           payment: "claude_plan" | "api_key";
-          source: AgentSettings["profile"]["credential_source"];
+          source: AgentProfile["credential_source"];
         };
-        const profile = this.agentSettings.profile;
+        const profile = this.agentSettings.profiles.find(
+          (p) => p.id === request.profile_id,
+        );
+        if (!profile)
+          throw { code: "NOT_FOUND", message: "No such agent profile." };
         Object.assign(profile, {
           payment: request.payment,
           credential_source: request.source,
           credential_saved_at: "2026-10-05T12:00:00Z",
           version: profile.version + 1,
         });
-        this.agentSettings.missing = [];
+        // A new key needs new tests.
+        for (const h of this.agentSettings.hosts)
+          h.tests = h.tests.map((t) =>
+            t.profile_id === profile.id ? { ...t, current: false } : t,
+          );
+        this.refreshAgents();
         return this.agentSettings;
       }
+      case "remove_agent_credential": {
+        const profile = this.agentSettings.profiles.find(
+          (p) => p.id === args.id,
+        );
+        if (profile)
+          Object.assign(profile, {
+            credential_source: { kind: "none" },
+            credential_saved_at: null,
+            version: profile.version + 1,
+          });
+        this.refreshAgents();
+        return this.agentSettings;
+      }
+      case "build_agent_image":
+        this.readyThisMac();
+        return this.agentSettings;
       case "agent_dockerfile":
         return "FROM node:22-bookworm-slim\n";
       case "list_agent_runs":
@@ -1819,12 +1998,24 @@ export class FakeBackend {
           start_commit: string;
           prompt: string;
           host_id: string;
+          profile_id: string;
+          model: string;
         };
         const host = this.agentSettings.hosts.find(
           (h) => h.id === request.host_id,
         );
+        const profile = this.agentSettings.profiles.find(
+          (p) => p.id === request.profile_id,
+        );
+        if (!profile) throw { code: "VALIDATION", message: "Choose an agent." };
         const run = sampleRun({
           id: `run-${this.runs.length + 1}`,
+          profile_id: profile.id,
+          agent: profile.agent,
+          provider: profile.provider,
+          payment: profile.payment,
+          model: request.model,
+          model_used: null,
           repository_id: request.repository_id,
           title: request.prompt.split("\n")[0],
           start_commit: request.start_commit,
@@ -1937,12 +2128,30 @@ export class FakeBackend {
         };
       case "get_run_controller_status":
         return { running: false, pid: null, live_runs: 0 };
-      case "test_agent_setup":
+      case "test_agent_setup": {
+        this.refreshAgents();
+        const profile = this.agentSettings.profiles.find(
+          (p) => p.id === args.profileId,
+        );
+        const local = this.agentSettings.hosts.find((h) => h.kind === "local");
+        if (!profile || !local)
+          throw { code: "VALIDATION", message: "Choose the agent to test." };
+        const first = [...profile.missing, ...local.missing][0];
+        if (first)
+          throw {
+            code: "VALIDATION",
+            message: `Settings → Agents is not ready: ${first}`,
+          };
+        this.passTest(local, profile.id);
         return {
-          steps: [{ name: "Start a run", passed: false, detail: "No engine" }],
-          passed: false,
+          steps: [
+            { name: "Start a run", passed: true, detail: null },
+            { name: "Send a prompt", passed: true, detail: null },
+          ],
+          passed: true,
           tested_at: NOW,
         };
+      }
       case "list_forge_accounts":
         return this.accounts;
       case "update_workspace_pull_requests":

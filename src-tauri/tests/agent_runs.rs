@@ -24,13 +24,56 @@ use brainiac_lib::credentials::{CommandRunner, CredentialService, MemoryStore};
 use brainiac_lib::db::{self, Db};
 use brainiac_lib::git::GitService;
 use brainiac_lib::models::{
-    AgentPayment, AgentRun, AgentRunChangedEvent, ErrorCode, RunActivity, RunCollection,
-    RunDiffRequest, RunEventBody, RunOutcome, RunPermissions, RunPhase, RunStartStep,
-    SaveAgentCredentialRequest, SecretSource, StartRunRequest,
+    AgentKind, AgentPayment, AgentProvider, AgentRun, AgentRunChangedEvent, ErrorCode, RunActivity,
+    RunCollection, RunDiffRequest, RunEventBody, RunOutcome, RunPermissions, RunPhase,
+    RunStartStep, SaveAgentCredentialRequest, SecretSource, StartRunRequest,
 };
 use fake_engine::{git, FakeEngine, KEY};
 
 const SOCKET: &str = "/fake/docker.sock";
+const CLAUDE_CODE: &str = "claude-code";
+const OPENROUTER: &str = "opencode-openrouter";
+const OPENROUTER_KEY: &str = "sk-or-v1-0123456789abcdef0123456789abcdef0123456789abcdef";
+
+/// A profile as a user would leave it: its key saved, the agreement, its
+/// model, and a passed test on this Mac.
+async fn set_up(core: &Db, settings: &AgentSettingsService, id: &str, key: &str, model: &str) {
+    let profile = settings.profile(id).await.unwrap();
+    settings
+        .save_credential(SaveAgentCredentialRequest {
+            profile_id: id.to_string(),
+            expected_version: profile.version,
+            payment: AgentPayment::ApiKey,
+            source: SecretSource::Store,
+            secret: Some(key.to_string()),
+        })
+        .await
+        .unwrap();
+    let revision = settings.profile(id).await.unwrap().credential.revision;
+    let (profile_id, model) = (id.to_string(), model.to_string());
+    core.call(move |conn| {
+        conn.execute(
+            "UPDATE agent_profiles SET sends_code_agreed = 1, model = ?2 WHERE id = ?1",
+            rusqlite::params![profile_id, model],
+        )?;
+        conn.execute(
+            "INSERT OR REPLACE INTO agent_tests (host_id, profile_id, passed_at,
+               credential_revision, image_id, engine_socket)
+             VALUES ('local', ?1, '2026-10-05T00:00:00Z', ?2, 'sha256:abc', ?3)",
+            rusqlite::params![profile_id, revision, SOCKET],
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let settings = settings.get().await.unwrap();
+    let profile = settings.profiles.iter().find(|p| p.id == id).unwrap();
+    let local = &settings.hosts[0];
+    assert_eq!(
+        brainiac_lib::agents::settings::run_missing(profile, local),
+        Vec::<String>::new()
+    );
+}
 
 /// The one repository the tests start runs from.
 struct Repos(PathBuf);
@@ -54,6 +97,7 @@ struct Harness {
     server: tokio::task::JoinHandle<()>,
     runs: Arc<AgentRunService>,
     settings: Arc<AgentSettingsService>,
+    core: Db,
     events: Arc<Mutex<Vec<AgentRunChangedEvent>>>,
     start: String,
 }
@@ -83,34 +127,21 @@ impl Harness {
             core.clone(),
             Arc::clone(&credentials),
         ));
-        // Settings → Agents as a user would leave it: a key saved, the engine
-        // and the image chosen (written straight into the rows: the real
-        // engine check asks a socket), the agreement, and a passed test.
-        let profile = settings.get().await.unwrap().profile;
-        settings
-            .save_credential(SaveAgentCredentialRequest {
-                expected_version: profile.version,
-                payment: AgentPayment::ApiKey,
-                source: SecretSource::Store,
-                secret: Some(KEY.to_string()),
-            })
-            .await
-            .unwrap();
-        let revision = settings.get().await.unwrap().profile.credential.revision;
+        // Settings → Agents as a user would leave it: this Mac's engine and
+        // image chosen (written straight into the rows: the real engine
+        // check asks a socket), and Claude Code set up and tested.
         let recipe = image::recipe();
         core.call(move |conn| {
             conn.execute_batch(&format!(
-                "UPDATE agent_hosts SET socket = '{SOCKET}';
-                 UPDATE agent_profiles SET sends_code_agreed = 1, image_id = 'sha256:abc',
-                   image_recipe = '{recipe}', image_built_at = '2026-10-05T00:00:00Z',
-                   test_passed_at = '2026-10-05T00:00:00Z', test_credential_revision = {revision},
-                   test_image_id = 'sha256:abc', test_engine_socket = '{SOCKET}';"
+                "UPDATE agent_hosts SET socket = '{SOCKET}', image_id = 'sha256:abc',
+                   image_recipe = '{recipe}', image_built_at = '2026-10-05T00:00:00Z'
+                 WHERE id = 'local';"
             ))?;
             Ok(())
         })
         .await
         .unwrap();
-        assert!(settings.get().await.unwrap().missing.is_empty());
+        set_up(&core, &settings, CLAUDE_CODE, KEY, "").await;
 
         let engine = FakeEngine::default();
         engine.get().volumes = tmp.path().join("volumes");
@@ -135,6 +166,7 @@ impl Harness {
                 Arc::new(move |event| seen.lock().unwrap().push(event)),
             ),
             settings,
+            core: core.clone(),
             events,
             tmp,
             engine,
@@ -193,6 +225,18 @@ impl Harness {
     }
 
     async fn start(&self, prompt: &str, permissions: RunPermissions) -> AgentRun {
+        self.start_with(CLAUDE_CODE, "sonnet", prompt, permissions)
+            .await
+            .unwrap()
+    }
+
+    async fn start_with(
+        &self,
+        profile_id: &str,
+        model: &str,
+        prompt: &str,
+        permissions: RunPermissions,
+    ) -> brainiac_lib::models::AppResult<AgentRun> {
         self.runs
             .start(StartRunRequest {
                 repository_id: "repo-1".into(),
@@ -203,11 +247,11 @@ impl Harness {
                 cpus: 2,
                 memory_mib: 2048,
                 workspace_gib: 20,
-                model: "sonnet".into(),
+                model: model.into(),
                 host_id: String::new(),
+                profile_id: profile_id.into(),
             })
             .await
-            .unwrap()
     }
 
     async fn wait(&self, id: &str, what: &str, done: impl Fn(&AgentRun) -> bool) -> AgentRun {
@@ -294,7 +338,11 @@ async fn a_run_is_started_followed_finished_collected_and_reviewed() {
     let run = h.wait(&run.id, "the first turn ends", idle).await;
     assert_eq!(run.turn, 1);
     assert_eq!(h.engine.get().frames.len(), 1);
-    assert_eq!(h.engine.get().models, vec!["sonnet".to_string()]);
+    assert_eq!(
+        h.engine.get().envs,
+        vec![vec!["ANTHROPIC_MODEL=sonnet".to_string()]]
+    );
+    assert_eq!(run.agent, AgentKind::ClaudeCode);
     assert_eq!(run.model, "sonnet");
     assert_eq!(run.model_used.as_deref(), Some("claude-sonnet-4-5"));
 
@@ -426,7 +474,11 @@ async fn a_run_is_started_followed_finished_collected_and_reviewed() {
         .any(|e| e.run_id == run.id && e.deleted));
     // Every collection and the cleanup named the current image, for a run
     // whose own image is no longer on the engine.
-    let current = h.settings.get().await.unwrap().profile.image.unwrap().name;
+    let current = h.settings.get().await.unwrap().hosts[0]
+        .image
+        .clone()
+        .unwrap()
+        .name;
     let named = h.engine.get().fallback_images.clone();
     assert_eq!(named.len(), 3, "{named:?}");
     assert!(named.iter().all(|i| i.as_deref() == Some(current.as_str())));
@@ -625,8 +677,15 @@ async fn a_preview_caught_by_finish_never_blocks_the_collection() {
 async fn the_settings_test_fails_when_a_refused_key_comes_back_as_a_reply() {
     let h = Harness::new().await;
     h.engine.get().refusal_as_reply = true;
-    let before = h.settings.get().await.unwrap().profile.test_passed_at;
-    let result = h.runs.test().await.unwrap();
+    let tested = |s: brainiac_lib::models::AgentSettings| {
+        s.hosts[0]
+            .tests
+            .iter()
+            .find(|t| t.profile_id == CLAUDE_CODE)
+            .map(|t| t.passed_at.clone())
+    };
+    let before = tested(h.settings.get().await.unwrap());
+    let result = h.runs.test(CLAUDE_CODE).await.unwrap();
     assert!(!result.passed, "{result:?}");
     let step = result
         .steps
@@ -640,10 +699,7 @@ async fn the_settings_test_fails_when_a_refused_key_comes_back_as_a_reply() {
         "{result:?}"
     );
     // Nothing is recorded, and the test's run is discarded.
-    assert_eq!(
-        h.settings.get().await.unwrap().profile.test_passed_at,
-        before
-    );
+    assert_eq!(tested(h.settings.get().await.unwrap()), before);
     assert_eq!(h.engine.get().discarded.len(), 1);
 }
 
@@ -703,7 +759,7 @@ async fn a_start_the_controller_answers_with_an_error_is_a_refusal() {
         run_id: "run-x".into(),
         attempt: 1,
         engine_socket: SOCKET.into(),
-        image: "brainiac-claude:test".into(),
+        image: "brainiac-agents:test".into(),
         cpus: 2,
         memory_mib: 2048,
         workspace_gib: 1,
@@ -717,6 +773,8 @@ async fn a_start_the_controller_answers_with_an_error_is_a_refusal() {
             key: CredentialKey::AnthropicApiKey,
             value: KEY.into(),
         },
+        agent: AgentKind::ClaudeCode,
+        provider: AgentProvider::Anthropic,
         model: String::new(),
     };
     // A bundle that is not there: the controller answers, and made nothing.
@@ -823,7 +881,7 @@ async fn the_settings_test_runs_prompts_cancels_and_collects() {
     let h = Harness::new().await;
     h.settings.get().await.unwrap();
     let before = h.runs.list().await.unwrap().runs.len();
-    let result = h.runs.test().await.unwrap();
+    let result = h.runs.test(CLAUDE_CODE).await.unwrap();
     let names: Vec<&str> = result.steps.iter().map(|s| s.name.as_str()).collect();
     assert!(result.passed, "{result:?}");
     assert_eq!(
@@ -844,7 +902,10 @@ async fn the_settings_test_runs_prompts_cancels_and_collects() {
     // The test's run is not a run of the user's, and leaves nothing behind.
     assert_eq!(h.runs.list().await.unwrap().runs.len(), before);
     assert_eq!(h.engine.get().discarded.len(), 1);
-    assert!(h.settings.get().await.unwrap().profile.test_current);
+    assert!(h.settings.get().await.unwrap().hosts[0]
+        .tests
+        .iter()
+        .any(|t| t.profile_id == CLAUDE_CODE && t.current));
 }
 
 #[tokio::test]
@@ -867,27 +928,80 @@ async fn a_run_cancelled_while_it_starts_ends_cancelled() {
 #[tokio::test]
 async fn a_start_the_settings_do_not_allow_is_refused_before_anything_is_read() {
     let h = Harness::new().await;
+    let version = h.settings.profile(CLAUDE_CODE).await.unwrap().version;
     h.settings
-        .remove_credential(h.settings.get().await.unwrap().profile.version)
+        .remove_credential(CLAUDE_CODE, version)
         .await
         .unwrap();
     let err = h
-        .runs
-        .start(StartRunRequest {
-            repository_id: "repo-1".into(),
-            start_commit: h.start.clone(),
-            prompt: "hello".into(),
-            permissions: RunPermissions::Act,
-            time_limit_minutes: 60,
-            cpus: 2,
-            memory_mib: 2048,
-            workspace_gib: 20,
-            model: String::new(),
-            host_id: String::new(),
-        })
+        .start_with(CLAUDE_CODE, "", "hello", RunPermissions::Act)
         .await
         .unwrap_err();
-    assert!(err.message.contains("Add an API key"), "{err:?}");
+    assert!(err.message.contains("Add an Anthropic API key"), "{err:?}");
+    // A profile never tested on this Mac cannot start there either.
+    let err = h
+        .start_with(OPENROUTER, "x", "hello", RunPermissions::Act)
+        .await
+        .unwrap_err();
+    assert!(err.message.contains("Add an OpenRouter API key"), "{err:?}");
     assert!(h.runs.list().await.unwrap().runs.is_empty());
     assert_eq!(h.engine.get().launches, 0);
+}
+
+#[tokio::test]
+async fn an_opencode_run_gets_its_provider_key_model_and_permissions() {
+    let h = Harness::new().await;
+    set_up(
+        &h.core,
+        &h.settings,
+        OPENROUTER,
+        OPENROUTER_KEY,
+        "anthropic/claude-sonnet-5-5",
+    )
+    .await;
+    // OpenCode has no default of its own to fall back to.
+    let err = h
+        .start_with(OPENROUTER, "", "hello", RunPermissions::Ask)
+        .await
+        .unwrap_err();
+    assert!(err.message.contains("model"), "{err:?}");
+    let run = h
+        .start_with(
+            OPENROUTER,
+            "anthropic/claude-sonnet-5-5",
+            "hello",
+            RunPermissions::Ask,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        (run.agent, run.provider, run.profile_id.as_str()),
+        (AgentKind::Opencode, AgentProvider::Openrouter, OPENROUTER)
+    );
+    let run = h.wait(&run.id, "the first turn ends", idle).await;
+    // The provider's key, alone, in the frame; the agent, model, and
+    // permissions in the environment, never the key.
+    let frames = h.engine.get().frames.clone();
+    assert_eq!(
+        frames,
+        vec![serde_json::json!({ "OPENROUTER_API_KEY": OPENROUTER_KEY })]
+    );
+    let env = h.engine.get().envs[0].clone();
+    assert_eq!(env[0], "BRAINIAC_AGENT=opencode");
+    let config: serde_json::Value =
+        serde_json::from_str(env[1].strip_prefix("OPENCODE_CONFIG_CONTENT=").unwrap()).unwrap();
+    assert_eq!(
+        config,
+        serde_json::json!({
+            "enabled_providers": ["openrouter"],
+            "model": "openrouter/anthropic/claude-sonnet-5-5",
+            "permission": { "edit": "ask", "bash": "ask", "webfetch": "ask" }
+        })
+    );
+    assert!(!env.iter().any(|e| e.contains(OPENROUTER_KEY)));
+    // OpenCode reports its model as a configuration option.
+    assert_eq!(
+        run.model_used.as_deref(),
+        Some("openrouter/anthropic/claude-sonnet-5-5")
+    );
 }

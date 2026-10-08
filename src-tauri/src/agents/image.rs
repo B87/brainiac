@@ -28,6 +28,7 @@ const FILES: &[(&str, &str)] = &[
         "managed-settings.json",
         include_str!("image/managed-settings.json"),
     ),
+    ("opencode.json", include_str!("image/opencode.json")),
 ];
 
 /// A build installs packages from the network: give it time.
@@ -62,7 +63,7 @@ pub fn recipe() -> String {
 
 /// The image's name for a recipe.
 pub fn name_for(recipe: &str) -> String {
-    format!("brainiac-claude:{recipe}")
+    format!("brainiac-agents:{recipe}")
 }
 
 /// An image the engine built.
@@ -307,7 +308,7 @@ mod tests {
     fn the_recipe_names_the_image() {
         let recipe = recipe();
         assert_eq!(recipe.len(), 12);
-        assert_eq!(name_for(&recipe), format!("brainiac-claude:{recipe}"));
+        assert_eq!(name_for(&recipe), format!("brainiac-agents:{recipe}"));
         assert!(dockerfile().contains("ENTRYPOINT"));
     }
 

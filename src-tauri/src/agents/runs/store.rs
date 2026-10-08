@@ -8,8 +8,9 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 use super::{activity_of, outcome_of, permission_of, phase_of};
 use crate::agents::controller::protocol::RunStatus;
 use crate::models::{
-    now_rfc3339, AgentPayment, AgentRun, AppError, AppResult, LeftOutFile, RunActivity,
-    RunCollection, RunOutcome, RunPermissionRequest, RunPermissions, RunPhase,
+    now_rfc3339, AgentKind, AgentPayment, AgentProvider, AgentRun, AppError, AppResult,
+    LeftOutFile, RunActivity, RunCollection, RunOutcome, RunPermissionRequest, RunPermissions,
+    RunPhase,
 };
 
 /// What a start knows before the controller answers.
@@ -21,6 +22,8 @@ pub struct NewRun {
     pub start_commit: String,
     pub start_subject: String,
     pub profile_id: String,
+    pub agent: AgentKind,
+    pub provider: AgentProvider,
     pub payment: AgentPayment,
     pub credential_source: String,
     pub host_id: String,
@@ -47,6 +50,8 @@ pub struct RunRow {
     pub start_commit: String,
     pub start_subject: String,
     pub profile_id: String,
+    pub agent: AgentKind,
+    pub provider: AgentProvider,
     pub payment: AgentPayment,
     pub credential_source: String,
     pub host_id: String,
@@ -103,6 +108,8 @@ impl RunRow {
             start_commit: new.start_commit,
             start_subject: new.start_subject,
             profile_id: new.profile_id,
+            agent: new.agent,
+            provider: new.provider,
             payment: new.payment,
             credential_source: new.credential_source,
             host_id: new.host_id,
@@ -158,6 +165,9 @@ impl RunRow {
             title: self.title,
             start_commit: self.start_commit,
             start_subject: self.start_subject,
+            profile_id: self.profile_id,
+            agent: self.agent,
+            provider: self.provider,
             payment: self.payment,
             credential_source: self.credential_source,
             host_id: self.host_id,
@@ -302,7 +312,7 @@ const COLUMNS: &str = "id, repository_id, repository_name, title, start_commit, 
     expired_asleep, error, pending_permissions, cursor, reported_at, cancel_requested,
     collection, collection_error, result_commit, changed_files, left_out, left_out_more,
     snapshot_accepted, cleanup_pending, version, created_at, updated_at, model, model_used,
-    host_id, host_name";
+    host_id, host_name, agent, provider";
 
 fn word<T: serde::Serialize>(value: &T) -> String {
     match serde_json::to_value(value) {
@@ -373,6 +383,8 @@ fn from_row(r: &Row<'_>) -> rusqlite::Result<RunRow> {
         model_used: r.get(47)?,
         host_id: r.get(48)?,
         host_name: r.get(49)?,
+        agent: parse(r.get(50)?)?,
+        provider: parse(r.get(51)?)?,
     })
 }
 
@@ -401,9 +413,9 @@ pub fn insert(conn: &mut Connection, row: &RunRow) -> AppResult<()> {
         "INSERT INTO agent_runs (id, repository_id, repository_name, title, start_commit,
            start_subject, profile_id, payment, credential_source, host_id, host_name,
            engine_socket, engine_name, image_name, image_id, permissions, time_limit_minutes,
-           cpus, memory_mib, workspace_gib, created_at, updated_at, model)
+           cpus, memory_mib, workspace_gib, created_at, updated_at, model, agent, provider)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-           ?18, ?19, ?20, ?21, ?22, ?23)",
+           ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
         params![
             row.id,
             row.repository_id,
@@ -428,6 +440,8 @@ pub fn insert(conn: &mut Connection, row: &RunRow) -> AppResult<()> {
             row.created_at,
             row.updated_at,
             row.model,
+            row.agent.as_str(),
+            row.provider.as_str(),
         ],
     )?;
     Ok(())

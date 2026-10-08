@@ -1,6 +1,7 @@
-//! Settings → Agents (SPEC.md, section 13): where runs execute, how they are
-//! paid for, the agreement to send code to the provider, new runs'
-//! defaults, and the image.
+//! Settings → Agents (SPEC.md, section 13): this Mac's engine and image,
+//! and the profiles: each an agent (Claude Code or OpenCode) with one model
+//! provider, how its runs are paid for, the agreement to send code to that
+//! provider, and its new runs' defaults.
 //!
 //! The token or key is never stored here. Like an account's token, it is
 //! read from its source through the credentials layer (owner
@@ -15,17 +16,19 @@ use std::sync::Arc;
 
 use rusqlite::{params, Connection, OptionalExtension, Row};
 
+use super::controller::protocol::CredentialKey;
 use super::image;
 use crate::credentials::{check_source, Binding, CredentialService, OwnerGate, SecretBytes};
 use crate::db::Db;
 use crate::models::{
-    now_rfc3339, AgentImage, AgentPayment, AgentProfile, AgentSettings, AppError, AppResult,
-    CredentialOwner, CredentialPending, CredentialState, ErrorCode, SaveAgentCredentialRequest,
-    SaveAgentSettingsRequest, SecretEntry, SecretSource,
+    now_rfc3339, AgentHost, AgentKind, AgentPayment, AgentProfile, AgentProvider, AgentSettings,
+    AppError, AppResult, CredentialOwner, CredentialPending, CredentialState, ErrorCode,
+    SaveAgentCredentialRequest, SaveAgentSettingsRequest, SecretEntry, SecretSource,
 };
 
-/// The one profile of phase 1: Claude Code (created by migration 0008).
-pub const PROFILE_ID: &str = "claude-code";
+/// The Claude Code profile (created by migration 0009, with one OpenCode
+/// profile per provider).
+pub const CLAUDE_CODE: &str = "claude-code";
 
 /// Whether this build offers paying with a Claude plan. Off in release
 /// builds until Anthropic's answer on its terms is recorded (SPEC.md,
@@ -38,7 +41,7 @@ const AGEING_DAYS: i64 = 335;
 /// New run's time limit, in minutes: 30 minutes to 8 hours (SPEC.md, New run).
 pub const TIME_LIMIT_MINUTES: (u32, u32) = (30, 480);
 pub const CPUS: (u32, u32) = (1, 64);
-/// Claude Code needs a few GiB to run at all.
+/// The agents need a few GiB to run at all.
 pub const MEMORY_MIB: (u32, u32) = (2048, 256 * 1024);
 pub const WORKSPACE_GIB: (u32, u32) = (1, 500);
 
@@ -51,9 +54,13 @@ pub fn credential_owner(id: &str) -> String {
 /// token `claude setup-token` prints, and copying the wrap brings line
 /// breaks and the spaces that pad them, so every whitespace and invisible
 /// character is removed and the pieces joined; two tokens, or anything that
-/// still does not look like one, are refused. The error never repeats the
-/// text.
-pub fn normalize_credential(payment: AgentPayment, text: &str) -> AppResult<String> {
+/// still does not look like one of the provider's, are refused. The error
+/// never repeats the text.
+pub fn normalize_credential(
+    provider: AgentProvider,
+    payment: AgentPayment,
+    text: &str,
+) -> AppResult<String> {
     let invisible = |c: char| {
         c.is_whitespace() || c.is_control() || matches!(c, '\u{200b}'..='\u{200d}' | '\u{feff}')
     };
@@ -65,36 +72,82 @@ pub fn normalize_credential(payment: AgentPayment, text: &str) -> AppResult<Stri
     if joined.is_empty() {
         return Err(AppError::validation(format!("Paste the {what}.")));
     }
-    if joined.matches("sk-ant-").count() > 1 {
+    // What starts each of the provider's keys, so two pasted together show.
+    let prefixes: &[&str] = match provider {
+        AgentProvider::Anthropic => &["sk-ant-"],
+        AgentProvider::Openai => &["sk-proj-", "sk-svcacct-", "sk-admin-"],
+        AgentProvider::Openrouter => &["sk-or-"],
+    };
+    if prefixes
+        .iter()
+        .map(|p| joined.matches(p).count())
+        .sum::<usize>()
+        > 1
+    {
         return Err(AppError::validation(format!(
             "That is more than one {what}. Paste only the {what} itself."
         )));
     }
+    let name = provider.name();
     if !joined
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
         || !(32..=512).contains(&joined.len())
     {
         return Err(AppError::validation(format!(
-            "That does not look like an Anthropic {what}."
+            "That does not look like an {name} {what}."
         )));
     }
+    let anthropic = joined.starts_with("sk-ant-");
     let plan = joined.starts_with("sk-ant-oat");
-    match payment {
-        AgentPayment::ClaudePlan if !plan => {
-            Err(AppError::validation(if joined.starts_with("sk-ant-") {
+    let openrouter = joined.starts_with("sk-or-");
+    match (provider, payment) {
+        (AgentProvider::Anthropic, AgentPayment::ClaudePlan) if !plan => {
+            Err(AppError::validation(if anthropic {
                 "That is an API key, not a Claude plan token. Choose API key, or paste what claude setup-token printed."
             } else {
                 "That is not a Claude plan token: run claude setup-token in Terminal and paste what it prints."
             }))
         }
-        AgentPayment::ApiKey if plan => Err(AppError::validation(
-            "That is a Claude plan token, not an API key. Choose Claude plan to use it.",
+        (_, AgentPayment::ClaudePlan) if provider != AgentProvider::Anthropic => Err(
+            AppError::validation("Only Claude Code is paid with a Claude plan."),
+        ),
+        (_, AgentPayment::ApiKey) if plan => Err(AppError::validation(
+            "That is a Claude plan token, not an API key. Only Claude Code is paid with a Claude plan.",
         )),
-        AgentPayment::ApiKey if !joined.starts_with("sk-ant-") => Err(AppError::validation(
-            "That does not look like an Anthropic API key, which starts with sk-ant-.",
+        (AgentProvider::Anthropic, AgentPayment::ApiKey) if !anthropic => Err(
+            AppError::validation(
+                "That does not look like an Anthropic API key, which starts with sk-ant-.",
+            ),
+        ),
+        (AgentProvider::Openrouter, _) if !openrouter => Err(AppError::validation(
+            "That does not look like an OpenRouter API key, which starts with sk-or-.",
         )),
+        (AgentProvider::Openai, _) if !joined.starts_with("sk-") || anthropic || openrouter => {
+            Err(AppError::validation(
+                "That does not look like an OpenAI API key, which starts with sk-.",
+            ))
+        }
         _ => Ok(joined),
+    }
+}
+
+/// The variable the container's agent reads the token or key from.
+pub fn credential_key(profile: &AgentProfile) -> CredentialKey {
+    match (profile.provider, profile.payment) {
+        (_, AgentPayment::ClaudePlan) => CredentialKey::ClaudeCodeOauthToken,
+        (AgentProvider::Anthropic, AgentPayment::ApiKey) => CredentialKey::AnthropicApiKey,
+        (AgentProvider::Openai, AgentPayment::ApiKey) => CredentialKey::OpenaiApiKey,
+        (AgentProvider::Openrouter, AgentPayment::ApiKey) => CredentialKey::OpenrouterApiKey,
+    }
+}
+
+/// A profile's name, as Settings and New run show it: "Claude Code", or
+/// "OpenCode · OpenRouter".
+pub fn profile_name(p: &AgentProfile) -> String {
+    match p.agent {
+        AgentKind::ClaudeCode => p.agent.name().to_string(),
+        AgentKind::Opencode => format!("{} · {}", p.agent.name(), p.provider.name()),
     }
 }
 
@@ -116,17 +169,22 @@ fn partial_save(e: AppError) -> AppError {
     )
 }
 
-/// A model as typed: an alias such as `sonnet` or `opus[1m]`, or a full
-/// name; empty means Claude Code's default. Only the characters model
-/// names use, so the value is safe as an environment variable.
-pub fn check_model(text: &str) -> AppResult<String> {
+/// A model as typed: for Claude Code an alias such as `sonnet` or
+/// `opus[1m]`, or a full name, and empty for its default; for OpenCode the
+/// provider's model name, which OpenRouter's carry a slash in
+/// (`anthropic/claude-sonnet-5-5`). Only the characters model names use, so
+/// the value is safe in the container's environment.
+pub fn check_model(agent: AgentKind, text: &str) -> AppResult<String> {
     let model = text.trim();
     let plain =
-        |c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':' | '[' | ']');
-    if model.len() > 64 || !model.chars().all(plain) {
-        return Err(AppError::validation(
-            "The model is an alias such as sonnet, or a full model name, with no spaces.",
-        ));
+        |c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':' | '[' | ']' | '/');
+    if model.len() > 96 || !model.chars().all(plain) {
+        return Err(AppError::validation(match agent {
+            AgentKind::ClaudeCode => {
+                "The model is an alias such as sonnet, or a full model name, with no spaces."
+            }
+            AgentKind::Opencode => "The model is the provider's model name, with no spaces.",
+        }));
     }
     Ok(model.to_string())
 }
@@ -152,10 +210,10 @@ fn credential_source(source: &SecretSource) -> AppResult<SecretSource> {
 }
 
 /// The provider and plan, as Settings and Settings → Secrets name it.
-fn destination(payment: AgentPayment) -> &'static str {
+fn destination(provider: AgentProvider, payment: AgentPayment) -> String {
     match payment {
-        AgentPayment::ClaudePlan => "Anthropic, under your Claude plan",
-        AgentPayment::ApiKey => "Anthropic, with an API key",
+        AgentPayment::ClaudePlan => "Anthropic, under your Claude plan".to_string(),
+        AgentPayment::ApiKey => format!("{}, with an API key", provider.name()),
     }
 }
 
@@ -176,36 +234,39 @@ impl AgentSettingsService {
         }
     }
 
-    pub async fn profile(&self) -> AppResult<AgentProfile> {
+    pub async fn profile(&self, id: &str) -> AppResult<AgentProfile> {
+        let id = id.to_string();
         self.db
-            .call(|conn| get(conn, PROFILE_ID))
+            .call(move |conn| get(conn, &id))
             .await?
-            .ok_or_else(|| AppError::db("Settings → Agents has no Claude Code profile."))
+            .ok_or_else(|| AppError::not_found("There is no such agent profile."))
+    }
+
+    pub async fn profiles(&self) -> AppResult<Vec<AgentProfile>> {
+        self.db.call(|conn| list(conn)).await
     }
 
     pub async fn get(&self) -> AppResult<AgentSettings> {
-        let profile = self.profile().await?;
-        let hosts = self.db.call(|conn| super::hosts::list(conn)).await?;
+        let profiles = self.profiles().await?;
+        let (engine_socket, hosts) = self
+            .db
+            .call(|conn| Ok((local_socket(conn)?, super::hosts::list(conn)?)))
+            .await?;
         Ok(AgentSettings {
-            missing: missing(&profile),
-            profile,
+            profiles,
+            engine_socket,
             plan_offered: PLAN_OFFERED,
             hosts,
         })
     }
 
-    /// Everything but the token or key. Choosing another engine forgets the
-    /// image built on the old one.
+    /// One profile's agreement and new runs' defaults: everything but its
+    /// token or key.
     pub async fn save(&self, request: SaveAgentSettingsRequest) -> AppResult<AgentSettings> {
+        let id = request.profile_id.clone();
         // Held so a credential save cannot interleave with this one.
-        let gate = self.credentials.gate(&credential_owner(PROFILE_ID)).await;
-        let stored = self.profile().await?;
-        let socket = match request.engine_socket.as_deref().map(str::trim) {
-            None | Some("") => None,
-            // The engine already chosen stays chosen while it is stopped.
-            Some(s) if Some(s) == stored.engine_socket.as_deref() => Some(s.to_string()),
-            Some(s) => Some(check_engine(s).await?),
-        };
+        let gate = self.credentials.gate(&credential_owner(&id)).await;
+        let stored = self.profile(&id).await?;
         let time_limit = in_range(
             "The time limit",
             request.time_limit_minutes,
@@ -214,7 +275,7 @@ impl AgentSettingsService {
         let cpus = in_range("CPUs", request.cpus, CPUS)?;
         let memory = in_range("Memory in MiB", request.memory_mib, MEMORY_MIB)?;
         let workspace = in_range("The workspace in GiB", request.workspace_gib, WORKSPACE_GIB)?;
-        let model = check_model(&request.model)?;
+        let model = check_model(stored.agent, &request.model)?;
         let (expected, agreed, permissions) = (
             request.expected_version,
             request.sends_code_agreed,
@@ -223,20 +284,13 @@ impl AgentSettingsService {
         let now = now_rfc3339();
         self.db
             .call(move |conn| {
-                let tx = conn.transaction()?;
-                let old: Option<String> = tx.query_row(
-                    "SELECT h.socket FROM agent_profiles p JOIN agent_hosts h ON h.id = p.host_id
-                         WHERE p.id = ?1",
-                    [PROFILE_ID],
-                    |r| r.get(0),
-                )?;
-                let changed = tx.execute(
+                let changed = conn.execute(
                     "UPDATE agent_profiles SET sends_code_agreed = ?2, permissions = ?3,
                        time_limit_minutes = ?4, cpus = ?5, memory_mib = ?6, workspace_gib = ?7,
                        model = ?10, version = version + 1, updated_at = ?8
                      WHERE id = ?1 AND version = ?9",
                     params![
-                        PROFILE_ID,
+                        id,
                         agreed,
                         permissions.as_str(),
                         time_limit,
@@ -251,25 +305,39 @@ impl AgentSettingsService {
                 if changed == 0 {
                     return Err(conflict());
                 }
-                if old != socket {
-                    tx.execute(
-                        "UPDATE agent_hosts SET socket = ?2, version = version + 1, updated_at = ?3
-                         WHERE id = (SELECT host_id FROM agent_profiles WHERE id = ?1)",
-                        params![PROFILE_ID, socket, now],
-                    )?;
-                    tx.execute(
-                        "UPDATE agent_profiles SET image_id = NULL, image_recipe = NULL,
-                           image_built_at = NULL
-                         WHERE id = ?1",
-                        [PROFILE_ID],
-                    )?;
-                }
-                tx.commit()?;
                 Ok(())
             })
             .await?;
         drop(gate);
-        tracing::info!("agent settings saved");
+        tracing::info!(profile = %request.profile_id, "agent settings saved");
+        self.get().await
+    }
+
+    /// This Mac's engine. Choosing another one forgets the image built on
+    /// the old one, and with it every profile's test there.
+    pub async fn choose_engine(&self, socket: Option<String>) -> AppResult<AgentSettings> {
+        let stored = self.db.call(|conn| local_socket(conn)).await?;
+        let socket = match socket.as_deref().map(str::trim) {
+            None | Some("") => None,
+            // The engine already chosen stays chosen while it is stopped.
+            Some(s) if Some(s) == stored.as_deref() => Some(s.to_string()),
+            Some(s) => Some(check_engine(s).await?),
+        };
+        if socket != stored {
+            let now = now_rfc3339();
+            self.db
+                .call(move |conn| {
+                    conn.execute(
+                        "UPDATE agent_hosts SET socket = ?2, image_id = NULL, image_recipe = NULL,
+                           image_built_at = NULL, version = version + 1, updated_at = ?3
+                         WHERE id = ?1",
+                        params![super::hosts::LOCAL_ID, socket, now],
+                    )?;
+                    Ok(())
+                })
+                .await?;
+            tracing::info!("agent engine chosen");
+        }
         self.get().await
     }
 
@@ -280,23 +348,30 @@ impl AgentSettingsService {
         request: SaveAgentCredentialRequest,
     ) -> AppResult<AgentSettings> {
         let payment = request.payment;
+        let id = request.profile_id.clone();
         if payment == AgentPayment::ClaudePlan && !PLAN_OFFERED {
             return Err(AppError::validation(
                 "Paying with a Claude plan is not available in this version of Brainiac. Use an API key.",
             ));
         }
         let source = credential_source(&request.source)?;
-        let owner = credential_owner(PROFILE_ID);
+        let owner = credential_owner(&id);
         let gate = self.credentials.gate(&owner).await;
-        let stored = self.profile().await?;
+        let stored = self.profile(&id).await?;
         if stored.version != request.expected_version {
             return Err(conflict());
         }
+        if payment == AgentPayment::ClaudePlan && stored.agent != AgentKind::ClaudeCode {
+            return Err(AppError::validation(
+                "Only Claude Code is paid with a Claude plan.",
+            ));
+        }
+        let provider = stored.provider;
         let pasted = match source {
             SecretSource::Store => request
                 .secret
                 .as_deref()
-                .map(|text| normalize_credential(payment, text))
+                .map(|text| normalize_credential(provider, payment, text))
                 .transpose()?,
             _ => None,
         };
@@ -328,9 +403,9 @@ impl AgentSettingsService {
         let agreed = stored.sends_code_agreed && stored.payment == payment;
 
         if let Some(value) = &pasted {
-            let expected = request.expected_version;
+            let (expected, id) = (request.expected_version, id.clone());
             self.db
-                .call(move |conn| mark_pending(conn, CredentialPending::Save, expected))
+                .call(move |conn| mark_pending(conn, &id, CredentialPending::Save, expected))
                 .await?;
             self.credentials.begin(&gate);
             self.credentials
@@ -339,11 +414,11 @@ impl AgentSettingsService {
                 .map_err(partial_save)?;
         }
         let committed = {
-            let (source, now) = (source.clone(), now_rfc3339());
+            let (source, now, id) = (source.clone(), now_rfc3339(), id.clone());
             let pending = pending_cleanup.then_some(CredentialPending::Cleanup);
             self.db
                 .call(move |conn| {
-                    commit_credential(conn, payment, &source, revision, pending, agreed, &now)
+                    commit_credential(conn, &id, payment, &source, revision, pending, agreed, &now)
                 })
                 .await
         };
@@ -357,21 +432,25 @@ impl AgentSettingsService {
                 .prime(&gate, revision, SecretBytes::from_text(value), None);
         }
         if cleanup {
-            if let Err(e) = self.cleanup(&gate).await {
+            if let Err(e) = self.cleanup(&gate, &id).await {
                 tracing::warn!(error = %e, "the old agent Keychain item was not deleted");
             }
         }
         drop(gate);
-        tracing::info!(payment = payment.as_str(), "agent credential saved");
+        tracing::info!(profile = %id, payment = payment.as_str(), "agent credential saved");
         self.get().await
     }
 
     /// **Remove**: runs have no token or key until another is saved. The
     /// Keychain item, if any, is deleted after the row no longer names it.
-    pub async fn remove_credential(&self, expected_version: i64) -> AppResult<AgentSettings> {
-        let owner = credential_owner(PROFILE_ID);
+    pub async fn remove_credential(
+        &self,
+        id: &str,
+        expected_version: i64,
+    ) -> AppResult<AgentSettings> {
+        let owner = credential_owner(id);
         let gate = self.credentials.gate(&owner).await;
-        let stored = self.profile().await?;
+        let stored = self.profile(id).await?;
         if stored.version != expected_version {
             return Err(conflict());
         }
@@ -380,11 +459,12 @@ impl AgentSettingsService {
         let pending = (uncertain || stored.credential.pending == Some(CredentialPending::Cleanup))
             .then_some(CredentialPending::Cleanup);
         let revision = (stored.credential.revision + 1).max(self.credentials.next_revision(&owner));
-        let (payment, now) = (stored.payment, now_rfc3339());
+        let (payment, now, profile_id) = (stored.payment, now_rfc3339(), id.to_string());
         self.db
             .call(move |conn| {
                 commit_credential(
                     conn,
+                    &profile_id,
                     payment,
                     &SecretSource::None,
                     revision,
@@ -396,7 +476,7 @@ impl AgentSettingsService {
             .await?;
         self.credentials.commit(&gate, revision);
         if uncertain && !stored.credential.needs_approval {
-            if let Err(e) = self.cleanup(&gate).await {
+            if let Err(e) = self.cleanup(&gate, id).await {
                 tracing::warn!(error = %e, "the agent Keychain item was not deleted");
             }
         }
@@ -406,31 +486,30 @@ impl AgentSettingsService {
     }
 
     /// Delete the old Keychain item after a move to another source.
-    async fn cleanup(&self, gate: &OwnerGate) -> AppResult<()> {
+    async fn cleanup(&self, gate: &OwnerGate, id: &str) -> AppResult<()> {
         self.credentials.delete_item(gate).await?;
+        let id = id.to_string();
         self.db
-            .call(|conn| clear_pending(conn, CredentialPending::Cleanup))
+            .call(move |conn| clear_pending(conn, &id, CredentialPending::Cleanup))
             .await
     }
 
     /// Settings → Secrets, **Retry**: finish a pending cleanup.
     pub async fn retry_cleanup(&self, id: &str) -> AppResult<()> {
-        if id != PROFILE_ID {
-            return Err(AppError::not_found("There is no such agent profile."));
-        }
+        let profile = self.profile(id).await?;
         let gate = self.credentials.gate(&credential_owner(id)).await;
-        let profile = self.profile().await?;
         match profile.credential.pending {
             Some(CredentialPending::Cleanup)
                 if profile.credential_source == SecretSource::Store =>
             {
                 // Moving back to the Keychain wrote a new item over the old one.
+                let id = id.to_string();
                 self.db
-                    .call(|conn| clear_pending(conn, CredentialPending::Cleanup))
+                    .call(move |conn| clear_pending(conn, &id, CredentialPending::Cleanup))
                     .await
             }
             Some(CredentialPending::Cleanup) | Some(CredentialPending::Removal) => {
-                self.cleanup(&gate).await
+                self.cleanup(&gate, id).await
             }
             Some(CredentialPending::Save) => Err(AppError::validation(
                 "Paste the token or key again in Settings → Agents.",
@@ -444,16 +523,15 @@ impl AgentSettingsService {
     /// then Brainiac does not read its credential, build its image, or start
     /// a run.
     pub async fn approve(&self, id: &str, revision: i64) -> AppResult<AgentSettings> {
-        if id != PROFILE_ID {
-            return Err(AppError::not_found("There is no such agent profile."));
-        }
+        self.profile(id).await?;
         let gate = self.credentials.gate(&credential_owner(id)).await;
+        let profile_id = id.to_string();
         self.db
             .call(move |conn| {
                 let changed = conn.execute(
                     "UPDATE agent_profiles SET source_approved = 1, version = version + 1
                      WHERE id = ?1 AND credential_revision = ?2",
-                    params![PROFILE_ID, revision],
+                    params![profile_id, revision],
                 )?;
                 if changed == 0 {
                     return Err(conflict());
@@ -483,37 +561,32 @@ impl AgentSettingsService {
         }
     }
 
-    /// **Build image** / **Rebuild…**: build Brainiac's Dockerfile on the
-    /// chosen engine and record the image. The build takes minutes; the
-    /// record is kept only if the engine is still the one it was built on.
+    /// **Build image** / **Rebuild…** on this Mac: build Brainiac's
+    /// Dockerfile on the chosen engine and record the image. The build takes
+    /// minutes; the record is kept only if the engine is still the one it was
+    /// built on.
     pub async fn build_image(&self) -> AppResult<AgentSettings> {
         let Ok(_building) = self.building.try_lock() else {
             return Err(AppError::validation("The image is already being built."));
         };
-        let profile = self.profile().await?;
-        if profile.credential.needs_approval {
-            return Err(AppError::validation(
-                "Confirm this setup first: it was restored from a backup.",
-            ));
-        }
-        let socket = profile
-            .engine_socket
-            .clone()
+        let socket = self
+            .db
+            .call(|conn| local_socket(conn))
+            .await?
             .ok_or_else(|| AppError::validation("Choose where runs execute first."))?;
         let built = image::build(Path::new(&socket)).await?;
         let now = now_rfc3339();
-        let recorded = self
-            .db
-            .call(move |conn| {
-                Ok(conn.execute(
-                    "UPDATE agent_profiles SET image_id = ?2, image_recipe = ?3, image_built_at = ?4,
+        let recorded =
+            self.db
+                .call(move |conn| {
+                    Ok(conn.execute(
+                    "UPDATE agent_hosts SET image_id = ?2, image_recipe = ?3, image_built_at = ?4,
                        version = version + 1, updated_at = ?4
-                     WHERE id = ?1
-                       AND (SELECT socket FROM agent_hosts WHERE id = agent_profiles.host_id) = ?5",
-                    params![PROFILE_ID, built.id, image::recipe(), now, socket],
+                     WHERE id = ?1 AND socket = ?5",
+                    params![super::hosts::LOCAL_ID, built.id, image::recipe(), now, socket],
                 )?)
-            })
-            .await?;
+                })
+                .await?;
         if recorded == 0 {
             return Err(AppError::new(
                 ErrorCode::Conflict,
@@ -524,46 +597,59 @@ impl AgentSettingsService {
         self.get().await
     }
 
-    /// **Test** passed with this token or key, image, and engine: runs may
-    /// start until one of them changes.
-    pub async fn record_test(&self, profile: &AgentProfile) -> AppResult<AgentSettings> {
-        let (revision, image, socket, now) = (
+    /// **Test** of a profile passed on a host with this token or key, image,
+    /// and engine: its runs may start there until one of them changes.
+    pub async fn record_test(
+        &self,
+        host_id: &str,
+        profile: &AgentProfile,
+        image_id: &str,
+        engine_socket: Option<&str>,
+    ) -> AppResult<()> {
+        let (host, id, revision, image, socket, now) = (
+            host_id.to_string(),
+            profile.id.clone(),
             profile.credential.revision,
-            profile.image.as_ref().map(|i| i.id.clone()),
-            profile.engine_socket.clone(),
+            image_id.to_string(),
+            engine_socket.map(str::to_string),
             now_rfc3339(),
         );
         self.db
             .call(move |conn| {
                 conn.execute(
-                    "UPDATE agent_profiles SET test_passed_at = ?2, test_credential_revision = ?3,
-                       test_image_id = ?4, test_engine_socket = ?5, version = version + 1
-                     WHERE id = ?1",
-                    params![PROFILE_ID, now, revision, image, socket],
+                    "INSERT INTO agent_tests (host_id, profile_id, passed_at, credential_revision,
+                       image_id, engine_socket)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                     ON CONFLICT (host_id, profile_id) DO UPDATE SET passed_at = ?3,
+                       credential_revision = ?4, image_id = ?5, engine_socket = ?6",
+                    params![host, id, now, revision, image, socket],
                 )?;
                 Ok(())
             })
-            .await?;
-        self.get().await
+            .await
     }
 
-    /// Settings → Secrets: the profile when it has a token or key, or a
-    /// cleanup still to do. Reads no secret.
+    /// Settings → Secrets: each profile with a token or key, or a cleanup
+    /// still to do. Reads no secret.
     pub async fn secret_entries(&self) -> AppResult<Vec<SecretEntry>> {
-        let p = self.profile().await?;
-        if p.credential_source == SecretSource::None && p.credential.pending.is_none() {
-            return Ok(Vec::new());
-        }
-        let owner = credential_owner(&p.id);
-        Ok(vec![SecretEntry {
-            owner: CredentialOwner::AgentProfile { id: p.id.clone() },
-            label: "Claude Code runs".to_string(),
-            destination: destination(p.payment).to_string(),
-            input_required: false,
-            last_test: self.credentials.last_test(&owner, p.credential.revision),
-            source: p.credential_source,
-            state: p.credential,
-        }])
+        Ok(self
+            .profiles()
+            .await?
+            .into_iter()
+            .filter(|p| p.credential_source != SecretSource::None || p.credential.pending.is_some())
+            .map(|p| {
+                let owner = credential_owner(&p.id);
+                SecretEntry {
+                    owner: CredentialOwner::AgentProfile { id: p.id.clone() },
+                    label: format!("{} runs", profile_name(&p)),
+                    destination: destination(p.provider, p.payment),
+                    input_required: false,
+                    last_test: self.credentials.last_test(&owner, p.credential.revision),
+                    source: p.credential_source.clone(),
+                    state: p.credential.clone(),
+                }
+            })
+            .collect())
     }
 }
 
@@ -601,35 +687,32 @@ fn check_socket(socket: &str) -> AppResult<String> {
     }
 }
 
-/// What still stops a run from starting, in the order to do it.
-fn missing(p: &AgentProfile) -> Vec<String> {
-    let mut missing = Vec::new();
-    if p.engine_socket.is_none() {
-        missing.push("Choose where runs execute.".to_string());
-    }
-    missing.extend(credential_missing(p));
-    match &p.image {
-        None => missing.push("Build the image.".to_string()),
-        Some(i) if !i.current => {
-            missing.push("Rebuild the image: this version of Brainiac changed it.".to_string())
-        }
+/// What stops a run of this profile on this host, in the order to do it:
+/// the profile's own setup, the host's, then a passed test of the profile
+/// there that still matches (SPEC.md, Settings → Agents, Before the first run).
+pub fn run_missing(profile: &AgentProfile, host: &AgentHost) -> Vec<String> {
+    let mut missing: Vec<String> = profile
+        .missing
+        .iter()
+        .chain(&host.missing)
+        .cloned()
+        .collect();
+    let name = profile_name(profile);
+    match host.tests.iter().find(|t| t.profile_id == profile.id) {
+        None => missing.push(format!("Pass a test of {name} on {}.", host.name)),
+        Some(t) if !t.current => missing.push(format!(
+            "Test {name} on {} again: the token or key, the image, or the engine changed since.",
+            host.name
+        )),
         Some(_) => {}
-    }
-    if !p.test_current {
-        missing.push(if p.test_passed_at.is_some() {
-            "Test again: the token or key, the image, or the engine changed since the last test."
-                .to_string()
-        } else {
-            "Pass a test run.".to_string()
-        });
     }
     missing
 }
 
-/// What stops any host from taking a run, wherever it runs: the restored
-/// setup, the token or key, and the agreement (SPEC.md, Settings → Agents).
-/// A remote host's own image and test are on its page.
-pub fn credential_missing(p: &AgentProfile) -> Vec<String> {
+/// What stops a profile's runs on any host: the restored setup, the token
+/// or key, the agreement, and OpenCode's model (SPEC.md, Settings → Agents).
+/// A host's own engine, image, and test are on its page.
+fn profile_missing(p: &AgentProfile) -> Vec<String> {
     let mut missing = Vec::new();
     if p.credential.needs_approval {
         missing.push("Confirm this setup: it was restored from a backup.".to_string());
@@ -644,23 +727,27 @@ pub fn credential_missing(p: &AgentProfile) -> Vec<String> {
     } else if p.credential_source == SecretSource::None {
         missing.push(match p.payment {
             AgentPayment::ClaudePlan => "Add the token from claude setup-token.".to_string(),
-            AgentPayment::ApiKey => "Add an API key.".to_string(),
+            AgentPayment::ApiKey => format!("Add an {} API key.", p.provider.name()),
         });
     }
     if !p.sends_code_agreed {
         missing.push(format!(
             "Agree to send code and prompts to {}.",
-            destination(p.payment)
+            destination(p.provider, p.payment)
         ));
+    }
+    if p.agent == AgentKind::Opencode && p.model.is_empty() {
+        missing.push("Choose the model new runs use.".to_string());
     }
     missing
 }
 
-const COLUMNS: &str = "p.id, h.socket, p.payment, p.secret_source, p.credential_revision,
-    p.source_approved, p.credential_pending, p.credential_saved_at, p.sends_code_agreed,
-    p.permissions, p.time_limit_minutes, p.cpus, p.memory_mib, p.workspace_gib, p.image_id,
-    p.image_recipe, p.image_built_at, p.version, p.test_passed_at, p.test_credential_revision,
-    p.test_image_id, p.test_engine_socket, p.model";
+const COLUMNS: &str = "id, agent, provider, payment, secret_source, credential_revision,
+    source_approved, credential_pending, credential_saved_at, sends_code_agreed, permissions,
+    time_limit_minutes, cpus, memory_mib, workspace_gib, model, version";
+
+/// Claude Code first, then OpenCode by provider.
+const ORDER: &str = "CASE agent WHEN 'claude_code' THEN 0 ELSE 1 END, provider";
 
 fn parse<T: serde::de::DeserializeOwned>(text: String) -> rusqlite::Result<T> {
     serde_json::from_value(serde_json::Value::String(text)).map_err(|e| {
@@ -682,82 +769,80 @@ fn word<T: serde::Serialize>(value: &T) -> String {
 }
 
 fn from_row(r: &Row<'_>) -> rusqlite::Result<AgentProfile> {
-    let payment: AgentPayment = parse(r.get(2)?)?;
-    let saved_at: Option<String> = r.get(7)?;
+    let payment: AgentPayment = parse(r.get(3)?)?;
+    let saved_at: Option<String> = r.get(8)?;
     let ageing = payment == AgentPayment::ClaudePlan
         && saved_at
             .as_deref()
             .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
             .is_some_and(|t| chrono::Utc::now().signed_duration_since(t).num_days() >= AGEING_DAYS);
-    let image_id: Option<String> = r.get(14)?;
-    let recipe: Option<String> = r.get(15)?;
-    let built_at: Option<String> = r.get(16)?;
-    let image = match (image_id, recipe, built_at) {
-        (Some(id), Some(recipe), Some(built_at)) => Some(AgentImage {
-            name: image::name_for(&recipe),
-            current: recipe == image::recipe(),
-            id,
-            built_at,
-        }),
-        _ => None,
-    };
-    let engine_socket: Option<String> = r.get(1)?;
-    let revision: i64 = r.get(4)?;
-    let test_passed_at: Option<String> = r.get(18)?;
-    let test_revision: Option<i64> = r.get(19)?;
-    let test_image: Option<String> = r.get(20)?;
-    let test_socket: Option<String> = r.get(21)?;
-    // The test counts while nothing it ran with changed.
-    let test_current = test_passed_at.is_some()
-        && test_revision == Some(revision)
-        && test_image.is_some()
-        && test_image == image.as_ref().map(|i| i.id.clone())
-        && test_socket.is_some()
-        && test_socket == engine_socket;
-    Ok(AgentProfile {
+    let mut profile = AgentProfile {
         id: r.get(0)?,
-        engine_socket,
+        agent: parse(r.get(1)?)?,
+        provider: parse(r.get(2)?)?,
         payment,
-        credential_source: parse_json(r.get(3)?)?,
+        credential_source: parse_json(r.get(4)?)?,
         credential: CredentialState {
-            revision,
-            needs_approval: !r.get::<_, bool>(5)?,
-            pending: r.get::<_, Option<String>>(6)?.map(parse).transpose()?,
+            revision: r.get(5)?,
+            needs_approval: !r.get::<_, bool>(6)?,
+            pending: r.get::<_, Option<String>>(7)?.map(parse).transpose()?,
         },
         credential_saved_at: saved_at,
         credential_ageing: ageing,
-        sends_code_agreed: r.get(8)?,
-        permissions: parse(r.get(9)?)?,
-        time_limit_minutes: r.get(10)?,
-        cpus: r.get(11)?,
-        memory_mib: r.get(12)?,
-        model: r.get(22)?,
-        workspace_gib: r.get(13)?,
-        image,
-        test_passed_at,
-        test_current,
-        version: r.get(17)?,
-    })
+        sends_code_agreed: r.get(9)?,
+        permissions: parse(r.get(10)?)?,
+        time_limit_minutes: r.get(11)?,
+        cpus: r.get(12)?,
+        memory_mib: r.get(13)?,
+        workspace_gib: r.get(14)?,
+        model: r.get(15)?,
+        missing: Vec::new(),
+        version: r.get(16)?,
+    };
+    profile.missing = profile_missing(&profile);
+    Ok(profile)
 }
 
 fn get(conn: &Connection, id: &str) -> AppResult<Option<AgentProfile>> {
     Ok(conn
         .query_row(
-            &format!(
-                "SELECT {COLUMNS} FROM agent_profiles p JOIN agent_hosts h ON h.id = p.host_id
-                 WHERE p.id = ?1"
-            ),
+            &format!("SELECT {COLUMNS} FROM agent_profiles WHERE id = ?1"),
             [id],
             from_row,
         )
         .optional()?)
 }
 
-fn mark_pending(conn: &Connection, pending: CredentialPending, expected: i64) -> AppResult<()> {
+fn list(conn: &Connection) -> AppResult<Vec<AgentProfile>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {COLUMNS} FROM agent_profiles ORDER BY {ORDER}"
+    ))?;
+    let rows = stmt.query_map([], from_row)?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// This Mac's engine socket, `None` until chosen.
+fn local_socket(conn: &Connection) -> AppResult<Option<String>> {
+    Ok(conn
+        .query_row(
+            "SELECT socket FROM agent_hosts WHERE id = ?1",
+            [super::hosts::LOCAL_ID],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten())
+}
+
+fn mark_pending(
+    conn: &Connection,
+    id: &str,
+    pending: CredentialPending,
+    expected: i64,
+) -> AppResult<()> {
     let changed = conn.execute(
         "UPDATE agent_profiles SET credential_pending = ?2, version = version + 1
          WHERE id = ?1 AND version = ?3",
-        params![PROFILE_ID, word(&pending), expected],
+        params![id, word(&pending), expected],
     )?;
     if changed == 0 {
         return Err(conflict());
@@ -767,8 +852,11 @@ fn mark_pending(conn: &Connection, pending: CredentialPending, expected: i64) ->
 
 /// The row after a credential save or removal: the payment and source, the
 /// new revision, approved by this save, and what is still pending.
+// Every argument is one column of the row; a struct would only rename them.
+#[allow(clippy::too_many_arguments)]
 fn commit_credential(
     conn: &Connection,
+    id: &str,
     payment: AgentPayment,
     source: &SecretSource,
     revision: i64,
@@ -783,7 +871,7 @@ fn commit_credential(
            sends_code_agreed = ?7, version = version + 1, updated_at = ?8
          WHERE id = ?1",
         params![
-            PROFILE_ID,
+            id,
             payment.as_str(),
             serde_json::to_string(source).map_err(|e| AppError::db(e.to_string()))?,
             revision,
@@ -796,11 +884,11 @@ fn commit_credential(
     Ok(())
 }
 
-fn clear_pending(conn: &Connection, which: CredentialPending) -> AppResult<()> {
+fn clear_pending(conn: &Connection, id: &str, which: CredentialPending) -> AppResult<()> {
     conn.execute(
         "UPDATE agent_profiles SET credential_pending = NULL
          WHERE id = ?1 AND credential_pending = ?2",
-        params![PROFILE_ID, word(&which)],
+        params![id, word(&which)],
     )?;
     Ok(())
 }
@@ -811,46 +899,84 @@ mod tests {
 
     const PLAN: &str = "sk-ant-oat01-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-AbCd";
     const KEY: &str = "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-AbCd";
+    const OPENAI: &str = "sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-AbCdEfGh";
+    const OPENROUTER: &str = "sk-or-v1-0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    fn plan(text: &str) -> AppResult<String> {
+        normalize_credential(AgentProvider::Anthropic, AgentPayment::ClaudePlan, text)
+    }
+
+    fn key(provider: AgentProvider, text: &str) -> AppResult<String> {
+        normalize_credential(provider, AgentPayment::ApiKey, text)
+    }
 
     #[test]
     fn wrapped_tokens_are_joined_and_anything_else_refused() {
         let wrapped = format!("  {}\r\n{}  \n", &PLAN[..20], &PLAN[20..]);
-        assert_eq!(
-            normalize_credential(AgentPayment::ClaudePlan, &wrapped).unwrap(),
-            PLAN
-        );
+        assert_eq!(plan(&wrapped).unwrap(), PLAN);
         // Terminal pads a wrapped line with spaces before the break, and a
         // copy can carry a non-breaking or zero-width character.
         let padded = format!("{}   \n   {}\u{a0}\u{200b}", &PLAN[..30], &PLAN[30..]);
-        assert_eq!(
-            normalize_credential(AgentPayment::ClaudePlan, &padded).unwrap(),
-            PLAN
-        );
+        assert_eq!(plan(&padded).unwrap(), PLAN);
         let two = format!("{PLAN}\n{PLAN}");
-        let err = normalize_credential(AgentPayment::ClaudePlan, &two).unwrap_err();
+        let err = plan(&two).unwrap_err();
         assert!(err.message.contains("more than one"), "{err:?}");
         assert!(!err.message.contains("sk-ant"), "{err:?}");
         let sentence = format!("{PLAN} Store this token securely!");
-        let err = normalize_credential(AgentPayment::ClaudePlan, &sentence).unwrap_err();
+        let err = plan(&sentence).unwrap_err();
         assert!(err.message.contains("does not look like"), "{err:?}");
-        assert!(normalize_credential(AgentPayment::ClaudePlan, "").is_err());
-        assert!(normalize_credential(AgentPayment::ClaudePlan, "sk-ant-oat01-short").is_err());
+        assert!(plan("").is_err());
+        assert!(plan("sk-ant-oat01-short").is_err());
     }
 
     #[test]
     fn a_key_and_a_plan_token_are_not_mixed_up() {
-        let err = normalize_credential(AgentPayment::ClaudePlan, KEY).unwrap_err();
+        let err = plan(KEY).unwrap_err();
         assert!(err.message.contains("API key"), "{err:?}");
-        let err = normalize_credential(AgentPayment::ApiKey, PLAN).unwrap_err();
+        let err = key(AgentProvider::Anthropic, PLAN).unwrap_err();
         assert!(err.message.contains("Claude plan"), "{err:?}");
-        assert_eq!(
-            normalize_credential(AgentPayment::ApiKey, KEY).unwrap(),
-            KEY
-        );
-        assert!(normalize_credential(
-            AgentPayment::ApiKey,
+        assert_eq!(key(AgentProvider::Anthropic, KEY).unwrap(), KEY);
+        assert!(key(
+            AgentProvider::Anthropic,
             "xx-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
         )
         .is_err());
+    }
+
+    #[test]
+    fn each_provider_takes_only_its_own_keys() {
+        assert_eq!(key(AgentProvider::Openai, OPENAI).unwrap(), OPENAI);
+        assert_eq!(
+            key(AgentProvider::Openrouter, OPENROUTER).unwrap(),
+            OPENROUTER
+        );
+        for (provider, wrong) in [
+            (AgentProvider::Openai, KEY),
+            (AgentProvider::Openai, OPENROUTER),
+            (AgentProvider::Openrouter, OPENAI),
+            (AgentProvider::Anthropic, OPENROUTER),
+        ] {
+            let err = key(provider, wrong).unwrap_err();
+            assert!(err.message.contains("does not look like"), "{err:?}");
+            assert!(err.message.contains(provider.name()), "{err:?}");
+        }
+        let two = format!("{OPENROUTER}{OPENROUTER}");
+        assert!(key(AgentProvider::Openrouter, &two)
+            .unwrap_err()
+            .message
+            .contains("more than one"));
+        let err = normalize_credential(AgentProvider::Openai, AgentPayment::ClaudePlan, PLAN)
+            .unwrap_err();
+        assert!(err.message.contains("Only Claude Code"), "{err:?}");
+    }
+
+    #[test]
+    fn an_openrouter_model_keeps_its_slash() {
+        assert_eq!(
+            check_model(AgentKind::Opencode, " anthropic/claude-sonnet-5-5 ").unwrap(),
+            "anthropic/claude-sonnet-5-5"
+        );
+        assert!(check_model(AgentKind::Opencode, "gpt 6").is_err());
+        assert!(check_model(AgentKind::ClaudeCode, "opus[1m]").is_ok());
     }
 }

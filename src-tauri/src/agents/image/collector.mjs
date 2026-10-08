@@ -53,6 +53,7 @@ const FIXED_RULES = new Set([
   "coverage",
   ".DS_Store",
   ".claude",
+  ".opencode",
 ]);
 const FIXED_REASON = "Brainiac's fixed rules";
 

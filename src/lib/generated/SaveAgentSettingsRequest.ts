@@ -4,8 +4,8 @@ import type { RunPermissions } from "./RunPermissions";
 /**
  * Settings → Agents, everything but the token or key.
  */
-export type SaveAgentSettingsRequest = { 
+export type SaveAgentSettingsRequest = { profile_id: string, 
 /**
  * The version the pane shows; a save over a newer one is refused.
  */
-expected_version: number, engine_socket: string | null, sends_code_agreed: boolean, permissions: RunPermissions, time_limit_minutes: number, cpus: number, memory_mib: number, workspace_gib: number, model: string, };
+expected_version: number, sends_code_agreed: boolean, permissions: RunPermissions, time_limit_minutes: number, cpus: number, memory_mib: number, workspace_gib: number, model: string, };

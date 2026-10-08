@@ -5,7 +5,7 @@ import type { SecretSource } from "./SecretSource";
 /**
  * Settings → Agents, **Pay with**: the token or key and where it comes from.
  */
-export type SaveAgentCredentialRequest = { expected_version: number, payment: AgentPayment, 
+export type SaveAgentCredentialRequest = { profile_id: string, expected_version: number, payment: AgentPayment, 
 /**
  * The Keychain, an environment variable, or a command.
  */
