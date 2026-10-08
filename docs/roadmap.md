@@ -138,7 +138,18 @@ Local and remote use the same controller/session contract; client disconnect or 
 
 **Exit gate (0.5.0):** for a week, hand real tasks to Claude Code and to OpenCode (with at least two providers) from Brainiac instead of a terminal, on this Mac and on a remote host. Set it up from nothing; save uncommitted and binary results from a repository with no remote, as a patch and through Copy branch command; cancel, steer, reconnect, and recover failed runs; retry collection and cleanup without losing work, with the repository's refs, index, configuration, and working copy unchanged. On the remote host, close Brainiac and sleep the Mac during a turn, prove the host kept working, reconnect to the same session with the complete journal, and send another prompt; also verify permissions waiting offline, expiry and collection, lost acknowledgements, controller-crash termination, emergency stop, a changed host key, and Upgrade and removal waiting for live runs. Test restored approvals, resource cleanup, and the injected credential's absence from configuration, journals, logs, and IPC. Exact-value filtering cannot certify arbitrary agent output or artifacts as secret-free. The gates of the later phases are in [`design/agent-runs.md`](design/agent-runs.md), Phases and exit gates.
 
-### v0.6 — Content imports and global capture
+### v0.6 — Explaining changes
+
+Brainiac explains a commit, a branch, or a run's result to the person reading it, so they learn the software being built: a summary, a guided tour of the files in reading order, notes beside the lines, the concepts the change relies on, and questions to check understanding, each claim citing the code or the project's docs. An agent writes it in a run of its own kind on v0.5's machinery; Brainiac checks it and shows it beside the diff. Design: [`design/code-explanations.md`](design/code-explanations.md). Its spike needs no code and can run during v0.5's week of use; building starts after 0.5.0.
+
+- [ ] Spike: ordinary runs on this repository with the explain prompt over about five commits, with Claude Code and OpenCode, every note scored by hand, and the time and cost recorded.
+- [ ] Explain runs: a run kind with Brainiac's prompt (subject, reader level, known concepts, depth, schema), a short time limit, no review, no place in Runs, and only `.brainiac/explanation.json` collected; the file checked against its schema and every quote verified, with one follow-up turn to fix errors.
+- [ ] The Explain dialog, the panel (summary, Tour, Concepts, Check yourself), notes in the patch, reading order in the file list, progress from the journal, staleness, code–docs disagreement, Save as note, and Settings → Explanations, for commits, branches, and collected run results.
+- [ ] 0.6.x: working-tree changes, pull requests, a question about one note as a follow-up prompt, and a direct model call for small changes and local models.
+
+**Exit gate:** for a week, read every commit and agent result in Brainiac with an explanation, with Claude Code and with OpenCode. Most notes are correct and point to the right lines; no claim without a verified source is shown; a change made after explaining marks only the affected notes; nothing reaches a provider from a repository whose answer was no; the repository is unchanged; and the time and cost of each explanation are known.
+
+### v0.7 — Content imports and global capture
 
 - [ ] Inbox view for captured and imported items, with triage: file or move, link to a task or repository, create a task.
 - [ ] Text/selection capture, URL bookmarks, Markdown copies, source provenance, resumable import jobs.
@@ -153,9 +164,9 @@ Local and remote use the same controller/session contract; client disconnect or 
 
 **Exit gate:** import representative articles/emails/issue excerpts/video references, find their captured content offline, identify metadata-only items, preserve annotations, retry failed imports without duplicates, and capture from another app without losing drafts or main-window updates. Create notes from an Obsidian template copied unchanged; import a `My Clippings.txt` from a Kindle in another language, then import again after new and extended highlights, with the book note renamed, moved, and annotated in between, and nothing duplicated or overwritten.
 
-**v0.6.x follow-up:** add one authenticated source adapter chosen by daily use, Jira or the email provider. Validate its authentication/deployment and selected-item import before expanding providers. Native share/browser entry points and a forwarding service remain separate follow-ups.
+**v0.7.x follow-up:** add one authenticated source adapter chosen by daily use, Jira or the email provider. Validate its authentication/deployment and selected-item import before expanding providers. Native share/browser entry points and a forwarding service remain separate follow-ups.
 
-### v0.7 — Semantic retrieval
+### v0.8 — Semantic retrieval
 
 - [ ] Validate sqlite-vec/Rust/bundled-SQLite release integration.
 - [ ] Choose and document a local embedding profile using actual notes.
@@ -164,7 +175,7 @@ Local and remote use the same controller/session contract; client disconnect or 
 
 **Exit gate:** a labeled set of roughly 30 real queries demonstrates useful retrieval beyond keyword search; deleted/stale chunks are excluded and Ollama failure leaves core search functional.
 
-### v0.8 — Grounded AI answers
+### v0.9 — Grounded AI answers
 
 - [ ] Context assembly, generation model configuration, streamed channel output.
 - [ ] Openable citations, stale-source labeling, insufficient-evidence behavior.
@@ -174,7 +185,7 @@ Local and remote use the same controller/session contract; client disconnect or 
 
 ### Later — Life management and integrations
 
-Expand the v0.6 import adapters and consider pull requests on GitLab and Bitbucket Data Center; CI beyond the checks a pull request shows; the In flight view of each change from local branch to merged (Pull request follow-ups, below); Linear references; local calendar context; recurring tasks and reminders; daily/weekly review notes built on v0.6 templates; Kindle highlights from Amazon's cloud notebook or Readwise (`design/templates-and-kindle.md`, Where highlights come from); optional graph navigation; explicit branch/dev-server actions; multiple vaults; sync; automation or plugin APIs; a Linux build, whose secrets would go to the Secret Service (`design/secrets.md`, phase 3).
+Expand the v0.7 import adapters and consider pull requests on GitLab and Bitbucket Data Center; CI beyond the checks a pull request shows; the In flight view of each change from local branch to merged (Pull request follow-ups, below); Linear references; local calendar context; recurring tasks and reminders; daily/weekly review notes built on v0.7 templates; Kindle highlights from Amazon's cloud notebook or Readwise (`design/templates-and-kindle.md`, Where highlights come from); optional graph navigation; explicit branch/dev-server actions; multiple vaults; sync; automation or plugin APIs; a Linux build, whose secrets would go to the Secret Service (`design/secrets.md`, phase 3).
 
 Machines (`architecture.md`, Machines) are where later remote features attach, each as its own role on an approved machine rather than a copy of its address and key: database SSH tunnels (v0.4.x) through a machine, an SSH terminal, and a machine's health (disk, memory, Docker, the run controller's state) beside the run host's. Settings gets a Machines pane, with Run hosts pointing to it, when the second role ships.
 
@@ -191,16 +202,17 @@ Remote services require their own authentication, rate-limit, cache, error, and 
 | Hosted PostgreSQL providers to support | Choose among Cloud SQL, RDS, Supabase, and Neon; the spike verified TLS only against a local CA, so the exit gate is the first test against a hosted provider | v0.4 exit gate |
 | Health on Cloud SQL | Whether `pg_monitor` can be granted and `pg_stat_statements` is on; Google credentials from `gcloud` only, or also a service account key (`design/databases.md`, Open questions) | v0.4 Health |
 | Commands as secret sources from a GUI app | An app opened from Finder gets a minimal `PATH` and no terminal: check where `gh`, `op`, and `gcloud` are found, and how long a password manager's unlock window takes (`design/secrets.md`, Open questions) | v0.4.x secrets |
-| Sending an agent's work to a cloud model | v0.8's AI answers go only to a local endpoint by default; agent runs send code to the provider of the agent the user set up, with their own key or Claude subscription token. Record it as a decision with an explicit opt-in in setup | v0.5 setup |
+| Sending an agent's work to a cloud model | v0.9's AI answers go only to a local endpoint by default; agent runs send code to the provider of the agent the user set up, with their own key or Claude subscription token. Record it as a decision with an explicit opt-in in setup | v0.5 setup |
 | ACP adapters and remote session ownership | The early v0.5 spike: a pinned Claude adapter over controller-owned stdio with no Mac filesystem/terminal; prove remote progress through Mac sleep, same-session reconnect/follow-up, offline deadline/permissions, and crash termination. Add Codex when supported (`design/agent-runs.md`, Open questions) | Before production runtime implementation; repeat for remote release |
-| Quick-capture focus behavior | macOS/Spaces/fullscreen prototype | v0.6 |
-| Reading `My Clippings.txt` from current Kindles | Check whether recent models mount as a USB drive or use MTP; collect files in several device languages, with notes and export-limited books (`design/templates-and-kindle.md`, Open questions) | v0.6 Kindle device detection and language table |
+| Time and cost of an explanation | The v0.6 spike: explain runs over real commits with Claude Code and OpenCode, notes scored by hand, time and cost recorded | v0.6 prompt, schema, and default time limit |
+| Quick-capture focus behavior | macOS/Spaces/fullscreen prototype | v0.7 |
+| Reading `My Clippings.txt` from current Kindles | Check whether recent models mount as a USB drive or use MTP; collect files in several device languages, with notes and export-limited books (`design/templates-and-kindle.md`, Open questions) | v0.7 Kindle device detection and language table |
 | Vault size and note sizes | Generated vaults of 1,000 and 10,000 notes measured (S3; `docs/architecture.md`, Decisions); check against the real vault after a month of use, with a cold file cache | Confirming v0.2 batch sizes and revision budget |
 | Snapshot size and retention | Measure `brainiac.db` and `history.db` on a real vault after a month | v0.2 backup defaults |
 | Restore onto another Mac | Fixture: vault and snapshot restored where paths and repository locations differ | v0.2 restore |
-| Embedding model and dimensions | Local retrieval evaluation, model availability and license review | v0.7 schema/profile selection |
-| Chunking notes, code, and imports | Labelled set of about 30 real queries; compare heading-aware splits, size caps, and overlap by recall@k | v0.7 chunker version 1 |
-| SQLite-vector integration compatibility | Build and query a bundled release executable | v0.7 |
+| Embedding model and dimensions | Local retrieval evaluation, model availability and license review | v0.8 schema/profile selection |
+| Chunking notes, code, and imports | Labelled set of about 30 real queries; compare heading-aware splits, size caps, and overlap by recall@k | v0.8 chunker version 1 |
+| SQLite-vector integration compatibility | Build and query a bundled release executable | v0.8 |
 | `sqlite-vec` approximate indexes | Track whether ANN indexes reach a stable release; brute force is enough at personal scale | Only if a vault outgrows brute force |
 | Remote integrations and company data constraints | First providers chosen: GitHub and Bitbucket Cloud (v0.3). Confirm the scopes each employer allows and whether caching pull request content locally is acceptable | v0.3 accounts |
 | Where the daily view of pull requests lives | Use v0.3's workspace tab for a few weeks, then choose a pull requests inbox in the sidebar or a group in Today (Pull request follow-ups, below) | v0.3.x |
@@ -223,33 +235,37 @@ Phase 1 shipped in 0.4.0. Its behavior is [`SPEC.md`](../SPEC.md) section 12 and
 
 Phase 1 (local runs and review) is in [`SPEC.md`](../SPEC.md) section 13 and [`architecture.md`](architecture.md), Agent runs — v0.5. Phases 2 to 4 (landing and more agents, remote hosts, tasks), the background, the spike records, and the open questions remain in [`design/agent-runs.md`](design/agent-runs.md).
 
-### Additions of v0.6 onward to storage and contracts
+### Explaining changes — v0.6
+
+The UX, the explain run and its checks, the phases, the spike, and the open questions are in [`design/code-explanations.md`](design/code-explanations.md).
+
+### Additions of v0.7 onward to storage and contracts
 
 #### Data model of later releases
 
 | Entity | File | Essential fields and constraints | Release |
 | --- | --- | --- | --- |
-| `note_sources` | core | `note_id`, source type, canonical URL/provider ID, source time, import time, content scope, source hash; derived from note provenance | v0.6 |
-| `import_jobs` | core | `id`, input reference, adapter, state, staged payload reference, error, result note ID, idempotency key | v0.6 |
-| `import_items` | core | adapter, item ID (such as a Kindle highlight's), `note_id`, first seen, hash of the block as rendered, disposition (`added`, `superseded`, `dismissed`); the ledger that stops a deleted item from returning on re-import | v0.6 |
-| `embedding_profiles` | core | `id`, provider, model name and digest, dimensions, distance metric, normalization, chunker version, state | v0.7 |
-| `note_chunks` | index | `id`, `note_id`, profile, source hash, heading, byte/line range, text, chunk hash | v0.7 |
-| vector tables | index | One `vec0` table per embedding profile: chunk ID, embedding, filter columns | v0.7 |
+| `note_sources` | core | `note_id`, source type, canonical URL/provider ID, source time, import time, content scope, source hash; derived from note provenance | v0.7 |
+| `import_jobs` | core | `id`, input reference, adapter, state, staged payload reference, error, result note ID, idempotency key | v0.7 |
+| `import_items` | core | adapter, item ID (such as a Kindle highlight's), `note_id`, first seen, hash of the block as rendered, disposition (`added`, `superseded`, `dismissed`); the ledger that stops a deleted item from returning on re-import | v0.7 |
+| `embedding_profiles` | core | `id`, provider, model name and digest, dimensions, distance metric, normalization, chunker version, state | v0.8 |
+| `note_chunks` | index | `id`, `note_id`, profile, source hash, heading, byte/line range, text, chunk hash | v0.8 |
+| vector tables | index | One `vec0` table per embedding profile: chunk ID, embedding, filter columns | v0.8 |
 
 #### Commands of later releases
 
 | Command | Important input/output |
 | --- | --- |
 | `prepare_import` / `commit_import` / `list_import_jobs` | Source input or job ID; preview/provenance, duplicate choice, resulting note, retry state |
-| `configure_shortcut` | v0.6: validated binding and registration result |
-| `list_templates` / `render_template` / `create_note_from_template` | v0.6: template kind, path, title, and folder; rendered text with cursor offset and undefined names, or an error with line and column; the new note |
-| `semantic_search` / `ask_brain` / `cancel_job` | v0.7+: profile/request IDs, results or response channel |
+| `configure_shortcut` | v0.7: validated binding and registration result |
+| `list_templates` / `render_template` / `create_note_from_template` | v0.7: template kind, path, title, and folder; rendered text with cursor offset and undefined names, or an error with line and column; the new note |
+| `semantic_search` / `ask_brain` / `cancel_job` | v0.8+: profile/request IDs, results or response channel |
 
 #### Shortcuts of later releases
 
 | Shortcut | Action |
 | --- | --- |
-| `Cmd+Shift+Space`, v0.6 | Configurable global quick capture |
+| `Cmd+Shift+Space`, v0.7 | Configurable global quick capture |
 
 ### Pull request follow-ups — v0.3.x and later
 
@@ -262,7 +278,7 @@ v0.3's design moved to `SPEC.md` section 10 and `architecture.md`, Pull requests
 - **Agent tools (v0.3.x):** read pull requests, diffs, and conversations, and add review drafts the user opens and sends; agents never submit, approve, merge, or close. Pull request text is written by other people, so agents are told to treat it as data.
 - **In flight (Later):** each of your changes from local branch to merged (local only, pushed without a pull request, in review, needs changes, ready, merged), with the reviews you owe beside them. It needs every local branch's commits ahead of the default branch and matching branches to pull requests across forks and reused names, which is where most of its cost lies. Store each pull request's head repository, branch, and commit from v0.3 so it needs no migration.
 
-### Capture and imports — v0.6
+### Capture and imports — v0.7
 
 Import is a core way to create knowledge, available from the same capture interface as writing a note. Sources feed a common Rust ingestion pipeline and become ordinary Markdown notes in the Inbox. Importers do not create separate knowledge silos or require AI to produce a useful result.
 
@@ -278,13 +294,13 @@ Later, the same capture action can be reached from global quick capture, a brows
 
 | Source | Captured note | Initial path | Richer integration |
 | --- | --- | --- | --- |
-| Pasted text/selection | Supplied text, optional source URL, and personal comment | v0.6 paste | Browser extension supplies selected text and page metadata |
-| Markdown file | Independent copy in the vault, preserving original source reference | v0.6 picker/drop | Batch import with preview |
-| Web page | Article title, source URL, author/date when available, extracted readable body | v0.6 URL bookmark; v0.6 extraction | Browser capture for authenticated or client-rendered pages |
-| Email | Subject, sender/recipients/date, selected message body, message identity | Paste in v0.6; `.eml` in v0.6 | Selected-message import through an authorized mailbox connector |
-| Jira issue | Issue key/title, description, status/assignee snapshot, source link | Paste text or bookmark in v0.6 | Explicit fetch through configured Jira deployment/account |
-| YouTube video | Video link/title and user's notes; timestamped transcript when supplied/available | Bookmark and pasted transcript in v0.6 | Metadata and supported transcript acquisition |
-| Kindle highlights | One note per book: highlights and the user's Kindle notes in book order, rendered from templates | `My Clippings.txt` picker/drop in v0.6 | Cloud notebook or Readwise, only as a separately reviewed opt-in |
+| Pasted text/selection | Supplied text, optional source URL, and personal comment | v0.7 paste | Browser extension supplies selected text and page metadata |
+| Markdown file | Independent copy in the vault, preserving original source reference | v0.7 picker/drop | Batch import with preview |
+| Web page | Article title, source URL, author/date when available, extracted readable body | v0.7 URL bookmark; v0.7 extraction | Browser capture for authenticated or client-rendered pages |
+| Email | Subject, sender/recipients/date, selected message body, message identity | Paste in v0.7; `.eml` in v0.7 | Selected-message import through an authorized mailbox connector |
+| Jira issue | Issue key/title, description, status/assignee snapshot, source link | Paste text or bookmark in v0.7 | Explicit fetch through configured Jira deployment/account |
+| YouTube video | Video link/title and user's notes; timestamped transcript when supplied/available | Bookmark and pasted transcript in v0.7 | Metadata and supported transcript acquisition |
+| Kindle highlights | One note per book: highlights and the user's Kindle notes in book order, rendered from templates | `My Clippings.txt` picker/drop in v0.7 | Cloud notebook or Readwise, only as a separately reviewed opt-in |
 
 Saving a URL is distinct from capturing its contents. Every import has a `content_scope`: `full_text`, `excerpt`, `transcript`, or `metadata_only`. A bookmark-only note must not appear to have the full article or video available for search or RAG.
 
@@ -317,7 +333,7 @@ Job states are `queued`, `acquiring`, `extracting`, `awaiting_review`, `saving`,
 - Embed a `brainiac_source` frontmatter object containing source type, stable source ID/URL, imported time, source modified time when known, content scope, and source-content hash. Keep provider-specific metadata in a namespaced object.
 - Put personal commentary in a clearly separate section from captured source text. Summaries, when added later, are labeled generated content and never replace the source body.
 - Keep source material useful offline after import. Original web content may later change or disappear; Open original is navigation, not the storage strategy.
-- Retain raw originals such as `.eml` in a vault-local `attachments/imports/<import-id>/` folder in v0.6. Save relative references in frontmatter and include them in export/restore. Unsupported attachments stay as originals, with no implied indexing.
+- Retain raw originals such as `.eml` in a vault-local `attachments/imports/<import-id>/` folder in v0.7. Save relative references in frontmatter and include them in export/restore. Unsupported attachments stay as originals, with no implied indexing.
 - Imported Markdown copies get a new Brainiac ID; preserve any original ID as source metadata so copying does not create identity collisions. Do not modify the source file. Detect dependencies such as relative images and warn when they cannot be copied/resolved by the supported importer.
 - Source caches are reconstructible from provenance. Pending acquisition credentials and job state stay outside note files.
 
@@ -341,27 +357,27 @@ Snapshot import is the default. Live synchronization, scheduled bulk acquisition
 
 #### Import rollout
 
-1. **v0.6 core:** text/selection capture, URL bookmarks, Markdown copies, provenance, Inbox triage, duplicate/retry handling.
-2. **v0.6 source adapters:** public-page extraction and `.eml` parsing/original retention, with explicit bookmark/paste fallback; Kindle highlights from `My Clippings.txt`, after note templates.
-3. **v0.6.x:** one authenticated connector, selected by daily use—Jira or the email provider—and validated video metadata/transcript improvements.
+1. **v0.7 core:** text/selection capture, URL bookmarks, Markdown copies, provenance, Inbox triage, duplicate/retry handling.
+2. **v0.7 source adapters:** public-page extraction and `.eml` parsing/original retention, with explicit bookmark/paste fallback; Kindle highlights from `My Clippings.txt`, after note templates.
+3. **v0.7.x:** one authenticated connector, selected by daily use—Jira or the email provider—and validated video metadata/transcript improvements.
 4. **Later:** browser/share entry points, optional forwarding service, batches, and explicit synchronization.
 
-All external content-import behavior starts in v0.6. Selecting local repositories and discovering them inside a folder in v0.1 is workspace configuration, separate from importing knowledge content.
+All external content-import behavior starts in v0.7. Selecting local repositories and discovering them inside a folder in v0.1 is workspace configuration, separate from importing knowledge content.
 
 **Acceptance scenario:** capture an email, an issue excerpt, an article, and a video reference into the Inbox; add commentary, create a task from one item, find captured material offline, open each original source, retry an interrupted import without duplicates, and identify which items contain only metadata.
 
-### Note templates and Kindle highlights — v0.6
+### Note templates and Kindle highlights — v0.7
 
 The full design, with the research behind it, is in [`design/templates-and-kindle.md`](design/templates-and-kindle.md).
 
 - **Templates first.** Templates are ordinary notes in a templates folder of the vault, chosen in Settings. **New Note from Template…** creates a note from one and **Insert Template…** inserts one at the cursor, both after a preview. Obsidian's `{{title}}`, `{{date}}`, `{{time}}`, and `{{date:YYYY-MM-DD}}` work unchanged, so templates can be copied from an Obsidian vault. The new note never inherits the template's `brainiac_id`, and links inside templates are not indexed as the vault's.
 - **Rendering in Rust with MiniJinja.** Its Jinja syntax is close to the Nunjucks of Obsidian's Kindle plugin. Its `fuel` feature bounds the work of a render; there is no template loader, no function that reaches files or the network, and output stops at 5 MiB. Missing values render empty and are listed in the preview.
-- **Kindle highlights from `My Clippings.txt` only.** It is the one source that covers sideloaded books and personal documents, and it needs no account. Amazon's cloud notebook covers only purchased books, needs the user's Amazon session, and is excluded by Amazon's Conditions of Use for extraction tools, so it stays out of v0.6.
+- **Kindle highlights from `My Clippings.txt` only.** It is the one source that covers sideloaded books and personal documents, and it needs no account. Amazon's cloud notebook covers only purchased books, needs the user's Amazon session, and is excluded by Amazon's Conditions of Use for extraction tools, so it stays out of v0.7.
 - **Parsing.** The file has no published format and follows the device's language: parse kind, location, page, and date through a keyword table per language, and fall back to the entry's structure. Drop exact duplicates, show extended or edited highlights as revisions, and label highlights cut short by publishers' export limits as truncated.
 - **One note per book from two templates,** one for the note and one for each highlight, with variable names taken from Obsidian's Kindle plugin. The note template renders once and is the user's afterwards; Brainiac owns only `brainiac_source` and the highlight blocks it adds.
 - **Re-import adds, never rewrites.** The book's note is found by its `brainiac_id` through a book key (normalized title and author), not its path. Each highlight carries an Obsidian block ID, `^kh-…`, from the book, its location, and its text. New highlights go next to their neighbours in book order after a preview; a revised highlight replaces its block only if the user has not edited it. `import_items` in `brainiac.db` remembers what was imported, so a highlight the user deleted does not return.
 
-### Global capture and window state — v0.6
+### Global capture and window state — v0.7
 
 Use the official `tauri-plugin-global-shortcut` from Rust. Default to `Cmd+Shift+Space`, allow rebinding, and show shortcut registration conflicts. Handle pressed events once; key release must not trigger a second capture. [Tauri global shortcut plugin](https://v2.tauri.app/plugin/global-shortcut/)
 
@@ -380,7 +396,7 @@ Rust is the shared authority across windows:
 
 Events invalidate caches; they are not a durable event log. Include entity ID, version, and origin window. Frontends discard older events and unsubscribe on teardown. Dirty editors use the conflict contract even when a change originated in another app window.
 
-### Semantic search — v0.7
+### Semantic search — v0.8
 
 Keep lexical search fully functional when semantic search is disabled, indexing is incomplete, or Ollama is unavailable.
 
@@ -411,7 +427,7 @@ Use the `sqlite-vec` Rust binding with the same bundled SQLite used by `rusqlite
 - Start with notes only. Task, commit-message, and source-code embeddings are separate future scope.
 - Model installation is an explicit user action. Show download/storage requirements, indexing progress, pause, cancellation, and retry.
 
-### Ask my brain — v0.8
+### Ask my brain — v0.9
 
 RAG uses hybrid retrieval to answer questions about saved notes. It adds synthesis after retrieval is useful and measured.
 

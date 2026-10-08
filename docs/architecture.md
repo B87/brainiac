@@ -42,7 +42,7 @@ flowchart TD
     Main[Main WebView] --> IPC[Tauri commands]
     Agent[Agent through brainiac mcp, v0.2.x] --> MCP[MCP server]
     MCP --> Services
-    Capture[Quick capture WebView, v0.6] --> IPC
+    Capture[Quick capture WebView, v0.7] --> IPC
     IPC --> Services[Rust domain services]
     Services --> Files[Markdown files, v0.2]
     Services --> DB[SQLite worker]
@@ -50,8 +50,8 @@ flowchart TD
     Queue --> Services
     Services --> Git[Git subprocesses, v0.1]
     Services --> Forges[GitHub and Bitbucket Cloud, v0.3]
-    Services --> AI[Ollama, v0.7+]
-    DB --> Search[FTS5, v0.2; vectors, v0.7]
+    Services --> AI[Ollama, v0.8+]
+    DB --> Search[FTS5, v0.2; vectors, v0.8]
     Services --> Events[Committed change events]
     Events --> Main
     Events --> Capture
@@ -109,7 +109,7 @@ brainiac/
 
 The Claude Code plugin is outside the Cargo project: `.claude-plugin/marketplace.json` at the repository root lists `plugins/brainiac/`, which holds `.claude-plugin/plugin.json`, `.mcp.json`, and `skills/brainiac/SKILL.md`.
 
-Create modules as their behavior is implemented; the scaffold does not need empty placeholders for every file. Add `imports.rs` in v0.6, then AI modules at their milestones.
+Create modules as their behavior is implemented; the scaffold does not need empty placeholders for every file. Add `imports.rs` in v0.7, then AI modules at their milestones.
 
 In Rust, a **package** is described by `Cargo.toml`; a **crate** is a compilation unit, such as its library or executable; a **module** organizes code within a crate. Tauri's scaffold has a small desktop binary (`main.rs`) that delegates to the application library (`lib.rs`). This is scaffold reuse, not a separate backend service.
 
@@ -124,7 +124,7 @@ Files become modules through declarations such as `mod notes;` in `lib.rs`. A di
 - Start with two concurrent Git status jobs and one embedding job; adjust after measurement.
 - On sleep, suspend timers; on wake and application activation, reconcile stale state.
 - On quit, flush accepted saves and draft checkpoints, cancel jobs, close the database, and unregister shortcuts. If flushing fails, preserve the draft and offer retry or quit with recovery.
-- Support a single application instance. Before v0.6, closing the last window quits after flushing. In v0.6, closing the window may keep capture available in the menu bar; `Cmd+Q` still quits.
+- Support a single application instance. Before v0.7, closing the last window quits after flushing. In v0.7, closing the window may keep capture available in the menu bar; `Cmd+Q` still quits.
 
 ## Storage
 
@@ -164,7 +164,7 @@ Only two things cannot be rebuilt: the vault's Markdown files and a small core d
 | --- | --- | --- | --- |
 | Vault (`.md` files) | Note text, frontmatter including `brainiac_id`, links written in notes | Source of truth | By the user, and in Brainiac's export |
 | `brainiac.db` | Settings, repositories, workspaces, pins, activity, vaults, note identity, tasks and their search table, note-to-repository links | No | Snapshots before migrations and daily, and export |
-| `index.db` | Note bodies, the notes search table, parsed links between notes; chunks and vectors from v0.7 | Yes, from the vault | Never; rebuilt after a restore |
+| `index.db` | Note bodies, the notes search table, parsed links between notes; chunks and vectors from v0.8 | Yes, from the vault | Never; rebuilt after a restore |
 | `history.db` | Note revisions and draft checkpoints; from v0.4, query run history and open query tabs | No, but optional | Its own snapshots, less often than `brainiac.db` |
 | `forge.db`, v0.3 | Cached pull requests, files, conversations, checks, and each request's ETag | Yes, from the providers | Never |
 
@@ -175,7 +175,7 @@ Only two things cannot be rebuilt: the vault's Markdown files and a small core d
 
 ### Data model
 
-Tables of v0.6 onward are in `docs/roadmap.md` or the design it points to and are not created before their release; v0.3's and v0.4's are created by the code that first uses them. IDs are UUID strings and timestamps are UTC instants. The v0.1 schema is `src-tauri/migrations/0001_init.sql`; v0.2's core tables arrive in `0002`, v0.3's accounts in `0003`, its forge mapping in `0004`, and review drafts in `0005`; v0.4's databases in `0006` and secret sources in `0007`; v0.5's agent settings in `0008`; `index.db` and `history.db` get their own migration lists.
+Tables of v0.7 onward are in `docs/roadmap.md` or the design it points to and are not created before their release; v0.3's and v0.4's are created by the code that first uses them. IDs are UUID strings and timestamps are UTC instants. The v0.1 schema is `src-tauri/migrations/0001_init.sql`; v0.2's core tables arrive in `0002`, v0.3's accounts in `0003`, its forge mapping in `0004`, and review drafts in `0005`; v0.4's databases in `0006` and secret sources in `0007`; v0.5's agent settings in `0008`; `index.db` and `history.db` get their own migration lists.
 
 | Entity | Essential fields and constraints | Release |
 | --- | --- | --- |
@@ -271,7 +271,7 @@ An export is a new folder `Brainiac Export <date> <time>` holding `manifest.json
 - Migrations stay append-only and run at startup after a pre-migration snapshot; an app refuses a database newer than it knows (Storage, above). That is enough for one user on one machine.
 - Rows use UUIDs, notes are identified by vault ID plus relative path, and unknown frontmatter keys are preserved, so multiple vaults or sync can be added later without rewriting identity. Absolute paths stay only where they are local by nature, such as a repository's folder; its remote URL is the identity that travels.
 - Sync, if it comes, cannot migrate every device at once, because devices run different app versions: record a format version on synced records and translate on read. [Ink & Switch: Cambria](https://www.inkandswitch.com/cambria/)
-- New embedding models or chunkers (v0.7) add a profile; they never change existing vectors in place.
+- New embedding models or chunkers (v0.8) add a profile; they never change existing vectors in place.
 
 ## Git
 
@@ -681,7 +681,7 @@ These are initial targets to measure, not framework guarantees. Use a release bu
 | Local note edit reflected in an idle editor, v0.2 | Within 2 seconds when watcher delivery succeeds |
 | Selected text diff / first 100 history records, v0.1 | p95 under 500 ms on representative repos, with visible loading beyond that |
 | Local Git change reflected in viewer, v0.1 | Within 2 seconds after event delivery on representative repos; stale state visible otherwise |
-| Quick-capture activation, v0.6 | p95 under 250 ms with warm window |
+| Quick-capture activation, v0.7 | p95 under 250 ms with warm window |
 | Idle CPU with dashboard/AI inactive | Under 1% averaged over five minutes |
 | Core app memory, AI runtime excluded | Initial budget under 250 MiB, measured across app/WebView processes |
 
@@ -779,3 +779,4 @@ Decisions already made. Add new ones at the end with a date; do not edit an acce
 - **7 Oct 2026 — A remote host's install, upgrade, image build, and test are background jobs with steps.** Upgrade sat on "This host is being upgraded" for many minutes with no sign of progress, because the first build of the Linux controller after an update compiles every crate under emulation. Each of those actions is now a job on its own task with numbered steps, the build's output, a running clock, cancel until the install begins, and the last job kept on disk; Upgrade builds first and then waits for live runs instead of refusing them. The build keeps Cargo's registry and target folder in named Docker volumes on this Mac, so later builds recompile only what changed. Run hosts stay in Settings → Agents, one page per host: they only run agents today, and when database SSH tunnels arrive the connection part of a host (address, user, identity, approved key) can move to a shared place in Settings while the run-host part stays here.
 - **7 Oct 2026 — A remote host's connection and approved key are a machine; a run host is a role on it.** Database tunnels, a terminal, and monitoring would each need the same user, host, port, identity file, and approved key that a run host has. Kept in `agent_hosts`, each would copy them or read another feature's table, and splitting them out after a release would mean migrating every user's approved hosts and restoring older backups into the new shape. No release shipped `agent_hosts`, so it is split now: `machines` holds the connection and approval, `agent_hosts` keeps the controller, image, and test with a `machine_id`. Only what v0.5 uses moved; nothing is added for a later role, which brings its own table or columns when it is built. Settings keeps hosts in Settings → Agents, because a pane can move without a migration and a Machines pane with one role would split Add host across two places; it moves when a second role ships.
 - **8 Oct 2026 — The second agent is OpenCode, with Anthropic, OpenAI, and OpenRouter API keys.** A second agent proves runs do not depend on one agent or one provider. OpenCode reaches many providers' models, OpenRouter's through one key, and asks for permission over ACP in the container. Codex was checked too (`docs/design/agent-runs.md`, Record: OpenCode in a run's container): it keeps its key out of the agent's commands better, but offers only OpenAI's models and could only run without asking, since its sandbox needs user namespaces. A profile is an agent and a provider, so each provider's key, agreement, model, and test reuse the credential handling of the one profile before; one image holds both agents. The cost: a repository's own OpenCode configuration is not read, because a setting there can put the key in a request to another server.
+- **8 Oct 2026 — Explaining changes becomes v0.6, and the releases after it move one number on.** With agents writing more of the code, understanding a change matters more than importing content, so a commit, a branch, or a run's result explained from the change, the code around it, and the project's own docs comes before imports and capture (now v0.7, with authenticated import adapters in v0.7.x), semantic search (now v0.8), and grounded AI answers (now v0.9). Release numbers in the entries above refer to the earlier plan: v0.6 there now means v0.7, v0.7 means v0.8, and v0.8 means v0.9. An agent writes it, in a run of its own kind on v0.5's machinery: it reads the code and docs it needs in the container and returns one file that Brainiac checks, so Brainiac builds no context gathering of its own and reuses the profiles, keys, hosts, and isolation of runs. One model call over context Brainiac gathers was considered: faster, cheaper, and open to local models, but its context would be weaker; it may follow as a fast path. The design is in `docs/design/code-explanations.md`. It changes no accepted decision yet: asking once per repository before an explanation sends its code to the profile's provider is recorded when v0.6 starts.
