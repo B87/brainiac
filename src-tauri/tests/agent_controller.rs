@@ -1379,7 +1379,7 @@ async fn runs_reconnecting_together_start_one_controller() {
     let runtime = std::sync::Arc::new(RunRuntime::launching_from(
         state,
         dir.join("runner.sock"),
-        PathBuf::from(env!("CARGO_BIN_EXE_brainiac-runner")),
+        PathBuf::from(env!("CARGO_BIN_EXE_brainiac")),
     ));
     let calls: Vec<_> = (0..8)
         .map(|_| {

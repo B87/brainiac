@@ -178,7 +178,7 @@ async fn build(
     std::fs::create_dir_all(&out)?;
     let name = format!("brainiac-runner-build-{}", uuid::Uuid::new_v4().simple());
     let arch = platform.rsplit('/').next().unwrap_or("native");
-    let script = "cargo build --locked --release --no-default-features --bin brainiac-runner --target-dir /tmp/brainiac-target && cp /tmp/brainiac-target/release/brainiac-runner /out/brainiac-runner";
+    let script = "cargo build --locked --release --no-default-features --features runner --bin brainiac-runner --target-dir /tmp/brainiac-target && cp /tmp/brainiac-target/release/brainiac-runner /out/brainiac-runner";
     // A login shell (`bash -l`) resets PATH and drops the image's cargo.
     // The registry and the target folder are named volumes on this Mac's
     // engine, so the next build after a Brainiac update compiles only what

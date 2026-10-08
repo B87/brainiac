@@ -27,6 +27,10 @@ app = [
   "dep:tauri-plugin-notification",
   "dep:security-framework",
 ]
+# Builds the Linux `brainiac-runner` binary. Off by default so that the app's
+# bundle, which takes every binary built, does not look for a universal copy
+# of it: on this Mac the controller is `brainiac runner`.
+runner = []
 
 [build-dependencies]
 tauri-build = { version = "2", optional = true, features = [] }
@@ -87,6 +91,7 @@ required-features = ["app"]
 [[bin]]
 name = "brainiac-runner"
 path = "src/runner_main.rs"
+required-features = ["runner"]
 
 [profile.release]
 codegen-units = 1
