@@ -289,12 +289,24 @@ impl AgentHostService {
         }
 
         job.begin(at + WAIT);
-        if restart {
+        // A controller an earlier setup left running (this Mac's data was
+        // deleted, or another Mac installed it) is replaced like an upgrade:
+        // its runs are waited for, and the service is restarted, since
+        // starting a running service would leave the old program running.
+        let earlier = !restart && self.earlier_controller(id, &target).await?;
+        if restart || earlier {
             if let Err(e) = self.wait_for_no_live_run(id, &name, job, at + WAIT).await {
                 remove_upload(&target).await;
                 return Err(e);
             }
-            job.finish(at + WAIT, Some(format!("No run is live on {name}")));
+            job.finish(
+                at + WAIT,
+                Some(if earlier {
+                    format!("An earlier setup's controller is there; no run is live on {name}")
+                } else {
+                    format!("No run is live on {name}")
+                }),
+            );
         } else {
             job.finish(at + WAIT, Some("No controller there yet".to_string()));
         }
@@ -354,7 +366,11 @@ impl AgentHostService {
         // A run that started in the moment before this job took the host
         // is still there, and must not be restarted away.
         self.refuse_live(id).await?;
-        ssh::run("ssh", &ssh::ssh_args(&target, service_command(restart))).await?;
+        ssh::run(
+            "ssh",
+            &ssh::ssh_args(&target, service_command(restart || earlier)),
+        )
+        .await?;
         job.finish(
             at + INSTALL,
             Some(if restart {
@@ -378,9 +394,29 @@ impl AgentHostService {
         }
         self.write_token(id, &token)?;
         let runtime = self.runtime_for(&row, &token, "")?;
-        let info = runtime.running().await.ok_or_else(|| {
-            AppError::dependency("The host's run controller did not answer after install.")
-        })?;
+        let info = match runtime.answer().await {
+            Ok(info) => info,
+            Err(e) => {
+                // The service's own account of itself, for the job's log.
+                let status = ssh::run(
+                    "ssh",
+                    &ssh::ssh_args(
+                        &target,
+                        "sudo -n systemctl status brainiac-runner.service --no-pager -n 20 || true",
+                    ),
+                )
+                .await
+                .unwrap_or_default();
+                let mut details = format!("{}\n{}", e.message, e.details.unwrap_or_default());
+                if !status.trim().is_empty() {
+                    details.push_str(&format!("\n\n{}", status.trim()));
+                }
+                return Err(AppError::dependency(
+                    "The host's run controller did not answer after install.",
+                )
+                .with_details(details.trim().to_string()));
+            }
+        };
         let installation = info.installation;
         let protocol = info.protocol as i64;
         let build = runner_binary::current_build();
@@ -412,6 +448,35 @@ impl AgentHostService {
 
     /// Upgrade waits while a run is live, checking every few seconds, and
     /// stops waiting when the job is cancelled.
+    /// Whether the host already runs a controller Brainiac has no record
+    /// of. Its token is saved, so it can be asked whether a run is live.
+    async fn earlier_controller(&self, id: &str, target: &Target) -> AppResult<bool> {
+        let state = ssh::run(
+            "ssh",
+            &ssh::ssh_args(
+                target,
+                "systemctl is-active brainiac-runner.service || true",
+            ),
+        )
+        .await?;
+        if state.trim() != "active" {
+            return Ok(false);
+        }
+        let token = ssh::run(
+            "ssh",
+            &ssh::ssh_args(target, "sudo -n cat /var/lib/brainiac-runner/token"),
+        )
+        .await?;
+        let token = token.trim();
+        if token.is_empty() || token.contains('\n') {
+            return Err(AppError::dependency(
+                "A run controller is running on this host, and Brainiac could not read its token to ask whether a run is live.",
+            ));
+        }
+        self.write_token(id, token)?;
+        Ok(true)
+    }
+
     async fn wait_for_no_live_run(
         &self,
         id: &str,
@@ -658,14 +723,18 @@ impl AgentHostService {
             return Err(live_conflict());
         }
         let row = self.require(id).await?;
-        if row.installation.is_some() {
-            let runtime = self.connected(&row).await.map_err(|_| {
+        // A controller Brainiac installed, or one an earlier setup left that
+        // Install found (it saved that controller's token): it is asked
+        // whatever its protocol, since it is about to be replaced.
+        if row.installation.is_some() || self.read_token(id).is_ok() {
+            let cannot_tell = |e: AppError| {
                 AppError::dependency(
                     "This host's run controller did not answer, so Brainiac cannot tell whether a run is still live.",
                 )
-            })?;
-            let runs = runtime.runs().await?;
-            if live_run(&phases_of(&runs)) {
+                .with_details(format!("{}\n{}", e.message, e.details.unwrap_or_default()))
+            };
+            let runtime = self.connected(&row).await.map_err(cannot_tell)?;
+            if runtime.live_any_protocol().await.map_err(cannot_tell)? {
                 return Err(live_conflict());
             }
         }

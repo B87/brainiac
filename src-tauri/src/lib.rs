@@ -22,7 +22,9 @@ pub mod vault;
 pub mod watcher;
 pub mod workspaces;
 
+#[cfg(feature = "app")]
 use std::sync::Arc;
+#[cfg(feature = "app")]
 use std::time::Duration;
 
 #[cfg(feature = "app")]
@@ -663,6 +665,7 @@ fn quit(app: &tauri::AppHandle) {
 }
 
 /// Image types Live Preview shows from the vault.
+#[cfg(feature = "app")]
 const VAULT_IMAGE_TYPES: &[(&str, &str)] = &[
     ("png", "image/png"),
     ("jpg", "image/jpeg"),

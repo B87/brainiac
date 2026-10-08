@@ -27,6 +27,8 @@ const REMOTE_SOCKET: &str = "/var/lib/brainiac-runner/runner.sock";
 /// How long a newly started controller has to answer.
 const START_WAIT: Duration = Duration::from_secs(10);
 const RETRY_EVERY: Duration = Duration::from_millis(100);
+/// How long a remote service just started has to answer.
+const SERVICE_START: Duration = Duration::from_secs(20);
 /// Requests answer at once; only a long poll for events waits.
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 /// A collection hashes the whole working tree and copies the result out.
@@ -448,8 +450,70 @@ impl RunRuntime {
         }
     }
 
-    /// Open the SSH forward and check the installation and protocol.
+    /// A remote controller just installed or restarted: ask until it
+    /// answers, for a little while, and say why it did not.
+    pub async fn answer(&self) -> AppResult<ControllerInfo> {
+        let deadline = tokio::time::Instant::now() + SERVICE_START;
+        loop {
+            match self.connect_remote().await {
+                Ok((_, info)) => return Ok(info),
+                Err(e) if tokio::time::Instant::now() >= deadline => return Err(e),
+                Err(_) => tokio::time::sleep(Duration::from_secs(1)).await,
+            }
+        }
+    }
+
+    /// Open the SSH forward and check the installation and protocol. What
+    /// ssh says goes to a log beside the forward's socket, so a failure can
+    /// say why (a refused forward, a socket the SSH user cannot open).
     async fn connect_remote(&self) -> AppResult<(Connection, ControllerInfo)> {
+        self.connect_remote_as(false).await
+    }
+
+    /// Whether a run is live on a remote controller of any protocol, before
+    /// Install or Upgrade replaces it. Only each run's phase is read from the
+    /// answer, so a controller older than this Brainiac can still say.
+    pub async fn live_any_protocol(&self) -> AppResult<bool> {
+        let (mut connection, _) = self.connect_remote_as(true).await?;
+        let answer = connection
+            .call_raw(&Request::Status, self.call_timeout)
+            .await?;
+        let runs = answer
+            .get("runs")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(unexpected)?;
+        Ok(runs
+            .iter()
+            .any(|run| run.get("phase").and_then(serde_json::Value::as_str) != Some("ended")))
+    }
+
+    async fn connect_remote_as(
+        &self,
+        any_protocol: bool,
+    ) -> AppResult<(Connection, ControllerInfo)> {
+        let Link::Remote { forward, .. } = &self.link else {
+            return Err(AppError::dependency("This run is not on a remote host."));
+        };
+        let log = forward.with_extension("log");
+        self.open_remote(&log, any_protocol)
+            .await
+            .map_err(|e| match ssh_said(&log) {
+                Some(said) => {
+                    let details = match e.details.as_deref() {
+                        Some(d) => format!("{d}\nssh: {said}"),
+                        None => format!("ssh: {said}"),
+                    };
+                    e.with_details(details)
+                }
+                None => e,
+            })
+    }
+
+    async fn open_remote(
+        &self,
+        log: &Path,
+        any_protocol: bool,
+    ) -> AppResult<(Connection, ControllerInfo)> {
         let Link::Remote {
             target,
             token,
@@ -463,12 +527,15 @@ impl RunRuntime {
         // `create_dir_all` would leave that folder open.
         crate::mcp::prepare_socket_dir(forward)?;
         let args = crate::machines::ssh::forward_args(target, forward, REMOTE_SOCKET);
+        let stderr = std::fs::File::create(log).map_err(|e| {
+            AppError::io("The SSH forward's log could not be made.").with_details(e.to_string())
+        })?;
         use std::os::unix::process::CommandExt;
         let child = std::process::Command::new("ssh")
             .args(&args)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stderr(stderr)
             .process_group(0)
             .spawn()
             .map_err(|e| {
@@ -504,7 +571,7 @@ impl RunRuntime {
                 build,
                 pid,
             } => {
-                if protocol != PROTOCOL {
+                if protocol != PROTOCOL && !any_protocol {
                     return Err(AppError::dependency(
                         "The host's run controller speaks another protocol.",
                     ));
@@ -839,6 +906,17 @@ struct Forward {
     child: std::process::Child,
 }
 
+/// The end of what ssh wrote while it held a forward, if anything.
+fn ssh_said(log: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(log).ok()?;
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let start = text.char_indices().rev().nth(1999).map_or(0, |(i, _)| i);
+    Some(text[start..].to_string())
+}
+
 impl Drop for Forward {
     fn drop(&mut self) {
         let pid = self.child.id() as i32;
@@ -861,6 +939,35 @@ struct Connection {
 }
 
 impl Connection {
+    /// One request, its answer read as JSON whatever its shape: for a
+    /// controller of another protocol.
+    async fn call_raw(
+        &mut self,
+        request: &Request,
+        timeout: Duration,
+    ) -> AppResult<serde_json::Value> {
+        let exchange = async {
+            write_line(&mut self.writer, request).await?;
+            let line = read_line(&mut self.reader, MAX_LINE_BYTES)
+                .await?
+                .ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "the controller closed the connection",
+                    )
+                })?;
+            serde_json::from_slice::<serde_json::Value>(&line).map_err(std::io::Error::other)
+        };
+        match tokio::time::timeout(timeout, exchange).await {
+            Ok(Ok(value)) => Ok(value),
+            Ok(Err(e)) => Err(
+                AppError::dependency("The run controller could not be reached.")
+                    .with_details(e.to_string()),
+            ),
+            Err(_) => Err(AppError::timeout("The run controller did not answer.")),
+        }
+    }
+
     async fn call(&mut self, request: &Request, timeout: Duration) -> AppResult<Response> {
         let exchange = async {
             write_line(&mut self.writer, request).await?;
