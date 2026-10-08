@@ -245,7 +245,7 @@ impl Harness {
                 permissions,
                 time_limit_minutes: 60,
                 cpus: 2,
-                memory_mib: 2048,
+                memory_mib: 3072,
                 workspace_gib: 20,
                 model: model.into(),
                 host_id: String::new(),
@@ -304,6 +304,28 @@ impl Harness {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         panic!("turn {turn} did not end in the journal");
+    }
+}
+
+impl Harness {
+    /// Another app on the same data folder, as after quitting and reopening.
+    async fn reopened(&self) -> Arc<AgentRunService> {
+        let data = self.data();
+        AgentRunService::new(
+            Db::open_store(&data.join(db::HISTORY_FILE), &db::HISTORY).unwrap(),
+            Arc::clone(&self.settings),
+            Arc::new(CredentialService::new(
+                Arc::new(MemoryStore::default()),
+                CommandRunner::new(data.join("commands")),
+            )),
+            Arc::new(RunArtifacts::new(
+                Some(GitService::detect().await.unwrap()),
+                &data,
+            )),
+            Arc::new(self.runtime()),
+            Arc::new(Repos(self.tmp.path().join("repo"))),
+            Arc::new(|_| {}),
+        )
     }
 }
 
@@ -1004,4 +1026,51 @@ async fn an_opencode_run_gets_its_provider_key_model_and_permissions() {
         run.model_used.as_deref(),
         Some("openrouter/anthropic/claude-sonnet-5-5")
     );
+}
+
+/// The app crashed after appending events to its copy of the journal but
+/// before moving the run's cursor: the controller sends them again, and they
+/// are neither written nor shown twice.
+#[tokio::test]
+async fn events_mirrored_again_after_a_crash_are_kept_once() {
+    let h = Harness::new().await;
+    let run = h.start("edit", RunPermissions::Act).await;
+    let run = h.wait(&run.id, "the first turn ends", idle).await;
+    h.reply(&run.id, 1).await;
+    let run = h.runs.get(&run.id).await.unwrap();
+    let trace = h
+        .data()
+        .join("agent-runs")
+        .join(&run.id)
+        .join("trace.jsonl");
+    let mirrored = std::fs::read_to_string(&trace).unwrap();
+    let count = mirrored.lines().count();
+    assert!(count > 3);
+    // An older build's double append, and a cursor that never moved.
+    let mut doubled = mirrored.clone();
+    doubled.push_str(mirrored.lines().last().unwrap());
+    doubled.push('\n');
+    std::fs::write(&trace, &doubled).unwrap();
+    rusqlite::Connection::open(h.data().join(db::HISTORY_FILE))
+        .unwrap()
+        .execute("UPDATE agent_runs SET cursor = 2 WHERE id = ?1", [&run.id])
+        .unwrap();
+
+    let reopened = h.reopened().await;
+    let seqs = |events: &[brainiac_lib::models::RunEvent]| -> Vec<u64> {
+        events.iter().map(|e| e.seq).collect()
+    };
+    let events = reopened.events(&run.id, 0).await.unwrap().events;
+    assert_eq!(seqs(&events), (1..=count as u64).collect::<Vec<_>>());
+    reopened.reconnect().await;
+    for _ in 0..500 {
+        if reopened.get(&run.id).await.unwrap().cursor == run.cursor {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(reopened.get(&run.id).await.unwrap().cursor, run.cursor);
+    assert_eq!(std::fs::read_to_string(&trace).unwrap(), doubled);
+    let events = reopened.events(&run.id, 0).await.unwrap().events;
+    assert_eq!(seqs(&events), (1..=count as u64).collect::<Vec<_>>());
 }

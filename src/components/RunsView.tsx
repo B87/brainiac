@@ -911,13 +911,12 @@ function RunCards({
         title={run.error ?? "The run failed"}
       >
         <p className="m-0">
-          The agent's work so far is kept. A run can't take a new token or key,
-          so collect this one
-          {credential ? ", update the credential in Settings," : ","} and start
-          a new run.
+          The agent's work so far is kept, and Brainiac collects it once the
+          run's host answers. A run can't take a new token or key
+          {credential ? ", so update the credential in Settings and" : ", so"}{" "}
+          start a new run.
         </p>
         <div className="flex flex-wrap gap-2">
-          {collectButtons}
           {credential && (
             <button
               type="button"
@@ -931,18 +930,19 @@ function RunCards({
       </RunCard>,
     );
   } else if (uncollected && run.stop_confirmed) {
+    // Brainiac collects every run that was not interrupted on its own; Collect
+    // work here would only race it.
     cards.push(
       <RunCard
         key="kept"
         tone="grey"
-        badge="Not collected"
-        title="The agent's work is kept, not collected"
+        badge="Not collected yet"
+        title="Brainiac collects the agent's work"
       >
         <p className="m-0">
-          {run.error ? `${run.error} ` : ""}The stopped container and its files
-          stay until you collect or discard them.
+          {run.error ? `${run.error} ` : ""}It starts as soon as the run's host
+          answers; the stopped container and its files are kept until then.
         </p>
-        <div className="flex flex-wrap gap-2">{collectButtons}</div>
       </RunCard>,
     );
   } else if (

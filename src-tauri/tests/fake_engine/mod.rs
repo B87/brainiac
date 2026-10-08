@@ -403,6 +403,26 @@ pub async fn fake_agent(
                         .unwrap();
                         say(update("edited")).await;
                         say(json!({ "jsonrpc": "2.0", "id": id, "result": { "stopReason": "end_turn" } })).await;
+                    } else if text.contains("odd files") {
+                        // What a text diff gets wrong: bytes that are not
+                        // text, a link, executable bits (on a new file and
+                        // as the only change to a tracked one), and the
+                        // ignore file deleted with an ignored file made.
+                        std::fs::write(work.join("data.bin"), [0u8, 159, 146, 150, 0, 255, 10])
+                            .unwrap();
+                        std::os::unix::fs::symlink("readme.txt", work.join("link")).unwrap();
+                        std::fs::write(work.join("run.sh"), "#!/bin/sh\necho hi\n").unwrap();
+                        for file in ["run.sh", "readme.txt"] {
+                            std::fs::set_permissions(
+                                work.join(file),
+                                std::os::unix::fs::PermissionsExt::from_mode(0o755),
+                            )
+                            .unwrap();
+                        }
+                        std::fs::remove_file(work.join(".gitignore")).unwrap();
+                        std::fs::write(work.join("debug.log"), "noise\n").unwrap();
+                        say(update("made odd files")).await;
+                        say(json!({ "jsonrpc": "2.0", "id": id, "result": { "stopReason": "end_turn" } })).await;
                     } else if text.contains("echo-secret") {
                         let (a, b) = key.split_at(10);
                         say(update(&format!("the key is {a}"))).await;

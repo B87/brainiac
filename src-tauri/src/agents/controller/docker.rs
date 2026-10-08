@@ -407,6 +407,45 @@ impl DockerEngine {
     }
 }
 
+/// A helper's container, removed once it has ended. A cancelled launch drops
+/// the helper's future before `now` runs; dropping this then removes the
+/// container on a task of its own, since `drop` cannot wait.
+struct RemoveOnDrop {
+    docker: Docker,
+    id: Option<String>,
+}
+
+impl RemoveOnDrop {
+    fn id(&self) -> &str {
+        self.id.as_deref().unwrap_or_default()
+    }
+
+    async fn now(mut self) {
+        if let Some(id) = self.id.take() {
+            remove_forced(&self.docker, &id).await;
+        }
+    }
+}
+
+impl Drop for RemoveOnDrop {
+    fn drop(&mut self) {
+        let Some(id) = self.id.take() else { return };
+        let docker = self.docker.clone();
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move { remove_forced(&docker, &id).await });
+        }
+    }
+}
+
+async fn remove_forced(docker: &Docker, id: &str) {
+    let _ = docker
+        .remove_container(
+            id,
+            Some(RemoveContainerOptionsBuilder::new().force(true).build()),
+        )
+        .await;
+}
+
 impl DockerEngine {
     /// Run a short shell script in a privileged helper container of the
     /// run's image, with the workspace store mounted at `/store`, and return
@@ -495,14 +534,12 @@ impl DockerEngine {
                     e,
                 )
             })?;
-        let id = created.id;
-        let result = self.run_helper(docker, &id).await;
-        let _ = docker
-            .remove_container(
-                &id,
-                Some(RemoveContainerOptionsBuilder::new().force(true).build()),
-            )
-            .await;
+        let remove = RemoveOnDrop {
+            docker: docker.clone(),
+            id: Some(created.id),
+        };
+        let result = self.run_helper(docker, remove.id()).await;
+        remove.now().await;
         result
     }
 

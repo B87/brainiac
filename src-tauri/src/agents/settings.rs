@@ -41,8 +41,8 @@ const AGEING_DAYS: i64 = 335;
 /// New run's time limit, in minutes: 30 minutes to 8 hours (SPEC.md, New run).
 pub const TIME_LIMIT_MINUTES: (u32, u32) = (30, 480);
 pub const CPUS: (u32, u32) = (1, 64);
-/// The agents need a few GiB to run at all.
-pub const MEMORY_MIB: (u32, u32) = (2048, 256 * 1024);
+/// The agents need a few GiB to run at all: the spike's Claude Code container needed 3 GiB.
+pub const MEMORY_MIB: (u32, u32) = (3072, 256 * 1024);
 pub const WORKSPACE_GIB: (u32, u32) = (1, 500);
 
 /// The credential owner key of a profile, which is also its Keychain account.

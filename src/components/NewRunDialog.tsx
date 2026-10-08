@@ -522,7 +522,7 @@ export default function NewRunDialog({
             <Num
               label="Memory (GB)"
               value={memoryGb}
-              min={2}
+              min={3}
               max={256}
               onChange={setMemoryGb}
             />

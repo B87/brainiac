@@ -761,7 +761,7 @@ A coding agent run in a container, started from a repository, followed live, ste
 - **Collecting** snapshots the agent's working tree, including edits it never committed: staged and unstaged changes, new files, binary files, symbolic links (as links), executable bits, and deletions. It is compared with the start commit as one new commit on top of it; the agent's own commits are not kept as history.
 - **Left out:** new files that the start commit's ignore rules or Brainiac's fixed rules exclude (generated output, caches, Git's own data, home folders). Review lists them with the reason; **Choose files to add…** collects again with the chosen regular files, and **Keep this snapshot** accepts the list. Until one of them, or a patch export or Copy branch command that confirms the same list, the stopped container is kept.
 - **Interrupted** (the engine, the container, or the run controller stopped unexpectedly): the container is stopped and kept with its files; only Discard removes them. The conversation cannot continue; **Collect work** collects it for review. Updates after the last one recorded may be missing.
-- **Collection failed:** nothing is removed from the engine; the stopped container and its files are kept, with the reason ("over the 200 MB limit for one file", or that the run's workspace is not on the engine), **Retry collection**, **Export files…**, and **Discard work…**.
+- **Collection failed:** nothing is removed from the engine; the stopped container and its files are kept, with the reason ("over the 200 MB limit for one file", or that the run's workspace is not on the engine), **Retry collection** and **Discard work…**. Exporting the files of a failed collection follows in 0.5.x.
 
 ### Review
 

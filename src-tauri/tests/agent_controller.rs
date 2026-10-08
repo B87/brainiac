@@ -1258,6 +1258,72 @@ async fn a_finished_run_is_collected_as_one_snapshot_on_the_start() {
     std::fs::set_permissions(&secret, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
 }
 
+/// What a text diff gets wrong survives collection: bytes that are not
+/// text, a symbolic link (as a link), executable bits, and a deleted ignore
+/// file, after which new files still follow the start's ignore rules.
+#[tokio::test]
+async fn binary_files_links_modes_and_a_deleted_ignore_file_are_collected() {
+    let h = Harness::new().await;
+    h.start("run-1", "odd files", RunPermissions::Act).await;
+    h.wait("run-1", "the turn ends", idle).await;
+    h.runtime.stop("run-1", StopReason::Finish).await.unwrap();
+    h.wait("run-1", "the stop is confirmed", |s| {
+        ended(s) && s.stop_confirmed
+    })
+    .await;
+    let out = h.tmp.path().join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    let manifest = h
+        .runtime
+        .collect("run-1", Vec::new(), &out, None)
+        .await
+        .unwrap();
+    // data.bin, link, run.sh new; readme.txt's mode; .gitignore deleted.
+    assert_eq!(manifest.changed_files, 5);
+    let left: Vec<(&str, &str)> = manifest
+        .left_out
+        .iter()
+        .map(|l| (l.path.as_str(), l.reason.as_str()))
+        .collect();
+    assert_eq!(left.len(), 1, "{left:?}");
+    assert_eq!(left[0].0, "debug.log");
+    assert!(left[0].1.contains("*.log"), "{left:?}");
+
+    let bundle = out.join("result.bundle");
+    git(
+        &h.repo,
+        &[
+            "fetch",
+            "-q",
+            bundle.to_str().unwrap(),
+            "refs/heads/result:refs/heads/result",
+        ],
+    );
+    let bytes = std::process::Command::new("git")
+        .args(["cat-file", "blob", "result:data.bin"])
+        .current_dir(&h.repo)
+        .output()
+        .unwrap()
+        .stdout;
+    assert_eq!(bytes, [0u8, 159, 146, 150, 0, 255, 10]);
+    let tree = git(&h.repo, &["ls-tree", "result"]);
+    let mode = |name: &str| {
+        tree.lines()
+            .find(|l| l.ends_with(&format!("\t{name}")))
+            .map(|l| l.split(' ').next().unwrap().to_string())
+    };
+    assert_eq!(mode("link").as_deref(), Some("120000"));
+    assert_eq!(
+        git(&h.repo, &["cat-file", "blob", "result:link"]),
+        "readme.txt"
+    );
+    assert_eq!(mode("run.sh").as_deref(), Some("100755"));
+    assert_eq!(mode("readme.txt").as_deref(), Some("100755"));
+    assert_eq!(git(&h.repo, &["show", "result:readme.txt"]), "start");
+    assert_eq!(mode(".gitignore"), None);
+    assert_eq!(mode("debug.log"), None);
+}
+
 /// One host that accepts a connection and never answers does not delay
 /// another host's status. Each runtime has its own timeout.
 #[tokio::test]
@@ -1296,4 +1362,106 @@ async fn a_stuck_host_does_not_block_another() {
         "the stuck host held the other for {:?}",
         started.elapsed()
     );
+}
+
+/// Runs reconnecting together after the app opens start one controller: the
+/// others wait for it instead of starting their own, which would wait on the
+/// controller's lock, then fail and replace its `runner.log`.
+#[tokio::test]
+async fn runs_reconnecting_together_start_one_controller() {
+    let tmp = tempfile::tempdir().unwrap();
+    // A short folder: a socket path is limited to 104 bytes.
+    let dir = tmp.path().join("c");
+    let state = StateDir::new(dir.clone());
+    let runtime = std::sync::Arc::new(RunRuntime::launching_from(
+        state,
+        dir.join("runner.sock"),
+        PathBuf::from(env!("CARGO_BIN_EXE_brainiac-runner")),
+    ));
+    let calls: Vec<_> = (0..8)
+        .map(|_| {
+            let runtime = runtime.clone();
+            tokio::spawn(async move { runtime.runs().await })
+        })
+        .collect();
+    let mut answers = Vec::new();
+    for call in calls {
+        answers.push(call.await.unwrap());
+    }
+    // Controllers (not their guard) started for this folder.
+    let pattern = format!("runner --state {}", dir.display());
+    let started = std::process::Command::new("pgrep")
+        .args(["-f", &pattern])
+        .output()
+        .unwrap();
+    let started = String::from_utf8_lossy(&started.stdout).lines().count();
+    // Stopped before the assertions, so a failure leaves no process behind.
+    let _ = std::process::Command::new("pkill")
+        .args(["-f", &dir.display().to_string()])
+        .status();
+    for answer in answers {
+        assert!(answer.unwrap().is_empty());
+    }
+    assert_eq!(started, 1, "controllers started");
+}
+
+/// A host's controller from an earlier Brainiac, on a socket of its own: it
+/// welcomes any Hello with its older protocol and lists its runs in that
+/// protocol's shape.
+fn older_controller(socket: PathBuf, runs: Value) -> tokio::task::JoinHandle<()> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let runs = runs.clone();
+            tokio::spawn(async move {
+                let (read, mut write) = stream.into_split();
+                let mut lines = BufReader::new(read).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let request: Value = serde_json::from_str(&line).unwrap();
+                    let answer = match request["op"].as_str() {
+                        Some("hello") => json!({
+                            "op": "welcome", "protocol": 2, "installation": "install-1",
+                            "build": "0.4.0", "pid": 1
+                        }),
+                        Some("status") => json!({ "op": "runs", "runs": runs }),
+                        _ => return,
+                    };
+                    let _ = write.write_all(format!("{answer}\n").as_bytes()).await;
+                }
+            });
+        }
+    })
+}
+
+/// Upgrade across a protocol change: everyday requests refuse a host's older
+/// controller, but the check before replacing it still reads which of its
+/// runs are live, from the run phases alone.
+#[tokio::test]
+async fn upgrade_reads_live_runs_from_a_controller_of_an_older_protocol() {
+    let tmp = tempfile::tempdir().unwrap();
+    let live = tmp.path().join("live.sock");
+    let idle = tmp.path().join("idle.sock");
+    // Fields this build no longer knows, and none of the ones it added.
+    let live_server = older_controller(
+        live.clone(),
+        json!([
+            { "run_id": "a", "phase": "ended", "retired_field": 1 },
+            { "run_id": "b", "phase": "running", "retired_field": 2 },
+        ]),
+    );
+    let idle_server = older_controller(
+        idle.clone(),
+        json!([{ "run_id": "a", "phase": "ended", "retired_field": 1 }]),
+    );
+    let host = |socket: &PathBuf| {
+        RunRuntime::remote_direct(socket.clone(), "token".into(), "install-1".into())
+    };
+
+    let refused = host(&live).runs().await.unwrap_err();
+    assert!(refused.message.contains("another protocol"), "{refused:?}");
+    assert!(host(&live).live_any_protocol().await.unwrap());
+    assert!(!host(&idle).live_any_protocol().await.unwrap());
+    live_server.abort();
+    idle_server.abort();
 }

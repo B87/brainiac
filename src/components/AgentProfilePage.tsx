@@ -288,7 +288,7 @@ export default function AgentProfilePage({
             label="Memory"
             value={profile.memory_mib / 1024}
             format={String}
-            parse={(t) => parseInRange(t, 2, 256)}
+            parse={(t) => parseInRange(t, 3, 256)}
             onCommit={(gb) => save({ memory_mib: gb * 1024 })}
             unit="GB"
             width={70}

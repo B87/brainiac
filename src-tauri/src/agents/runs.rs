@@ -327,11 +327,15 @@ impl AgentRunService {
             let text = tokio::task::spawn_blocking(move || std::fs::read_to_string(&path))
                 .await
                 .map_err(|e| AppError::io(e.to_string()))?;
-            let mut loaded = Vec::new();
+            let mut loaded: Vec<RunEvent> = Vec::new();
             if let Ok(text) = text {
                 for line in text.lines() {
                     if let Ok(event) = serde_json::from_str::<RunEvent>(line) {
-                        loaded.push(event);
+                        // A file an older build appended twice after a crash
+                        // repeats events: each is read once.
+                        if loaded.last().is_none_or(|last| event.seq > last.seq) {
+                            loaded.push(event);
+                        }
                     }
                 }
             }
@@ -1023,7 +1027,9 @@ impl AgentRunService {
     }
 
     /// Append events to `trace.jsonl`, then advance the row's cursor: the
-    /// cursor moves only after the Mac's own copy is on disk.
+    /// cursor moves only after the Mac's own copy is on disk. After a crash
+    /// between the two, the controller sends again what the file has; those
+    /// events are not written twice.
     async fn mirror(
         &self,
         run_id: &str,
@@ -1046,6 +1052,12 @@ impl AgentRunService {
         let Some(last) = converted.last().map(|e| e.seq) else {
             return Ok(());
         };
+        let journal = self.journal(run_id).await?;
+        let known = {
+            let journal = journal.lock().unwrap_or_else(|p| p.into_inner());
+            journal.events.last().map(|e| e.seq).unwrap_or(0)
+        };
+        let converted: Vec<RunEvent> = converted.into_iter().filter(|e| e.seq > known).collect();
         let path = self.trace_path(run_id);
         let lines: Vec<String> = converted
             .iter()
@@ -1069,7 +1081,6 @@ impl AgentRunService {
         })
         .await
         .map_err(|e| AppError::io(e.to_string()))??;
-        let journal = self.journal(run_id).await?;
         {
             let mut journal = journal.lock().unwrap_or_else(|p| p.into_inner());
             let known = journal.events.last().map(|e| e.seq).unwrap_or(0);

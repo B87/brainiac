@@ -53,6 +53,8 @@ enum Link {
         socket: PathBuf,
         /// Start `brainiac runner` when no controller answers.
         launch: bool,
+        /// The executable to start instead of this one (tests).
+        runner: Option<PathBuf>,
     },
     /// A host's controller, through an SSH stream-local forward. The SSH
     /// process is only the transport (SPEC.md, Remote hosts).
@@ -62,6 +64,8 @@ enum Link {
         /// Empty until Deploy has recorded the installation.
         installation: String,
         forward: PathBuf,
+        /// Open the SSH forward first; tests reach a socket directly.
+        tunnel: bool,
     },
 }
 
@@ -70,6 +74,10 @@ pub struct RunRuntime {
     /// How long a request may wait. Tests use a short one so a stuck host
     /// does not hold the suite.
     call_timeout: Duration,
+    /// Held while the local controller is being started, so runs
+    /// reconnecting together start it once. Tokio's `Mutex` can be held
+    /// across an `.await`, which the standard library's cannot.
+    launching: tokio::sync::Mutex<()>,
 }
 
 impl RunRuntime {
@@ -82,8 +90,10 @@ impl RunRuntime {
                 state,
                 socket,
                 launch: true,
+                runner: None,
             },
             call_timeout: CALL_TIMEOUT,
+            launching: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -94,8 +104,25 @@ impl RunRuntime {
                 state,
                 socket,
                 launch: false,
+                runner: None,
             },
             call_timeout: CALL_TIMEOUT,
+            launching: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    /// Started from `runner` (`brainiac`'s executable) when none answers
+    /// (tests, whose own executable is not the app).
+    pub fn launching_from(state: StateDir, socket: PathBuf, runner: PathBuf) -> Self {
+        Self {
+            link: Link::Local {
+                state,
+                socket,
+                launch: true,
+                runner: Some(runner),
+            },
+            call_timeout: CALL_TIMEOUT,
+            launching: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -113,8 +140,31 @@ impl RunRuntime {
                 token,
                 installation,
                 forward,
+                tunnel: true,
             },
             call_timeout: CALL_TIMEOUT,
+            launching: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    /// A remote controller's socket reached without SSH (tests).
+    pub fn remote_direct(socket: PathBuf, token: String, installation: String) -> Self {
+        Self {
+            link: Link::Remote {
+                target: crate::machines::ssh::Target {
+                    user: String::new(),
+                    host: String::new(),
+                    port: 22,
+                    identity: None,
+                    known_hosts: PathBuf::new(),
+                },
+                token,
+                installation,
+                forward: socket,
+                tunnel: false,
+            },
+            call_timeout: CALL_TIMEOUT,
+            launching: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -146,7 +196,20 @@ impl RunRuntime {
                 .map(|(connection, _)| connection);
         }
         let (_, _, launch) = self.local();
-        match self.try_connect().await {
+        let mut found = self.try_connect().await;
+        // One caller starts the controller; the others wait here and then
+        // find it running. A second start would wait on the controller's
+        // lock, then fail and replace the first one's `runner.log`. The
+        // guard releases the lock when it goes out of scope.
+        let _launching = if launch && !matches!(&found, Ok((_, info)) if info.protocol == PROTOCOL)
+        {
+            let guard = self.launching.lock().await;
+            found = self.try_connect().await;
+            Some(guard)
+        } else {
+            None
+        };
+        match found {
             Ok((connection, info)) if info.protocol == PROTOCOL => return Ok(connection),
             Ok((mut connection, _)) => {
                 if !matches!(
@@ -196,6 +259,7 @@ impl RunRuntime {
                 state,
                 socket,
                 launch,
+                ..
             } => (state, socket, *launch),
             Link::Remote { .. } => unreachable!("a remote runtime has no local controller"),
         }
@@ -270,7 +334,13 @@ impl RunRuntime {
             .truncate(true)
             .mode(0o600)
             .open(state.log_path())?;
-        let (exe, mut args) = super::controller::runner_command()?;
+        let (exe, mut args) = match &self.link {
+            Link::Local {
+                runner: Some(runner),
+                ..
+            } => (runner.clone(), vec!["runner".to_string()]),
+            _ => super::controller::runner_command()?,
+        };
         args.extend([
             "--state".into(),
             state.root().display().to_string(),
@@ -519,29 +589,34 @@ impl RunRuntime {
             token,
             installation,
             forward,
+            tunnel,
         } = &self.link
         else {
             return Err(AppError::dependency("This run is not on a remote host."));
         };
-        // The `/tmp` fallback must be this user's and closed to others.
-        // `create_dir_all` would leave that folder open.
-        crate::mcp::prepare_socket_dir(forward)?;
-        let args = crate::machines::ssh::forward_args(target, forward, REMOTE_SOCKET);
-        let stderr = std::fs::File::create(log).map_err(|e| {
-            AppError::io("The SSH forward's log could not be made.").with_details(e.to_string())
-        })?;
-        use std::os::unix::process::CommandExt;
-        let child = std::process::Command::new("ssh")
-            .args(&args)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(stderr)
-            .process_group(0)
-            .spawn()
-            .map_err(|e| {
-                AppError::dependency("SSH could not be started.").with_details(e.to_string())
+        let held = if *tunnel {
+            // The `/tmp` fallback must be this user's and closed to others.
+            // `create_dir_all` would leave that folder open.
+            crate::mcp::prepare_socket_dir(forward)?;
+            let args = crate::machines::ssh::forward_args(target, forward, REMOTE_SOCKET);
+            let stderr = std::fs::File::create(log).map_err(|e| {
+                AppError::io("The SSH forward's log could not be made.").with_details(e.to_string())
             })?;
-        let held = Forward { child };
+            use std::os::unix::process::CommandExt;
+            let child = std::process::Command::new("ssh")
+                .args(&args)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(stderr)
+                .process_group(0)
+                .spawn()
+                .map_err(|e| {
+                    AppError::dependency("SSH could not be started.").with_details(e.to_string())
+                })?;
+            Some(Forward { child })
+        } else {
+            None
+        };
         let deadline = tokio::time::Instant::now() + crate::machines::ssh::CONNECT_TIMEOUT;
         let stream = loop {
             if tokio::time::Instant::now() >= deadline {
@@ -558,7 +633,7 @@ impl RunRuntime {
         let mut connection = Connection {
             reader: BufReader::new(read),
             writer: write,
-            forward: Some(held),
+            forward: held,
         };
         let hello = Request::Hello {
             token: token.clone(),
