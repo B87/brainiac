@@ -41,9 +41,60 @@ Agents now write a growing share of the code (v0.5), and a diff shows what chang
 
 No code: ordinary runs on this repository with a prompt that asks for `explanation.json`, over about five commits of different sizes, with Claude Code and with OpenCode. Score every note by hand (correct, useful, grounded) and record the time and cost. It decides the prompt, the schema, the default time limit, and whether the result teaches.
 
+### Spike, first round (8 October 2026)
+
+Claude Code only, run as the headless `claude -p` on a fresh clone of this repository checked out at each commit, not yet as a Brainiac run: no container, so the times below leave out its start and the image. The agent could read files, search, and run `git`, and write only the explanation. Five commits of different sizes, each with Opus 5.5 (Claude Code's default) and with Sonnet 5.5. Costs are what Claude Code reported for the run; on a Claude subscription they are notional.
+
+The prompt, with the commit in place of `<SHA>`:
+
+```
+Explain commit <SHA> of this repository (checked out at that commit) to a reader who is new to Rust and comfortable with TypeScript. Do not edit any file except the one named below.
+
+Read whatever you need: the diff (git show <SHA>), callers and definitions, SPEC.md, docs/architecture.md (especially its Decisions), and git history.
+
+Write .brainiac/explanation.json, a single JSON object with:
+- "summary": 2–4 sentences on why the change exists, not only what moved.
+- "sources_read": the files and doc sections you relied on.
+- "tour": the changed files in reading order (the rule, then the fix, then its helpers, then bookkeeping), each {"path", "role"}.
+- "notes": each {"path", "new_start", "new_end", "text", "sources": [{"path", "start", "end", "quote"}]}. new_start/new_end are line numbers on the NEW side of the diff, inside a changed hunk. Each quote is copied verbatim from that file at this commit, and lies within start..end.
+- "concepts": ideas the change relies on, each {"name", "kind": "language"|"library"|"system"|"project-pattern", "explanation", "appears": [{"path", "line"}]}.
+- "questions": 2–3 {"question", "answer"} that check understanding.
+- "disagreements": only where code and docs conflict, each {"claim", "code": {"path","start","end","quote"}, "doc": {"path","start","end","quote"}}. Empty array if none.
+
+Every claim must cite a source. If you cannot quote it verbatim, leave the claim out.
+```
+
+Each file was then checked the way Brainiac would check it: every key present; each note's lines inside a changed hunk on the new side; each quote found verbatim within its cited lines at that commit (or, failing that, elsewhere in the file); each concept's location an existing line; every tour file part of the change.
+
+| Commit | Change | Opus: time, cost | Sonnet: time, cost | Notes O / S | Quotes O / S | Concepts O / S | Disagreements O / S |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `5a98929` | 3 files, +12/−3 | 79 s, $0.49 | 42 s, $0.18 | 5 / 5 | 13 / 6 | 7 / 4 | 0 / 0 |
+| `29bbc56` | 4 files, +35/−11 | 118 s, $0.68 | 61 s, $0.22 | 6 / 6 | 15 / 9 | 7 / 6 | 1 / 0 |
+| `4aae4b2` | 6 files, +87/−24 | 142 s, $0.77 | 54 s, $0.22 | 11 / 8 | 30 / 9 | 10 / 6 | 0 / 0 |
+| `287bdc9` | 5 files, +196/−17 | 250 s, $1.53 | 90 s, $0.37 | 14 / 12 | 38 / 18 | 13 / 8 | 1 / 1 |
+| `7edf3c2` | 14 files, +726/−239 | 231 s, $1.50 | 110 s, $0.52 | 23 / 16 | 46 / 26 | 11 / 7 | 0 / 0 |
+| **Total** | | **$4.97** | **$1.51** | 59 / 47 | 142 / 68 | 48 / 31 | 2 / 1 |
+
+What it showed:
+
+- **Both models follow the schema.** Every file parsed with every key, and every tour covered every changed file in a sensible order. The runs left the clone's tracked files unchanged.
+- **Opus passed every check.** All 59 notes were inside changed lines and all 142 quotes were verbatim at their cited lines, so a follow-up turn would never have been needed. Sonnet failed two checks in five runs: one note anchored to unchanged lines (`5a98929`), and one quote verbatim but cited at the wrong lines (`4aae4b2`).
+- **Disagreements are worth having.** Both of Opus's were real, and both docs were still out of date at the time of the spike: `architecture.md` said a pasted token has only its line breaks removed (`29bbc56`), and that a protocol mismatch is always a failure (`287bdc9`). Sonnet found the second and missed the first. One Opus note on `287bdc9` also found a small bug: Install over an earlier controller restarts the service but reports "the service started".
+- **Sonnet is thinner, not wrong.** Its summaries, reading order, and questions were accurate and taught. It cited about 1.4 quotes per note against Opus's 2.4, gave fewer concepts, and caught less.
+- **Cost follows what the agent reads** (files opened, turns) more than the size of the diff.
+- **The checks cannot judge correctness or usefulness.** They prove that a note sits on the change and that its quotes exist, not that its claim is right. That still needs the hand scoring.
+
+What it suggests for the build (not yet decided):
+
+- The model follows the depth: Sonnet for Brief and Teach me, Opus for Deep, with an override in Settings → Explanations.
+- The checker repairs what it can before a follow-up turn: a quote found verbatim elsewhere in its file is re-anchored there rather than reported. A note outside the changed lines still costs the follow-up turn, or is dropped.
+- A default time limit of about 5 minutes for Sonnet and 10 for Opus, until runs in a container are timed.
+
+Left for the spike: scoring every note by hand; the same five commits with OpenCode, with at least one provider; and the prompt as a real Brainiac run, to time the container.
+
 ## Open questions
 
-- How long an explanation takes and costs on each agent, and the time limit to default to (the spike).
+- How long an explanation takes and costs on each agent, and the time limit to default to (the spike; Claude Code's first round is above, OpenCode is still to measure).
 - How a concept is identified across explanations, so Got it carries over (a name the agent gives, normalized by Brainiac, which the user can merge).
 - Where explanations are stored (`history.db` or their own deletable file), and whether backups include them.
 - Whether an explain run needs its own workspace filesystem, or a smaller one than a coding run.
