@@ -1,6 +1,6 @@
 # Brainiac — Specification
 
-**Updated:** 3 October 2026  
+**Updated:** 8 October 2026  
 **Target:** macOS desktop application, Rust backend, Tauri v2 shell
 
 This document says what Brainiac does: the product, its release plan, and the behavior of the current release. How it is built is in [`docs/architecture.md`](docs/architecture.md); milestones and the designs of later releases are in [`docs/roadmap.md`](docs/roadmap.md).
@@ -38,7 +38,7 @@ The product can eventually include PR and CI status, calendar context, recurring
 
 ## 2. Release boundaries
 
-**v0.1 — Git viewer and single/multi-repository tracker** shipped as 0.1.3. **v0.2 — knowledge, tasks, and code context** shipped as 0.2.0: one Markdown vault, tasks, Today, keyword search, and links between notes, tasks, and the repositories v0.1 tracks (sections 5–8). **v0.2.x — agent access** lets agents such as Claude Code work with Brainiac's notes, tasks, and repository links through a local MCP server (section 9). **v0.3 — pull requests** shipped as 0.3.1: reviewing and merging the pull requests of a workspace's repositories on GitHub and Bitbucket Cloud (section 10). **v0.4 — databases** shipped as 0.4.0: SQLite and PostgreSQL connections, a query editor and result grid, saved queries, and a PostgreSQL server's health, next to the repositories they belong to (section 11), with phase 1 of secrets (section 12). **v0.5 — agent runs** is the current release: a coding agent run in a container, followed live, and reviewed before anything leaves the Mac (section 13). 0.5.0 runs Claude Code or OpenCode (with Anthropic, OpenAI, or OpenRouter models) on this Mac's Docker engine or an approved Linux host and ends with a patch or a branch to fetch; pushing a branch, more agents, and runs from tasks follow within v0.5. Explaining changes follows it (v0.6), then content imports, global capture, and AI.
+**v0.1 — Git viewer and single/multi-repository tracker** shipped as 0.1.3. **v0.2 — knowledge, tasks, and code context** shipped as 0.2.0: one Markdown vault, tasks, Today, keyword search, and links between notes, tasks, and the repositories v0.1 tracks (sections 5–8). **v0.2.x — agent access** lets agents such as Claude Code work with Brainiac's notes, tasks, and repository links through a local MCP server (section 9). **v0.3 — pull requests** shipped as 0.3.1: reviewing and merging the pull requests of a workspace's repositories on GitHub and Bitbucket Cloud (section 10). **v0.4 — databases** shipped as 0.4.0: SQLite and PostgreSQL connections, a query editor and result grid, saved queries, and a PostgreSQL server's health, next to the repositories they belong to (section 11), with phase 1 of secrets (section 12). **v0.5 — agent runs** shipped as 0.5.0: Claude Code or OpenCode (with Anthropic, OpenAI, or OpenRouter models) run in a container on this Mac's Docker engine or an approved Linux host, followed live, and reviewed before anything leaves the Mac, ending with a patch or a branch to fetch (section 13); pushing a branch, more agents, and runs from tasks follow within v0.5. **v0.6 — explaining changes** is the current release: a commit, a branch, or a run's result explained by an agent so the reader learns the software being built (section 14). Content imports, global capture, and AI follow.
 
 | Capability | Release | Scope |
 | --- | --- | --- |
@@ -63,7 +63,8 @@ The product can eventually include PR and CI status, calendar context, recurring
 | Database and credential follow-ups | v0.4.x | SSH tunnels, editing rows in the grid, saved queries as files, and secrets from Google Secret Manager, Git's credential helper, and `.pgpass`; chosen by use |
 | Agent runs | v0.5 | Claude Code or OpenCode run in a container on this Mac's Docker engine or an approved Linux host, with guided setup, a live conversation, follow-up prompts, and a review of the collected work saved as a patch (section 13) |
 | Agent run follow-ups | v0.5 | Pushing the reviewed result to a new branch, Codex and Gemini CLI, and runs from tasks (`docs/design/agent-runs.md`) |
-| Explaining changes | v0.6 | A commit, a branch, or a run's result explained with a guided tour, notes beside the lines, concepts, and questions, each claim citing its source; written by an agent run in a container and checked by Brainiac (`docs/design/code-explanations.md`) |
+| Explaining changes | v0.6 | A commit, a branch, or a run's result explained with a guided tour, notes beside the lines, concepts, and questions, each claim citing its source; written by an agent run in a container and checked by Brainiac (section 14) |
+| Explanation follow-ups | v0.6.x | Working-tree changes, pull requests, a question about one note, and a direct model call for small changes and local models |
 | External content imports | v0.7 | Paste, bookmarks, Markdown copies, articles, `.eml`, provenance and duplicate handling |
 | Global capture window and Inbox | v0.7 | System shortcut, floating capture, Inbox triage of captured and imported items, shared backend state |
 | Authenticated import adapters | v0.7.x | Selected Jira issues/mail messages; provider choice and video transcript acquisition validated separately |
@@ -163,6 +164,7 @@ Repository name/path filtering and commit-message/hash filtering belong to the G
 | `J` / `K` (or arrow keys) | Next / previous row in the focused list, without clicking it first |
 | `[` / `]` | Previous / next file in a commit or the changes list |
 | `N` / `P` | Next / previous hunk in the shown diff |
+| `E`, v0.6 | Explain the commit, branch, or run result shown |
 | `/` | Focus the filter of the current list |
 | `Cmd+Enter`, v0.4 | In a query tab: run the statement under the cursor, or the selection |
 | `Shift+Cmd+Enter`, v0.4 | Run every statement in the query tab |
@@ -782,3 +784,54 @@ A coding agent run in a container, started from a repository, followed live, ste
 
 - The credential is read on the Mac when a run starts and handed to the agent in memory. It never goes into the container's settings, its environment as Docker shows it, the image, labels, arguments, logs, the conversation as saved, or Brainiac's files.
 - Known injected values are removed from the conversation before it is saved or shown. That is best effort for values Brainiac knows; the agent can write a secret into its files, and a review cannot certify that a result holds none.
+
+## 14. Explaining changes — v0.6
+
+Brainiac explains a change to the person reading it, so they learn the software being built, not only what moved. An agent writes the explanation in a run of its own kind (section 13): it reads the change, the code around it, and the project's own docs in a container, and returns one file that Brainiac checks and shows beside the diff. The reasons, the spike, the UX canvas, and the open questions are in `docs/design/code-explanations.md`.
+
+### Boundaries
+
+- **Never automatic.** An explanation starts only from **Explain**, for one subject: a commit (History), a branch compared with the default branch (Branches & tags, where a selected branch now also shows **Changes against main**: one patch from where it left the default branch to its tip), or a collected run's result (a run's Changes). Working-tree changes and pull requests follow in 0.6.x.
+- **The repository is only read**, as for a run: the subject's commit and its history are copied into Brainiac's own repository and the container (section 13, Boundaries). Whatever else the agent changes is discarded; only its explanation comes back. An explain run is not listed in Runs and has no review. Its container and workspace are removed as soon as its explanation is checked, or when it fails; its conversation stays with the explanation (How it was written, below).
+- **Code goes to the provider of the chosen agent profile.** The first Explain in a repository asks once whether its code may be sent for explanations, naming the provider; the answer is listed, and can be changed, in Settings → Explanations. A repository answered No is never explained, and a profile of another provider asks again.
+- **A run's risks apply.** The agent acts without asking inside its container, the repository's code (and its Claude Code settings) can read the token or key, and the network is unrestricted (section 13, Boundaries). The question above says so.
+- **Every claim cites its source**, and Brainiac shows only what it verified (Checks, below). It can verify that a note sits on the change and that its quotes exist, not that the note is right.
+- **Agents (section 9) cannot start explanations or change Settings → Explanations.**
+
+### Explain
+
+- **Explain** is a button in the patch's toolbar, and `E`. A short dialog names the agent profile and host that will read the code (Settings → Explanations' at first), the depth (**Brief**, **Teach me**, or **Deep**), whether to add questions, and the time limit; the first time in a repository it also asks the question above. It needs an agent whose test passed on the host (section 13, Settings → Agents); otherwise it says what is missing, with a link to Settings → Agents.
+- An explanation of the same subject, agent, and depth opens at once; **Explain again** replaces it.
+- **While it works**, the panel shows its steps (copying the subject, starting the agent, reading, checking), the files the agent opens, the time since Explain and the time limit, and **Cancel**. Leaving the view does not stop it, and the subject shows "Explaining…" until it ends. One explanation runs at a time per subject.
+- **A failure** (the time limit, a refused token or key, no valid file after the second turn) says why, with **Try again** and **How it was written**. Nothing partial is shown.
+
+### The explanation
+
+- **A panel beside the patch**, not a separate view: the summary (why the change exists, not only what moved), the sources the agent read, the agent, model, depth, and date, the cost when the provider reports one ("Uses your Claude plan" on a plan), and three tabs:
+  - **Tour:** the changed files in reading order, each with its role. The file list switches between **Reading order** and **Path**; in reading order, `[` and `]` follow the tour.
+  - **Concepts:** the ideas the change relies on (a language feature, a library, a system tool, a project pattern), each with its explanation and where it appears. **Got it** adds one to the ledger, and later explanations leave a known concept out unless the change uses it in a new way.
+  - **Check yourself:** two or three questions, each with **Reveal answer**, when they were asked for.
+- **How it was written** opens the explain run's conversation in the run view, read only: Brainiac's prompt, the files the agent read and the commands it ran, its replies, the follow-up turn when there was one, and the time and cost. It goes with its explanation: Explain again, Try again, or Delete all.
+- **Notes in the patch:** a note sits after the lines it explains, with links to its sources (lines of a file at the subject's commit, or a doc's section). A concept's name in the code is underlined and opens the concept.
+- **Code and docs disagree:** shown with both quotes and where they are, only when both were found in the files. **Add a task** creates a task linked to the repository; **Not a problem** hides it.
+- **Out of date:** a branch's explanation stays with the branch when it moves. Each note keeps a hash of the lines it explains: a note whose lines are unchanged in the new comparison stays, and one whose lines changed or went is marked out of date, with **Re-explain**. Commits and run results do not change, so their notes never go out of date.
+- **Save as note** writes the explanation into the vault as a Markdown note, `Explanations/<repository>/<short commit or branch> — <subject>.md`, with the repository, subject, date, agent, and model in its frontmatter, linked to the repository (section 5, Notes and repositories). It is a copy that does not change with the explanation.
+
+### Checks
+
+Brainiac checks the agent's file before anything is shown:
+
+- It matches the schema, and its tour lists every changed file.
+- Each note lies within changed lines on the new side of the change.
+- Each quote is found verbatim in its file at the subject's commit: at the cited lines, or else elsewhere in the file, where it is anchored instead. A claim whose quote is not found is dropped.
+- A code–docs disagreement needs both its quotes found.
+
+A file that does not match the schema, or has notes outside the change, gets one more turn in the same session, listing what was wrong. If it still fails, the explanation fails with those reasons.
+
+### Settings → Explanations
+
+- **Agent:** the profile and host, at first those of the last run. **Model by depth:** for Claude Code, sonnet for Brief and Teach me and opus for Deep at first; for OpenCode, the profile's model. **Time limit by depth:** at first 10 minutes for Brief and Teach me and 20 for Deep. Each can be changed.
+- **Your level** for each language (new, comfortable, or expert), and the default depth.
+- **Concepts you know:** the ledger, with **Remove**, and **Merge** for one idea that explanations named in two ways.
+- **Repositories:** each repository's answer, with **Change**.
+- **Stored explanations:** how many and their size, with **Delete all**. Explanations are kept until deleted, each with its run's conversation.

@@ -2,6 +2,8 @@
 
 Design notes for v0.6: Brainiac explains a change to the person reading it, so they learn the software being built rather than only seeing what moved. An explanation is written by an agent in a run of its own kind, on v0.5's agent-run machinery, and shown beside the diff in v0.1's viewer.
 
+v0.6 started on 8 October 2026. What it does is now `SPEC.md` section 14, and how it is built `docs/architecture.md`, Explaining changes — v0.6; where they differ from the notes below, they win. This file keeps the reasons, the spike, and the questions still open.
+
 UX Design Artifact: https://claude.ai/artifact/R41zyUax5ikqMYXh7Y9TuA (the panel, tour, notes, concepts, staleness, and Settings apply as drawn; its Explain dialog and Working state predate the choice of agent runs)
 
 ## Why
@@ -84,7 +86,7 @@ What it showed:
 - **Cost follows what the agent reads** (files opened, turns) more than the size of the diff.
 - **The checks cannot judge correctness or usefulness.** They prove that a note sits on the change and that its quotes exist, not that its claim is right. That still needs the hand scoring.
 
-What it suggests for the build (not yet decided):
+What it suggested for the build, taken into `SPEC.md` section 14 as defaults (the time limits doubled to allow for the container until runs in one are timed):
 
 - The model follows the depth: Sonnet for Brief and Teach me, Opus for Deep, with an override in Settings → Explanations.
 - The checker repairs what it can before a follow-up turn: a quote found verbatim elsewhere in its file is re-anchored there rather than reported. A note outside the changed lines still costs the follow-up turn, or is dropped.
@@ -95,6 +97,5 @@ Left for the spike: scoring every note by hand; the same five commits with OpenC
 ## Open questions
 
 - How long an explanation takes and costs on each agent, and the time limit to default to (the spike; Claude Code's first round is above, OpenCode is still to measure).
-- How a concept is identified across explanations, so Got it carries over (a name the agent gives, normalized by Brainiac, which the user can merge).
-- Where explanations are stored (`history.db` or their own deletable file), and whether backups include them.
-- Whether an explain run needs its own workspace filesystem, or a smaller one than a coding run.
+- Whether an explain run needs a smaller workspace than a coding run (it uses the profile's for now).
+- Whether the panel and the canvas's Working state hold up with real progress from the journal.
