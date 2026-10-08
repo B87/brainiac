@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { absoluteTime, relativeTime } from "../lib/format";
 import {
   type CommitDetail,
@@ -22,6 +22,7 @@ import { useDiff } from "../lib/useDiff";
 import DiffView from "./DiffView";
 import { Avatar } from "./HistoryTab";
 import { CopyIcon, FolderIcon, SidebarIcon } from "./icons";
+import { OrderSwitch, useExplainedPatch } from "./useExplainedPatch";
 
 type Props = {
   repositoryId: string;
@@ -31,6 +32,8 @@ type Props = {
   onOpenInEditor: (path: string, line?: number) => void;
   /** Jump to another commit, such as a parent, when it is in the loaded list. */
   onSelectCommit: (id: string) => void;
+  /** A short message in the window, such as "Saved as …". */
+  onNotice?: (message: string) => void;
 };
 
 /** Message lines shown before "Show full message". */
@@ -42,6 +45,7 @@ export default function CommitDetails({
   onError,
   onOpenInEditor,
   onSelectCommit,
+  onNotice,
 }: Props) {
   const [parentIndex, setParentIndex] = useState(0);
   const [detail, setDetail] = useState<CommitDetail | null>(null);
@@ -100,10 +104,26 @@ export default function CommitDetails({
     ? 0
     : Math.max(0, bodyLines.length - BODY_PREVIEW_LINES);
   const comparedParent = commit.parent_ids[parentIndex];
-  // Files in the order the tree shows them, for the stepper and [ ] keys.
-  const files = detail
-    ? groupFilesByDir(detail.files).flatMap((g) => g.files)
-    : [];
+  // Files in the order the tree shows them, for the stepper and [ ] keys;
+  // with an explanation, in its reading order unless Path is chosen.
+  const byPath = useMemo(
+    () => (detail ? groupFilesByDir(detail.files).flatMap((g) => g.files) : []),
+    [detail],
+  );
+  const subject = useMemo(
+    () => ({ kind: "commit" as const, reference: commit.id }),
+    [commit.id],
+  );
+  const explained = useExplainedPatch({
+    repositoryId,
+    subject,
+    files: byPath,
+    selectedPath,
+    onSelectFile: setSelectedPath,
+    onNotice,
+  });
+  const reading = explained.hasExplanation && explained.order === "reading";
+  const files = explained.ordered;
   const fileIndex = files.findIndex((f) => f.path === selectedPath);
   const stepFile = (delta: number) => {
     const next = files[fileIndex + delta];
@@ -213,6 +233,15 @@ export default function CommitDetails({
             selectedPath={selectedPath}
             onSelect={setSelectedPath}
             onHide={() => setShowFiles(false)}
+            reading={reading ? files : null}
+            orderSwitch={
+              explained.hasExplanation && (
+                <OrderSwitch
+                  order={explained.order}
+                  setOrder={explained.setOrder}
+                />
+              )
+            }
           />
         )}
         <div className="flex min-w-0 flex-1 flex-col">
@@ -232,17 +261,21 @@ export default function CommitDetails({
                   }
                 : undefined
             }
+            annotate={explained.annotate}
             extra={
-              !showFiles && (
-                <button
-                  type="button"
-                  className="btn btn-sm"
-                  onClick={() => setShowFiles(true)}
-                >
-                  <SidebarIcon size={13} />
-                  Show files
-                </button>
-              )
+              <>
+                {!showFiles && (
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    onClick={() => setShowFiles(true)}
+                  >
+                    <SidebarIcon size={13} />
+                    Show files
+                  </button>
+                )}
+                {explained.toolbar}
+              </>
             }
             meta={
               comparedParent
@@ -259,7 +292,9 @@ export default function CommitDetails({
             onOpenInEditor={onOpenInEditor}
           />
         </div>
+        {explained.panel}
       </div>
+      {explained.dialog}
     </div>
   );
 }
@@ -274,12 +309,17 @@ function FileTree({
   selectedPath,
   onSelect,
   onHide,
+  reading,
+  orderSwitch,
 }: {
   detail: CommitDetail | null;
   parentIndex: number;
   selectedPath: string | null;
   onSelect: (path: string) => void;
   onHide: () => void;
+  /** The files in reading order, listed flat instead of by folder. */
+  reading: CommitFile[] | null;
+  orderSwitch?: ReactNode;
 }) {
   const ready = detail && detail.compared_parent_index === parentIndex;
   const additions = detail?.files.reduce((n, f) => n + (f.additions ?? 0), 0);
@@ -309,8 +349,25 @@ function FileTree({
           <SidebarIcon size={13} />
         </button>
       </div>
+      {orderSwitch && (
+        <div className="flex shrink-0 justify-center border-b px-2 py-1.5">
+          {orderSwitch}
+        </div>
+      )}
       <div className="min-h-0 flex-1 overflow-y-auto py-1.5">
         {ready &&
+          reading?.map((f) => (
+            <FileRow
+              key={f.path}
+              file={f}
+              nested={false}
+              full
+              selected={f.path === selectedPath}
+              onSelect={() => onSelect(f.path)}
+            />
+          ))}
+        {ready &&
+          !reading &&
           groupFilesByDir(detail.files).map((g) => (
             <div key={g.dir}>
               {g.dir && (
@@ -343,11 +400,14 @@ function FileRow({
   nested,
   selected,
   onSelect,
+  full = false,
 }: {
   file: CommitFile;
   nested: boolean;
   selected: boolean;
   onSelect: () => void;
+  /** Show the whole path, as reading order lists files flat. */
+  full?: boolean;
 }) {
   const tone = kindTone(file.kind);
   const bar = barWidths(file.additions, file.deletions);
@@ -369,7 +429,7 @@ function FileRow({
         {KIND_LETTER[file.kind]}
       </span>
       <span className="min-w-0 flex-1 truncate">
-        {splitPath(file.path).name}
+        {full ? file.path : splitPath(file.path).name}
       </span>
       {file.is_binary ? (
         <span className="text-[11px] text-muted">binary</span>

@@ -1559,3 +1559,169 @@ pub async fn list_docker_containers(
 ) -> AppResult<crate::models::DockerContainers> {
     crate::databases::health::list_containers(socket.as_deref()).await
 }
+
+// ---------------------------------------------------------------------------
+// Explaining changes (v0.6)
+// ---------------------------------------------------------------------------
+
+pub type Explanations = Arc<crate::explain::service::ExplanationService>;
+
+/// **Changes against main**: a branch's files since it left the default branch.
+#[tauri::command]
+pub async fn get_branch_comparison(
+    repository_id: String,
+    branch: String,
+    service: State<'_, Arc<RepositoryService>>,
+) -> AppResult<crate::models::BranchComparison> {
+    service.branch_comparison(&repository_id, &branch).await
+}
+
+/// The Explain dialog's contents.
+#[tauri::command]
+pub async fn get_explain_dialog(
+    repository_id: String,
+    subject: crate::models::ExplainSubject,
+    explanations: State<'_, Explanations>,
+) -> AppResult<crate::models::ExplainDialog> {
+    explanations.dialog(&repository_id, subject).await
+}
+
+/// The once-per-repository question, or Change in Settings.
+#[tauri::command]
+pub async fn answer_explain(
+    request: crate::models::AnswerExplainRequest,
+    explanations: State<'_, Explanations>,
+) -> AppResult<()> {
+    explanations.answer(request).await
+}
+
+#[tauri::command]
+pub async fn forget_explain_answer(
+    scope: crate::models::ExplainAnswerScope,
+    scope_id: String,
+    provider: crate::models::AgentProvider,
+    explanations: State<'_, Explanations>,
+) -> AppResult<()> {
+    explanations.forget_answer(scope, scope_id, provider).await
+}
+
+/// **Explain**
+#[tauri::command]
+pub async fn start_explanation(
+    request: crate::models::StartExplanationRequest,
+    explanations: State<'_, Explanations>,
+) -> AppResult<crate::models::ExplanationRecord> {
+    explanations.start(request).await
+}
+
+#[tauri::command]
+pub async fn cancel_explanation(
+    id: String,
+    explanations: State<'_, Explanations>,
+) -> AppResult<crate::models::ExplanationRecord> {
+    explanations.cancel(&id).await
+}
+
+#[tauri::command]
+pub async fn get_explanation(
+    id: String,
+    explanations: State<'_, Explanations>,
+) -> AppResult<crate::models::ExplanationRecord> {
+    explanations.get(&id).await
+}
+
+/// Every explanation of a subject, newest first.
+#[tauri::command]
+pub async fn list_subject_explanations(
+    repository_id: String,
+    subject: crate::models::ExplainSubject,
+    explanations: State<'_, Explanations>,
+) -> AppResult<Vec<crate::models::ExplanationRecord>> {
+    explanations.for_subject(&repository_id, subject).await
+}
+
+/// **Delete explanation…**
+#[tauri::command]
+pub async fn delete_explanation(
+    id: String,
+    explanations: State<'_, Explanations>,
+) -> AppResult<()> {
+    explanations.delete(&id).await
+}
+
+/// Settings → Explanations, **Delete all**.
+#[tauri::command]
+pub async fn delete_all_explanations(explanations: State<'_, Explanations>) -> AppResult<u32> {
+    explanations.delete_all().await
+}
+
+/// **Not a problem**, or **Show**.
+#[tauri::command]
+pub async fn set_disagreement_hidden(
+    id: String,
+    index: u32,
+    hidden: bool,
+    explanations: State<'_, Explanations>,
+) -> AppResult<crate::models::ExplanationRecord> {
+    explanations.set_hidden(&id, index, hidden).await
+}
+
+/// **Got it**; returns the concept's ID for Undo.
+#[tauri::command]
+pub async fn learn_concept(
+    repository_id: String,
+    kind: crate::models::ConceptKind,
+    name: String,
+    explanations: State<'_, Explanations>,
+) -> AppResult<String> {
+    explanations.learn(&repository_id, kind, &name).await
+}
+
+/// **Undo** or **Remove**.
+#[tauri::command]
+pub async fn forget_concept(id: String, explanations: State<'_, Explanations>) -> AppResult<()> {
+    explanations.forget_concept(&id).await
+}
+
+/// **Merge**
+#[tauri::command]
+pub async fn merge_concept(
+    from: String,
+    into: String,
+    explanations: State<'_, Explanations>,
+) -> AppResult<()> {
+    explanations.merge_concept(&from, &into).await
+}
+
+/// Where a branch explanation's notes are now.
+#[tauri::command]
+pub async fn place_explanation(
+    id: String,
+    explanations: State<'_, Explanations>,
+) -> AppResult<crate::models::ExplanationPlacement> {
+    explanations.placement(&id).await
+}
+
+/// **Save as note**
+#[tauri::command]
+pub async fn save_explanation_as_note(
+    id: String,
+    explanations: State<'_, Explanations>,
+) -> AppResult<NoteSummary> {
+    explanations.save_as_note(&id).await
+}
+
+#[tauri::command]
+pub async fn get_explanation_settings(
+    explanations: State<'_, Explanations>,
+) -> AppResult<crate::models::ExplanationSettingsView> {
+    explanations.settings_view().await
+}
+
+#[tauri::command]
+pub async fn save_explanation_settings(
+    settings: crate::models::ExplanationSettings,
+    explanations: State<'_, Explanations>,
+) -> AppResult<()> {
+    explanations.save_settings(settings).await
+}

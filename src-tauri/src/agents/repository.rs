@@ -903,6 +903,86 @@ impl RunArtifacts {
     }
 }
 
+impl RunArtifacts {
+    /// An explain run's files once its explanation is read: its input
+    /// bundle, everything else in its folder but the mirrored journal
+    /// (`trace.jsonl`, kept for How it was written), and its refs in
+    /// Brainiac's repository.
+    pub async fn remove_run_keeping_trace(
+        &self,
+        repository_id: &str,
+        run_id: &str,
+    ) -> AppResult<()> {
+        check_id("run", run_id)?;
+        let dir = self.run_dir(run_id);
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                if entry.file_name() == "trace.jsonl" {
+                    continue;
+                }
+                let path = entry.path();
+                let removed = if path.is_dir() {
+                    std::fs::remove_dir_all(&path)
+                } else {
+                    std::fs::remove_file(&path)
+                };
+                removed.map_err(|e| {
+                    AppError::io("The run's files could not be removed.")
+                        .with_details(e.to_string())
+                })?;
+            }
+        }
+        if check_id("repository", repository_id).is_ok() {
+            let repo = self.repository_dir(repository_id);
+            if repo.join("HEAD").exists() {
+                for name in ["start", "result"] {
+                    let r = Self::run_ref(run_id, name);
+                    let _ = self
+                        .git(&repo, &["update-ref", "-d", &r], CHECK_TIMEOUT)
+                        .await;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// What an explanation is about: the change `base..tip` in `repo`,
+    /// Brainiac's own repository where the explain run's start was copied,
+    /// or the user's when a branch moved. Reads only, with no user
+    /// configuration.
+    pub async fn read_subject(
+        &self,
+        repo: &Path,
+        base: &str,
+        tip: &str,
+    ) -> AppResult<crate::explain::subject::Subject> {
+        let git = self.git.as_ref().ok_or_else(|| {
+            AppError::dependency("Git was not found, so Brainiac cannot read the change.")
+        })?;
+        crate::explain::subject::read_subject(git, repo, &self.home()?, base, tip, CHECK_TIMEOUT)
+            .await
+    }
+
+    /// Run a reading Git command in `repo` and return what it printed.
+    pub async fn read_git(&self, repo: &Path, args: &[&str]) -> AppResult<String> {
+        self.git_ok(repo, args, CHECK_TIMEOUT).await
+    }
+
+    /// The text of `paths` at `tip` in `repo`.
+    pub async fn read_files(
+        &self,
+        repo: &Path,
+        tip: &str,
+        paths: &std::collections::BTreeSet<String>,
+    ) -> AppResult<crate::explain::subject::Files> {
+        let git = self.git.as_ref().ok_or_else(|| {
+            AppError::dependency("Git was not found, so Brainiac cannot read the change.")
+        })?;
+        crate::explain::subject::read_files(git, repo, &self.home()?, tip, paths, CHECK_TIMEOUT)
+            .await
+    }
+}
+
 /// One word for a POSIX shell: single quotes, a quote inside closed and
 /// escaped. The command is pasted into the user's terminal.
 fn shell_quote(text: &str) -> String {

@@ -1,4 +1,5 @@
-//! The `agent_runs` rows of `history.db` (migration `history/0004`): a
+//! The `agent_runs` rows of `history.db` (migrations `history/0004` and
+//! `0005`, which adds the kind): a
 //! run's immutable start and settings, the controller's last confirmed
 //! projection, the mirrored cursor, the collected result, and pending
 //! client actions. Never the token or key.
@@ -38,6 +39,9 @@ pub struct NewRun {
     pub memory_mib: u32,
     pub workspace_gib: u32,
     pub model: String,
+    /// An explain run (SPEC.md, section 14): left out of Runs, its badge,
+    /// retention, and collection.
+    pub explain: bool,
 }
 
 /// One row, as stored.
@@ -95,6 +99,7 @@ pub struct RunRow {
     pub version: i64,
     pub created_at: String,
     pub updated_at: String,
+    pub explain: bool,
 }
 
 impl RunRow {
@@ -153,6 +158,7 @@ impl RunRow {
             version: 1,
             created_at: now.clone(),
             updated_at: now,
+            explain: new.explain,
         }
     }
 
@@ -205,6 +211,7 @@ impl RunRow {
             left_out_more: self.left_out_more,
             snapshot_accepted: self.snapshot_accepted,
             cleanup_pending: self.cleanup_pending,
+            explain: self.explain,
             cursor: self.cursor,
             created_at: self.created_at,
             updated_at: self.updated_at,
@@ -312,7 +319,7 @@ const COLUMNS: &str = "id, repository_id, repository_name, title, start_commit, 
     expired_asleep, error, pending_permissions, cursor, reported_at, cancel_requested,
     collection, collection_error, result_commit, changed_files, left_out, left_out_more,
     snapshot_accepted, cleanup_pending, version, created_at, updated_at, model, model_used,
-    host_id, host_name, agent, provider";
+    host_id, host_name, agent, provider, kind";
 
 fn word<T: serde::Serialize>(value: &T) -> String {
     match serde_json::to_value(value) {
@@ -385,6 +392,7 @@ fn from_row(r: &Row<'_>) -> rusqlite::Result<RunRow> {
         host_name: r.get(49)?,
         agent: parse(r.get(50)?)?,
         provider: parse(r.get(51)?)?,
+        explain: r.get::<_, String>(52)? == "explain",
     })
 }
 
@@ -413,9 +421,9 @@ pub fn insert(conn: &mut Connection, row: &RunRow) -> AppResult<()> {
         "INSERT INTO agent_runs (id, repository_id, repository_name, title, start_commit,
            start_subject, profile_id, payment, credential_source, host_id, host_name,
            engine_socket, engine_name, image_name, image_id, permissions, time_limit_minutes,
-           cpus, memory_mib, workspace_gib, created_at, updated_at, model, agent, provider)
+           cpus, memory_mib, workspace_gib, created_at, updated_at, model, agent, provider, kind)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-           ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
+           ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)",
         params![
             row.id,
             row.repository_id,
@@ -442,6 +450,7 @@ pub fn insert(conn: &mut Connection, row: &RunRow) -> AppResult<()> {
             row.model,
             row.agent.as_str(),
             row.provider.as_str(),
+            if row.explain { "explain" } else { "run" },
         ],
     )?;
     Ok(())

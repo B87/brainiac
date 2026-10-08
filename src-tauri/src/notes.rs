@@ -773,6 +773,28 @@ impl NoteService {
         .await
     }
 
+    /// Create a note with extra frontmatter and a body (Save as note,
+    /// SPEC.md section 14). Values are written as JSON strings, which YAML
+    /// reads as quoted strings.
+    pub async fn create_with_body(
+        self: &Arc<Self>,
+        request: CreateNoteRequest,
+        frontmatter: Vec<(String, String)>,
+        body: String,
+    ) -> AppResult<NoteSummary> {
+        self.create_with(request, NoteChangeOrigin::App, move |id, _title| {
+            let mut text = format!("---\nbrainiac_id: {id}\n");
+            for (key, value) in &frontmatter {
+                let value = serde_json::to_string(value).unwrap_or_else(|_| "\"\"".into());
+                text.push_str(&format!("{key}: {value}\n"));
+            }
+            text.push_str("---\n\n");
+            text.push_str(&body);
+            text
+        })
+        .await
+    }
+
     /// Create a note whose text `text_for(id, title)` gives.
     async fn create_with(
         self: &Arc<Self>,

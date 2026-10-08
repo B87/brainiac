@@ -479,6 +479,7 @@ function sampleRun(fields: Partial<AgentRun>): AgentRun {
     left_out_more: 0,
     snapshot_accepted: false,
     cleanup_pending: null,
+    explain: false,
     cursor: 0,
     created_at: minutesFromNow(-20),
     updated_at: minutesFromNow(0),

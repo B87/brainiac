@@ -125,6 +125,8 @@ pub struct Session<S: RunSink> {
     /// The start of this turn's reply, to recognize a refused credential
     /// that comes back as an ordinary reply.
     reply_start: String,
+    /// The session's cost the agent last reported, recorded only when it changes.
+    cost: Option<(u64, String)>,
     /// The agent's name and version, from `initialize`.
     agent: (String, String),
     noticed: HashSet<String>,
@@ -156,6 +158,7 @@ impl<S: RunSink> Session<S> {
             stream: None,
             last_chunk: Instant::now(),
             reply_start: String::new(),
+            cost: None,
             agent: (String::new(), String::new()),
             noticed: HashSet::new(),
             skipped: 0,
@@ -651,8 +654,28 @@ impl<S: RunSink> Session<S> {
             | "available_commands_update"
             | "current_mode_update"
             | "config_option_update"
-            | "session_info_update"
-            | "usage_update" => {}
+            | "session_info_update" => {}
+            // The session's cost so far, when the agent reports one.
+            "usage_update" => {
+                let amount = update.pointer("/cost/amount").and_then(Value::as_f64);
+                let currency = update
+                    .pointer("/cost/currency")
+                    .and_then(Value::as_str)
+                    .unwrap_or("USD");
+                if let Some(amount) = amount.filter(|a| a.is_finite() && *a >= 0.0) {
+                    // Millionths, so the journal stays whole numbers.
+                    let micros = (amount * 1_000_000.0).round() as u64;
+                    let cost = (micros, currency.chars().take(8).collect::<String>());
+                    if self.cost.as_ref() != Some(&cost) {
+                        self.cost = Some(cost.clone());
+                        self.sink.record(EventBody::Usage {
+                            turn: self.turn,
+                            cost_micros: cost.0,
+                            currency: cost.1,
+                        });
+                    }
+                }
+            }
             other => {
                 let other = other.to_string();
                 self.notice_once(

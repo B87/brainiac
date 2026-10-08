@@ -99,3 +99,6 @@ Left for the spike: scoring every note by hand; the same five commits with OpenC
 - How long an explanation takes and costs on each agent, and the time limit to default to (the spike; Claude Code's first round is above, OpenCode is still to measure).
 - Whether an explain run needs a smaller workspace than a coding run (it uses the profile's for now).
 - Whether the panel and the canvas's Working state hold up with real progress from the journal.
+- A shared answer for a team (which repositories may reach which provider), set once rather than on each developer's Mac. Brainiac has one user per Mac; this belongs with shared workspaces (`docs/design/shared-workspaces.md`).
+- Whether the estimate from the last ten explanations is close enough to trust before Explain, once real runs in a container are timed.
+- Whether the panel, with the summary first and Tour open, reads well on a large change, or should start folded.

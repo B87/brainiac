@@ -102,6 +102,12 @@ pub enum Request {
         #[serde(default)]
         image: Option<String>,
     },
+    /// An explain run's `.brainiac/explanation.json`, read from the agent's
+    /// container through the engine's archive API: one regular file of at
+    /// most 2 MB, running or stopped (docs/architecture.md, Explaining
+    /// changes — v0.6). Added without a protocol bump, as `Preview` was: an
+    /// older controller answers that it did not understand.
+    ReadExplanation { run_id: String },
     /// Exit, only when no run is live: a newer Brainiac replaces it.
     Shutdown,
     /// Write the run's input bundle into the controller's state directory,
@@ -276,6 +282,10 @@ pub enum Response {
     },
     Image {
         id: String,
+    },
+    /// The explanation's text, or `None` when the agent wrote no file.
+    Explanation {
+        text: Option<String>,
     },
     Error {
         error: AppError,
@@ -493,6 +503,13 @@ pub enum EventBody {
         reason: String,
         message: Option<String>,
     },
+    /// The session's cost so far, as the agent reported it, in millionths of
+    /// `currency`. Recorded when it changes.
+    Usage {
+        turn: u32,
+        cost_micros: u64,
+        currency: String,
+    },
     /// Something the user should know that is not the agent's: a skipped
     /// message, a refused request from the agent.
     Notice {
@@ -530,6 +547,7 @@ impl EventBody {
     pub fn texts_mut(&mut self) -> Vec<&mut String> {
         match self {
             EventBody::Accepted { .. } | EventBody::Stopping { .. } => Vec::new(),
+            EventBody::Usage { currency, .. } => vec![currency],
             EventBody::Ready {
                 session_id,
                 agent,

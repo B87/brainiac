@@ -9,6 +9,7 @@ export type SettingsSection =
   | "secrets"
   | "agents"
   | "runs"
+  | "explanations"
   | "backup";
 
 export const SECTIONS: { id: SettingsSection; label: string }[] = [
@@ -20,8 +21,19 @@ export const SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "secrets", label: "Secrets" },
   { id: "agents", label: "Agent Access" },
   { id: "runs", label: "Agents" },
+  { id: "explanations", label: "Explanations" },
   { id: "backup", label: "Backup" },
 ];
+
+/** The window event that asks App to open a Settings section from anywhere. */
+export const OPEN_SETTINGS_EVENT = "brainiac:open-settings";
+
+/** Open a Settings section from a view that has no callback for it. */
+export function requestSettings(section: SettingsSection) {
+  window.dispatchEvent(
+    new CustomEvent<SettingsSection>(OPEN_SETTINGS_EVENT, { detail: section }),
+  );
+}
 
 export function sectionLabel(id: SettingsSection): string {
   return SECTIONS.find((s) => s.id === id)?.label ?? "Settings";

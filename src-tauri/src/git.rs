@@ -1405,6 +1405,23 @@ impl GitService {
         }
     }
 
+    /// The best common ancestor of two commits; `None` when they share no history.
+    pub async fn merge_base(&self, root: &Path, a: &str, b: &str) -> AppResult<Option<String>> {
+        validate_revision(a)?;
+        validate_revision(b)?;
+        let args = ["merge-base", "--end-of-options", a, b];
+        let out = self
+            .exec(Some(root), &args, MAX_OUTPUT_BYTES, &[], self.timeout)
+            .await?;
+        match out.code {
+            Some(0) => Ok(Some(
+                String::from_utf8_lossy(&out.stdout).trim().to_string(),
+            )),
+            Some(1) => Ok(None),
+            _ => Err(classify_git_error(&args, &out.stderr)),
+        }
+    }
+
     /// Number of commits reachable from `include` but from none of `exclude`.
     pub async fn count_commits(
         &self,

@@ -57,8 +57,9 @@ import {
   relocatedNotice,
   relocationQuestion,
 } from "./lib/repo";
-import type { SettingsSection } from "./lib/settings";
+import { OPEN_SETTINGS_EVENT, type SettingsSection } from "./lib/settings";
 import { SIDE_PANEL_KEY, SidePanelState } from "./lib/sidePanel";
+import { NOTICE_EVENT, OPEN_RUN_EVENT } from "./lib/windowEvents";
 import { workspaceRepositories } from "./lib/workspace";
 
 /** The section open when Brainiac quit, reopened at launch (SPEC.md, Main window v0.2). */
@@ -472,6 +473,24 @@ export default function App() {
     },
     [fetching, reloadSnapshot],
   );
+
+  // Views deep in the window open Settings, a run's conversation, or say
+  // something in the notice line through window events (v0.6).
+  useEffect(() => {
+    const settings = (e: Event) =>
+      openSettings((e as CustomEvent<SettingsSection>).detail);
+    const run = (e: Event) =>
+      showView({ kind: "runs", runId: (e as CustomEvent<string>).detail });
+    const say = (e: Event) => setNotice((e as CustomEvent<string>).detail);
+    window.addEventListener(OPEN_SETTINGS_EVENT, settings);
+    window.addEventListener(OPEN_RUN_EVENT, run);
+    window.addEventListener(NOTICE_EVENT, say);
+    return () => {
+      window.removeEventListener(OPEN_SETTINGS_EVENT, settings);
+      window.removeEventListener(OPEN_RUN_EVENT, run);
+      window.removeEventListener(NOTICE_EVENT, say);
+    };
+  }, [openSettings, showView]);
 
   // A fetch notice fades after a few seconds.
   useEffect(() => {

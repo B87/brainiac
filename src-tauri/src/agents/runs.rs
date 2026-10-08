@@ -41,6 +41,28 @@ use crate::workspaces::RepositoryService;
 
 pub use store::RunRow;
 
+/// What `start_explain` needs (docs/architecture.md, Explaining changes —
+/// v0.6, An explain run is an agent run).
+pub struct ExplainRun {
+    pub repository_id: String,
+    pub profile_id: String,
+    pub host_id: String,
+    pub start: ExplainStart,
+    pub prompt: String,
+    /// The subject in a few words, as the run's title.
+    pub title: String,
+    pub model: String,
+    pub time_limit_minutes: u32,
+}
+
+/// Where an explain run's start commit comes from.
+pub enum ExplainStart {
+    /// A full commit ID in the user's repository.
+    Commit(String),
+    /// A collected run's result, already in Brainiac's own repository.
+    RunResult(String),
+}
+
 /// How long one poll for events waits at the controller.
 const POLL_WAIT: Duration = Duration::from_secs(25);
 /// How long to wait before trying the controller again after it failed.
@@ -190,8 +212,10 @@ impl AgentRunService {
         let runs = self.history.call(store::list).await?;
         let connected = self.connected.load(std::sync::atomic::Ordering::SeqCst);
         Ok(AgentRunList {
+            // Explain runs belong to their explanation, not to Runs.
             runs: runs
                 .into_iter()
+                .filter(|r| !r.explain)
                 .map(|r| {
                     let step = steps.get(&r.id).copied();
                     self.present(r, step)
@@ -278,6 +302,11 @@ impl AgentRunService {
         } else {
             Ok(())
         }
+    }
+
+    /// A remote host with a job in progress takes no new run.
+    pub fn host_busy(&self, host_id: &str) -> bool {
+        self.refuse_if_upgrading(host_id).is_err()
     }
 
     async fn row(&self, run_id: &str) -> AppResult<RunRow> {
@@ -504,7 +533,173 @@ impl AgentRunService {
             memory_mib: memory,
             workspace_gib: workspace,
             model: model.clone(),
+            explain: false,
         });
+        let start = StartRun {
+            run_id: run_id.clone(),
+            attempt: 1,
+            engine_socket: socket,
+            image: image_name.clone(),
+            cpus,
+            memory_mib: memory,
+            workspace_gib: workspace,
+            time_limit_secs: u64::from(time_limit) * 60,
+            permissions: request.permissions,
+            start_commit: preview.commit,
+            // Set once the start is copied, after this answers.
+            bundle: PathBuf::new(),
+            prompt_id: format!("{run_id}-prompt-1"),
+            prompt,
+            credential,
+            agent: profile.agent,
+            provider: profile.provider,
+            model,
+        };
+        self.begin(row, start, host_id, request.repository_id.clone(), root)
+            .await?;
+        self.get(&run_id).await
+    }
+
+    /// An explain run (SPEC.md, section 14; docs/architecture.md, Explaining
+    /// changes — v0.6): started like any run, with Brainiac's prompt, Act
+    /// without asking, and the profile's CPU, memory, and workspace. Its
+    /// start is a commit of the user's repository, checked as New run
+    /// checks one, or a collected run's result in Brainiac's own repository.
+    /// Returns the run's ID once its row is written; the rest goes on as
+    /// for any run.
+    pub async fn start_explain(self: &Arc<Self>, request: ExplainRun) -> AppResult<String> {
+        let settings = self.settings.get().await?;
+        let host_id = if request.host_id.is_empty() {
+            super::hosts::LOCAL_ID.to_string()
+        } else {
+            request.host_id.clone()
+        };
+        let remote = host_id != super::hosts::LOCAL_ID;
+        let profile = settings
+            .profiles
+            .iter()
+            .find(|p| p.id == request.profile_id)
+            .cloned()
+            .ok_or_else(|| AppError::validation("Choose an agent in Settings → Explanations."))?;
+        let host = settings
+            .hosts
+            .iter()
+            .find(|h| h.id == host_id)
+            .cloned()
+            .ok_or_else(|| AppError::validation("Choose a host in Settings → Explanations."))?;
+        if let Some(first) = settings::run_missing(&profile, &host).first() {
+            return Err(AppError::validation(format!(
+                "Settings → Agents is not ready: {first}"
+            )));
+        }
+        if remote {
+            self.refuse_if_upgrading(&host_id)?;
+        }
+        let model = settings::check_model(profile.agent, &request.model)?;
+        let (name, root) = self.repositories.locate(&request.repository_id).await?;
+        // A commit of the user's repository is checked as New run checks
+        // one; a run's result is already in Brainiac's own repository.
+        let (commit, root) = match &request.start {
+            ExplainStart::Commit(commit) => {
+                let preview = self
+                    .artifacts
+                    .preview(&request.repository_id, &root, commit)
+                    .await?;
+                if &preview.commit != commit {
+                    return Err(AppError::validation(
+                        "The commit to explain is not a full ID.",
+                    ));
+                }
+                (preview.commit, root)
+            }
+            ExplainStart::RunResult(commit) => (
+                commit.clone(),
+                self.artifacts.repository_dir(&request.repository_id),
+            ),
+        };
+        let image = host
+            .image
+            .clone()
+            .ok_or_else(|| AppError::validation("Build the image first."))?;
+        let (socket, engine_name) = if remote {
+            (
+                "/var/run/docker.sock".to_string(),
+                host.engine_name.clone().unwrap_or_else(|| "Docker".into()),
+            )
+        } else {
+            let socket = settings
+                .engine_socket
+                .clone()
+                .ok_or_else(|| AppError::validation("Choose where runs execute first."))?;
+            let name = super::engine::name_of(&socket);
+            (socket, name)
+        };
+        let credential = self.credential(&profile).await?;
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let row = RunRow::new(store::NewRun {
+            id: run_id.clone(),
+            repository_id: request.repository_id.clone(),
+            repository_name: name,
+            title: request.title.clone(),
+            start_commit: commit.clone(),
+            start_subject: request.title,
+            profile_id: profile.id.clone(),
+            agent: profile.agent,
+            provider: profile.provider,
+            payment: profile.payment,
+            credential_source: crate::credentials::describe(
+                &profile.credential_source,
+                &settings::credential_owner(&profile.id),
+            ),
+            host_id: host_id.clone(),
+            host_name: host.name,
+            engine_socket: socket.clone(),
+            engine_name,
+            image_name: image.name.clone(),
+            image_id: image.id,
+            permissions: RunPermissions::Act,
+            time_limit_minutes: request.time_limit_minutes,
+            cpus: profile.cpus,
+            memory_mib: profile.memory_mib,
+            workspace_gib: profile.workspace_gib,
+            model: model.clone(),
+            explain: true,
+        });
+        let start = StartRun {
+            run_id: run_id.clone(),
+            attempt: 1,
+            engine_socket: socket,
+            image: image.name,
+            cpus: profile.cpus,
+            memory_mib: profile.memory_mib,
+            workspace_gib: profile.workspace_gib,
+            time_limit_secs: u64::from(request.time_limit_minutes) * 60,
+            permissions: RunPermissions::Act,
+            start_commit: commit,
+            bundle: PathBuf::new(),
+            prompt_id: format!("{run_id}-prompt-1"),
+            prompt: request.prompt,
+            credential,
+            agent: profile.agent,
+            provider: profile.provider,
+            model,
+        };
+        self.begin(row, start, host_id, request.repository_id, root)
+            .await?;
+        Ok(run_id)
+    }
+
+    /// Write the run's row, then copy its start and hand it to its
+    /// controller in the background.
+    async fn begin(
+        self: &Arc<Self>,
+        row: RunRow,
+        start: StartRun,
+        host_id: String,
+        repository_id: String,
+        root: PathBuf,
+    ) -> AppResult<()> {
+        let run_id = row.id.clone();
         // The row is written before the controller is asked, so a start
         // whose answer is lost is still a run Brainiac knows. Its step is
         // set first, so the window never sees the run without one.
@@ -530,35 +725,14 @@ impl AgentRunService {
             return Err(e);
         }
         self.emit(&run_id, false);
-        let start = StartRun {
-            run_id: run_id.clone(),
-            attempt: 1,
-            engine_socket: socket,
-            image: image_name.clone(),
-            cpus,
-            memory_mib: memory,
-            workspace_gib: workspace,
-            time_limit_secs: u64::from(time_limit) * 60,
-            permissions: request.permissions,
-            start_commit: preview.commit,
-            // Set once the start is copied, after this answers.
-            bundle: PathBuf::new(),
-            prompt_id: format!("{run_id}-prompt-1"),
-            prompt,
-            credential,
-            agent: profile.agent,
-            provider: profile.provider,
-            model,
-        };
         // Copying the start and reaching a remote host can take minutes, so
         // they go on after this answers: the window opens the run at once
         // and shows each step (SPEC.md, The run: Starting).
         let service = Arc::clone(self);
-        let repository_id = request.repository_id.clone();
         tokio::spawn(async move {
             service.launch(start, host_id, repository_id, root).await;
         });
-        self.get(&run_id).await
+        Ok(())
     }
 
     /// The rest of Start run: copy the start, hand the run to its
@@ -1121,6 +1295,12 @@ impl AgentRunService {
         let Ok(row) = self.row(run_id).await else {
             return;
         };
+        if row.explain {
+            if row.phase == RunPhase::Ended && row.stop_confirmed {
+                self.discard_explain(&row).await;
+            }
+            return;
+        }
         if row.phase == RunPhase::Ended && row.stop_confirmed && !row.kept {
             if let Err(e) = self.discard_at_controller(run_id).await {
                 tracing::warn!(run = %run_id, error = %e, "the controller's files for a run were not removed");
@@ -1475,6 +1655,85 @@ impl AgentRunService {
         self.get(run_id).await
     }
 
+    /// An explain run's end: its container, volume, input bundle, and refs
+    /// go; its row and mirrored journal stay with its explanation. A
+    /// discard that fails is recorded as Cleanup pending and tried again by
+    /// the hourly tick.
+    async fn discard_explain(&self, row: &RunRow) {
+        let run_id = row.id.as_str();
+        if row.kept {
+            if let Err(e) = self.discard_at_controller(run_id).await {
+                tracing::warn!(run = %run_id, error = %e, "an explain run's container was not removed");
+                let id = run_id.to_string();
+                let message = e.message.clone();
+                let _ = self
+                    .history
+                    .call(move |conn| store::set_cleanup(conn, &id, false, Some(&message)))
+                    .await;
+                self.emit(run_id, false);
+                return;
+            }
+        }
+        if let Err(e) = self
+            .artifacts
+            .remove_run_keeping_trace(&row.repository_id, run_id)
+            .await
+        {
+            tracing::warn!(run = %run_id, error = %e, "an explain run's files were not removed");
+        }
+        let id = run_id.to_string();
+        let _ = self
+            .history
+            .call(move |conn| store::set_cleanup(conn, &id, true, None))
+            .await;
+        self.emit(run_id, false);
+    }
+
+    /// An explain run's file, read from its agent's container.
+    pub async fn read_explanation(&self, run_id: &str) -> AppResult<Option<String>> {
+        self.rt(run_id).await?.read_explanation(run_id).await
+    }
+
+    /// The cost an explain run's agent last reported, from its journal.
+    pub async fn reported_cost(&self, run_id: &str) -> Option<(u64, String)> {
+        let journal = self.journal(run_id).await.ok()?;
+        let journal = journal.lock().unwrap_or_else(|p| p.into_inner());
+        journal.events.iter().rev().find_map(|e| match &e.body {
+            crate::models::RunEventBody::Usage {
+                cost_micros,
+                currency,
+                ..
+            } => Some((*cost_micros, currency.clone())),
+            _ => None,
+        })
+    }
+
+    /// The files an explain run's agent has opened so far, from its
+    /// journal's tool events, in order and each once.
+    pub async fn files_read(&self, run_id: &str) -> Vec<String> {
+        let Ok(journal) = self.journal(run_id).await else {
+            return Vec::new();
+        };
+        let journal = journal.lock().unwrap_or_else(|p| p.into_inner());
+        let mut files: Vec<String> = Vec::new();
+        for event in &journal.events {
+            if let crate::models::RunEventBody::Tool {
+                kind, locations, ..
+            } = &event.body
+            {
+                if kind.as_deref().is_none_or(|k| k == "read" || k == "search") {
+                    for path in locations {
+                        let path = path.strip_prefix("/workspace/").unwrap_or(path);
+                        if !files.iter().any(|f| f == path) {
+                            files.push(path.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        files
+    }
+
     /// **Retry cleanup**.
     pub async fn retry_cleanup(self: &Arc<Self>, run_id: &str) -> AppResult<AgentRun> {
         self.cleanup(run_id).await;
@@ -1821,6 +2080,14 @@ impl AgentRunService {
         };
         let cutoff = chrono::Utc::now() - RETENTION;
         for row in rows {
+            // An explain run lives as long as its explanation; one whose
+            // container could not be removed is tried again.
+            if row.explain {
+                if row.phase == RunPhase::Ended && row.stop_confirmed && row.kept {
+                    self.discard_explain(&row).await;
+                }
+                continue;
+            }
             let old = row
                 .ended_at
                 .as_deref()

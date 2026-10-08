@@ -265,6 +265,7 @@ describe("Runs", () => {
     left_out_more: 0,
     snapshot_accepted: false,
     cleanup_pending: null,
+    explain: false,
     cursor: 12,
     created_at: "2026-10-05T10:00:00Z",
     updated_at: "2026-10-05T10:30:00Z",

@@ -24,6 +24,7 @@ import {
   producedTone,
   type RunGroup,
   type RunTone,
+  reportedCost,
   samePreview,
   shortClock,
   spanLabel,
@@ -67,6 +68,7 @@ import {
 } from "./icons";
 import { Markdown } from "./Markdown";
 import { RepoChip } from "./RepoChip";
+import { OrderSwitch, useExplainedPatch } from "./useExplainedPatch";
 
 type Props = {
   snapshot: AppSnapshot;
@@ -543,6 +545,9 @@ function RunView({
   const collected =
     run.collection === "ready" || run.collection === "no_changes";
   const folded = useMemo(() => foldTurns(events), [events]);
+  const cost = useMemo(() => reportedCost(events), [events]);
+  // An explain run is its explanation's How it was written: read only.
+  const explain = run.explain;
   const reported = useMemo(() => reportedFiles(folded.turns), [folded]);
   const finishTitle = !run.connected
     ? "Possible once Brainiac reconnects"
@@ -564,13 +569,13 @@ function RunView({
                 className="text-muted hover:text-fg"
                 onClick={onBack}
               >
-                Runs
+                {explain ? "Back" : "Runs"}
               </button>
               <span aria-hidden="true">›</span>
               <span className="truncate">{run.repository_name}</span>
             </nav>
             <h1 className="selectable m-0 text-[17px] font-semibold leading-snug">
-              {run.title}
+              {explain ? `How it was written: ${run.title}` : run.title}
             </h1>
             <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1 text-[12px] text-fg-2">
               <RepoChip
@@ -596,11 +601,11 @@ function RunView({
           </div>
           <div className="flex flex-[1_1_auto] flex-wrap items-center justify-end gap-x-2.5 gap-y-2">
             {live ? (
-              <LiveStatus run={run} now={now} />
+              <LiveStatus run={run} now={now} cost={cost} />
             ) : (
-              <EndedStatus run={run} turns={folded.turns.length} />
+              <EndedStatus run={run} turns={folded.turns.length} cost={cost} />
             )}
-            {live && (
+            {live && !explain && (
               <button
                 type="button"
                 className="btn btn-sm text-conflict"
@@ -610,7 +615,7 @@ function RunView({
                 {run.cancel_requested ? "Cancel requested" : "Cancel run…"}
               </button>
             )}
-            {live && (
+            {live && !explain && (
               <button
                 type="button"
                 className="btn btn-sm btn-primary"
@@ -621,7 +626,7 @@ function RunView({
                 Finish and collect
               </button>
             )}
-            {!live && run.collection === "ready" && (
+            {!live && !explain && run.collection === "ready" && (
               <>
                 <button
                   type="button"
@@ -647,7 +652,7 @@ function RunView({
                 </button>
               </>
             )}
-            {!live && (
+            {!live && !explain && (
               <button
                 type="button"
                 className="btn btn-sm text-conflict"
@@ -664,7 +669,12 @@ function RunView({
             )}
           </div>
         </div>
-        <div role="tablist" aria-label="Run" className="-mb-px flex gap-1">
+        <div
+          role="tablist"
+          aria-label="Run"
+          className="-mb-px flex gap-1"
+          hidden={explain}
+        >
           <button
             type="button"
             role="tab"
@@ -701,19 +711,22 @@ function RunView({
       {live && !run.connected && <AwayBanner run={run} now={now} />}
       <div className="flex min-h-0 flex-1">
         <div className="flex min-w-0 flex-1 flex-col">
-          <RunCards
-            run={run}
-            busy={busy}
-            onCollect={() => void collect()}
-            onDiscard={() => void discard()}
-            onRetryCleanup={() => void act(() => ipc.retryRunCleanup(run.id))}
-            onOpenSettings={onOpenSettings}
-          />
-          {tab === "changes" && !collected && live ? (
+          {!explain && (
+            <RunCards
+              run={run}
+              busy={busy}
+              onCollect={() => void collect()}
+              onDiscard={() => void discard()}
+              onRetryCleanup={() => void act(() => ipc.retryRunCleanup(run.id))}
+              onOpenSettings={onOpenSettings}
+            />
+          )}
+          {tab === "changes" && !collected && live && !explain ? (
             <ChangesSoFar run={run} onError={onError} onNotice={onNotice} />
-          ) : tab === "conversation" || !collected ? (
+          ) : tab === "conversation" || !collected || explain ? (
             <Conversation
               run={run}
+              readOnly={explain}
               turns={folded.turns}
               notices={folded.notices}
               ended={folded.ended}
@@ -742,7 +755,15 @@ function RunView({
 }
 
 /** A live run's header: what the agent is doing, when it ends, what it costs. */
-function LiveStatus({ run, now }: { run: AgentRun; now: number }) {
+function LiveStatus({
+  run,
+  now,
+  cost,
+}: {
+  run: AgentRun;
+  now: number;
+  cost: ReturnType<typeof reportedCost>;
+}) {
   const label = run.connected ? activityLabel(run) : visibilityLabel(run);
   return (
     <>
@@ -762,13 +783,23 @@ function LiveStatus({ run, now }: { run: AgentRun; now: number }) {
           {timeLeft(run.deadline_at, now)}
         </span>
       )}
-      <span className="text-[12px] text-fg-2">{costLabel(run.payment)}</span>
+      <span className="text-[12px] text-fg-2">
+        {costLabel(run.payment, cost)}
+      </span>
     </>
   );
 }
 
 /** An ended run's header: how it ended, what it produced, and how long it took. */
-function EndedStatus({ run, turns }: { run: AgentRun; turns: number }) {
+function EndedStatus({
+  run,
+  turns,
+  cost,
+}: {
+  run: AgentRun;
+  turns: number;
+  cost: ReturnType<typeof reportedCost>;
+}) {
   const produced = producedLabel(run);
   const visibility = visibilityLabel(run);
   const took =
@@ -795,7 +826,7 @@ function EndedStatus({ run, turns }: { run: AgentRun; turns: number }) {
           took,
           run.payment === "claude_plan"
             ? "used your Claude plan"
-            : costLabel(run.payment),
+            : costLabel(run.payment, cost),
         ]
           .filter(Boolean)
           .join(" · ")}
@@ -1287,6 +1318,7 @@ function RunStarting({ run }: { run: AgentRun }) {
 
 function Conversation({
   run,
+  readOnly = false,
   turns,
   notices,
   ended,
@@ -1296,6 +1328,8 @@ function Conversation({
   onPrompt,
 }: {
   run: AgentRun;
+  /** An explain run's conversation: no prompt box, no answers. */
+  readOnly?: boolean;
   turns: Turn[];
   notices: string[];
   ended: { outcome: string; message: string | null } | null;
@@ -1419,7 +1453,7 @@ function Conversation({
           <div ref={bottom} />
         </div>
       </div>
-      {live && (
+      {live && !readOnly && (
         <div className="shrink-0 border-t px-5 pt-2.5 pb-3.5 pl-lead">
           <div className="flex max-w-[720px] flex-col gap-1.5">
             <label
@@ -2050,6 +2084,8 @@ function Changes({
           commit={run.result_commit ?? ""}
           files={files}
           preview={false}
+          repositoryId={run.repository_id}
+          explainable
           onError={onError}
           onOpenInEditor={() =>
             onNotice(
@@ -2075,10 +2111,12 @@ function lineTotals(files: CommitFile[] | null): {
 function SnapshotFiles({
   runId,
   commit,
-  files,
+  files: byPath,
   preview,
   onError,
   onOpenInEditor,
+  repositoryId = "",
+  explainable = false,
 }: {
   runId: string;
   /** The snapshot shown: a new one reads the selected file's diff again. */
@@ -2087,10 +2125,25 @@ function SnapshotFiles({
   preview: boolean;
   onError: (text: string) => void;
   onOpenInEditor: () => void;
+  repositoryId?: string;
+  /** A collected result, which can be explained (SPEC.md, section 14). */
+  explainable?: boolean;
 }) {
   const [selected, setSelected] = useState<string | null>(
-    files[0]?.path ?? null,
+    byPath[0]?.path ?? null,
   );
+  const subject = useMemo(
+    () => (explainable ? { kind: "run" as const, reference: runId } : null),
+    [explainable, runId],
+  );
+  const explained = useExplainedPatch({
+    repositoryId,
+    subject,
+    files: byPath,
+    selectedPath: selected,
+    onSelectFile: setSelected,
+  });
+  const files = explained.ordered;
   const [diff, setDiff] = useState<DiffResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [ignoreWhitespace, setIgnoreWhitespace] = useState(false);
@@ -2135,45 +2188,55 @@ function SnapshotFiles({
       : undefined;
   return (
     <div className="flex min-h-0 flex-1">
-      <ul
-        aria-label="Changed files"
-        className="m-0 w-[260px] shrink-0 list-none overflow-y-auto border-r p-1"
-      >
-        {files.map((f) => {
-          const { dir, name } = splitPath(f.path);
-          return (
-            <li key={f.path}>
-              <button
-                type="button"
-                className="side-row h-auto w-full items-start gap-2 py-1.5 text-left"
-                aria-current={f === file}
-                onClick={() => setSelected(f.path)}
-              >
-                <span className="kind mt-px" data-tone={kindTone(f.kind)}>
-                  {KIND_LETTER[f.kind]}
-                </span>
-                <span className="flex min-w-0 flex-1 flex-col">
-                  <span className="truncate">{name}</span>
-                  {dir && (
-                    <span className="truncate text-[11px] text-muted">
-                      {dir.replace(/\/$/, "")}
-                    </span>
-                  )}
-                </span>
-                <span className="mt-px shrink-0 text-[11px] tabular">
-                  {f.additions != null && (
-                    <span className="text-added">+{f.additions} </span>
-                  )}
-                  {f.deletions != null && (
-                    <span className="text-deleted">−{f.deletions}</span>
-                  )}
-                  {f.is_binary && <span className="text-muted">bin</span>}
-                </span>
-              </button>
-            </li>
-          );
-        })}
-      </ul>
+      <div className="flex w-[260px] shrink-0 flex-col border-r">
+        {explained.hasExplanation && (
+          <div className="flex shrink-0 justify-center border-b px-2 py-1.5">
+            <OrderSwitch
+              order={explained.order}
+              setOrder={explained.setOrder}
+            />
+          </div>
+        )}
+        <ul
+          aria-label="Changed files"
+          className="m-0 min-h-0 flex-1 list-none overflow-y-auto p-1"
+        >
+          {files.map((f) => {
+            const { dir, name } = splitPath(f.path);
+            return (
+              <li key={f.path}>
+                <button
+                  type="button"
+                  className="side-row h-auto w-full items-start gap-2 py-1.5 text-left"
+                  aria-current={f === file}
+                  onClick={() => setSelected(f.path)}
+                >
+                  <span className="kind mt-px" data-tone={kindTone(f.kind)}>
+                    {KIND_LETTER[f.kind]}
+                  </span>
+                  <span className="flex min-w-0 flex-1 flex-col">
+                    <span className="truncate">{name}</span>
+                    {dir && (
+                      <span className="truncate text-[11px] text-muted">
+                        {dir.replace(/\/$/, "")}
+                      </span>
+                    )}
+                  </span>
+                  <span className="mt-px shrink-0 text-[11px] tabular">
+                    {f.additions != null && (
+                      <span className="text-added">+{f.additions} </span>
+                    )}
+                    {f.deletions != null && (
+                      <span className="text-deleted">−{f.deletions}</span>
+                    )}
+                    {f.is_binary && <span className="text-muted">bin</span>}
+                  </span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
       <div className="flex min-w-0 flex-1 flex-col">
         <DiffView
           diff={diff}
@@ -2184,8 +2247,12 @@ function SnapshotFiles({
           stepper={stepper}
           ignoreWhitespace={ignoreWhitespace}
           onIgnoreWhitespace={setIgnoreWhitespace}
+          annotate={explained.annotate}
+          extra={explained.toolbar}
         />
       </div>
+      {explained.panel}
+      {explained.dialog}
     </div>
   );
 }

@@ -647,6 +647,39 @@ impl RepositoryService {
         }
     }
 
+    /// **Changes against main**: the files a branch changed since it left
+    /// the default branch, from their merge base to its tip. Reads only.
+    pub async fn branch_comparison(
+        &self,
+        id: &str,
+        branch: &str,
+    ) -> AppResult<crate::models::BranchComparison> {
+        let row = self.row(id).await?;
+        let root = Path::new(&row.canonical_root);
+        let git = self.git()?;
+        crate::git::validate_revision(branch)?;
+        let tip = git
+            .resolve_commit(root, branch)
+            .await?
+            .ok_or_else(|| AppError::not_found("That branch is gone."))?;
+        let (_, base) = git.list_refs_with_base(root).await?;
+        let base = base.ok_or_else(|| {
+            AppError::validation("This repository has no default branch to compare with.")
+        })?;
+        let merge_base = git.merge_base(root, &base, &tip).await?.ok_or_else(|| {
+            AppError::validation("This branch shares no history with the default branch.")
+        })?;
+        let files = git.range_files(root, &merge_base, &tip).await?;
+        Ok(crate::models::BranchComparison {
+            repository_id: id.to_string(),
+            branch: branch.to_string(),
+            base_branch: base,
+            merge_base,
+            tip,
+            files,
+        })
+    }
+
     pub async fn diff(
         &self,
         id: &str,

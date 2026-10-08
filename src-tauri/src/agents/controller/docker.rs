@@ -237,6 +237,21 @@ pub trait Workloads: Send + Sync + 'static {
         fallback_image: Option<&str>,
     ) -> impl Future<Output = AppResult<()>> + Send;
 
+    /// One regular file of at most `max_bytes` from a container, running or
+    /// stopped, through the engine's archive API: nothing runs inside the
+    /// container. `None` when the file is not there.
+    fn read_file(
+        &self,
+        _socket: &str,
+        _container_id: &str,
+        _path: &str,
+        _max_bytes: u64,
+    ) -> impl Future<Output = AppResult<Option<Vec<u8>>>> + Send {
+        std::future::ready(Err(AppError::dependency(
+            "This engine does not read files from a container.",
+        )))
+    }
+
     /// What this engine is, and whether `losetup` works when `image` is set.
     fn probe(
         &self,
@@ -1284,6 +1299,58 @@ impl Workloads for DockerEngine {
             tracing::warn!(error = %e, "the collector's container was not removed");
         }
         collected
+    }
+
+    async fn read_file(
+        &self,
+        socket: &str,
+        container_id: &str,
+        path: &str,
+        max_bytes: u64,
+    ) -> AppResult<Option<Vec<u8>>> {
+        let docker = self.client(socket)?;
+        // The archive of one file holds one entry named after it; the
+        // reader takes only that name, as a regular file within the limit.
+        let name: &'static str = match path.rsplit('/').next() {
+            Some("explanation.json") => "explanation.json",
+            _ => return Err(AppError::validation("Only an explanation's file is read.")),
+        };
+        let mut reader = TarReader::new(vec![Expected {
+            name,
+            max_bytes,
+            sink: Sink::Memory(Vec::new()),
+            found: false,
+        }]);
+        let mut download = docker.download_from_container(
+            container_id,
+            Some(DownloadFromContainerOptions {
+                path: path.to_string(),
+            }),
+        );
+        while let Some(chunk) = download.next().await {
+            let chunk = match chunk {
+                Ok(chunk) => chunk,
+                Err(bollard::errors::Error::DockerResponseServerError {
+                    status_code: 404, ..
+                }) => return Ok(None),
+                Err(e) => return Err(engine_error("The file could not be read.", e)),
+            };
+            reader.feed(&chunk).await.map_err(|e| {
+                AppError::validation("The file is not one regular file within its limit.")
+                    .with_details(e.to_string())
+            })?;
+        }
+        let entries = reader
+            .finish()
+            .map_err(|e| AppError::io("The file was cut short.").with_details(e.to_string()))?;
+        match entries.into_iter().next() {
+            Some(Expected {
+                sink: Sink::Memory(bytes),
+                found: true,
+                ..
+            }) => Ok(Some(bytes)),
+            _ => Ok(None),
+        }
     }
 
     async fn discard(

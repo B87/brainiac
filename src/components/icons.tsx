@@ -407,3 +407,11 @@ export const PulseIcon = (p: IconProps) => (
     <path d="M1.5 8.5h3l1.5-4 3 8 1.5-4h4" />
   </Svg>
 );
+
+/** A light bulb: Explain (v0.6). */
+export const BulbIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M5.5 10.5c-1-.9-1.8-2-1.8-3.6a4.3 4.3 0 0 1 8.6 0c0 1.6-.8 2.7-1.8 3.6v1.5h-5z" />
+    <path d="M6 14h4" />
+  </Svg>
+);

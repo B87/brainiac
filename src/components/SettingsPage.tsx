@@ -3,9 +3,11 @@ import { ACCESS_CHOICES } from "../lib/agent";
 import { errorMessage, ipc, type Settings, type VaultState } from "../lib/ipc";
 import { SECTIONS, type SettingsSection, sectionLabel } from "../lib/settings";
 import AgentRunsPane from "./AgentRunsPane";
+import ExplanationsPane from "./ExplanationsPane";
 import {
   ArchiveIcon,
   BranchIcon,
+  BulbIcon,
   ChevronLeft,
   DatabaseIcon,
   KeyIcon,
@@ -35,6 +37,7 @@ const ICONS: Record<SettingsSection, ReactNode> = {
   secrets: <KeyIcon size={16} />,
   agents: <TerminalIcon size={16} />,
   runs: <PlayIcon size={16} />,
+  explanations: <BulbIcon size={16} />,
   backup: <ArchiveIcon size={16} />,
 };
 
@@ -213,6 +216,9 @@ export default function SettingsPage({
                 onProfile={onProfile}
                 onOpenRun={onOpenRun}
               />
+            )}
+            {section === "explanations" && (
+              <ExplanationsPane onOpenAgents={() => onSection("runs")} />
             )}
             {section === "backup" && (
               <BackupPane onExport={onExport} onRestore={onRestore} />
