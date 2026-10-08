@@ -11,6 +11,8 @@ into the release's section.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-08
+
 - Runs can use OpenCode as well as Claude Code, with an Anthropic, OpenAI, or OpenRouter API key and the model you choose; Settings → Agents sets up and tests each agent and provider on its own page, and New run asks which one to use.
 - Installing, upgrading, building the image on, and testing a remote host now show each step as it happens, with the build's output and how long it has taken; an install or upgrade can be cancelled until it changes the host, and a failure says at which step and offers Try again.
 - Upgrading a host with a live run now waits for the run to end instead of refusing, and later upgrades build the run controller much faster.
@@ -159,7 +161,8 @@ First public build: a read-only Git viewer and multi-repository tracker for macO
 - The Branches tab is a placeholder.
 - Not signed with an Apple Developer certificate; the first launch needs right-click > Open (see the README).
 
-[Unreleased]: https://github.com/B87/brainiac/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/B87/brainiac/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/B87/brainiac/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/B87/brainiac/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/B87/brainiac/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/B87/brainiac/compare/v0.2.0...v0.3.0
