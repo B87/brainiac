@@ -196,7 +196,17 @@ A third panel round (hypotheses, not user data) on one project pattern that **ap
 - **The agent looks up before it has settled its names.** It sent short words (`closure`, `Result`, `iterator`) from its first read of the diff, then wrote its concepts under longer names it never looked up.
 - **`known_used` can overclaim.** Ten of the fourteen names the agents listed were the ledger's filler (`React` for a Rust change, `tokio`, `async/await`, `SQLite`), which the agent had looked up; the change may not rely on them. The checker confirms a name is in the ledger, not that the change uses it, so "Left out because you know them: N" can count a name the explanation never needed. It stays a count of ledger names, never above the ledger.
 
-What this suggests, none of it decided: ask the agent to look up the names it is about to write, after drafting its concepts and as it writes them; and let `known` report a near name (the same words, a plural, an added type parameter) as "similar to", which the panel's "related concept skipping" would otherwise cover. The first costs a prompt change and a second run of this harness; the second reopens a not-planned item. The container's start is still untimed.
+What this suggested was tried the same day (`--variant late`: decide the concept names first, then look up exactly those names, with the same ledgers):
+
+| Agent | Time | Cost | Lookups (per commit) | Known concepts named in `known_used` | Read the ledger whole |
+| --- | --- | --- | --- | --- | --- |
+| Claude Code | 384 s (was 289) | $1.03 (was $1.12) | 2, 2, 9 | 2 of 13 (was 1) | no |
+| OpenCode | 355 s (was 278) | $1.17 (was $0.99) | 3, 3, 3 | 10 of 14 (was 3) | yes, in all three |
+
+- **It helped OpenCode by defeating the file.** In every commit it ran `cut -f2,3 <file> | head -400` and read the whole ledger, in spite of "do not read it whole", then looked up names copied from it. That is why 10 of 14 known concepts were left out by name. With 300 entries that costs a few thousand tokens (the run cost 18% more and took 28% longer); with 5,000 it would not be cheap. The ledger's size, not the prompt, will decide whether agents read it whole.
+- **It did not help Claude Code.** It looked up the names it was about to write, and the ledger held the same ideas under other names ("Result and ?" against "Result and the ? operator"), so 2 of 13 were left out by name. It no longer kept a known concept in Concepts (0, was 2). Its time and cost moved about as much as a repeat run would.
+- **Reading the file is not the fix.** The lookup was meant to spare the agent the file; when the exact name misses, the agent's next step is to read it. So the answer is likely in what `known` returns: a near name as "similar to", or a few candidates by the words in a name, so one lookup shows the agent what the reader knows without reading the file. That reopens "related concept skipping", and is the next thing to try.
+- One OpenCode run failed with "database is locked" when two OpenCode processes ran together; the harness should not run them in parallel.
 
 ## Open questions
 
