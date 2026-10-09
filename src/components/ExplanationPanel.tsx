@@ -957,7 +957,7 @@ function ReadyActions({
             )}
           {item("Explain again or at another depth…", onExplain)}
           {item("Settings → Explanations", () =>
-            requestSettings("explanations"),
+            requestSettings("explain-agent"),
           )}
           {item(
             "Delete explanation…",

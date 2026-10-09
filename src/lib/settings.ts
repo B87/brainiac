@@ -9,10 +9,20 @@ export type SettingsSection =
   | "secrets"
   | "agents"
   | "runs"
-  | "explanations"
-  | "backup";
+  | "backup"
+  | "explain-agent"
+  | "explain-repositories"
+  | "explain-concepts"
+  | "explain-stored";
 
-export const SECTIONS: { id: SettingsSection; label: string }[] = [
+/** Which heading of Settings' sidebar a section is listed under. */
+export type SettingsGroup = "settings" | "explanations";
+
+export const SECTIONS: {
+  id: SettingsSection;
+  label: string;
+  group?: SettingsGroup;
+}[] = [
   { id: "general", label: "General" },
   { id: "notes", label: "Notes and Search" },
   { id: "repositories", label: "Repositories" },
@@ -21,8 +31,20 @@ export const SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: "secrets", label: "Secrets" },
   { id: "agents", label: "Agent Access" },
   { id: "runs", label: "Agents" },
-  { id: "explanations", label: "Explanations" },
   { id: "backup", label: "Backup" },
+  // Settings → Explanations, one page each (SPEC.md, section 14).
+  { id: "explain-agent", label: "Agent and Depth", group: "explanations" },
+  {
+    id: "explain-repositories",
+    label: "Repositories Asked",
+    group: "explanations",
+  },
+  { id: "explain-concepts", label: "Concepts You Know", group: "explanations" },
+  {
+    id: "explain-stored",
+    label: "Stored Explanations",
+    group: "explanations",
+  },
 ];
 
 /** The window event that asks App to open a Settings section from anywhere. */

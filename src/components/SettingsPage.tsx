@@ -1,16 +1,29 @@
 import { type ReactNode, useCallback, useRef, useState } from "react";
 import { ACCESS_CHOICES } from "../lib/agent";
 import { errorMessage, ipc, type Settings, type VaultState } from "../lib/ipc";
-import { SECTIONS, type SettingsSection, sectionLabel } from "../lib/settings";
+import {
+  SECTIONS,
+  type SettingsGroup,
+  type SettingsSection,
+  sectionLabel,
+} from "../lib/settings";
 import AgentRunsPane from "./AgentRunsPane";
-import ExplanationsPane from "./ExplanationsPane";
+import {
+  ExplainAgentPane,
+  ExplainConceptsPane,
+  ExplainRepositoriesPane,
+  ExplainStoredPane,
+} from "./ExplanationsPane";
 import {
   ArchiveIcon,
+  BoxIcon,
   BranchIcon,
   BulbIcon,
+  CheckIcon,
   ChevronLeft,
   DatabaseIcon,
   KeyIcon,
+  LockIcon,
   NoteIcon,
   PersonIcon,
   PlayIcon,
@@ -37,9 +50,21 @@ const ICONS: Record<SettingsSection, ReactNode> = {
   secrets: <KeyIcon size={16} />,
   agents: <TerminalIcon size={16} />,
   runs: <PlayIcon size={16} />,
-  explanations: <BulbIcon size={16} />,
   backup: <ArchiveIcon size={16} />,
+  "explain-agent": <BulbIcon size={16} />,
+  "explain-repositories": <LockIcon size={16} />,
+  "explain-concepts": <CheckIcon size={16} />,
+  "explain-stored": <BoxIcon size={16} />,
 };
+
+/** The sidebar's headings, in order. */
+const GROUPS: { id: SettingsGroup; label: string }[] = [
+  { id: "settings", label: "Settings" },
+  { id: "explanations", label: "Explanations" },
+];
+
+/** Sections whose list takes the page's full width. */
+const WIDE: SettingsSection[] = ["explain-concepts", "explain-stored"];
 
 /** Saves a change to the settings; true when it was saved. */
 export type SaveSettings = (patch: Partial<Settings>) => Promise<boolean>;
@@ -94,6 +119,9 @@ export default function SettingsPage({
   const pending = useRef<Partial<Settings>[]>([]);
   const queue = useRef<Promise<unknown>>(Promise.resolve());
   const [shown, setShown] = useState(initial);
+  // Where a page draws what goes beside its title, such as a list's count.
+  const [titleSlot, setTitleSlot] = useState<HTMLSpanElement | null>(null);
+  const wide = WIDE.includes(section);
   const show = useCallback(
     () => setShown(Object.assign({}, confirmed.current, ...pending.current)),
     [],
@@ -143,43 +171,70 @@ export default function SettingsPage({
             <ChevronLeft size={14} />
             Back
           </button>
-          <h2 className="section-label m-0 px-2 pt-3 pb-1">Settings</h2>
-          {SECTIONS.map((s) => {
-            const current = s.id === section;
-            return (
-              <button
-                key={s.id}
-                type="button"
-                className="side-row"
-                aria-current={current}
-                onClick={() => onSection(s.id)}
-              >
-                <span className={current ? "text-accent" : "text-muted"}>
-                  {ICONS[s.id]}
-                </span>
-                <span className="min-w-0 flex-1 truncate">{s.label}</span>
-                {s.id === "agents" && accessLabel && (
-                  <span className="text-[11px] font-normal text-muted">
-                    {accessLabel}
-                  </span>
-                )}
-              </button>
-            );
-          })}
+          {GROUPS.map((g) => (
+            <section key={g.id} className="flex flex-col gap-px">
+              <h2 className="section-label m-0 px-2 pt-3 pb-1">{g.label}</h2>
+              {SECTIONS.filter((s) => (s.group ?? "settings") === g.id).map(
+                (s) => {
+                  const current = s.id === section;
+                  return (
+                    <button
+                      key={s.id}
+                      type="button"
+                      className="side-row"
+                      aria-current={current}
+                      // The row is named by its section; a state shown beside
+                      // it, such as Agent Access' Off, describes it.
+                      aria-label={s.label}
+                      aria-describedby={
+                        s.id === "agents" && accessLabel
+                          ? "settings-access-label"
+                          : undefined
+                      }
+                      onClick={() => onSection(s.id)}
+                    >
+                      <span className={current ? "text-accent" : "text-muted"}>
+                        {ICONS[s.id]}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate">{s.label}</span>
+                      {s.id === "agents" && accessLabel && (
+                        <span
+                          id="settings-access-label"
+                          className="text-[11px] font-normal text-muted"
+                        >
+                          {accessLabel}
+                        </span>
+                      )}
+                    </button>
+                  );
+                },
+              )}
+            </section>
+          ))}
         </div>
       </nav>
       <main className="flex min-w-0 flex-1 flex-col bg-app">
         {top}
         <div
           data-tauri-drag-region
-          className="flex h-12 shrink-0 items-center border-b bg-header px-4"
+          className="flex h-12 shrink-0 items-center gap-2 border-b bg-header px-4"
         >
           <h1 className="m-0 text-[14px] font-semibold">
             {sectionLabel(section)}
           </h1>
+          <span
+            ref={setTitleSlot}
+            className="flex min-w-0 flex-1 items-center gap-2 text-[13px]"
+          />
         </div>
         <div className="min-h-0 flex-1 overflow-auto bg-header">
-          <div className="mx-auto flex max-w-160 flex-col gap-5 px-6 pt-5 pb-8">
+          <div
+            className={
+              wide
+                ? "flex flex-col gap-3 px-6 pb-8"
+                : "mx-auto flex max-w-160 flex-col gap-5 px-6 pt-5 pb-8"
+            }
+          >
             {error && (
               <div role="alert" className="text-[12.5px] text-conflict">
                 {error}
@@ -217,8 +272,15 @@ export default function SettingsPage({
                 onOpenRun={onOpenRun}
               />
             )}
-            {section === "explanations" && (
-              <ExplanationsPane onOpenAgents={() => onSection("runs")} />
+            {section === "explain-agent" && (
+              <ExplainAgentPane onOpenAgents={() => onSection("runs")} />
+            )}
+            {section === "explain-repositories" && <ExplainRepositoriesPane />}
+            {section === "explain-concepts" && (
+              <ExplainConceptsPane titleSlot={titleSlot} />
+            )}
+            {section === "explain-stored" && (
+              <ExplainStoredPane titleSlot={titleSlot} />
             )}
             {section === "backup" && (
               <BackupPane onExport={onExport} onRestore={onRestore} />

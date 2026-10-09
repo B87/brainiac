@@ -25,15 +25,14 @@ const PROVIDER: Record<string, string> = {
   openrouter: "OpenRouter",
 };
 
-/** Settings → Explanations (SPEC.md, section 14). */
-export default function ExplanationsPane({
-  onOpenAgents,
-}: {
-  onOpenAgents: () => void;
-}) {
+/**
+ * Settings → Explanations' settings and lists, kept current, with how to save
+ * a change or run an action and reload (SPEC.md, section 14). Each of its four
+ * pages loads its own.
+ */
+function useExplanationSettings() {
   const [view, setView] = useState<ExplanationSettingsView | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [language, setLanguage] = useState("");
 
   const load = useCallback(
     () =>
@@ -69,15 +68,35 @@ export default function ExplanationsPane({
       setError(errorMessage(e));
     }
   };
+  return { view, error, save, act };
+}
 
-  if (!view)
-    return error ? (
-      <div role="alert" className="text-[12.5px] text-conflict">
-        {error}
-      </div>
-    ) : (
-      <span className="text-muted">Loading…</span>
-    );
+function ErrorLine({ error }: { error: string | null }) {
+  return error ? (
+    <div role="alert" className="text-[12.5px] text-conflict">
+      {error}
+    </div>
+  ) : null;
+}
+
+function Loading({ error }: { error: string | null }) {
+  return error ? (
+    <ErrorLine error={error} />
+  ) : (
+    <span className="text-muted">Loading…</span>
+  );
+}
+
+/** Settings → Agent and Depth: who explains, with what model and time, for whom. */
+export function ExplainAgentPane({
+  onOpenAgents,
+}: {
+  onOpenAgents: () => void;
+}) {
+  const { view, error, save } = useExplanationSettings();
+  const [language, setLanguage] = useState("");
+
+  if (!view) return <Loading error={error} />;
   const s = view.settings;
   const profile = view.profiles.find((p) => p.profile_id === s.profile_id);
   const minutes = (text: string): { value: number } | { error: string } => {
@@ -93,15 +112,12 @@ export default function ExplanationsPane({
   return (
     <>
       <Lede>
-        An agent explains a commit, a branch, or a run's result when you ask, in
-        a run of its own on the host chosen here. It needs what a run needs in
-        Agents; each repository is asked once before its code is sent.
+        An agent explains a commit, a branch, a pull request, or a run's result
+        when you ask, in a run of its own on the host chosen here. It needs what
+        a run needs in Agents; each repository is asked once before its code is
+        sent.
       </Lede>
-      {error && (
-        <div role="alert" className="text-[12.5px] text-conflict">
-          {error}
-        </div>
-      )}
+      <ErrorLine error={error} />
 
       <Group label="Agent">
         <div className="settings-group">
@@ -313,18 +329,25 @@ export default function ExplanationsPane({
           </form>
         </div>
       </Group>
+    </>
+  );
+}
 
-      <Group label="Concepts you know">
-        <Hint>
-          Explanations leave these out unless a change uses one in a new way.
-          Languages, libraries, and system tools count in every repository; a
-          project pattern only in its own, so one client's names never reach
-          another's prompts.
-        </Hint>
-        <ConceptList concepts={view.concepts} act={act} />
-      </Group>
+/** Settings → Repositories Asked: each answer to whether code may be sent. */
+export function ExplainRepositoriesPane() {
+  const { view, error, act } = useExplanationSettings();
+  if (!view) return <Loading error={error} />;
+  return (
+    <>
+      <Lede>
+        Before the first Explain in a repository, Brainiac asks whether its code
+        may be sent to the agent's provider, for that repository or every
+        repository in one of its workspaces. A No from any of its workspaces
+        wins over a Yes.
+      </Lede>
+      <ErrorLine error={error} />
 
-      <Group label="Repositories">
+      <Group label="Answers">
         <div className="settings-group">
           {view.answers.length === 0 && (
             <div className="settings-row text-muted">
@@ -381,18 +404,47 @@ export default function ExplanationsPane({
           ))}
         </div>
       </Group>
+    </>
+  );
+}
 
-      <Group label="Stored explanations">
-        <Hint>
-          Kept until deleted, unlike runs, each with its run's conversation,
-          which holds the code the agent read.
-        </Hint>
-        <StoredList
-          stored={view.stored}
-          totalBytes={view.stored_bytes}
-          act={act}
-        />
-      </Group>
+/** Settings → Concepts You Know: the ledger explanations leave out. */
+export function ExplainConceptsPane({
+  titleSlot,
+}: {
+  titleSlot: HTMLElement | null;
+}) {
+  const { view, error, act } = useExplanationSettings();
+  if (!view) return <Loading error={error} />;
+  return (
+    <>
+      <ErrorLine error={error} />
+      <ConceptList concepts={view.concepts} act={act} titleSlot={titleSlot} />
+    </>
+  );
+}
+
+/** Settings → Stored Explanations: every explanation kept, with its cost. */
+export function ExplainStoredPane({
+  titleSlot,
+}: {
+  titleSlot: HTMLElement | null;
+}) {
+  const { view, error, act } = useExplanationSettings();
+  if (!view) return <Loading error={error} />;
+  return (
+    <>
+      <ErrorLine error={error} />
+      <StoredList
+        stored={view.stored}
+        totalBytes={view.stored_bytes}
+        act={act}
+        titleSlot={titleSlot}
+      />
+      <Hint>
+        Kept until deleted, unlike runs, each with its run's conversation, which
+        holds the code the agent read.
+      </Hint>
     </>
   );
 }

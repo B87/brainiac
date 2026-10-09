@@ -1,5 +1,6 @@
 import { ask } from "@tauri-apps/plugin-dialog";
 import { type ReactNode, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { depthLabel, formatCost } from "../lib/explain";
 import {
   type ConceptKind,
@@ -15,6 +16,21 @@ import Popover from "./Popover";
 import { Hint } from "./SettingsPanes";
 
 type Act = (what: () => Promise<unknown>) => Promise<void>;
+
+/** What a list's page shows beside its title, drawn into the page's header. */
+function Title({
+  slot,
+  children,
+}: {
+  slot: HTMLElement | null;
+  children: ReactNode;
+}) {
+  return slot ? createPortal(children, slot) : null;
+}
+
+/** The band under the page's title with a list's filter and choices. */
+const TOOLBAR =
+  "sticky top-0 z-10 -mx-6 flex flex-wrap items-center gap-2 border-b bg-header px-6 py-3";
 
 const KIND_WORD: Record<ConceptKind, string> = {
   language: "Language",
@@ -103,9 +119,11 @@ function toggled(set: Set<string>, id: string): Set<string> {
 export function ConceptList({
   concepts,
   act,
+  titleSlot,
 }: {
   concepts: KnownConcept[];
   act: Act;
+  titleSlot: HTMLElement | null;
 }) {
   const [filter, setFilter] = useState("");
   const [kind, setKind] = useState<ConceptKind | "all">("all");
@@ -142,9 +160,20 @@ export function ConceptList({
         c.repository_id === chosen[0].repository_id,
     );
 
+  const title = (
+    <Title slot={titleSlot}>
+      {roots.length > 0 && <span className="text-muted">· {roots.length}</span>}
+      <span className="flex-1" />
+      <Hint>
+        Explanations leave these out unless a change uses one in a new way
+      </Hint>
+    </Title>
+  );
+
   if (roots.length === 0)
     return (
-      <div className="settings-group">
+      <div className="settings-group mt-5">
+        {title}
         <div className="settings-row text-muted">
           I know this on a concept in an explanation adds it here.
         </div>
@@ -153,10 +182,11 @@ export function ConceptList({
 
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex flex-wrap items-center gap-2">
+      {title}
+      <div className={TOOLBAR}>
         <input
           type="search"
-          className="field w-56"
+          className="field w-72"
           placeholder="Filter concepts"
           aria-label="Filter concepts"
           value={filter}
@@ -331,10 +361,12 @@ export function StoredList({
   stored,
   totalBytes,
   act,
+  titleSlot,
 }: {
   stored: ExplanationSummary[];
   totalBytes: number;
   act: Act;
+  titleSlot: HTMLElement | null;
 }) {
   const [filter, setFilter] = useState("");
   const [grouping, setGrouping] = useState<Grouping>("repository");
@@ -390,9 +422,30 @@ export function StoredList({
     });
   };
 
+  const title = (
+    <Title slot={titleSlot}>
+      {stored.length > 0 && (
+        <span className="text-muted">
+          · {stored.length} · {bytes(totalBytes)}
+        </span>
+      )}
+      <span className="flex-1" />
+      {stored.length > 0 && (
+        <button
+          type="button"
+          className="btn btn-sm text-conflict"
+          onClick={() => void remove(stored, "every stored explanation")}
+        >
+          Delete All…
+        </button>
+      )}
+    </Title>
+  );
+
   if (stored.length === 0)
     return (
-      <div className="settings-group">
+      <div className="settings-group mt-5">
+        {title}
         <div className="settings-row text-muted">
           No explanation is stored. Explain keeps each one here until you delete
           it.
@@ -402,10 +455,11 @@ export function StoredList({
 
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex flex-wrap items-center gap-2">
+      {title}
+      <div className={TOOLBAR}>
         <input
           type="search"
-          className="field w-56"
+          className="field w-72"
           placeholder="Filter by commit, branch, or title"
           aria-label="Filter explanations"
           value={filter}
@@ -445,17 +499,6 @@ export function StoredList({
         <span className="text-[12.5px] font-semibold">
           {totalCost(inMonth(stored)) || "no cost reported"}
         </span>
-        <span className="flex-1" />
-        <Hint>
-          {plural(stored.length, "explanation")} · {bytes(totalBytes)}
-        </Hint>
-        <button
-          type="button"
-          className="btn btn-sm"
-          onClick={() => void remove(stored, "every stored explanation")}
-        >
-          Delete All…
-        </button>
       </div>
 
       <div className="flex flex-col">

@@ -367,7 +367,7 @@ export default function ExplainDialog({
                   className="text-link hover:underline"
                   onClick={() => {
                     onClose();
-                    requestSettings("explanations");
+                    requestSettings("explain-repositories");
                   }}
                 >
                   Change in Settings

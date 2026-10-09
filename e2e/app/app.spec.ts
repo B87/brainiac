@@ -253,12 +253,27 @@ async function openSettings(page: Page, section: string) {
   await page.evaluate(() => window.emitEvent("menu", { id: "settings" }));
   await page
     .getByRole("navigation", { name: "Settings" })
-    .getByRole("button", { name: section })
+    .getByRole("button", { name: section, exact: true })
     .click();
   await expect(
     page.getByRole("heading", { name: section, level: 1 }),
   ).toBeVisible();
 }
+
+test("Settings → Explanations has a page for each part", async ({ page }) => {
+  await openSettings(page, "Agent and Depth");
+  await expect(page.getByText("Brief, Claude Code's model")).toBeVisible();
+  await openSettings(page, "Repositories Asked");
+  await expect(page.getByRole("button", { name: "Ask again" })).toBeVisible();
+  await openSettings(page, "Concepts You Know");
+  await expect(page.getByText("· 3", { exact: true })).toBeVisible();
+  await page.getByLabel("Filter concepts").fill("serde");
+  await expect(page.getByText("Turns Rust values into JSON")).toBeVisible();
+  await expect(page.getByText("async and await")).toBeHidden();
+  await openSettings(page, "Stored Explanations");
+  await expect(page.getByRole("button", { name: "Delete All…" })).toBeVisible();
+  await expect(page.getByText("Fix installing over a running")).toBeVisible();
+});
 
 test("Settings shows the vault and turns note IDs off", async ({ page }) => {
   await openSettings(page, "Notes and Search");
@@ -780,7 +795,7 @@ test("Settings checks a value before saving it, and saves it when the field is l
   // Leaving Settings from the menu, with no blur, still saves what was typed.
   await page
     .getByRole("navigation", { name: "Settings" })
-    .getByRole("button", { name: "Repositories" })
+    .getByRole("button", { name: "Repositories", exact: true })
     .click();
   await page.getByLabel("Stop a fetch after").fill("120");
   await page.evaluate(() => window.emitEvent("menu", { id: "show_today" }));

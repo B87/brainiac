@@ -18,6 +18,7 @@ import type {
   Conversation,
   CredentialOwner,
   DbConnection,
+  ExplanationSettingsView,
   FolderEntry,
   ForgeAccountSlot,
   HealthSample,
@@ -2245,6 +2246,8 @@ export class FakeBackend {
       // Explaining changes (SPEC.md, section 14): nothing is explained here.
       case "list_subject_explanations":
         return [];
+      case "get_explanation_settings":
+        return structuredClone(explanationSettings);
       // Reviewing (SPEC.md, Reviewing): drafts stay here; the other writes
       // land in the conversation at once.
       case "list_review_drafts":
@@ -2766,3 +2769,76 @@ export class FakeBackend {
     }
   }
 }
+
+/** Settings → Explanations with a few concepts and stored explanations. */
+const explanationSettings: ExplanationSettingsView = {
+  settings: {
+    profile_id: null,
+    host_id: null,
+    brief_model: "sonnet",
+    teach_me_model: "sonnet",
+    deep_model: "opus",
+    brief_minutes: 10,
+    teach_me_minutes: 10,
+    deep_minutes: 20,
+    levels: [{ language: "Rust", level: "new" }],
+    default_depth: "teach_me",
+    questions: true,
+  },
+  profiles: [],
+  answers: [
+    {
+      scope: "repository",
+      scope_id: repository.id,
+      scope_name: repository.name,
+      provider: "anthropic",
+      allowed: true,
+      answered_at: NOW,
+    },
+  ],
+  concepts: [
+    [
+      "language",
+      "async and await",
+      "A function that can pause while it waits.",
+    ],
+    ["library", "serde", "Turns Rust values into JSON and back."],
+    ["project_pattern", "Retry until the lock is free", "Callers retry once."],
+  ].map(([kind, name, description], i) => ({
+    id: `concept-${i}`,
+    kind: kind as "language",
+    name,
+    repository_id: kind === "project_pattern" ? repository.id : null,
+    repository_name: kind === "project_pattern" ? repository.name : null,
+    merged_into: null,
+    learned_at: NOW,
+    description,
+    learned_from: "287bdc9",
+    learned_in: repository.id,
+    learned_in_name: repository.name,
+    explanation_id: null,
+  })),
+  stored: [
+    ["commit", "a".repeat(40), "Fix installing over a running controller"],
+    ["branch", "refs/heads/feature/retry", "Retry failed webhooks"],
+  ].map(([kind, reference, title], i) => ({
+    id: `explanation-${i}`,
+    repository_id: repository.id,
+    repository_name: repository.name,
+    subject: { kind: kind as "commit", reference },
+    title,
+    profile_id: "claude",
+    agent: "claude_code",
+    provider: "anthropic",
+    payment: "api_key",
+    model: "opus",
+    depth: "deep",
+    state: "ready",
+    created_at: NOW,
+    cost: { micros: 1_530_000, currency: "USD" },
+    duration_secs: 240,
+    size_bytes: 120_000,
+  })),
+  stored_bytes: 240_000,
+  stored_cost: [{ micros: 3_060_000, currency: "USD" }],
+};
