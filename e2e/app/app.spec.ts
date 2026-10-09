@@ -286,7 +286,7 @@ test("Settings → Explanations has a page for each part", async ({ page }) => {
     page.getByRole("button", { name: "parser", exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "Forget parser's 3…" }),
+    page.getByRole("button", { name: "Forget these 3…" }),
   ).toBeVisible();
   await page.getByLabel("Select all of parser").check();
   await expect(page.getByText("3 selected")).toBeVisible();
@@ -322,6 +322,10 @@ test("Concepts You Know edits a concept's name and kind", async ({ page }) => {
     kind: "library",
   });
   await expect(dialog).toBeHidden();
+  // The page reloads the saved list.
+  await expect(
+    page.getByRole("button", { name: "Edit serde json" }),
+  ).toBeVisible();
 
   // A project pattern may become a technique; the dialog says what that
   // does and the button says so too.

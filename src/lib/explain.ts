@@ -234,8 +234,9 @@ export const CONCEPT_KINDS: KnownConcept["kind"][] = [
 /** Where a concept belongs when a list is grouped by repository: a project
  * pattern's own repository, else the repository it was learned in. */
 export const NO_REPOSITORY = "Not from a tracked repository";
+const REMOVED_REPOSITORY = "A removed repository";
 export function conceptRepository(c: KnownConcept): string {
-  if (c.repository_id) return c.repository_name ?? "A removed repository";
+  if (c.repository_id) return c.repository_name ?? REMOVED_REPOSITORY;
   return c.learned_in_name ?? NO_REPOSITORY;
 }
 
@@ -288,9 +289,20 @@ export function forgetGroupQuestion(
 ): string {
   const everywhere = concepts.filter((c) => !c.repository_id).length;
   const n = concepts.length;
-  const head = `Forget ${n} ${n === 1 ? "concept" : "concepts"} learned in ${label}?`;
+  // The fallback labels are phrases, not names: "learned in A removed repository".
+  const where =
+    label === NO_REPOSITORY
+      ? "outside a tracked repository"
+      : label === REMOVED_REPOSITORY
+        ? "in a removed repository"
+        : `in ${label}`;
+  const head = `Forget ${n} ${n === 1 ? "concept" : "concepts"} learned ${where}?`;
+  const known =
+    n === 1
+      ? "It is known in every repository"
+      : `${everywhere} of them ${everywhere === 1 ? "is" : "are"} known in every repository`;
   return everywhere
-    ? `${head} ${everywhere} of ${n === 1 ? "it is" : "them are"} known in every repository (languages, libraries, protocols, tools, and techniques), so explanations will teach ${everywhere === 1 ? "it" : "them"} again everywhere.`
+    ? `${head} ${known} (languages, libraries, protocols, tools, and techniques), so explanations will teach ${everywhere === 1 ? "it" : "them"} again everywhere.`
     : `${head} Explanations will teach ${n === 1 ? "it" : "them"} again.`;
 }
 
@@ -308,10 +320,21 @@ export function conceptKindChoices(
 /** A concept's name folded as the ledger folds it (`store::concept_key`):
  * lowercase, every run of other characters one space. */
 export function conceptKey(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, " ")
-    .trim();
+  // One code point at a time, as the ledger does: Rust's `is_alphanumeric`
+  // is Alphabetic or Numeric (combining marks of some scripts count), and
+  // lowercasing the whole string would turn a final sigma into ς.
+  let key = "";
+  let gap = false;
+  for (const c of name) {
+    if (/^[\p{Alphabetic}\p{N}]$/u.test(c)) {
+      if (gap && key) key += " ";
+      gap = false;
+      key += c.toLowerCase();
+    } else {
+      gap = true;
+    }
+  }
+  return key;
 }
 
 /** What an edit would do, for the Edit Concept dialog: whether the concept

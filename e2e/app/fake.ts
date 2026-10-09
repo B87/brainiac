@@ -2271,11 +2271,34 @@ export class FakeBackend {
         return [];
       case "get_explanation_settings":
         return structuredClone(explanationSettings);
-      // Concepts You Know: the calls are what the tests check.
-      case "edit_concept":
-      case "forget_concept":
-      case "merge_concept":
+      // Concepts You Know: the saved list changes as the app's would.
+      case "edit_concept": {
+        const concept = explanationSettings.concepts.find(
+          (c) => c.id === args.id,
+        );
+        if (concept) {
+          concept.name = String(args.name);
+          concept.kind = args.kind as typeof concept.kind;
+          if (concept.kind !== "project_pattern") {
+            concept.repository_id = null;
+            concept.repository_name = null;
+          }
+        }
         return null;
+      }
+      case "forget_concept": {
+        explanationSettings.concepts = explanationSettings.concepts.filter(
+          (c) => c.id !== args.id && c.merged_into !== args.id,
+        );
+        return null;
+      }
+      case "merge_concept": {
+        const from = explanationSettings.concepts.find(
+          (c) => c.id === args.from,
+        );
+        if (from) from.merged_into = String(args.into);
+        return null;
+      }
       // Code sharing (SPEC.md, section 13): one answer per repository and
       // provider, for runs and explanations.
       case "get_code_sharing_question": {

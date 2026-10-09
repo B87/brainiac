@@ -393,7 +393,7 @@ export function ConceptList({
                     className="text-[12px] text-conflict hover:underline"
                     onClick={() => void forgetGroup(label, items)}
                   >
-                    Forget {label}'s {items.length}…
+                    Forget these {items.length}…
                   </button>
                 </div>
                 {expanded && (

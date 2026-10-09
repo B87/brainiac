@@ -10,6 +10,7 @@ import {
   formatDuration,
   groupConceptsByRepository,
   knownLeftOutLine,
+  NO_REPOSITORY,
   noteSequence,
   notesIn,
   pickRecord,
@@ -319,7 +320,14 @@ describe("Concepts You Know", () => {
       "2 of them are known in every repository",
     );
     expect(forgetGroupQuestion("widgets", [lang])).toContain(
-      "1 of it is known in every repository",
+      "It is known in every repository",
+    );
+    // The fallback labels are not repository names.
+    expect(forgetGroupQuestion(NO_REPOSITORY, [lang])).toContain(
+      "learned outside a tracked repository?",
+    );
+    expect(forgetGroupQuestion("A removed repository", [pattern])).toContain(
+      "learned in a removed repository?",
     );
   });
 
@@ -339,6 +347,10 @@ describe("Concepts You Know", () => {
     expect(conceptKey("Result / ?")).toBe("result");
     expect(conceptKey("ts-rs")).toBe("ts rs");
     expect(conceptKey("!!")).toBe("");
+    // A final sigma lowercases on its own, and a combining mark of a letter
+    // stays, as in the ledger.
+    expect(conceptKey("AΣ")).toBe("aσ");
+    expect(conceptKey("α\u0345 x")).toBe("α\u0345 x");
   });
 
   it("say what an edit would do before it is saved", () => {

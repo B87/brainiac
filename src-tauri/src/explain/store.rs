@@ -720,6 +720,9 @@ mod tests {
         assert_eq!(concept_key("Result / ?"), "result");
         assert_eq!(concept_key("ts-rs"), "ts rs");
         assert_eq!(concept_key("!!"), "");
+        // The frontend folds the same way (src/lib/explain.test.ts).
+        assert_eq!(concept_key("AΣ"), "aσ");
+        assert_eq!(concept_key("α\u{345} x"), "α\u{345} x");
     }
     fn ledger() -> Connection {
         let conn = Connection::open_in_memory().unwrap();

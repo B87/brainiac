@@ -33,7 +33,10 @@ const agents = opt("agent", ["claude"]);
 const model = opt("model", [null])[0];
 const commits = opt("commit", ["29bbc56", "287bdc9", "7edf3c2"]);
 const ledgerSize = Number(opt("ledger", ["300"])[0]);
-const out = opt("out", [path.join(os.tmpdir(), "known-concepts-spike")])[0];
+// Absolute: the agent starts in a clone, where a relative path is another file.
+const out = path.resolve(
+  opt("out", [path.join(os.tmpdir(), "known-concepts-spike")])[0],
+);
 const dry = args.includes("--dry-run");
 const variant = opt("variant", ["first"])[0];
 const reuse = opt("reuse", [null])[0];
