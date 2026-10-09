@@ -598,7 +598,7 @@ function Ready({
 
   const learn = (name: string, kind: ConceptKind) =>
     act(async () => {
-      const id = await ipc.learnConcept(repositoryId, kind, name);
+      const id = await ipc.learnConcept(repositoryId, kind, name, record.id);
       setKnown((k) => ({ ...k, [`${kind}:${name}`]: id }));
     });
   const unlearn = (name: string, kind: ConceptKind) =>

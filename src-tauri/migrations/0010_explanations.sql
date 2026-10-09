@@ -26,6 +26,13 @@ CREATE TABLE known_concepts (
   repository_id  TEXT NOT NULL DEFAULT '',
   merged_into    TEXT REFERENCES known_concepts (id) ON DELETE SET NULL,
   learned_at     TEXT NOT NULL,
+  -- The explanation's own words for it, and where it was learned: the
+  -- subject's short label ("287bdc9", "feature/x", "#42", "run 4f2a91c0"),
+  -- its repository, and the explanation (in history.db, so not a key).
+  description    TEXT NOT NULL DEFAULT '',
+  learned_from   TEXT NOT NULL DEFAULT '',
+  learned_in     TEXT NOT NULL DEFAULT '',
+  explanation_id TEXT,
   UNIQUE (kind, key, repository_id),
   CHECK ((kind = 'project_pattern') = (repository_id <> ''))
 );

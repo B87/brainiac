@@ -12,4 +12,21 @@ repository_id: string | null, repository_name: string | null,
 /**
  * Merged into this concept.
  */
-merged_into: string | null, learned_at: string, };
+merged_into: string | null, learned_at: string, 
+/**
+ * The explanation's one-line account of it, when learned from one.
+ */
+description: string, 
+/**
+ * The subject it was learned on: "287bdc9", "feature/x", "#42", or
+ * "run 4f2a91c0"; empty when not known.
+ */
+learned_from: string, 
+/**
+ * The repository it was learned in, and its name while it is tracked.
+ */
+learned_in: string | null, learned_in_name: string | null, 
+/**
+ * The explanation it was learned from, while it is kept.
+ */
+explanation_id: string | null, };

@@ -431,15 +431,31 @@ async fn a_commit_is_explained_after_one_follow_up_turn() {
     // Got it on a project pattern is told to this repository's prompts.
     let concept = h
         .explanations
-        .learn(&h.repository_id, ConceptKind::ProjectPattern, "Limit rule")
+        .learn(
+            &h.repository_id,
+            ConceptKind::ProjectPattern,
+            "Limit rule",
+            None,
+        )
         .await
         .unwrap();
     h.explanations
-        .learn(&h.repository_id, ConceptKind::Language, "let")
+        .learn(
+            &h.repository_id,
+            ConceptKind::Language,
+            "let",
+            Some(&record.id),
+        )
         .await
         .unwrap();
     let view = h.explanations.settings_view().await.unwrap();
     assert_eq!(view.concepts.len(), 2);
+    // Learned from the explanation, it keeps its words and where it was.
+    let known = view.concepts.iter().find(|c| c.name == "let").unwrap();
+    assert_eq!(known.description, "Binds a name.");
+    assert_eq!(known.learned_from, record.tip[..7]);
+    assert_eq!(known.learned_in_name.as_deref(), Some("repo"));
+    assert_eq!(known.explanation_id.as_deref(), Some(record.id.as_str()));
     assert_eq!(view.stored.len(), 1);
     assert_eq!(view.stored_cost[0].micros, 420_000);
 

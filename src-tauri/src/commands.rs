@@ -1666,15 +1666,18 @@ pub async fn set_disagreement_hidden(
     explanations.set_hidden(&id, index, hidden).await
 }
 
-/// **Got it**; returns the concept's ID for Undo.
+/// **I know this**; returns the concept's ID for Undo.
 #[tauri::command]
 pub async fn learn_concept(
     repository_id: String,
     kind: crate::models::ConceptKind,
     name: String,
+    explanation_id: Option<String>,
     explanations: State<'_, Explanations>,
 ) -> AppResult<String> {
-    explanations.learn(&repository_id, kind, &name).await
+    explanations
+        .learn(&repository_id, kind, &name, explanation_id.as_deref())
+        .await
 }
 
 /// **Undo** or **Remove**.

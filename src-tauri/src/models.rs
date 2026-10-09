@@ -4615,6 +4615,16 @@ pub struct KnownConcept {
     /// Merged into this concept.
     pub merged_into: Option<String>,
     pub learned_at: String,
+    /// The explanation's one-line account of it, when learned from one.
+    pub description: String,
+    /// The subject it was learned on: "287bdc9", "feature/x", "#42", or
+    /// "run 4f2a91c0"; empty when not known.
+    pub learned_from: String,
+    /// The repository it was learned in, and its name while it is tracked.
+    pub learned_in: Option<String>,
+    pub learned_in_name: Option<String>,
+    /// The explanation it was learned from, while it is kept.
+    pub explanation_id: Option<String>,
 }
 
 /// Settings → Explanations.

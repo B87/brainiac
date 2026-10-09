@@ -1,19 +1,16 @@
-import { ask } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useState } from "react";
-import { DEPTHS, depthLabel, formatCost, formatDuration } from "../lib/explain";
+import { DEPTHS, depthLabel } from "../lib/explain";
 import { relativeTime } from "../lib/format";
 import {
-  type ConceptKind,
   type ExplanationSettings,
   type ExplanationSettingsView,
   errorMessage,
   ipc,
-  type KnownConcept,
   type LanguageLevel,
   onExplanationChanged,
   subscribe,
 } from "../lib/ipc";
-import { plural } from "../lib/repo";
+import { ConceptList, StoredList } from "./ExplanationLists";
 import { CommitField, Group, Hint, Lede } from "./SettingsPanes";
 
 const LEVELS: { value: LanguageLevel; label: string }[] = [
@@ -21,19 +18,6 @@ const LEVELS: { value: LanguageLevel; label: string }[] = [
   { value: "comfortable", label: "Comfortable" },
   { value: "expert", label: "Expert" },
 ];
-
-const KIND_WORD: Record<ConceptKind, string> = {
-  language: "Language",
-  library: "Library",
-  system: "System tool",
-  project_pattern: "Project pattern",
-};
-
-function bytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-}
 
 const PROVIDER: Record<string, string> = {
   anthropic: "Anthropic",
@@ -106,14 +90,6 @@ export default function ExplanationsPane({
     /\s/.test(text.trim())
       ? { error: "A model name has no spaces." }
       : { value: text.trim() };
-  const general = view.concepts.filter((c) => !c.repository_id);
-  const patterns = view.concepts.filter((c) => c.repository_id);
-  const byRepository = new Map<string, KnownConcept[]>();
-  for (const c of patterns) {
-    const key = c.repository_name ?? c.repository_id ?? "";
-    byRepository.set(key, [...(byRepository.get(key) ?? []), c]);
-  }
-
   return (
     <>
       <Lede>
@@ -340,42 +316,12 @@ export default function ExplanationsPane({
 
       <Group label="Concepts you know">
         <Hint>
-          Languages, libraries, and system tools are left out of every
-          repository's explanations; a project pattern only out of its own
-          repository's, so one client's names never reach another's prompts.
+          Explanations leave these out unless a change uses one in a new way.
+          Languages, libraries, and system tools count in every repository; a
+          project pattern only in its own, so one client's names never reach
+          another's prompts.
         </Hint>
-        <div className="settings-group">
-          {view.concepts.length === 0 && (
-            <div className="settings-row text-muted">
-              Got it on a concept adds it here.
-            </div>
-          )}
-          {general.map((c) => (
-            <ConceptRow
-              key={c.id}
-              concept={c}
-              others={general.filter(
-                (o) => o.id !== c.id && o.kind === c.kind && !o.merged_into,
-              )}
-              act={act}
-            />
-          ))}
-          {[...byRepository.entries()].map(([name, list]) => (
-            <div key={name} className="flex flex-col">
-              <div className="settings-row text-[12px] font-medium text-fg-2">
-                {name}
-              </div>
-              {list.map((c) => (
-                <ConceptRow
-                  key={c.id}
-                  concept={c}
-                  others={list.filter((o) => o.id !== c.id && !o.merged_into)}
-                  act={act}
-                />
-              ))}
-            </div>
-          ))}
-        </div>
+        <ConceptList concepts={view.concepts} act={act} />
       </Group>
 
       <Group label="Repositories">
@@ -439,114 +385,14 @@ export default function ExplanationsPane({
       <Group label="Stored explanations">
         <Hint>
           Kept until deleted, unlike runs, each with its run's conversation,
-          which holds the code the agent read.{" "}
-          {plural(view.stored.length, "explanation")},{" "}
-          {bytes(view.stored_bytes)}
-          {view.stored_cost.length > 0 &&
-            `, ${view.stored_cost.map(formatCost).join(" + ")} reported`}
-          .
+          which holds the code the agent read.
         </Hint>
-        <div className="settings-group">
-          {view.stored.map((e) => (
-            <div key={e.id} className="settings-row">
-              <span className="flex min-w-55 flex-1 flex-col gap-0.5">
-                <span className="truncate font-medium" title={e.title}>
-                  {e.repository_name} · {e.title}
-                </span>
-                <Hint>
-                  {e.subject.kind} · {depthLabel(e.depth)} ·{" "}
-                  {e.model || e.agent} · {relativeTime(e.created_at)}
-                  {e.state !== "ready" ? ` · ${e.state}` : ""}
-                  {e.duration_secs !== null
-                    ? ` · ${formatDuration(e.duration_secs)}`
-                    : ""}
-                  {e.cost ? ` · ${formatCost(e.cost)}` : ""}
-                </Hint>
-              </span>
-              <button
-                type="button"
-                className="btn btn-sm btn-ghost"
-                disabled={e.state === "working"}
-                onClick={() => void act(() => ipc.deleteExplanation(e.id))}
-              >
-                Delete
-              </button>
-            </div>
-          ))}
-          {view.stored.length > 0 && (
-            <div className="settings-row">
-              <span className="flex-1" />
-              <button
-                type="button"
-                className="btn btn-sm"
-                onClick={() =>
-                  void (async () => {
-                    const sure = await ask(
-                      "Delete every stored explanation and its run's conversation? One still being written is left.",
-                      {
-                        title: "Delete All Explanations",
-                        kind: "warning",
-                        okLabel: "Delete All",
-                      },
-                    );
-                    if (sure) await act(() => ipc.deleteAllExplanations());
-                  })()
-                }
-              >
-                Delete all
-              </button>
-            </div>
-          )}
-        </div>
+        <StoredList
+          stored={view.stored}
+          totalBytes={view.stored_bytes}
+          act={act}
+        />
       </Group>
     </>
-  );
-}
-
-function ConceptRow({
-  concept,
-  others,
-  act,
-}: {
-  concept: KnownConcept;
-  others: KnownConcept[];
-  act: (what: () => Promise<unknown>) => Promise<void>;
-}) {
-  const merged = concept.merged_into;
-  return (
-    <div className="settings-row">
-      <span className="flex min-w-55 flex-1 flex-col gap-0.5">
-        <span className="font-medium">{concept.name}</span>
-        <Hint>
-          {KIND_WORD[concept.kind]}
-          {merged ? " · merged" : ""}
-        </Hint>
-      </span>
-      {!merged && others.length > 0 && (
-        <select
-          className="field"
-          aria-label={`Merge ${concept.name} into`}
-          value=""
-          onChange={(e) =>
-            e.target.value &&
-            void act(() => ipc.mergeConcept(concept.id, e.target.value))
-          }
-        >
-          <option value="">Merge into…</option>
-          {others.map((o) => (
-            <option key={o.id} value={o.id}>
-              {o.name}
-            </option>
-          ))}
-        </select>
-      )}
-      <button
-        type="button"
-        className="btn btn-sm btn-ghost"
-        onClick={() => void act(() => ipc.forgetConcept(concept.id))}
-      >
-        Remove
-      </button>
-    </div>
   );
 }

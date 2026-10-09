@@ -456,12 +456,15 @@ pub fn concept_key(name: &str) -> String {
 
 pub fn concepts(conn: &Connection) -> AppResult<Vec<KnownConcept>> {
     let mut stmt = conn.prepare(
-        "SELECT id, kind, name, repository_id, merged_into, learned_at FROM known_concepts
-         ORDER BY kind, name COLLATE NOCASE",
+        "SELECT id, kind, name, repository_id, merged_into, learned_at,
+                description, learned_from, learned_in, explanation_id
+         FROM known_concepts
+         ORDER BY learned_at DESC, name COLLATE NOCASE",
     )?;
     let rows = stmt
         .query_map([], |r| {
             let repository: String = r.get(3)?;
+            let learned_in: String = r.get(8)?;
             Ok(KnownConcept {
                 id: r.get(0)?,
                 kind: parse(r.get(1)?)?,
@@ -470,18 +473,34 @@ pub fn concepts(conn: &Connection) -> AppResult<Vec<KnownConcept>> {
                 repository_name: None,
                 merged_into: r.get(4)?,
                 learned_at: r.get(5)?,
+                description: r.get(6)?,
+                learned_from: r.get(7)?,
+                learned_in: (!learned_in.is_empty()).then_some(learned_in),
+                learned_in_name: None,
+                explanation_id: r.get(9)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
 }
 
-/// Got it: add a concept, or return the one already known by that identity.
+/// Where a concept was learned, kept with it for Settings → Explanations.
+#[derive(Debug, Default, Clone)]
+pub struct ConceptOrigin {
+    pub description: String,
+    pub learned_from: String,
+    pub learned_in: String,
+    pub explanation_id: Option<String>,
+}
+
+/// I know this: add a concept, or return the one already known by that
+/// identity (which keeps where it was first learned).
 pub fn add_concept(
     conn: &Connection,
     kind: ConceptKind,
     name: &str,
     repository_id: Option<&str>,
+    origin: &ConceptOrigin,
 ) -> AppResult<String> {
     let name = name.trim();
     let key = concept_key(name);
@@ -506,9 +525,21 @@ pub fn add_concept(
     }
     let id = uuid::Uuid::new_v4().to_string();
     conn.execute(
-        "INSERT INTO known_concepts (id, kind, name, key, repository_id, learned_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![id, word(&kind)?, name, key, repository, now_rfc3339()],
+        "INSERT INTO known_concepts (id, kind, name, key, repository_id, learned_at,
+                description, learned_from, learned_in, explanation_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            id,
+            word(&kind)?,
+            name,
+            key,
+            repository,
+            now_rfc3339(),
+            origin.description,
+            origin.learned_from,
+            origin.learned_in,
+            origin.explanation_id,
+        ],
     )?;
     Ok(id)
 }

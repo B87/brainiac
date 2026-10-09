@@ -699,9 +699,20 @@ export const ipc = {
       index,
       hidden,
     }),
-  /** Got it; the concept's ID, for Undo. */
-  learnConcept: (repositoryId: string, kind: ConceptKind, name: string) =>
-    invoke<string>("learn_concept", { repositoryId, kind, name }),
+  /** I know this; the concept's ID, for Undo. Given the explanation it is
+   * in, the concept keeps its description and where it was learned. */
+  learnConcept: (
+    repositoryId: string,
+    kind: ConceptKind,
+    name: string,
+    explanationId: string | null = null,
+  ) =>
+    invoke<string>("learn_concept", {
+      repositoryId,
+      kind,
+      name,
+      explanationId,
+    }),
   forgetConcept: (id: string) => invoke<void>("forget_concept", { id }),
   mergeConcept: (from: string, into: string) =>
     invoke<void>("merge_concept", { from, into }),

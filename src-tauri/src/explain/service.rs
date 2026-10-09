@@ -1398,18 +1398,36 @@ impl ExplanationService {
         self.get(id).await
     }
 
-    /// **Got it**: a concept goes into the ledger; a project pattern with
-    /// its repository. Returns the concept's ID, for Undo.
+    /// **I know this**: a concept goes into the ledger; a project pattern
+    /// with its repository. Given the explanation it is in, it keeps that
+    /// explanation's words for it and where it was learned. Returns the
+    /// concept's ID, for Undo.
     pub async fn learn(
         &self,
         repository_id: &str,
         kind: ConceptKind,
         name: &str,
+        explanation_id: Option<&str>,
     ) -> AppResult<String> {
+        let mut origin = store::ConceptOrigin {
+            learned_in: repository_id.to_string(),
+            ..Default::default()
+        };
+        if let Some(explanation_id) = explanation_id {
+            let row = self.row(explanation_id).await?;
+            origin.learned_from = subject_short(&row);
+            origin.explanation_id = Some(row.id.clone());
+            origin.description = row
+                .explanation
+                .as_ref()
+                .and_then(|e| e.concepts.iter().find(|c| c.kind == kind && c.name == name))
+                .map(|c| c.explanation.clone())
+                .unwrap_or_default();
+        }
         let (repository, name) = (repository_id.to_string(), name.to_string());
         let id = self
             .core
-            .call(move |conn| store::add_concept(conn, kind, &name, Some(&repository)))
+            .call(move |conn| store::add_concept(conn, kind, &name, Some(&repository), &origin))
             .await?;
         self.emit("", repository_id, false);
         Ok(id)
@@ -1543,6 +1561,7 @@ impl ExplanationService {
             .ok_or_else(|| AppError::validation("The explanation is not ready."))?;
         let short = match row.subject.kind {
             ExplainSubjectKind::Commit => row.tip[..row.tip.len().min(8)].to_string(),
+            // A file name cannot hold a slash.
             ExplainSubjectKind::Branch => short_ref(&row.subject.reference).replace('/', "-"),
             ExplainSubjectKind::Run => format!("run {}", &row.tip[..row.tip.len().min(8)]),
             ExplainSubjectKind::PullRequest => {
@@ -1632,6 +1651,10 @@ impl ExplanationService {
         for concept in &mut concepts {
             concept.repository_name = concept
                 .repository_id
+                .as_ref()
+                .and_then(|r| repository_names.get(r).cloned());
+            concept.learned_in_name = concept
+                .learned_in
                 .as_ref()
                 .and_then(|r| repository_names.get(r).cloned());
         }
@@ -1831,6 +1854,24 @@ fn find_lines(text: &str, hash: &str, near: u32, count: u32) -> Option<(u32, u32
         }
     }
     best
+}
+
+/// A subject's short label, for where a concept was learned: a commit's
+/// short hash, a branch's name, a pull request's number, or a run's.
+fn subject_short(row: &ExplanationRow) -> String {
+    let short = |s: &str| s[..s.len().min(7)].to_string();
+    match row.subject.kind {
+        ExplainSubjectKind::Commit => short(&row.tip),
+        ExplainSubjectKind::Branch => short_ref(&row.subject.reference).to_string(),
+        ExplainSubjectKind::Run => format!(
+            "run {}",
+            &row.subject.reference[..row.subject.reference.len().min(8)]
+        ),
+        ExplainSubjectKind::PullRequest => format!(
+            "#{}",
+            row.subject.reference.rsplit('#').next().unwrap_or_default()
+        ),
+    }
 }
 
 #[cfg(test)]
