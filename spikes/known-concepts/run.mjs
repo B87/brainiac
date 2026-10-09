@@ -120,7 +120,8 @@ function runAgent(agent, dir, text, knownFile, logFile) {
   const started = Date.now();
   const cmd = agent === "claude"
     ? ["claude", ["-p", text, "--output-format", "stream-json", "--verbose", ...(model ? ["--model", model] : []),
-        "--allowedTools", "Read Grep Glob Bash(git:*) Bash(rg:*) Bash(known:*) Bash(mkdir:*) Write(.brainiac/*)"]]
+        "--permission-mode", "acceptEdits",
+        "--allowedTools", "Read Grep Glob Bash(git:*) Bash(rg:*) Bash(known:*)"]]
     : ["opencode", ["run", "--format", "json", "--auto", "--dir", dir, ...(model ? ["-m", model] : []), text]];
   const r = spawnSync(cmd[0], cmd[1], { cwd: dir, env, encoding: "utf8", maxBuffer: 1 << 28 });
   fs.writeFileSync(logFile, r.stdout + (r.stderr ? `\n# stderr\n${r.stderr}` : ""));
@@ -132,6 +133,7 @@ function runOne(agent, sha, label, ledger) {
   fs.rmSync(dir, { recursive: true, force: true });
   execFileSync("git", ["clone", "-q", "--no-hardlinks", root, dir]);
   execFileSync("git", ["-C", dir, "checkout", "-q", sha]);
+  fs.mkdirSync(path.join(dir, ".brainiac"), { recursive: true });
   const knownFile = path.join(out, `${sha}-${agent}-${label}.tsv`);
   fs.writeFileSync(knownFile, ledger ?? "");
   const count = ledger ? ledger.trim().split("\n").length : 0;

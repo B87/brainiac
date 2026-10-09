@@ -31,4 +31,4 @@ container's start is not timed; the prompt is the first round's, with the
 lookup paragraph of `explain/prompt.rs`, not the real prompt; the known
 concepts are all given the kind technique; a run's cost is what the agent
 reports. Each run costs real money (the first round's Sonnet runs were
-$0.18 to $0.52). Not yet run against the real agents.
+$0.18 to $0.52). First results (Claude Code and OpenCode, Sonnet 5.5, three commits) are in the design doc. `known_used` counts any ledger name the agent lists, filler included.
