@@ -13,7 +13,7 @@ into the release's section.
 
 - New run asks once, for each repository and provider, whether the repository's code may be sent, in place of the agreement on each agent's page; the answers, shared with Explain, are in Settings → Code Sharing.
 - Explain asks an agent to explain a commit, a branch compared with the default branch, a run's result, or a pull request: a summary, the files in reading order, notes beside the lines, the ideas the change relies on, and questions to check yourself, each claim checked against the code before it is shown.
-- The first Explain in a repository asks whether its code may be sent, for that repository or for every repository in a workspace; Settings → Explanations lists the answers.
+- The first Explain in a repository asks whether its code may be sent, for that repository or for every repository in a workspace; Settings → Code Sharing lists the answers.
 - The Explain dialog shows what an explanation usually takes in time and cost, and a finished or failed one shows what it took.
 - A branch's explanation stays with the branch: notes move with their lines, and those whose lines changed are marked out of date, with Re-explain.
 - Branches & tags shows a branch's changes against the default branch as one patch.
