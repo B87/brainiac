@@ -143,6 +143,7 @@ mod tests {
             }],
             disagreements: vec![],
             checks: ExplanationChecks::default(),
+            known_left_out: vec![],
         };
         let md = render("abc — Title", &e);
         assert!(md.starts_with("# abc — Title\n\nWhy.\n"));

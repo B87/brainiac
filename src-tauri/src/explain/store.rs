@@ -543,6 +543,59 @@ pub fn known_for(conn: &Connection, repository_id: &str) -> AppResult<Vec<String
     Ok(rows)
 }
 
+/// A known concept as the checker matches it: its identity key, and the
+/// concept a merge points at (the one Undo forgets).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnownRef {
+    pub id: String,
+    pub name: String,
+    pub kind: ConceptKind,
+    pub key: String,
+}
+
+/// What a repository's explanation can leave out because the reader knows
+/// it: the same concepts `known_for` names in the prompt, newest first. A
+/// concept merged into another resolves to that one.
+pub fn known_refs(conn: &Connection, repository_id: &str) -> AppResult<Vec<KnownRef>> {
+    let mut stmt = conn.prepare(
+        "SELECT c.id, c.name, c.kind, c.key, c.merged_into, t.name, t.kind
+         FROM known_concepts c
+         LEFT JOIN known_concepts t ON t.id = c.merged_into
+         WHERE c.repository_id = '' OR c.repository_id = ?1
+         ORDER BY c.learned_at DESC",
+    )?;
+    // `?` after `query_map` hands a database error to the caller as an
+    // `AppError`; the closure itself returns rusqlite's own error type.
+    let rows = stmt
+        .query_map([repository_id], |r| {
+            let merged_into: Option<String> = r.get(4)?;
+            let (id, name, kind) = match merged_into {
+                Some(target) => (
+                    target,
+                    r.get::<_, Option<String>>(5)?,
+                    r.get::<_, Option<String>>(6)?,
+                ),
+                None => (r.get(0)?, Some(r.get(1)?), Some(r.get(2)?)),
+            };
+            Ok((id, name, kind, r.get::<_, String>(3)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut refs = Vec::new();
+    for (id, name, kind, key) in rows {
+        // A merge target that is gone leaves no name: skip the dangling row.
+        let (Some(name), Some(kind)) = (name, kind) else {
+            continue;
+        };
+        refs.push(KnownRef {
+            id,
+            name,
+            kind: parse(kind)?,
+            key,
+        });
+    }
+    Ok(refs)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -553,5 +606,50 @@ mod tests {
         assert_eq!(concept_key("Result / ?"), "result");
         assert_eq!(concept_key("ts-rs"), "ts rs");
         assert_eq!(concept_key("!!"), "");
+    }
+    fn ledger() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("../../migrations/0010_explanations.sql"))
+            .unwrap();
+        conn
+    }
+
+    fn origin() -> ConceptOrigin {
+        ConceptOrigin {
+            description: String::new(),
+            learned_from: String::new(),
+            learned_in: String::new(),
+            explanation_id: None,
+        }
+    }
+
+    #[test]
+    fn known_refs_are_this_repositorys_and_resolve_a_merge_to_its_target() {
+        let conn = ledger();
+        let add = |kind, name: &str, repo: Option<&str>| {
+            add_concept(&conn, kind, name, repo, &origin()).unwrap()
+        };
+        let embed = add(ConceptKind::Language, "go:embed", None);
+        let alias = add(ConceptKind::Language, "Go embed directive", None);
+        merge_concept(&conn, &alias, &embed).unwrap();
+        add(ConceptKind::ProjectPattern, "ledger rule", Some("repo-a"));
+        add(
+            ConceptKind::ProjectPattern,
+            "other client rule",
+            Some("repo-b"),
+        );
+
+        let refs = known_refs(&conn, "repo-a").unwrap();
+        let keys: Vec<&str> = refs.iter().map(|r| r.key.as_str()).collect();
+        assert!(keys.contains(&"go embed directive"));
+        assert!(keys.contains(&"ledger rule"));
+        // One repository's pattern never reaches another's explanation.
+        assert!(!keys.contains(&"other client rule"));
+        // The alias resolves to the concept it was merged into, which Undo forgets.
+        let by_alias = refs.iter().find(|r| r.key == "go embed directive").unwrap();
+        assert_eq!(
+            (by_alias.id.as_str(), by_alias.name.as_str()),
+            (embed.as_str(), "go:embed")
+        );
     }
 }

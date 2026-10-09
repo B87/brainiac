@@ -154,7 +154,7 @@ Brainiac explains a commit, a branch, a run's result, or a pull request to the p
 
 Refines v0.6's concepts after use: the labels, the Concepts You Know page, and how the ledger reaches an explain run. Branch `v0.6.1-concepts`, started 9 October 2026. Design and the panel rounds behind each item: [`design/code-explanations.md`](design/code-explanations.md), Concept classification and Editing the ledger, and scope. Proposed scope, in the panel's order; the maintainer decides what stays. `SPEC.md` section 14 changes before the code of each item.
 
-- [ ] **Left out because you know them: N**, in the explanation beside "Matched to the change", with Undo next to the concept; counted by Brainiac's checker (a concept whose exact name is in the ledger is dropped and counted), not by the agent.
+- [ ] **Left out because you know them: N**, in the explanation beside "Matched to the change", with Undo next to the concept; the agent names the known concepts it left out and Brainiac's checker counts only those the ledger holds by exact name; a known concept used in a new way stays in Concepts.
 - [ ] **The ledger as a file in the run's input**: a sorted, folded, filtered and capped `known-concepts.txt` outside the repository, and a small `known` lookup script in the run's image that reports known or new with the stored description. The cap and the dialog's estimate follow from the spike below.
 - [ ] **Kinds renamed**: "system" becomes protocol or standard and tool or service, with the schema, the checker, the prompt, and a migration of existing "system" rows (and their Merge groups).
 - [ ] **Concepts You Know**: group by repository, sort, search over names and descriptions, bulk Forget by repository.

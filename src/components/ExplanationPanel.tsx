@@ -4,6 +4,7 @@ import {
   checksLine,
   depthLabel,
   formatDuration,
+  knownLeftOutLine,
   type PlacedNote,
   readingOrder,
   sameSubject,
@@ -582,10 +583,14 @@ function Ready({
   const [checksOpen, setChecksOpen] = useState(false);
   const [metaOpen, setMetaOpen] = useState(false);
   const [known, setKnown] = useState<Record<string, string>>({});
+  const [leftOutOpen, setLeftOutOpen] = useState(false);
+  // Ledger ids forgotten from the left-out list; later explanations explain them.
+  const [forgotten, setForgotten] = useState<Set<string>>(new Set());
   const [revealed, setRevealed] = useState<Set<number>>(new Set());
   const [showHidden, setShowHidden] = useState(false);
   if (!e) return null;
   const checks = checksLine(e);
+  const leftOut = knownLeftOutLine(e);
   const usage = usageText(record);
   const tour = readingOrder(e.tour, e);
   const step = selectedPath
@@ -600,6 +605,11 @@ function Ready({
     act(async () => {
       const id = await ipc.learnConcept(repositoryId, kind, name, record.id);
       setKnown((k) => ({ ...k, [`${kind}:${name}`]: id }));
+    });
+  const forget = (id: string) =>
+    act(async () => {
+      await ipc.forgetConcept(id);
+      setForgotten((f) => new Set(f).add(id));
     });
   const unlearn = (name: string, kind: ConceptKind) =>
     act(async () => {
@@ -677,6 +687,41 @@ function Ready({
             <ul className="m-0 mt-1 pl-5">
               {e.checks.left_out.map((l) => (
                 <li key={l}>{l}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+      {leftOut && (
+        <div className="text-[12px] text-muted">
+          <button
+            type="button"
+            className="text-left hover:underline"
+            aria-expanded={leftOutOpen}
+            title="Concepts you marked as known, which this explanation does not teach again"
+            onClick={() => setLeftOutOpen(!leftOutOpen)}
+          >
+            {leftOut}
+          </button>
+          {leftOutOpen && (
+            <ul className="m-0 mt-1 list-none pl-0">
+              {e.known_left_out.map((c) => (
+                <li key={c.id} className="flex items-baseline gap-2 py-0.5">
+                  <span className="text-fg-2">{c.name}</span>
+                  <span className="text-[11.5px]">{KIND_WORD[c.kind]}</span>
+                  <span className="flex-1" />
+                  {forgotten.has(c.id) ? (
+                    <span>Forgotten: later explanations will explain it</span>
+                  ) : (
+                    <button
+                      type="button"
+                      className="text-link hover:underline"
+                      onClick={() => void forget(c.id)}
+                    >
+                      Undo
+                    </button>
+                  )}
+                </li>
               ))}
             </ul>
           )}

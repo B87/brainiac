@@ -1128,7 +1128,15 @@ impl ExplanationService {
                     // not cut a cited one among a large change's others.
                     let paths = draft.cited_paths();
                     let files = self.artifacts.read_files(&repo, &row.tip, &paths).await?;
-                    check::check(draft, &subject, &files, attempt)
+                    // The ledger as it is now: a concept forgotten while the
+                    // agent worked is not counted as left out.
+                    let known = {
+                        let repository = row.repository_id.clone();
+                        self.core
+                            .call(move |conn| store::known_refs(conn, &repository))
+                            .await?
+                    };
+                    check::check(draft, &subject, &files, &known, attempt)
                 }
             },
         };

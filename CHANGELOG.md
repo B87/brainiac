@@ -11,6 +11,8 @@ into the release's section.
 
 ## [Unreleased]
 
+- An explanation says how many concepts it left out because you know them, lists them, and lets you undo one.
+
 ## [0.6.0] - 2026-10-09
 
 - Explain asks an agent to explain a commit, a branch compared with the default branch, a run's result, or a pull request: a summary, the files in reading order, notes beside the lines, the ideas the change relies on, and questions to check yourself, each claim checked against the code before it is shown.

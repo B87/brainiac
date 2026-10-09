@@ -107,6 +107,9 @@ pub fn prompt(
     p.push_str("- \"tour\": every changed file once, in reading order (the rule, then the fix, then its helpers, then bookkeeping), each {\"path\", \"role\"}.\n");
     p.push_str("- \"notes\": each {\"path\", \"new_start\", \"new_end\", \"text\", \"sources\": [{\"path\", \"start\", \"end\", \"quote\"}]}. new_start and new_end are line numbers on the NEW side of the change, and the lines must include at least one changed line. \"text\" is Markdown. Each quote is copied verbatim from that file at the checked-out commit, and lies within start..end.\n");
     p.push_str("- \"concepts\": ideas the change relies on, each {\"name\", \"kind\": \"language\" | \"library\" | \"system\" | \"project_pattern\", \"explanation\", \"appears\": [{\"path\", \"line\"}]}.\n");
+    if !reader.known.is_empty() {
+        p.push_str("- \"known_used\": the names of the reader's known concepts (the list above) that this change relies on and that you left out of \"concepts\", each name exactly as listed, without its kind. An empty array if none.\n");
+    }
     if questions {
         p.push_str("- \"questions\": 2–3 {\"question\", \"answer\"} that check understanding.\n");
     } else {
@@ -158,6 +161,7 @@ mod tests {
         assert!(text.contains("git diff aaa..bbb"));
         assert!(text.contains("new to Rust"));
         assert!(text.contains("traits (language)"));
+        assert!(text.contains("\"known_used\""));
         assert!(text.contains("Depth: deep"));
         assert!(text.contains("plain English"));
         assert!(text.contains("\"questions\": an empty array"));
@@ -180,6 +184,8 @@ mod tests {
         );
         assert!(root.contains("git show bbb"));
         assert!(!root.contains("already knows"));
+        // Nothing known, so nothing to report as left out.
+        assert!(!root.contains("known_used"));
     }
 
     #[test]

@@ -105,6 +105,12 @@ export function checksLine(e: Explanation): string | null {
   return parts.length ? parts.join(" · ") : null;
 }
 
+/** "Left out because you know them: 3", or null when none were. */
+export function knownLeftOutLine(e: Explanation): string | null {
+  const n = e.known_left_out.length;
+  return n ? `Left out because you know them: ${n}` : null;
+}
+
 /** Paths in reading order: the tour's, then any file it leaves out, by path. */
 export function readingOrder<T extends { path: string }>(
   files: T[],

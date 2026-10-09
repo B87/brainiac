@@ -4,6 +4,7 @@ import {
   estimateText,
   formatCost,
   formatDuration,
+  knownLeftOutLine,
   noteSequence,
   notesIn,
   pickRecord,
@@ -41,6 +42,7 @@ const explanation = (over: Partial<Explanation> = {}): Explanation => ({
   questions: [],
   disagreements: [],
   checks: { moved: 2, left_out: ["x"] },
+  known_left_out: [],
   ...over,
 });
 
@@ -79,6 +81,20 @@ describe("explanations", () => {
         }),
       ),
     ).toBeNull();
+  });
+
+  it("count the known concepts left out, only when there were some", () => {
+    expect(knownLeftOutLine(explanation())).toBeNull();
+    expect(
+      knownLeftOutLine(
+        explanation({
+          known_left_out: [
+            { id: "1", name: "go:embed", kind: "language" },
+            { id: "2", name: "DKIM", kind: "system" },
+          ],
+        }),
+      ),
+    ).toBe("Left out because you know them: 2");
   });
 
   it("order files and notes by the tour", () => {
