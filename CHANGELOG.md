@@ -11,6 +11,8 @@ into the release's section.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-10
+
 - Text fields and menus in New Run, Explain, Code Sharing, and Settings → Explanations have a border and padding like the rest of the app.
 - An explanation says how many concepts it left out because you know them, lists them, and lets you undo one.
 - A concept you know can be edited: change its name or kind, and its old name stays with it.
@@ -179,7 +181,8 @@ First public build: a read-only Git viewer and multi-repository tracker for macO
 - The Branches tab is a placeholder.
 - Not signed with an Apple Developer certificate; the first launch needs right-click > Open (see the README).
 
-[Unreleased]: https://github.com/B87/brainiac/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/B87/brainiac/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/B87/brainiac/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/B87/brainiac/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/B87/brainiac/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/B87/brainiac/compare/v0.3.1...v0.4.0
