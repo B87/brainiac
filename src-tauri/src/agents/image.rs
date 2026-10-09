@@ -305,51 +305,128 @@ mod tests {
         }
     }
 
-    /// `known` is plain Node, so the test runs it where Node is installed.
+    /// `known` is plain Node. The test fails when Node is not installed:
+    /// a silent skip would hide a script that no longer matches the ledger.
+    fn require_node() {
+        let version = std::process::Command::new("node")
+            .arg("--version")
+            .output()
+            .unwrap_or_else(|error| panic!("node is required to test the known script: {error}"));
+        assert!(
+            version.status.success(),
+            "node --version failed: {version:?}"
+        );
+    }
+
+    fn run_known(
+        script: &std::path::Path,
+        list: &std::path::Path,
+        stdin: Option<&str>,
+        args: &[&str],
+    ) -> String {
+        let mut command = std::process::Command::new("node");
+        command
+            .arg(script)
+            .args(args)
+            .env("BRAINIAC_KNOWN_FILE", list)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        if stdin.is_some() {
+            command.stdin(std::process::Stdio::piped());
+        }
+        let mut child = command.spawn().unwrap();
+        if let Some(text) = stdin {
+            use std::io::Write;
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(text.as_bytes())
+                .unwrap();
+        }
+        let out = child.wait_with_output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap()
+    }
+
     #[test]
     fn known_says_which_names_are_exact_matches_of_the_list() {
-        let node = std::process::Command::new("node").arg("--version").output();
-        if node.is_err() {
-            return;
-        }
+        require_node();
         let dir = tempfile::tempdir().unwrap();
         let list = dir.path().join("known-concepts.tsv");
         std::fs::write(
             &list,
-            "go embed\tgo:embed\tlanguage\tPuts a file into the binary.\ndkim\tDKIM\tsystem\t\n",
+            "go embed\tgo:embed\tlanguage\tPuts a file into the binary.\n\
+go embed\tgo:embed\tlibrary\tThe crate.\n\
+dkim\tDKIM\tsystem\t\n",
         )
         .unwrap();
         let script = dir.path().join("known.mjs");
         std::fs::write(&script, include_str!("image/known.mjs")).unwrap();
-        let run = |args: &[&str]| {
-            let out = std::process::Command::new("node")
-                .arg(&script)
-                .args(args)
-                .env("BRAINIAC_KNOWN_FILE", &list)
-                .output()
-                .unwrap();
-            String::from_utf8(out.stdout).unwrap()
-        };
-        let out = run(&[
-            "GO:EMBED (language)",
-            "dkim",
-            "go",
-            "go:embed directive",
-            "spf",
-        ]);
+        let out = run_known(
+            &script,
+            &list,
+            None,
+            &[
+                "GO:EMBED (language)",
+                "dkim",
+                "go",
+                "go:embed directive",
+                "spf",
+            ],
+        );
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(
             lines[0],
             "known: go:embed (language) - Puts a file into the binary."
         );
-        assert_eq!(lines[1], "known: DKIM (system)");
+        assert_eq!(lines[1], "known: go:embed (library) - The crate.");
+        assert_eq!(lines[2], "known: DKIM (system)");
         // Exact names only: a shorter or longer name is new.
-        assert_eq!(lines[2], "new: go");
-        assert_eq!(lines[3], "new: go:embed directive");
-        assert_eq!(lines[4], "new: spf");
+        assert_eq!(lines[3], "new: go");
+        assert_eq!(lines[4], "new: go:embed directive");
+        assert_eq!(lines[5], "new: spf");
         // No list: every name is new, and it says why.
         std::fs::remove_file(&list).unwrap();
-        assert!(run(&["dkim"]).contains("treat every concept as new"));
+        assert!(run_known(&script, &list, None, &["dkim"]).contains("treat every concept as new"));
+    }
+
+    /// The script's fold is the ledger's fold, including names a shell would
+    /// split, and names come one per line on stdin.
+    #[test]
+    fn known_folds_names_as_the_ledger_does_and_reads_stdin() {
+        require_node();
+        let dir = tempfile::tempdir().unwrap();
+        let names = ["İstanbul", "AΣ", "Arc<Mutex<_>>", "go:embed", "Limit rule"];
+        let mut tsv = String::new();
+        for name in names {
+            let key = crate::explain::store::concept_key(name);
+            tsv.push_str(&format!("{key}\t{name}\tlanguage\t\n"));
+        }
+        let list = dir.path().join("known-concepts.tsv");
+        std::fs::write(&list, &tsv).unwrap();
+        let script = dir.path().join("known.mjs");
+        std::fs::write(&script, include_str!("image/known.mjs")).unwrap();
+        let out = run_known(
+            &script,
+            &list,
+            Some(&format!("{}\n", names.join("\n"))),
+            &[],
+        );
+        for name in names {
+            assert!(out.contains(&format!("known: {name} (language)")), "{out}");
+        }
+        let usage = std::process::Command::new("node")
+            .arg(&script)
+            .env("BRAINIAC_KNOWN_FILE", &list)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        assert_eq!(usage.status.code(), Some(2));
     }
 
     #[test]

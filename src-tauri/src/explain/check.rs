@@ -402,7 +402,16 @@ pub fn check(
         .collect();
     let mut sources_read = raw.sources_read;
     sources_read.truncate(MAX_SOURCES_READ);
-    let known_left_out = confirm_known(&raw.known_used, known);
+    // A concept the agent kept (a new use) is not also "left out", even when
+    // `known_used` names it too. The match is the folded name and the kind.
+    let kept: Vec<(String, ConceptKind)> = concepts
+        .iter()
+        .filter_map(|c| {
+            let key = concept_key(&c.name);
+            (!key.is_empty()).then_some((key, c.kind))
+        })
+        .collect();
+    let known_left_out = confirm_known(&raw.known_used, known, &kept);
 
     Ok(Checked {
         explanation: Explanation {
@@ -425,31 +434,42 @@ pub fn check(
 /// The known concepts the agent says it left out, each confirmed against the
 /// ledger by its exact name (folded as the ledger folds it). A name the
 /// ledger does not hold is not counted, so the line can never claim more than
-/// the reader's own ledger says; one concept is listed once however it was
-/// spelled or merged.
-fn confirm_known(named: &[String], known: &[KnownRef]) -> Vec<LeftOutConcept> {
+/// the reader's own ledger says. One concept is listed once however it was
+/// spelled or merged. Two kinds of one name are both counted. A concept the
+/// agent kept in `concepts` (the same folded name and kind) is not counted:
+/// that is a known concept used in a new way.
+fn confirm_known(
+    named: &[String],
+    known: &[KnownRef],
+    kept: &[(String, ConceptKind)],
+) -> Vec<LeftOutConcept> {
     let mut out: Vec<LeftOutConcept> = Vec::new();
     for name in named.iter().take(MAX_KNOWN_USED) {
         let key = concept_key(strip_kind(name));
         if key.is_empty() {
             continue;
         }
-        let Some(found) = known.iter().find(|k| k.key == key) else {
-            continue;
-        };
-        if out.iter().all(|o| o.id != found.id) {
-            out.push(LeftOutConcept {
-                id: found.id.clone(),
-                name: found.name.clone(),
-                kind: found.kind,
-            });
+        for found in known.iter().filter(|k| k.key == key) {
+            if kept
+                .iter()
+                .any(|(k, kind)| k == &found.key && *kind == found.kind)
+            {
+                continue;
+            }
+            if out.iter().all(|o| o.id != found.id) {
+                out.push(LeftOutConcept {
+                    id: found.id.clone(),
+                    name: found.name.clone(),
+                    kind: found.kind,
+                });
+            }
         }
     }
     out
 }
 
-/// The prompt lists known concepts as "name (kind)"; an agent that copies
-/// that form gets its kind word dropped, and nothing else.
+/// The prompt asks for the name alone. An agent that copies `name (kind)`
+/// gets that kind word dropped, and nothing else.
 fn strip_kind(name: &str) -> &str {
     let name = name.trim();
     if let Some(open) = name.rfind('(') {
@@ -918,7 +938,7 @@ mod tests {
             "SPF".to_string(),           // not in the ledger: not counted
             "  ".to_string(),
         ];
-        let left = confirm_known(&named, &ledger);
+        let left = confirm_known(&named, &ledger, &[]);
         assert_eq!(
             left.iter().map(|l| l.id.as_str()).collect::<Vec<_>>(),
             ["1", "2"]
@@ -927,22 +947,53 @@ mod tests {
     }
 
     #[test]
+    fn two_kinds_of_one_name_are_both_counted() {
+        let ledger = [
+            known("1", "Result", ConceptKind::Language),
+            known("2", "Result", ConceptKind::Library),
+        ];
+        let left = confirm_known(&["Result".to_string()], &ledger, &[]);
+        assert_eq!(
+            left.iter().map(|l| l.id.as_str()).collect::<Vec<_>>(),
+            ["1", "2"]
+        );
+    }
+
+    #[test]
     fn a_name_that_only_looks_like_a_known_one_is_not_counted() {
         let ledger = [known("1", "go:embed", ConceptKind::Language)];
         // Exact name only: no prefix, substring, or related name.
         let named = ["go".to_string(), "go:embed directive".to_string()];
-        assert!(confirm_known(&named, &ledger).is_empty());
+        assert!(confirm_known(&named, &ledger, &[]).is_empty());
     }
 
     #[test]
     fn the_check_reports_what_the_ledger_confirms() {
         let mut value = file();
-        value["known_used"] = json!(["let binding", "nothing like it"]);
+        value["known_used"] = json!(["let binding", "DKIM", "nothing like it"]);
         let draft = parse(&value.to_string()).unwrap();
-        let ledger = [known("7", "Let Binding", ConceptKind::Language)];
+        let ledger = [
+            known("7", "Let Binding", ConceptKind::Language),
+            known("8", "DKIM", ConceptKind::System),
+        ];
         let checked = check(draft, &subject(), &files(), &ledger, Attempt::First).unwrap();
+        // "let binding" is also in concepts, so it was taught, not left out.
         assert_eq!(checked.explanation.known_left_out.len(), 1);
-        assert_eq!(checked.explanation.known_left_out[0].id, "7");
+        assert_eq!(checked.explanation.known_left_out[0].id, "8");
+    }
+
+    #[test]
+    fn a_kept_kind_is_not_left_out_and_the_other_kind_of_that_name_is() {
+        let ledger = [
+            known("1", "Result", ConceptKind::Language),
+            known("2", "Result", ConceptKind::Library),
+        ];
+        let kept = [(concept_key("RESULT"), ConceptKind::Language)];
+        let left = confirm_known(&["Result".to_string()], &ledger, &kept);
+        assert_eq!(
+            left.iter().map(|l| l.id.as_str()).collect::<Vec<_>>(),
+            ["2"]
+        );
     }
 
     #[test]

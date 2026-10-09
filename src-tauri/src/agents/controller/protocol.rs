@@ -37,6 +37,12 @@ pub const MAX_TRANSFER: u64 = (1 << 33) - 1;
 pub const MAX_LINE_BYTES: usize = 8 << 20;
 pub const MAX_PROMPT_BYTES: usize = 100 << 10;
 pub const MAX_PAGE_BYTES: usize = 4 << 20;
+/// The most an explain run's known-concepts file may hold. The app writes
+/// at most this (`explain::known::file`), and `StartRun` checks it again.
+/// In the JSON line a quote or a backslash doubles and the file's own
+/// newlines and tabs become `\n` and `\t`, so 2 MiB of text stays under
+/// [`MAX_LINE_BYTES`].
+pub const MAX_KNOWN_CONCEPTS_BYTES: usize = 2 << 20;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]

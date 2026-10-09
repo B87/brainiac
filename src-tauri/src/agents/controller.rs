@@ -35,7 +35,8 @@ use self::journal::{journal_path, Append, Redactor, TraceJournal};
 use self::protocol::{
     decode_hex, valid_id, Activity, CollectManifest, Credential, Delivery, EventBody, EventPage,
     Outcome, PendingPermission, Phase, Request, Response, RunStatus, StartRun, StopReason,
-    MAX_LINE_BYTES, MAX_PROMPT_BYTES, MAX_TRANSFER, PROTOCOL, TRANSFER_CHUNK,
+    MAX_KNOWN_CONCEPTS_BYTES, MAX_LINE_BYTES, MAX_PROMPT_BYTES, MAX_TRANSFER, PROTOCOL,
+    TRANSFER_CHUNK,
 };
 use self::state::{Ledger, RunRecord, StateDir};
 use crate::models::{AppError, AppResult, ErrorCode};
@@ -1542,9 +1543,6 @@ impl<W: Workloads> Controller<W> {
         futures_util::future::join_all(stops).await;
     }
 }
-
-/// The most a run's known-concepts file may hold: far past what the app writes.
-const MAX_KNOWN_CONCEPTS_BYTES: usize = 2 << 20;
 
 fn check_start(start: &StartRun) -> AppResult<()> {
     if !valid_id(&start.run_id) || !valid_id(&start.prompt_id) || start.attempt == 0 {

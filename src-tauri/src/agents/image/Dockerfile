@@ -27,8 +27,9 @@ RUN npm ci --omit=dev --no-audit --no-fund \
 
 COPY entrypoint.mjs collector.mjs known.mjs /opt/claude/
 
-# `known <name>…` tells an explain run which concepts the reader knows, from
-# the file the controller copies in (a path, never a credential).
+# `known` tells an explain run which concepts the reader knows, from the
+# file the controller copies in. Names arrive one per line on stdin (a path,
+# never a credential).
 RUN printf '#!/bin/sh\nexec node /opt/claude/known.mjs "$@"\n' > /usr/local/bin/known \
     && chmod 755 /usr/local/bin/known
 

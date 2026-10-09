@@ -529,7 +529,9 @@ pub struct KnownRef {
     pub name: String,
     pub kind: ConceptKind,
     pub key: String,
-    /// The explanation's own words for it, empty when not known.
+    /// The explanation's words for it. Empty when another repository taught
+    /// them: those words can quote that repository, and they stay out of
+    /// this run.
     pub description: String,
 }
 
@@ -540,7 +542,7 @@ pub struct KnownRef {
 pub fn known_refs(conn: &Connection, repository_id: &str) -> AppResult<Vec<KnownRef>> {
     let mut stmt = conn.prepare(
         "SELECT c.id, c.name, c.kind, c.key, c.merged_into, t.name, t.kind,
-                c.description, t.description
+                c.description, t.description, c.learned_in, t.learned_in
          FROM known_concepts c
          LEFT JOIN known_concepts t ON t.id = c.merged_into
          WHERE c.repository_id = '' OR c.repository_id = ?1
@@ -553,31 +555,46 @@ pub fn known_refs(conn: &Connection, repository_id: &str) -> AppResult<Vec<Known
             let key: String = r.get(3)?;
             // A merged concept stands for the one it was merged into: its id,
             // name, kind, and words, under its own key.
-            let (id, name, kind, description) = if r.get::<_, Option<String>>(4)?.is_some() {
-                (
-                    r.get::<_, String>(4)?,
-                    r.get::<_, Option<String>>(5)?,
-                    r.get::<_, Option<String>>(6)?,
-                    r.get::<_, Option<String>>(8)?,
-                )
-            } else {
-                (r.get(0)?, Some(r.get(1)?), Some(r.get(2)?), Some(r.get(7)?))
-            };
-            Ok((id, name, kind, key, description))
+            let (id, name, kind, description, learned_in) =
+                if r.get::<_, Option<String>>(4)?.is_some() {
+                    (
+                        r.get::<_, String>(4)?,
+                        r.get::<_, Option<String>>(5)?,
+                        r.get::<_, Option<String>>(6)?,
+                        r.get::<_, Option<String>>(8)?,
+                        r.get::<_, Option<String>>(10)?,
+                    )
+                } else {
+                    (
+                        r.get(0)?,
+                        Some(r.get(1)?),
+                        Some(r.get(2)?),
+                        Some(r.get(7)?),
+                        Some(r.get(9)?),
+                    )
+                };
+            Ok((id, name, kind, key, description, learned_in))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut refs = Vec::new();
-    for (id, name, kind, key, description) in rows {
+    for (id, name, kind, key, description, learned_in) in rows {
         // A merge target that is gone leaves no name: skip the dangling row.
         let (Some(name), Some(kind)) = (name, kind) else {
             continue;
         };
+        let mut description = description.unwrap_or_default();
+        let learned_in = learned_in.unwrap_or_default();
+        // Words from another repository can quote that repository's code.
+        // Code sharing is one answer per repository, so they stay out.
+        if !learned_in.is_empty() && learned_in != repository_id {
+            description.clear();
+        }
         refs.push(KnownRef {
             id,
             name,
             kind: parse(kind)?,
             key,
-            description: description.unwrap_or_default(),
+            description,
         });
     }
     Ok(refs)
@@ -601,29 +618,58 @@ mod tests {
         conn
     }
 
-    fn origin() -> ConceptOrigin {
-        ConceptOrigin {
-            description: String::new(),
-            learned_from: String::new(),
-            learned_in: String::new(),
-            explanation_id: None,
-        }
-    }
-
     #[test]
     fn known_refs_are_this_repositorys_and_resolve_a_merge_to_its_target() {
         let conn = ledger();
-        let add = |kind, name: &str, repo: Option<&str>| {
-            add_concept(&conn, kind, name, repo, &origin()).unwrap()
+        let add = |kind, name: &str, repo: Option<&str>, learned_in: &str, description: &str| {
+            add_concept(
+                &conn,
+                kind,
+                name,
+                repo,
+                &ConceptOrigin {
+                    description: description.to_string(),
+                    learned_in: learned_in.to_string(),
+                    ..ConceptOrigin::default()
+                },
+            )
+            .unwrap()
         };
-        let embed = add(ConceptKind::Language, "go:embed", None);
-        let alias = add(ConceptKind::Language, "Go embed directive", None);
+        let embed = add(
+            ConceptKind::Language,
+            "go:embed",
+            None,
+            "repo-b",
+            "Puts a file into the binary.",
+        );
+        let alias = add(
+            ConceptKind::Language,
+            "Go embed directive",
+            None,
+            "repo-a",
+            "alias words",
+        );
         merge_concept(&conn, &alias, &embed).unwrap();
-        add(ConceptKind::ProjectPattern, "ledger rule", Some("repo-a"));
+        add(
+            ConceptKind::Language,
+            "let",
+            None,
+            "repo-a",
+            "Binds a name.",
+        );
+        add(
+            ConceptKind::ProjectPattern,
+            "ledger rule",
+            Some("repo-a"),
+            "repo-a",
+            "This repository's rule.",
+        );
         add(
             ConceptKind::ProjectPattern,
             "other client rule",
             Some("repo-b"),
+            "repo-b",
+            "The other client's rule.",
         );
 
         let refs = known_refs(&conn, "repo-a").unwrap();
@@ -637,6 +683,22 @@ mod tests {
         assert_eq!(
             (by_alias.id.as_str(), by_alias.name.as_str()),
             (embed.as_str(), "go:embed")
+        );
+        // The alias carries the target's words, and those were learned in
+        // another repository, so this run does not get them.
+        assert_eq!(by_alias.description, "");
+        assert_eq!(
+            refs.iter().find(|r| r.key == "let").unwrap().description,
+            "Binds a name."
+        );
+        let there = known_refs(&conn, "repo-b").unwrap();
+        assert_eq!(
+            there
+                .iter()
+                .find(|r| r.key == "go embed")
+                .unwrap()
+                .description,
+            "Puts a file into the binary."
         );
     }
 }
