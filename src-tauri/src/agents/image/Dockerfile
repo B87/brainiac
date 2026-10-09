@@ -13,8 +13,11 @@
 # stops, with no network and no credential.
 FROM node:22-bookworm-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c
 
+# `rg` is the search command both agents' prompts tell the model to run.
+# Without it on PATH, a shell search fails and OpenCode fetches its own
+# binary into the tmpfs home. jq stays out; the explain prompt uses `known`.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates git \
+    && apt-get install -y --no-install-recommends ca-certificates git ripgrep \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/claude
