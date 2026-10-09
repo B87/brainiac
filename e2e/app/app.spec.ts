@@ -270,6 +270,27 @@ test("Settings → Explanations has a page for each part", async ({ page }) => {
   await page.getByLabel("Filter concepts").fill("serde");
   await expect(page.getByText("Turns Rust values into JSON")).toBeVisible();
   await expect(page.getByText("async and await")).toBeHidden();
+  await page.getByLabel("Filter concepts").fill("");
+
+  // By name, the list reads in order; by repository, a group has a heading
+  // and a Forget for all of its concepts.
+  await page.getByLabel("Sort").selectOption("name");
+  const names = page.locator(".settings-row .font-semibold");
+  await expect(names).toHaveText([
+    "async and await",
+    "Retry until the lock is free",
+    "serde",
+  ]);
+  await page.getByRole("tab", { name: "Repository" }).click();
+  await expect(
+    page.getByRole("button", { name: "parser", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Forget parser's 3…" }),
+  ).toBeVisible();
+  await page.getByLabel("Select all of parser").check();
+  await expect(page.getByText("3 selected")).toBeVisible();
+
   await openSettings(page, "Stored Explanations");
   await expect(page.getByRole("button", { name: "Delete All…" })).toBeVisible();
   await expect(page.getByText("Fix installing over a running")).toBeVisible();

@@ -13,6 +13,7 @@ import type {
   ExplanationNote,
   ExplanationPlacement,
   ExplanationRecord,
+  KnownConcept,
 } from "./ipc";
 
 export const DEPTHS: ExplainDepth[] = ["brief", "teach_me", "deep"];
@@ -215,4 +216,80 @@ export function pickRecord(
     records[0] ??
     null
   );
+}
+
+/** How Concepts You Know orders a list (SPEC.md, section 14). */
+export type ConceptSort = "newest" | "name" | "kind";
+
+/** The kinds in the order Concepts You Know lists them. */
+export const CONCEPT_KINDS: KnownConcept["kind"][] = [
+  "language",
+  "library",
+  "protocol",
+  "tool",
+  "technique",
+  "project_pattern",
+];
+
+/** Where a concept belongs when a list is grouped by repository: a project
+ * pattern's own repository, else the repository it was learned in. */
+export const NO_REPOSITORY = "Not from a tracked repository";
+export function conceptRepository(c: KnownConcept): string {
+  if (c.repository_id) return c.repository_name ?? "A removed repository";
+  return c.learned_in_name ?? NO_REPOSITORY;
+}
+
+/** A copy of the concepts in the chosen order; ties fall back to the name. */
+export function sortConcepts(
+  concepts: KnownConcept[],
+  by: ConceptSort,
+): KnownConcept[] {
+  const byName = (a: KnownConcept, b: KnownConcept) =>
+    a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+  return [...concepts].sort((a, b) => {
+    if (by === "name") return byName(a, b);
+    if (by === "kind") {
+      const kinds =
+        CONCEPT_KINDS.indexOf(a.kind) - CONCEPT_KINDS.indexOf(b.kind);
+      return kinds || byName(a, b);
+    }
+    // RFC 3339 times of one zone sort as text; newest first.
+    return b.learned_at.localeCompare(a.learned_at) || byName(a, b);
+  });
+}
+
+/** The concepts by repository, each group in the chosen order. Groups are
+ * ordered by name, the concepts of no tracked repository last. */
+export function groupConceptsByRepository(
+  concepts: KnownConcept[],
+  by: ConceptSort,
+): { label: string; concepts: KnownConcept[] }[] {
+  const groups = new Map<string, KnownConcept[]>();
+  for (const c of sortConcepts(concepts, by)) {
+    const label = conceptRepository(c);
+    groups.set(label, [...(groups.get(label) ?? []), c]);
+  }
+  return [...groups.entries()]
+    .map(([label, concepts]) => ({ label, concepts }))
+    .sort((a, b) =>
+      a.label === NO_REPOSITORY
+        ? 1
+        : b.label === NO_REPOSITORY
+          ? -1
+          : a.label.localeCompare(b.label),
+    );
+}
+
+/** What Forget asks before it forgets a repository's concepts: the ones that
+ * are known in every repository go too, and are explained again everywhere. */
+export function forgetGroupQuestion(
+  label: string,
+  concepts: KnownConcept[],
+): string {
+  const everywhere = concepts.filter((c) => !c.repository_id).length;
+  const n = concepts.length;
+  const head = `Forget ${n} ${n === 1 ? "concept" : "concepts"} learned in ${label}?`;
+  return everywhere
+    ? `${head} ${everywhere} of ${n === 1 ? "it is" : "them are"} known in every repository (languages, libraries, protocols, tools, and techniques), so explanations will teach ${everywhere === 1 ? "it" : "them"} again everywhere.`
+    : `${head} Explanations will teach ${n === 1 ? "it" : "them"} again.`;
 }
