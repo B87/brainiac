@@ -15,7 +15,7 @@ node spikes/known-concepts/run.mjs --agent claude --model sonnet
 node spikes/known-concepts/run.mjs --agent opencode --model anthropic/claude-sonnet-5-5
 ```
 
-Run OpenCode runs one at a time: two at once fail with "database is locked". `--variant late` asks the agent to look up the names it will write; `--reuse <dir>` reruns on an earlier run's ledgers.
+Run OpenCode runs one at a time: two at once fail with "database is locked". `--variant late` asks the agent to look up the names it will write; `--variant similar` explains the `similar:` lines the lookup prints; `--reuse <dir>` reruns on an earlier run's ledgers.
 
 Options: `--agent` and `--commit` can repeat; `--ledger <n>` sets the second
 run's size (300); `--out <dir>` keeps clones, prompts, logs, and

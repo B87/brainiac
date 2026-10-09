@@ -208,6 +208,18 @@ What this suggested was tried the same day (`--variant late`: decide the concept
 - **Reading the file is not the fix.** The lookup was meant to spare the agent the file; when the exact name misses, the agent's next step is to read it. So the answer is likely in what `known` returns: a near name as "similar to", or a few candidates by the words in a name, so one lookup shows the agent what the reader knows without reading the file. That reopens "related concept skipping", and is the next thing to try.
 - One OpenCode run failed with "database is locked" when two OpenCode processes ran together; the harness should not run them in parallel.
 
+The next try was a near-name lookup (`--variant similar`, the first prompt plus a sentence on `similar:` lines). When a name has no exact match, `known` still prints `new:`, then up to three `similar:` lines: known concepts that contain every word of the shorter name, after dropping small words and a plural "s", closest first. They are candidates for the agent to judge, never a match, so the checker still counts only exact names in `known_used`. The same ledgers and commits:
+
+| Agent | Time | Cost | Lookups (per commit) | Known concepts named in `known_used` | Read the ledger whole |
+| --- | --- | --- | --- | --- | --- |
+| Claude Code | 250 s (first prompt 289) | $0.99 ($1.12) | 2, 4, 2 | 8 of 13 (2) | no |
+| OpenCode | 338 s (278) | $1.07 ($0.99) | 2, 3, 2 | 11 of 14 (3) | no, one filtered search |
+
+- **It worked without the agent reading the file.** Claude Code went from 2 of 13 to 8 and OpenCode from 3 of 14 to 11, with the same ledgers, at about the cost of no lookup at all (Claude Code's cost and time were lower than the first runs, OpenCode's higher by 8% and 22%, which is within what a repeat run varies). OpenCode ran one `cut | grep` over the file in one of three commits and read none whole.
+- **What still missed:** a name with different words, not the same words in another form (an agent wrote "Slicing a string by byte index" for nothing known, which is right; "Versioned controller protocol" was found for "Controller protocol version" only through the longer name's words). Nothing was kept in Concepts under a known name, as before.
+- **`known_used` still includes filler** (`tokio`, `async/await`, `SQLite`, `Docker`) in six of the seven runs that named any, so the count can still overstate, and the checker cannot tell which names the change relies on.
+- **Not yet done:** `prompt.rs` does not describe `similar:` lines, so the app's agents see them unexplained; the lookup's behavior is not in `SPEC.md` or `architecture.md`; and near names are word-subset matches only, with no test beyond these runs.
+
 ## Open questions
 
 - How long an explanation takes and costs on each agent, and the time limit to default to (the spike; Claude Code's first round is above, OpenCode is still to measure).
