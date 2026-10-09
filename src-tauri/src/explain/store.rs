@@ -536,7 +536,7 @@ pub struct KnownRef {
 }
 
 /// What a repository's explanation can leave out because the reader knows
-/// it: languages, libraries, and system tools from anywhere and this
+/// it: languages, libraries, protocols, and tools from anywhere and this
 /// repository's own project patterns, newest first, as the known-concepts
 /// file lists them. A concept merged into another resolves to that one.
 pub fn known_refs(conn: &Connection, repository_id: &str) -> AppResult<Vec<KnownRef>> {

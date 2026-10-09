@@ -35,19 +35,22 @@ const TOOLBAR =
 const KIND_WORD: Record<ConceptKind, string> = {
   language: "Language",
   library: "Library",
-  system: "System tool",
+  protocol: "Protocol or standard",
+  tool: "Tool or service",
   project_pattern: "Project pattern",
 };
 const KINDS: ConceptKind[] = [
   "language",
   "library",
-  "system",
+  "protocol",
+  "tool",
   "project_pattern",
 ];
 const KIND_CHIP: Record<ConceptKind, string> = {
   language: "Language",
   library: "Library",
-  system: "System",
+  protocol: "Protocol",
+  tool: "Tool",
   project_pattern: "Project patterns",
 };
 

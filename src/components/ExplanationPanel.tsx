@@ -104,7 +104,8 @@ const STEPS: ExplainStep[] = ["copying", "starting", "reading", "checking"];
 const KIND_WORD: Record<ConceptKind, string> = {
   language: "Language",
   library: "Library",
-  system: "System tool",
+  protocol: "Protocol or standard",
+  tool: "Tool or service",
   project_pattern: "Project pattern",
 };
 

@@ -18,7 +18,14 @@ import fs from "node:fs";
 
 const FILE =
   process.env.BRAINIAC_KNOWN_FILE || "/opt/brainiac/input/known-concepts.tsv";
-const KINDS = new Set(["language", "library", "system", "project pattern"]);
+const KINDS = new Set([
+  "language",
+  "library",
+  "protocol",
+  "tool",
+  "system",
+  "project pattern",
+]);
 const ALPHABETIC = /^\p{Alphabetic}$/u;
 const NUMBER = /^\p{N}$/u;
 

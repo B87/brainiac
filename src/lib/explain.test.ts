@@ -90,7 +90,7 @@ describe("explanations", () => {
         explanation({
           known_left_out: [
             { id: "1", name: "go:embed", kind: "language" },
-            { id: "2", name: "DKIM", kind: "system" },
+            { id: "2", name: "DKIM", kind: "protocol" },
           ],
         }),
       ),

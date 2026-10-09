@@ -63,7 +63,8 @@ pub fn render(title: &str, e: &Explanation) -> String {
             let kind = match c.kind {
                 ConceptKind::Language => "language",
                 ConceptKind::Library => "library",
-                ConceptKind::System => "system",
+                ConceptKind::Protocol => "protocol",
+                ConceptKind::Tool => "tool",
                 ConceptKind::ProjectPattern => "project pattern",
             };
             md.push_str(&format!(

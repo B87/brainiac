@@ -156,7 +156,7 @@ Refines v0.6's concepts after use: the labels, the Concepts You Know page, and h
 
 - [x] **Left out because you know them: N**, in the explanation beside "Matched to the change", with Undo next to the concept; the agent names the known concepts it left out and Brainiac's checker counts only those the ledger holds by exact name; a known concept used in a new way stays in Concepts.
 - [x] **The ledger as a file in the run's input**: `known-concepts.tsv` outside the repository (capped at 5,000 concepts and 2 MiB, not filtered by language), and a small `known` lookup script in the run's image that reads names on stdin and reports known or new with the stored description. What that adds to time and cost is the spike below.
-- [ ] **Kinds renamed**: "system" becomes protocol or standard and tool or service, with the schema, the checker, the prompt, and a migration of existing "system" rows (and their Merge groups).
+- [x] **Kinds renamed**: "system" becomes protocol or standard and tool or service, with the schema, the checker, the prompt, and a migration of existing "system" rows (all become tools, so every Merge group survives; the reader corrects them once concepts can be edited).
 - [ ] **Concepts You Know**: group by repository, sort, search over names and descriptions, bulk Forget by repository.
 - [ ] **Change kind and rename as a Merge**: the old kind and name stay as a visible alias; a kind changes only within its scope, and a change to or from project pattern names the repositories that will then be told about it or stop being told.
 - [ ] **Add one concept by hand**, marked "added by you" wherever it is left out.

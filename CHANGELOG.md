@@ -12,6 +12,7 @@ into the release's section.
 ## [Unreleased]
 
 - An explanation says how many concepts it left out because you know them, lists them, and lets you undo one.
+- Concepts are labelled a protocol or standard (such as DKIM) or a tool or service (such as git) instead of a "system tool"; concepts you already know become tools.
 
 ## [0.6.0] - 2026-10-09
 

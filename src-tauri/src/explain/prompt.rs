@@ -103,7 +103,7 @@ For each name it prints `known: ` followed by the concept's name, its kind in pa
     p.push_str("- \"sources_read\": the files and doc sections you relied on.\n");
     p.push_str("- \"tour\": every changed file once, in reading order (the rule, then the fix, then its helpers, then bookkeeping), each {\"path\", \"role\"}.\n");
     p.push_str("- \"notes\": each {\"path\", \"new_start\", \"new_end\", \"text\", \"sources\": [{\"path\", \"start\", \"end\", \"quote\"}]}. new_start and new_end are line numbers on the NEW side of the change, and the lines must include at least one changed line. \"text\" is Markdown. Each quote is copied verbatim from that file at the checked-out commit, and lies within start..end.\n");
-    p.push_str("- \"concepts\": ideas the change relies on, each {\"name\", \"kind\": \"language\" | \"library\" | \"system\" | \"project_pattern\", \"explanation\", \"appears\": [{\"path\", \"line\"}]}.\n");
+    p.push_str("- \"concepts\": ideas the change relies on, each {\"name\", \"kind\", \"explanation\", \"appears\": [{\"path\", \"line\"}]}. \"kind\" is one of: \"language\" (a feature of a programming language), \"library\" (a package or framework), \"protocol\" (a protocol, file format, or standard, such as HTTP or DKIM), \"tool\" (a program or service the code runs or talks to, such as git or PostgreSQL), or \"project_pattern\" (a convention of this codebase).\n");
     if reader.known_count > 0 {
         p.push_str("- \"known_used\": the names of the reader's known concepts that this change relies on and that you left out of \"concepts\". Each entry is only the concept's name, the text `known` printed between `known: ` and ` (`, with no kind and no description. An empty array if none.\n");
     }
@@ -166,6 +166,8 @@ mod tests {
         assert!(text.contains("\"questions\": an empty array"));
         assert!(text.contains(".brainiac/explanation.json"));
         assert!(text.contains("project_pattern"));
+        assert!(text.contains("\"protocol\" (a protocol, file format, or standard"));
+        assert!(!text.contains("\"system\""));
 
         let root = prompt(
             &PromptSubject {

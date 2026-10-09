@@ -4246,7 +4246,10 @@ pub struct CitedQuote {
 pub enum ConceptKind {
     Language,
     Library,
-    System,
+    /// A protocol, format, or standard: HTTP, DKIM, SPF.
+    Protocol,
+    /// A program or service the code runs or talks to: git, Docker, PostgreSQL.
+    Tool,
     ProjectPattern,
 }
 

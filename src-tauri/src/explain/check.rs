@@ -161,7 +161,7 @@ pub fn parse(text: &str) -> Result<Draft, Failed> {
     for (i, concept) in raw.concepts.iter().enumerate() {
         if concept_kind(&concept.kind).is_none() {
             errors.push(format!(
-                "concepts[{i}]: \"kind\" must be language, library, system, or project_pattern (got {:?}).",
+                "concepts[{i}]: \"kind\" must be language, library, protocol, tool, or project_pattern (got {:?}).",
                 concept.kind
             ));
         }
@@ -477,7 +477,7 @@ fn strip_kind(name: &str) -> &str {
         if name.ends_with(')')
             && matches!(
                 inner.as_str(),
-                "language" | "library" | "system" | "project pattern"
+                "language" | "library" | "protocol" | "tool" | "system" | "project pattern"
             )
         {
             return name[..open].trim_end();
@@ -492,7 +492,10 @@ fn concept_kind(kind: &str) -> Option<ConceptKind> {
     match kind.trim().replace('-', "_").as_str() {
         "language" => Some(ConceptKind::Language),
         "library" => Some(ConceptKind::Library),
-        "system" => Some(ConceptKind::System),
+        "protocol" => Some(ConceptKind::Protocol),
+        "tool" => Some(ConceptKind::Tool),
+        // The kind 0.6.1 replaced: still read, as a tool.
+        "system" => Some(ConceptKind::Tool),
         "project_pattern" => Some(ConceptKind::ProjectPattern),
         _ => None,
     }
@@ -929,13 +932,13 @@ mod tests {
     fn a_known_concept_the_agent_left_out_is_confirmed_against_the_ledger() {
         let ledger = [
             known("1", "go:embed", ConceptKind::Language),
-            known("2", "DKIM", ConceptKind::System),
+            known("2", "DKIM", ConceptKind::Protocol),
         ];
         let named = [
-            "GO:EMBED".to_string(),      // case does not matter
-            "DKIM (system)".to_string(), // the prompt's own form
-            "go embed".to_string(),      // the same folded name: listed once
-            "SPF".to_string(),           // not in the ledger: not counted
+            "GO:EMBED".to_string(),        // case does not matter
+            "DKIM (protocol)".to_string(), // the prompt's own form
+            "go embed".to_string(),        // the same folded name: listed once
+            "SPF".to_string(),             // not in the ledger: not counted
             "  ".to_string(),
         ];
         let left = confirm_known(&named, &ledger, &[]);
@@ -974,7 +977,7 @@ mod tests {
         let draft = parse(&value.to_string()).unwrap();
         let ledger = [
             known("7", "Let Binding", ConceptKind::Language),
-            known("8", "DKIM", ConceptKind::System),
+            known("8", "DKIM", ConceptKind::Protocol),
         ];
         let checked = check(draft, &subject(), &files(), &ledger, Attempt::First).unwrap();
         // "let binding" is also in concepts, so it was taught, not left out.
@@ -1000,5 +1003,19 @@ mod tests {
     fn a_file_without_known_used_still_passes() {
         let checked = run(file()).unwrap();
         assert!(checked.explanation.known_left_out.is_empty());
+    }
+    #[test]
+    fn the_kinds_are_read_and_the_one_they_replaced_is_a_tool() {
+        assert_eq!(concept_kind("protocol"), Some(ConceptKind::Protocol));
+        assert_eq!(concept_kind("tool"), Some(ConceptKind::Tool));
+        assert_eq!(
+            concept_kind("project-pattern"),
+            Some(ConceptKind::ProjectPattern)
+        );
+        // A file written with the kind 0.6.1 replaced.
+        assert_eq!(concept_kind("system"), Some(ConceptKind::Tool));
+        assert_eq!(concept_kind("folklore"), None);
+        assert_eq!(strip_kind("git (tool)"), "git");
+        assert_eq!(strip_kind("git (system)"), "git");
     }
 }
