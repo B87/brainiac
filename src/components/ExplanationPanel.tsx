@@ -22,9 +22,11 @@ import {
   ipc,
 } from "../lib/ipc";
 import { usePref } from "../lib/prefs";
+import { plural } from "../lib/repo";
 import { requestSettings } from "../lib/settings";
 import type { ExplanationState } from "../lib/useExplanation";
-import { CloseIcon } from "./icons";
+import { CloseIcon, MoreIcon } from "./icons";
+import Popover from "./Popover";
 
 type Tab = "concepts" | "questions";
 
@@ -117,22 +119,40 @@ export function sourceLabel(q: CitedQuote): string {
  */
 export function NoteCard({
   placed,
+  position,
   onSource,
   privateMark = false,
 }: {
   placed: PlacedNote;
+  /** Its place among all the notes, in reading order: "Note 4 of 14". */
+  position?: { n: number; total: number };
   onSource: (path: string) => void;
   /** Among a pull request's threads and drafts: say it is never posted. */
   privateMark?: boolean;
 }) {
-  const { note, outOfDate } = placed;
+  const { note, outOfDate, start, end } = placed;
+  const name = privateMark ? "Explanation note" : "Note";
   return (
     <div
       id={`explain-note-${placed.index}`}
       className="mx-3 my-1.5 rounded-md border border-info-line bg-info-bg px-3 py-2 font-sans text-[12.5px] leading-relaxed whitespace-normal"
     >
-      <div className="mb-1 flex items-center gap-2 text-[11.5px]">
-        <span className="font-medium text-link">Explanation note</span>
+      <div className="mb-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11.5px]">
+        <span className="font-medium text-link">
+          {position ? `${name} ${position.n} of ${position.total}` : name}
+        </span>
+        <span className="text-muted">
+          {start === end ? `on line ${start}` : `on lines ${start}–${end}`}
+        </span>
+        {outOfDate && (
+          <span
+            className="state-pill"
+            data-tone="amber"
+            title="These lines changed since it was explained."
+          >
+            Out of date
+          </span>
+        )}
         {privateMark && (
           <span
             className="ml-auto text-muted"
@@ -142,11 +162,6 @@ export function NoteCard({
           </span>
         )}
       </div>
-      {outOfDate && (
-        <div className="mb-1 text-[11.5px] font-medium text-dirty">
-          Out of date: these lines changed since it was explained.
-        </div>
-      )}
       <div className="selectable whitespace-pre-wrap text-fg">{note.text}</div>
       <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11.5px] text-muted">
         {note.sources.map((s) => (
@@ -159,7 +174,12 @@ export function NoteCard({
           >
             {sourceLabel(s)}
             {s.moved && (
-              <span className="ml-1 font-sans text-muted">moved</span>
+              <span
+                className="ml-1 font-sans text-muted"
+                title="The quote was found at other lines than the agent gave."
+              >
+                moved
+              </span>
             )}
           </button>
         ))}
@@ -180,7 +200,7 @@ export function NoteCard({
  * an explanation works, its steps and the files the agent opens; when it
  * failed, why; when it is ready, the summary, what the checks did, the
  * selected file's place in the tour (the file list is the tour, numbered),
- * and the Concepts and Check yourself tabs, with the disagreements after.
+ * and the Concepts and Questions tabs, with the disagreements after.
  */
 export default function ExplanationPanel({
   repositoryId,
@@ -292,6 +312,15 @@ export default function ExplanationPanel({
           </select>
         )}
         <span className="flex-1" />
+        {record?.state === "ready" && record.explanation && (
+          <ReadyActions
+            record={record}
+            onOpenRun={onOpenRun}
+            onExplain={onExplain}
+            act={act}
+            onNotice={onNotice}
+          />
+        )}
         <button
           type="button"
           className="btn btn-sm btn-ghost w-6 px-0"
@@ -310,13 +339,19 @@ export default function ExplanationPanel({
         )}
         {!record && (
           <div className="flex flex-col items-start gap-2 text-fg-2">
+            <span className="font-semibold text-fg">Not explained yet</span>
             <p className="m-0">
-              An agent can explain this change: why it exists, the files in
-              reading order, notes beside the lines, and the ideas it relies on.
+              An agent can explain why this change exists, the files in reading
+              order, notes beside the lines, and the ideas it relies on. Every
+              note and quote is checked against the change before you see it.
             </p>
             <button type="button" className="btn btn-sm" onClick={onExplain}>
-              Explain… <span className="opacity-70">E</span>
+              Explain… <span className="kbd">E</span>
             </button>
+            <p className="m-0 text-[12px] text-muted">
+              Nothing is sent until you press Explain; the first time in a
+              repository, it asks whether its code may go to the provider.
+            </p>
           </div>
         )}
         {record?.state === "working" && (
@@ -341,6 +376,7 @@ export default function ExplanationPanel({
             record={record}
             placementMoved={placement?.moved ?? false}
             placementGone={placement?.gone ?? false}
+            placementTip={placement?.tip ?? record.tip}
             outOfDate={
               placement?.notes.filter((n) => n.out_of_date).length ?? 0
             }
@@ -350,10 +386,8 @@ export default function ExplanationPanel({
             selectedPath={selectedPath}
             onSelectFile={onSelectFile}
             onReexplain={() => again(record)}
-            onOpenRun={onOpenRun}
             act={act}
             onNotice={onNotice}
-            onExplain={onExplain}
           />
         )}
       </div>
@@ -361,21 +395,26 @@ export default function ExplanationPanel({
   );
 }
 
-/** The line above the summary when a branch or a pull request moved. */
-function movedText(
-  kind: ExplainSubject["kind"],
-  gone: boolean,
+/** A branch or pull request with nothing left to compare. */
+function goneText(kind: ExplainSubject["kind"]): string {
+  return kind === "pull_request"
+    ? "The pull request has no changes against its target now; the explanation is kept as written."
+    : "The branch is gone or has no changes against the default branch; the explanation is kept as written.";
+}
+
+/** "3 notes out of date and 2 files not covered; the other 11 notes still match their lines." */
+function movedCounts(
+  total: number,
   outOfDate: number,
   uncovered: number,
 ): string {
-  const pr = kind === "pull_request";
-  if (gone)
-    return pr
-      ? "The pull request has no changes against its target now; the explanation is kept as written."
-      : "The branch is gone or has no changes against the default branch; the explanation is kept as written.";
-  const notes = `${outOfDate} ${outOfDate === 1 ? "note" : "notes"} out of date`;
-  const files = `${uncovered} ${uncovered === 1 ? "file" : "files"} not covered`;
-  return `The ${pr ? "pull request" : "branch"} moved since this explanation: ${notes}, ${files}.`;
+  const parts = [`${plural(outOfDate, "note")} out of date`];
+  if (uncovered) parts.push(`${plural(uncovered, "file")} not covered`);
+  const rest = total - outOfDate;
+  const still = rest
+    ? `; the other ${plural(rest, "note")} still ${rest === 1 ? "matches its" : "match their"} lines`
+    : "";
+  return `${parts.join(" and ")}${still}.`;
 }
 
 function elapsed(since: string): string {
@@ -511,6 +550,7 @@ function Ready({
   record,
   placementMoved,
   placementGone,
+  placementTip,
   outOfDate,
   uncovered,
   tab,
@@ -518,16 +558,16 @@ function Ready({
   selectedPath,
   onSelectFile,
   onReexplain,
-  onOpenRun,
   act,
   onNotice,
-  onExplain,
 }: {
   repositoryId: string;
   subject: ExplainSubject;
   record: ExplanationRecord;
   placementMoved: boolean;
   placementGone: boolean;
+  /** The branch's tip or the pull request's head now. */
+  placementTip: string;
   outOfDate: number;
   uncovered: string[];
   tab: Tab;
@@ -535,10 +575,8 @@ function Ready({
   selectedPath: string | null;
   onSelectFile: (path: string) => void;
   onReexplain: () => void;
-  onOpenRun: (runId: string) => void;
   act: (what: () => Promise<unknown>) => Promise<void>;
   onNotice: (message: string) => void;
-  onExplain: () => void;
 }) {
   const e = record.explanation;
   const [checksOpen, setChecksOpen] = useState(false);
@@ -546,7 +584,6 @@ function Ready({
   const [known, setKnown] = useState<Record<string, string>>({});
   const [revealed, setRevealed] = useState<Set<number>>(new Set());
   const [showHidden, setShowHidden] = useState(false);
-  const [menu, setMenu] = useState(false);
   if (!e) return null;
   const checks = checksLine(e);
   const usage = usageText(record);
@@ -583,21 +620,45 @@ function Ready({
         </span>
       )}
       {placementMoved && (
-        <div className="rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[12px] text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-100">
-          {movedText(
-            record.subject.kind,
-            placementGone,
-            outOfDate,
-            uncovered.length,
-          )}{" "}
-          {!placementGone && (
-            <button
-              type="button"
-              className="text-link hover:underline"
-              onClick={onReexplain}
-            >
-              Re-explain
-            </button>
+        <div
+          role="status"
+          className="flex flex-col gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-2.5 py-2 text-[12px] text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-100"
+        >
+          {placementGone ? (
+            goneText(record.subject.kind)
+          ) : (
+            <>
+              <span className="font-semibold">
+                The{" "}
+                {record.subject.kind === "pull_request"
+                  ? "pull request"
+                  : "branch"}{" "}
+                moved since this explanation
+              </span>
+              <span>
+                Explained at{" "}
+                <span className="mono">{record.tip.slice(0, 7)}</span>,{" "}
+                {relativeTime(record.created_at)}; now at{" "}
+                <span className="mono">{placementTip.slice(0, 7)}</span>.{" "}
+                {movedCounts(e.notes.length, outOfDate, uncovered.length)}
+              </span>
+              <span className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className="btn btn-sm btn-primary"
+                  onClick={onReexplain}
+                >
+                  Re-explain
+                </button>
+                <span className="text-[11.5px] opacity-80">
+                  {depthLabel(record.depth)} · the whole{" "}
+                  {record.subject.kind === "pull_request"
+                    ? "pull request"
+                    : "branch"}{" "}
+                  at its tip, at its cost
+                </span>
+              </span>
+            </>
           )}
         </div>
       )}
@@ -610,7 +671,7 @@ function Ready({
             aria-expanded={checksOpen}
             onClick={() => setChecksOpen(!checksOpen)}
           >
-            Checks: {checks}
+            Matched to the change: {checks}
           </button>
           {checksOpen && (
             <ul className="m-0 mt-1 pl-5">
@@ -672,7 +733,7 @@ function Ready({
         </TabButton>
         {e.questions.length > 0 && (
           <TabButton tab="questions" current={tab} onClick={setTab}>
-            Check yourself
+            Questions
           </TabButton>
         )}
       </div>
@@ -714,7 +775,7 @@ function Ready({
                       title="Later explanations leave it out unless a change uses it in a new way"
                       onClick={() => void learn(c.name, c.kind)}
                     >
-                      Got it
+                      I know this
                     </button>
                   )}
                 </div>
@@ -828,76 +889,95 @@ function Ready({
           )}
         </div>
       )}
-
-      <div className="relative flex flex-wrap gap-2 border-t pt-3">
-        {record.run_id && (
-          <button
-            type="button"
-            className="btn btn-sm"
-            onClick={() => onOpenRun(record.run_id as string)}
-          >
-            How it was written
-          </button>
-        )}
-        <button
-          type="button"
-          className="btn btn-sm"
-          onClick={() =>
-            void act(async () => {
-              const note = await ipc.saveExplanationAsNote(record.id);
-              onNotice(`Saved as ${note.relative_path}.`);
-            })
-          }
-        >
-          Save as note
-        </button>
-        <button
-          type="button"
-          className="btn btn-sm btn-ghost"
-          aria-expanded={menu}
-          onClick={() => setMenu(!menu)}
-        >
-          More…
-        </button>
-        {menu && (
-          <div className="flex w-full flex-col items-start gap-1 text-[12.5px]">
-            <button
-              type="button"
-              className="text-link hover:underline"
-              onClick={onExplain}
-            >
-              Explain again or at another depth…
-            </button>
-            <button
-              type="button"
-              className="text-link hover:underline"
-              onClick={() => requestSettings("explanations")}
-            >
-              Settings → Explanations
-            </button>
-            <button
-              type="button"
-              className="text-conflict hover:underline"
-              onClick={() =>
-                void (async () => {
-                  const sure = await ask(
-                    "Delete this explanation? Its run's conversation, How it was written, goes with it.",
-                    {
-                      title: "Delete Explanation",
-                      kind: "warning",
-                      okLabel: "Delete Explanation",
-                    },
-                  );
-                  if (sure) await act(() => ipc.deleteExplanation(record.id));
-                })()
-              }
-            >
-              Delete explanation…
-            </button>
-          </div>
-        )}
-      </div>
     </div>
+  );
+}
+
+/**
+ * The panel header's actions on a ready explanation: Save as note, and a
+ * menu with How it was written, Explain again, Settings, and Delete.
+ */
+function ReadyActions({
+  record,
+  onOpenRun,
+  onExplain,
+  act,
+  onNotice,
+}: {
+  record: ExplanationRecord;
+  onOpenRun: (runId: string) => void;
+  onExplain: () => void;
+  act: (what: () => Promise<unknown>) => Promise<void>;
+  onNotice: (message: string) => void;
+}) {
+  const [menu, setMenu] = useState(false);
+  const item = (label: string, onClick: () => void, danger = false) => (
+    <button
+      type="button"
+      role="menuitem"
+      className={`menu-item ${danger ? "text-conflict" : ""}`}
+      onClick={() => {
+        setMenu(false);
+        onClick();
+      }}
+    >
+      {label}
+    </button>
+  );
+  return (
+    <span className="relative flex items-center gap-1">
+      <button
+        type="button"
+        className="btn btn-sm"
+        onClick={() =>
+          void act(async () => {
+            const note = await ipc.saveExplanationAsNote(record.id);
+            onNotice(`Saved as ${note.relative_path}.`);
+          })
+        }
+      >
+        Save as note
+      </button>
+      <button
+        type="button"
+        className="btn btn-sm btn-ghost w-6 px-0"
+        aria-label="More: How it was written, Explain again, Delete"
+        title="How it was written · Explain again… · Delete…"
+        aria-haspopup="menu"
+        aria-expanded={menu}
+        onClick={() => setMenu(!menu)}
+      >
+        <MoreIcon size={14} />
+      </button>
+      {menu && (
+        <Popover align="right" onClose={() => setMenu(false)}>
+          {record.run_id &&
+            item("How it was written", () =>
+              onOpenRun(record.run_id as string),
+            )}
+          {item("Explain again or at another depth…", onExplain)}
+          {item("Settings → Explanations", () =>
+            requestSettings("explanations"),
+          )}
+          {item(
+            "Delete explanation…",
+            () =>
+              void (async () => {
+                const sure = await ask(
+                  "Delete this explanation? Its run's conversation, How it was written, goes with it.",
+                  {
+                    title: "Delete Explanation",
+                    kind: "warning",
+                    okLabel: "Delete Explanation",
+                  },
+                );
+                if (sure) await act(() => ipc.deleteExplanation(record.id));
+              })(),
+            true,
+          )}
+        </Popover>
+      )}
+    </span>
   );
 }
 

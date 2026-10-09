@@ -82,7 +82,12 @@ import { StateIcon } from "./PullRequestsTab";
 import SidePanelButton from "./SidePanelButton";
 import {
   composeAnnotate,
+  type FileNoteCount,
+  FileNotes,
+  NotCoveredHeading,
   OrderSwitch,
+  startsNotCovered,
+  useExplainBlocked,
   useExplainedPatch,
 } from "./useExplainedPatch";
 
@@ -1674,6 +1679,8 @@ function FilesTab({
             {reading && (
               <ReadingList
                 files={ordered}
+                steps={explained.steps}
+                fileNotes={explained.fileNotes}
                 selectedPath={selectedPath}
                 marks={marks}
                 counts={counts}
@@ -1687,6 +1694,7 @@ function FilesTab({
                 selectedPath={selectedPath}
                 marks={marks}
                 counts={counts}
+                fileNotes={explained.fileNotes}
                 onSelect={select}
                 onMark={mark}
               />
@@ -1701,6 +1709,7 @@ function FilesTab({
                   selectedPath={selectedPath}
                   marks={marks}
                   counts={counts}
+                  fileNotes={explained.fileNotes}
                   onSelect={select}
                   onMark={mark}
                 />
@@ -1716,6 +1725,7 @@ function FilesTab({
                   selectedPath={selectedPath}
                   marks={marks}
                   counts={counts}
+                  fileNotes={explained.fileNotes}
                   onSelect={select}
                   onMark={mark}
                 />
@@ -1784,6 +1794,7 @@ function FileGroups({
   selectedPath,
   marks,
   counts,
+  fileNotes,
   onSelect,
   onMark,
 }: {
@@ -1791,6 +1802,7 @@ function FileGroups({
   selectedPath: string | null;
   marks: ViewedMarks;
   counts: Map<string, { total: number; open: number }>;
+  fileNotes: Map<string, FileNoteCount>;
   onSelect: (f: ChangedFile) => void;
   onMark: (f: ChangedFile, viewed: boolean) => void;
 }) {
@@ -1810,6 +1822,7 @@ function FileGroups({
           key={f.path}
           file={f}
           nested={!!g.dir}
+          notes={fileNotes.get(f.path)}
           selected={f.path === selectedPath}
           viewed={isViewed(marks, f)}
           threads={counts.get(f.path) ?? null}
@@ -1845,6 +1858,7 @@ function ExplanationLine({
     subject,
     pr.head_sha,
   );
+  const blocked = useExplainBlocked(repositoryId, subject, pr.head_sha);
   const outOfDate = placement?.notes.filter((n) => n.out_of_date).length ?? 0;
   let text: string;
   if (!current) text = "Not explained";
@@ -1877,7 +1891,8 @@ function ExplanationLine({
         <button
           type="button"
           className="btn btn-sm"
-          title="Explain this pull request (E in Files Changed)"
+          title={blocked ?? "Explain this pull request (E in Files Changed)"}
+          disabled={!!blocked}
           onClick={onExplain}
         >
           Explain…
@@ -1887,9 +1902,15 @@ function ExplanationLine({
   );
 }
 
-/** The files in the explanation's reading order, numbered, viewed ones in place. */
+/**
+ * The files in the explanation's reading order, viewed ones in place. Each
+ * toured file has its tour step, so a filter or Since your review leaves
+ * the numbers alone; a file the tour does not list has none.
+ */
 function ReadingList({
   files,
+  steps,
+  fileNotes,
   selectedPath,
   marks,
   counts,
@@ -1897,6 +1918,8 @@ function ReadingList({
   onMark,
 }: {
   files: ChangedFile[];
+  steps: Map<string, number>;
+  fileNotes: Map<string, FileNoteCount>;
   selectedPath: string | null;
   marks: ViewedMarks;
   counts: Map<string, { total: number; open: number }>;
@@ -1904,17 +1927,20 @@ function ReadingList({
   onMark: (f: ChangedFile, viewed: boolean) => void;
 }) {
   return files.map((f, i) => (
-    <FileRow
-      key={f.path}
-      file={f}
-      nested={false}
-      step={i + 1}
-      selected={f.path === selectedPath}
-      viewed={isViewed(marks, f)}
-      threads={counts.get(f.path) ?? null}
-      onSelect={() => onSelect(f)}
-      onMark={(viewed) => onMark(f, viewed)}
-    />
+    <div key={f.path}>
+      {startsNotCovered(files, i, steps) && <NotCoveredHeading />}
+      <FileRow
+        file={f}
+        nested={false}
+        step={steps.get(f.path) ?? null}
+        notes={fileNotes.get(f.path)}
+        selected={f.path === selectedPath}
+        viewed={isViewed(marks, f)}
+        threads={counts.get(f.path) ?? null}
+        onSelect={() => onSelect(f)}
+        onMark={(viewed) => onMark(f, viewed)}
+      />
+    </div>
   ));
 }
 
@@ -1927,11 +1953,14 @@ function FileRow({
   onSelect,
   onMark,
   step,
+  notes,
 }: {
   file: ChangedFile;
   nested: boolean;
-  /** Its place in the explanation's reading order. */
-  step?: number;
+  /** Its step in the explanation's tour; null for a file the tour does not
+   * list, which keeps the column so the rows line up; absent in Path. */
+  step?: number | null;
+  notes?: FileNoteCount;
   selected: boolean;
   viewed: boolean;
   threads: { total: number; open: number } | null;
@@ -1956,7 +1985,7 @@ function FileRow({
       >
         {step !== undefined && (
           <span className="w-[16px] shrink-0 text-right text-[11px] tabular text-muted">
-            {step}
+            {step ?? ""}
           </span>
         )}
         <span
@@ -1970,6 +1999,7 @@ function FileRow({
         >
           {splitPath(file.path).name}
         </span>
+        <FileNotes count={notes} />
         {threads && (
           <span
             className={`flex shrink-0 items-center gap-0.5 text-[11px] ${threads.open ? "text-fg-2" : "text-muted"}`}

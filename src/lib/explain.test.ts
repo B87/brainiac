@@ -9,6 +9,7 @@ import {
   pickRecord,
   readingOrder,
   sameSubject,
+  startsNotCovered,
   subjectLabel,
 } from "./explain";
 import type { Explanation, ExplanationNote, ExplanationRecord } from "./ipc";
@@ -149,6 +150,29 @@ describe("subjects", () => {
     const pr = { kind: "pull_request" as const, reference: "github.com/a/b#1" };
     expect(sameSubject(pr, { ...pr })).toBe(true);
     expect(sameSubject(pr, { kind: "branch", reference: "refs/heads/x" })).toBe(
+      false,
+    );
+  });
+});
+
+describe("startsNotCovered", () => {
+  const files = ["a", "b", "new1", "new2"].map((path) => ({ path }));
+  const steps = new Map([
+    ["a", 1],
+    ["b", 2],
+  ]);
+
+  it("marks only the first file the tour does not list", () => {
+    expect(files.map((_, i) => startsNotCovered(files, i, steps))).toEqual([
+      false,
+      false,
+      true,
+      false,
+    ]);
+  });
+
+  it("has no heading in Path order", () => {
+    expect(files.some((_, i) => startsNotCovered(files, i, new Map()))).toBe(
       false,
     );
   });

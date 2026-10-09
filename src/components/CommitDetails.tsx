@@ -22,7 +22,14 @@ import { useDiff } from "../lib/useDiff";
 import DiffView from "./DiffView";
 import { Avatar } from "./HistoryTab";
 import { CopyIcon, FolderIcon, SidebarIcon } from "./icons";
-import { OrderSwitch, useExplainedPatch } from "./useExplainedPatch";
+import {
+  type FileNoteCount,
+  FileNotes,
+  NotCoveredHeading,
+  OrderSwitch,
+  startsNotCovered,
+  useExplainedPatch,
+} from "./useExplainedPatch";
 
 type Props = {
   repositoryId: string;
@@ -246,6 +253,7 @@ export default function CommitDetails({
             onHide={() => setShowFiles(false)}
             reading={reading ? files : null}
             steps={explained.steps}
+            fileNotes={explained.fileNotes}
             orderSwitch={
               explained.hasExplanation && (
                 <OrderSwitch
@@ -323,6 +331,7 @@ function FileTree({
   onHide,
   reading,
   steps,
+  fileNotes,
   orderSwitch,
 }: {
   detail: CommitDetail | null;
@@ -333,6 +342,7 @@ function FileTree({
   /** The files in reading order, listed flat instead of by folder. */
   reading: CommitFile[] | null;
   steps: Map<string, number>;
+  fileNotes: Map<string, FileNoteCount>;
   orderSwitch?: ReactNode;
 }) {
   const ready = detail && detail.compared_parent_index === parentIndex;
@@ -370,16 +380,19 @@ function FileTree({
       )}
       <div className="min-h-0 flex-1 overflow-y-auto py-1.5">
         {ready &&
-          reading?.map((f) => (
-            <FileRow
-              key={f.path}
-              file={f}
-              nested={false}
-              full
-              step={steps.get(f.path)}
-              selected={f.path === selectedPath}
-              onSelect={() => onSelect(f.path)}
-            />
+          reading?.map((f, i) => (
+            <div key={f.path}>
+              {startsNotCovered(reading, i, steps) && <NotCoveredHeading />}
+              <FileRow
+                file={f}
+                nested={false}
+                full
+                step={steps.get(f.path)}
+                notes={fileNotes.get(f.path)}
+                selected={f.path === selectedPath}
+                onSelect={() => onSelect(f.path)}
+              />
+            </div>
           ))}
         {ready &&
           !reading &&
@@ -399,6 +412,7 @@ function FileTree({
                   key={f.path}
                   file={f}
                   nested={!!g.dir}
+                  notes={fileNotes.get(f.path)}
                   selected={f.path === selectedPath}
                   onSelect={() => onSelect(f.path)}
                 />
@@ -417,6 +431,7 @@ function FileRow({
   onSelect,
   full = false,
   step,
+  notes,
 }: {
   file: CommitFile;
   nested: boolean;
@@ -426,6 +441,7 @@ function FileRow({
   full?: boolean;
   /** Its step in the explanation's tour, in reading order. */
   step?: number;
+  notes?: FileNoteCount;
 }) {
   const tone = kindTone(file.kind);
   const bar = barWidths(file.additions, file.deletions);
@@ -454,6 +470,7 @@ function FileRow({
       <span className="min-w-0 flex-1 truncate">
         {full ? file.path : splitPath(file.path).name}
       </span>
+      <FileNotes count={notes} />
       {file.is_binary ? (
         <span className="text-[11px] text-muted">binary</span>
       ) : (

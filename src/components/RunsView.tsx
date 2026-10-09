@@ -68,7 +68,13 @@ import {
 } from "./icons";
 import { Markdown } from "./Markdown";
 import { RepoChip } from "./RepoChip";
-import { OrderSwitch, useExplainedPatch } from "./useExplainedPatch";
+import {
+  FileNotes,
+  NotCoveredHeading,
+  OrderSwitch,
+  startsNotCovered,
+  useExplainedPatch,
+} from "./useExplainedPatch";
 
 type Props = {
   snapshot: AppSnapshot;
@@ -2213,10 +2219,13 @@ function SnapshotFiles({
             aria-label="Changed files"
             className="m-0 min-h-0 flex-1 list-none overflow-y-auto p-1"
           >
-            {files.map((f) => {
+            {files.map((f, i) => {
               const { dir, name } = splitPath(f.path);
               return (
                 <li key={f.path}>
+                  {startsNotCovered(files, i, explained.steps) && (
+                    <NotCoveredHeading />
+                  )}
                   <button
                     type="button"
                     className="side-row h-auto w-full items-start gap-2 py-1.5 text-left"
@@ -2239,6 +2248,7 @@ function SnapshotFiles({
                         </span>
                       )}
                     </span>
+                    <FileNotes count={explained.fileNotes.get(f.path)} />
                     <span className="mt-px shrink-0 text-[11px] tabular">
                       {f.additions != null && (
                         <span className="text-added">+{f.additions} </span>

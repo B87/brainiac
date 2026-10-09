@@ -8,7 +8,13 @@ import { KIND_LETTER, kindTone, splitPath } from "../lib/repo";
 import { useDiff } from "../lib/useDiff";
 import DiffView from "./DiffView";
 import { ChevronLeft } from "./icons";
-import { OrderSwitch, useExplainedPatch } from "./useExplainedPatch";
+import {
+  FileNotes,
+  NotCoveredHeading,
+  OrderSwitch,
+  startsNotCovered,
+  useExplainedPatch,
+} from "./useExplainedPatch";
 
 /** `refs/heads/x` → `x`; `refs/remotes/origin/x` → `origin/x`. */
 function shortRef(name: string): string {
@@ -126,10 +132,13 @@ export default function BranchComparison({
             {comparison?.files.length === 0 && (
               <li className="p-3 text-muted">No changes against {base}.</li>
             )}
-            {files.map((f) => {
+            {files.map((f, i) => {
               const { dir, name } = splitPath(f.path);
               return (
                 <li key={f.path}>
+                  {startsNotCovered(files, i, explained.steps) && (
+                    <NotCoveredHeading />
+                  )}
                   <button
                     type="button"
                     className="side-row h-auto w-full items-start gap-2 py-1.5 text-left"
@@ -152,6 +161,7 @@ export default function BranchComparison({
                         </span>
                       )}
                     </span>
+                    <FileNotes count={explained.fileNotes.get(f.path)} />
                     <span className="mt-px shrink-0 text-[11px] tabular">
                       {f.additions != null && (
                         <span className="text-added">+{f.additions} </span>

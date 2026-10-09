@@ -119,6 +119,20 @@ export function readingOrder<T extends { path: string }>(
   });
 }
 
+/**
+ * Whether a reading-order list starts the files its tour does not list at
+ * row `i`, where the "Not in this explanation" heading goes. `steps` holds
+ * the toured files' steps; empty in Path order, which has no heading.
+ */
+export function startsNotCovered<T extends { path: string }>(
+  files: T[],
+  i: number,
+  steps: Map<string, number>,
+): boolean {
+  if (steps.size === 0 || steps.has(files[i].path)) return false;
+  return i === 0 || steps.has(files[i - 1].path);
+}
+
 export type PlacedNote = {
   index: number;
   note: ExplanationNote;
