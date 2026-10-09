@@ -11,6 +11,8 @@ into the release's section.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-09
+
 - Explain asks an agent to explain a commit, a branch compared with the default branch, a run's result, or a pull request: a summary, the files in reading order, notes beside the lines, the ideas the change relies on, and questions to check yourself, each claim checked against the code before it is shown.
 - New run and Explain ask once, for each repository and provider, whether its code may be sent, in place of the agreement on each agent's page; Settings → Code Sharing lists the answers.
 - The Explain dialog shows what an explanation usually takes in time and cost, and a finished or failed one shows what it took.
@@ -170,7 +172,8 @@ First public build: a read-only Git viewer and multi-repository tracker for macO
 - The Branches tab is a placeholder.
 - Not signed with an Apple Developer certificate; the first launch needs right-click > Open (see the README).
 
-[Unreleased]: https://github.com/B87/brainiac/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/B87/brainiac/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/B87/brainiac/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/B87/brainiac/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/B87/brainiac/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/B87/brainiac/compare/v0.3.0...v0.3.1
