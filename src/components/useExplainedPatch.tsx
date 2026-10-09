@@ -25,6 +25,8 @@ export function useExplainedPatch<T extends { path: string }>({
   selectedPath,
   onSelectFile,
   onNotice = requestNotice,
+  version = null,
+  review = false,
 }: {
   repositoryId: string;
   subject: ExplainSubject | null;
@@ -32,6 +34,11 @@ export function useExplainedPatch<T extends { path: string }>({
   selectedPath: string | null;
   onSelectFile: (path: string) => void;
   onNotice?: (message: string) => void;
+  /** Changes when the subject moves (a pull request's head). */
+  version?: string | null;
+  /** A pull request's Files Changed: notes sit among review threads and
+   * drafts, say they stay on this Mac, and are shown or hidden apart. */
+  review?: boolean;
 }): {
   /** Files in the order the list shows them, for the list and `[` `]`. */
   ordered: T[];
@@ -43,11 +50,16 @@ export function useExplainedPatch<T extends { path: string }>({
   annotate: Annotate | undefined;
   panel: ReactNode;
   dialog: ReactNode;
+  /** Open the Explain dialog, as `E` does. */
+  openDialog: () => void;
 } {
-  const state = useExplanation(repositoryId, subject);
+  const state = useExplanation(repositoryId, subject, version);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [panelOpen, setPanelOpen] = usePref("brainiac.explain.panel", true);
-  const [notesOn, setNotesOn] = usePref("brainiac.explain.notes", true);
+  const [notesOn, setNotesOn] = usePref(
+    review ? "brainiac.explain.pr.notes" : "brainiac.explain.notes",
+    true,
+  );
   const [order, setOrder] = usePref<FileOrder>(
     "brainiac.explain.order",
     "reading",
@@ -118,13 +130,18 @@ export function useExplainedPatch<T extends { path: string }>({
         return (
           <>
             {here.map((n) => (
-              <NoteCard key={n.index} placed={n} onSource={onSelectFile} />
+              <NoteCard
+                key={n.index}
+                placed={n}
+                onSource={onSelectFile}
+                privateMark={review}
+              />
             ))}
           </>
         );
       },
     };
-  }, [ready, notesOn, selectedPath, state.placement, onSelectFile]);
+  }, [ready, notesOn, selectedPath, state.placement, onSelectFile, review]);
 
   const toolbar = subject ? (
     <span className="flex items-center gap-1.5">
@@ -166,6 +183,7 @@ export function useExplainedPatch<T extends { path: string }>({
     subject && panelOpen && (record || dialogOpen) ? (
       <ExplanationPanel
         repositoryId={repositoryId}
+        subject={subject}
         state={state}
         selectedPath={selectedPath}
         onSelectFile={onSelectFile}
@@ -205,6 +223,32 @@ export function useExplainedPatch<T extends { path: string }>({
     annotate,
     panel,
     dialog,
+    openDialog: () => setDialogOpen(true),
+  };
+}
+
+/**
+ * Two annotations on one diff: a pull request's threads and drafts, and the
+ * explanation's notes before them. The first one's comment box stays.
+ */
+export function composeAnnotate(
+  first: Annotate | undefined,
+  notes: Annotate | undefined,
+): Annotate | undefined {
+  if (!first || !notes) return first ?? notes;
+  return {
+    ...first,
+    render: (line: DiffLine) => {
+      const a = notes.render(line);
+      const b = first.render(line);
+      if (!a && !b) return null;
+      return (
+        <>
+          {a}
+          {b}
+        </>
+      );
+    },
   };
 }
 

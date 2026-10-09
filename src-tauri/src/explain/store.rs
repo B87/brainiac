@@ -154,6 +154,26 @@ pub fn for_subject(
     Ok(rows)
 }
 
+/// The explanations of the same changes, whatever their subject: a branch
+/// and a pull request with the same merge base and head share one
+/// (SPEC.md, section 14, Pull requests).
+pub fn for_range(
+    conn: &mut Connection,
+    repository_id: &str,
+    base: &str,
+    tip: &str,
+) -> AppResult<Vec<ExplanationRow>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {COLUMNS} FROM explanations
+         WHERE repository_id = ?1 AND tip = ?2 AND base = ?3
+         ORDER BY created_at DESC"
+    ))?;
+    let rows = stmt
+        .query_map(params![repository_id, tip, base], from_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
 /// The one of the same subject, profile, and depth.
 pub fn find(
     conn: &mut Connection,

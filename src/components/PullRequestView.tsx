@@ -1,5 +1,6 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { depthLabel, sameSubject, subjectLabel } from "../lib/explain";
 import { absoluteTime, relativeTime } from "../lib/format";
 import {
   type ChangedFile,
@@ -61,10 +62,12 @@ import {
 import { plural, splitPath } from "../lib/repo";
 import { useSidePanel } from "../lib/sidePanel";
 import { createLatest } from "../lib/stale";
+import { useExplanation } from "../lib/useExplanation";
 import Dialog from "./Dialog";
 import DiffView, { type LineTarget } from "./DiffView";
 import { Avatar } from "./HistoryTab";
 import {
+  BulbIcon,
   ChevronLeft,
   CommentIcon,
   ExternalIcon,
@@ -76,6 +79,11 @@ import {
 import { Markdown } from "./Markdown";
 import { StateIcon } from "./PullRequestsTab";
 import SidePanelButton from "./SidePanelButton";
+import {
+  composeAnnotate,
+  OrderSwitch,
+  useExplainedPatch,
+} from "./useExplainedPatch";
 
 type Tab = "overview" | "files" | "checks";
 /** All changes, those since the account's last review, or since its drafts. */
@@ -126,6 +134,8 @@ export default function PullRequestView({
   const [refreshing, setRefreshing] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [mergeOpen, setMergeOpen] = useState(false);
+  /** The Overview's Explain… opens the dialog in Files Changed. */
+  const [explainOnOpen, setExplainOnOpen] = useState(false);
   const latest = useRef(createLatest()).current;
   const conversationLatest = useRef(createLatest()).current;
   const draftsLatest = useRef(createLatest()).current;
@@ -387,6 +397,9 @@ export default function PullRequestView({
           onDrafts={setDrafts}
           onOutcome={applyOutcome}
           onError={onError}
+          repositoryId={repository?.id ?? null}
+          explainOnOpen={explainOnOpen}
+          onExplainOpened={() => setExplainOnOpen(false)}
         />
       ) : tab === "checks" ? (
         <ChecksTab pr={pr} checks={checks} />
@@ -404,6 +417,11 @@ export default function PullRequestView({
           onError={onError}
           onShowSinceReview={() => {
             setScope("review");
+            setTab("files");
+          }}
+          onOpenExplanation={() => setTab("files")}
+          onExplain={() => {
+            setExplainOnOpen(true);
             setTab("files");
           }}
         />
@@ -463,6 +481,8 @@ function Overview({
   onMerge,
   onError,
   onShowSinceReview,
+  onOpenExplanation,
+  onExplain,
 }: {
   pr: PullRequest;
   conversation: Conversation | null;
@@ -475,6 +495,8 @@ function Overview({
   onMerge: () => void;
   onError: (message: string | null) => void;
   onShowSinceReview: () => void;
+  onOpenExplanation: () => void;
+  onExplain: () => void;
 }) {
   const since = sinceReviewLabel(pr);
   const unresolved = conversation
@@ -545,6 +567,14 @@ function Overview({
               </span>
             )}
           </div>
+          {repository && (
+            <ExplanationLine
+              repositoryId={repository.id}
+              pr={pr}
+              onOpen={onOpenExplanation}
+              onExplain={onExplain}
+            />
+          )}
           {since && (
             <div className="flex items-center gap-2 text-[12.5px]">
               <span className="font-medium text-accent">{since}</span>
@@ -1182,6 +1212,9 @@ function FilesTab({
   onDrafts,
   onOutcome,
   onError,
+  repositoryId,
+  explainOnOpen,
+  onExplainOpened,
 }: {
   pr: PullRequest;
   files: PullRequestFiles | null;
@@ -1198,6 +1231,11 @@ function FilesTab({
   onDrafts: (drafts: ReviewDrafts) => void;
   onOutcome: (outcome: WriteOutcome) => void;
   onError: (message: string | null) => void;
+  /** The local checkout, which an explanation needs; null without one. */
+  repositoryId: string | null;
+  /** The Overview's Explain… asked for the dialog. */
+  explainOnOpen: boolean;
+  onExplainOpened: () => void;
 }) {
   const [showFiles, setShowFiles] = usePref("brainiac.pr.files", true);
   const [ignoreWhitespace, setIgnoreWhitespace] = usePref(
@@ -1244,7 +1282,7 @@ function FilesTab({
     }
     return { all, shown, main, viewed, generated };
   }, [list, filter, marks, selectedPath]);
-  const ordered = useMemo(
+  const byPath = useMemo(
     () => [
       ...groupByDir(sections.main).flatMap((g) => g.files),
       ...groupByDir(sections.viewed).flatMap((g) => g.files),
@@ -1252,6 +1290,36 @@ function FilesTab({
     ],
     [sections],
   );
+
+  // The explanation (SPEC.md, section 14, Pull requests): the same panel,
+  // notes, and reading order as a branch's, beside the review.
+  const subject = useMemo(
+    () =>
+      repositoryId
+        ? { kind: "pull_request" as const, reference: pr.reference }
+        : null,
+    [repositoryId, pr.reference],
+  );
+  const selectRef = useRef<(path: string) => void>(() => {});
+  const explained = useExplainedPatch({
+    repositoryId: repositoryId ?? "",
+    subject,
+    files: sections.shown,
+    selectedPath,
+    onSelectFile: (path) => selectRef.current(path),
+    onNotice: (m) => onError(m),
+    version: pr.head_sha,
+    review: true,
+  });
+  // In reading order, viewed and generated files keep their place, so the
+  // numbers hold; Path brings back the tree and its folds.
+  const reading = explained.hasExplanation && explained.order === "reading";
+  const ordered = reading ? explained.ordered : byPath;
+  useEffect(() => {
+    if (!explainOnOpen || !subject) return;
+    explained.openDialog();
+    onExplainOpened();
+  }, [explainOnOpen, subject, explained, onExplainOpened]);
 
   // The first file to look at, once the list is here or the scope changed:
   // one not viewed or generated when there is one. The marks are read
@@ -1325,6 +1393,10 @@ function FilesTab({
     setSelectedPath(f.path);
     if (!isViewed(marks, f)) mark(f, true);
   };
+  selectRef.current = (path) => {
+    const f = list?.files.find((x) => x.path === path);
+    if (f) select(f);
+  };
   const index = ordered.findIndex((f) => f.path === selectedPath);
   const step = (delta: number) => {
     const next = ordered[index + delta];
@@ -1388,7 +1460,7 @@ function FilesTab({
     }
     setComposer({ target, draftId: null, initial: "" });
   };
-  const annotate =
+  const reviewAnnotate =
     diff?.diff.content.kind === "text"
       ? {
           render: (line: DiffLine) => {
@@ -1465,6 +1537,7 @@ function FilesTab({
           note: canReview.reason ?? undefined,
         }
       : undefined;
+  const annotate = composeAnnotate(reviewAnnotate, explained.annotate);
 
   const empty = !list
     ? since && sinceError
@@ -1556,6 +1629,18 @@ function FilesTab({
           </div>
           <div className="flex flex-col gap-2 border-b px-3 py-2">
             {scopeControl}
+            {explained.hasExplanation && (
+              <div className="flex items-center gap-2">
+                <OrderSwitch
+                  order={explained.order}
+                  setOrder={explained.setOrder}
+                />
+                <span className="ml-auto text-[11.5px] tabular text-muted">
+                  {sections.all.filter((f) => isViewed(marks, f)).length} of{" "}
+                  {sections.all.length} viewed
+                </span>
+              </div>
+            )}
             <input
               type="search"
               className="text-input h-7 text-[12px]"
@@ -1576,15 +1661,27 @@ function FilesTab({
                 {sinceError}
               </div>
             )}
-            <FileGroups
-              files={sections.main}
-              selectedPath={selectedPath}
-              marks={marks}
-              counts={counts}
-              onSelect={select}
-              onMark={mark}
-            />
-            {sections.viewed.length > 0 && (
+            {reading && (
+              <ReadingList
+                files={ordered}
+                selectedPath={selectedPath}
+                marks={marks}
+                counts={counts}
+                onSelect={select}
+                onMark={mark}
+              />
+            )}
+            {!reading && (
+              <FileGroups
+                files={sections.main}
+                selectedPath={selectedPath}
+                marks={marks}
+                counts={counts}
+                onSelect={select}
+                onMark={mark}
+              />
+            )}
+            {!reading && sections.viewed.length > 0 && (
               <details className="pr-fold">
                 <summary>
                   {plural(sections.viewed.length, "viewed file")}
@@ -1599,7 +1696,7 @@ function FilesTab({
                 />
               </details>
             )}
-            {sections.generated.length > 0 && (
+            {!reading && sections.generated.length > 0 && (
               <details className="pr-fold">
                 <summary>
                   {plural(sections.generated.length, "generated file")}
@@ -1641,25 +1738,30 @@ function FilesTab({
               : undefined
           }
           extra={
-            !showFiles && (
-              <>
-                <button
-                  type="button"
-                  className="btn btn-sm"
-                  onClick={() => setShowFiles(true)}
-                >
-                  <SidebarIcon size={13} />
-                  Show files
-                </button>
-                {scopeControl}
-              </>
-            )
+            <>
+              {!showFiles && (
+                <>
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    onClick={() => setShowFiles(true)}
+                  >
+                    <SidebarIcon size={13} />
+                    Show files
+                  </button>
+                  {scopeControl}
+                </>
+              )}
+              {explained.toolbar}
+            </>
           }
           meta={meta}
           empty={empty}
           onOpenInEditor={openInEditor}
         />
       </div>
+      {explained.panel}
+      {explained.dialog}
     </div>
   );
 }
@@ -1706,6 +1808,103 @@ function FileGroups({
   ));
 }
 
+/**
+ * The Overview's one line about the explanation (SPEC.md, section 14, Pull
+ * requests): whether there is one, how old, how much moved, and a way to it.
+ */
+function ExplanationLine({
+  repositoryId,
+  pr,
+  onOpen,
+  onExplain,
+}: {
+  repositoryId: string;
+  pr: PullRequest;
+  onOpen: () => void;
+  onExplain: () => void;
+}) {
+  const subject = useMemo(
+    () => ({ kind: "pull_request" as const, reference: pr.reference }),
+    [pr.reference],
+  );
+  const { current, placement } = useExplanation(
+    repositoryId,
+    subject,
+    pr.head_sha,
+  );
+  const outOfDate = placement?.notes.filter((n) => n.out_of_date).length ?? 0;
+  let text: string;
+  if (!current) text = "Not explained";
+  else if (current.state === "working") text = "Explaining…";
+  else if (current.state === "ready")
+    text = `Explained · ${depthLabel(current.depth)} · ${relativeTime(current.created_at)}${
+      sameSubject(current.subject, subject)
+        ? ""
+        : ` · from ${subjectLabel(current.subject)}`
+    }`;
+  else
+    text =
+      current.state === "cancelled"
+        ? "Explanation cancelled"
+        : "The explanation failed";
+  return (
+    <div className="flex items-center gap-2 text-[12.5px]">
+      <BulbIcon size={13} className="shrink-0 text-muted" />
+      <span className={current ? "text-fg-2" : "text-muted"}>{text}</span>
+      {placement?.moved && outOfDate > 0 && (
+        <span className="pr-state">
+          {plural(outOfDate, "note")} out of date
+        </span>
+      )}
+      {current ? (
+        <button type="button" className="btn btn-sm" onClick={onOpen}>
+          Open in Files Changed
+        </button>
+      ) : (
+        <button
+          type="button"
+          className="btn btn-sm"
+          title="Explain this pull request (E in Files Changed)"
+          onClick={onExplain}
+        >
+          Explain…
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** The files in the explanation's reading order, numbered, viewed ones in place. */
+function ReadingList({
+  files,
+  selectedPath,
+  marks,
+  counts,
+  onSelect,
+  onMark,
+}: {
+  files: ChangedFile[];
+  selectedPath: string | null;
+  marks: ViewedMarks;
+  counts: Map<string, { total: number; open: number }>;
+  onSelect: (f: ChangedFile) => void;
+  onMark: (f: ChangedFile, viewed: boolean) => void;
+}) {
+  return files.map((f, i) => (
+    <FileRow
+      key={f.path}
+      file={f}
+      nested={false}
+      step={i + 1}
+      selected={f.path === selectedPath}
+      viewed={isViewed(marks, f)}
+      threads={counts.get(f.path) ?? null}
+      onSelect={() => onSelect(f)}
+      onMark={(viewed) => onMark(f, viewed)}
+    />
+  ));
+}
+
 function FileRow({
   file,
   nested,
@@ -1714,9 +1913,12 @@ function FileRow({
   threads,
   onSelect,
   onMark,
+  step,
 }: {
   file: ChangedFile;
   nested: boolean;
+  /** Its place in the explanation's reading order. */
+  step?: number;
   selected: boolean;
   viewed: boolean;
   threads: { total: number; open: number } | null;
@@ -1739,6 +1941,11 @@ function FileRow({
         onClick={onSelect}
         title={`${label} (${stats})`}
       >
+        {step !== undefined && (
+          <span className="w-[16px] shrink-0 text-right text-[11px] tabular text-muted">
+            {step}
+          </span>
+        )}
         <span
           className="mono w-[13px] shrink-0 text-center text-[11px] font-semibold"
           style={{ color: `var(--k-${TONE[file.status]}-fg)` }}

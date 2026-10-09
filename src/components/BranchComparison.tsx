@@ -60,6 +60,7 @@ export default function BranchComparison({
     files: comparison?.files ?? [],
     selectedPath: selected,
     onSelectFile: setSelected,
+    version: comparison?.tip ?? null,
   });
   const files = explained.ordered;
   const file = files.find((f) => f.path === selected) ?? null;

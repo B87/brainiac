@@ -146,6 +146,10 @@ pub const HISTORY: Store = Store {
             "0005_explanations",
             include_str!("../migrations/history/0005_explanations.sql"),
         ),
+        (
+            "0006_pull_request_explanations",
+            include_str!("../migrations/history/0006_pull_request_explanations.sql"),
+        ),
     ],
     backups: Backups::Every { days: 7, keep: 2 },
     adopt_unmarked: false,

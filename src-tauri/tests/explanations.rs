@@ -18,7 +18,7 @@ use brainiac_lib::agents::{
 };
 use brainiac_lib::credentials::{CommandRunner, CredentialService, MemoryStore};
 use brainiac_lib::db::{self, Db};
-use brainiac_lib::explain::service::ExplanationService;
+use brainiac_lib::explain::service::{ExplanationService, PullRequestFacts};
 use brainiac_lib::git::GitService;
 use brainiac_lib::models::{
     AgentPayment, AgentProvider, AnswerExplainRequest, ConceptKind, ErrorCode, ExplainConsentState,
@@ -582,4 +582,148 @@ async fn a_branch_explanation_follows_the_branch_when_it_moves() {
     let placed = h.explanations.placement(&record.id).await.unwrap();
     assert!(placed.gone);
     assert!(h.explanations.get(&record.id).await.is_ok());
+}
+
+/// A pull request of `feature` into main, as the pull request service would
+/// describe it; the test changes it as the pull request moves.
+fn pull_request(h: &Harness) -> Arc<std::sync::Mutex<PullRequestFacts>> {
+    let facts = Arc::new(std::sync::Mutex::new(PullRequestFacts {
+        repository_id: h.repository_id.clone(),
+        number: 7,
+        title: "Check the limit".into(),
+        head_sha: h.head("feature"),
+        base_sha: h.head("main"),
+        source_branch: "feature".into(),
+        target_branch: "main".into(),
+        from_fork: false,
+        mine: false,
+        author: "Ana".into(),
+    }));
+    let reading = Arc::clone(&facts);
+    h.explanations
+        .set_pull_requests(Arc::new(move |_reference: String| {
+            let facts = reading.lock().unwrap().clone();
+            Box::pin(async move { Ok(facts) })
+        }));
+    facts
+}
+
+fn pull_request_subject() -> ExplainSubject {
+    ExplainSubject {
+        kind: ExplainSubjectKind::PullRequest,
+        reference: "github.com/acme/api#7".into(),
+    }
+}
+
+fn feature_file() -> String {
+    json!({
+        "summary": "Checks the limit.",
+        "tour": [
+            { "path": "src/lib.rs", "role": "the call" },
+            { "path": "src/check.rs", "role": "the check" },
+        ],
+        "notes": [{
+            "path": "src/lib.rs", "new_start": 8, "new_end": 8,
+            "text": "The new check.",
+            "sources": [quote("src/lib.rs", 8, 8, "check(limit);")],
+        }],
+        "concepts": [],
+    })
+    .to_string()
+}
+
+#[tokio::test]
+async fn a_pull_request_and_its_branch_share_one_explanation() {
+    let h = Harness::new().await;
+    h.allow().await;
+    let facts = pull_request(&h);
+
+    // The branch is explained first; the pull request of the same commits
+    // shows that explanation, and its dialog lists it.
+    h.engine.get().explanations.push_back(feature_file());
+    let started = h.explain(h.feature()).await.unwrap();
+    let branch = h.ended(&started.id).await;
+    assert_eq!(branch.state, ExplanationState::Ready, "{branch:?}");
+    let shown = h
+        .explanations
+        .for_subject(&h.repository_id, pull_request_subject())
+        .await
+        .unwrap();
+    assert_eq!(shown.len(), 1);
+    assert_eq!(shown[0].id, branch.id);
+    let dialog = h
+        .explanations
+        .dialog(&h.repository_id, pull_request_subject())
+        .await
+        .unwrap();
+    assert_eq!(dialog.title, "#7 Check the limit");
+    assert_eq!(dialog.existing.len(), 1);
+    assert_eq!(dialog.blocked, None);
+    // Someone else's head: the dialog says whose.
+    assert_eq!(dialog.head_author.as_deref(), Some("Ana"));
+
+    // Explained as a pull request too: compared with its target from their
+    // merge base, the same changes, and shown on the branch as well.
+    h.engine.get().explanations.push_back(feature_file());
+    let started = h.explain(pull_request_subject()).await.unwrap();
+    assert_eq!(started.title, "#7 Check the limit");
+    assert_eq!(started.base, h.head("main"));
+    let record = h.ended(&started.id).await;
+    assert_eq!(record.state, ExplanationState::Ready, "{record:?}");
+    let prompt = h.engine.get().prompts.last().cloned().unwrap();
+    assert!(prompt.contains("pull request #7"));
+    let on_branch = h
+        .explanations
+        .for_subject(&h.repository_id, h.feature())
+        .await
+        .unwrap();
+    assert_eq!(on_branch.len(), 2);
+    assert!(on_branch.iter().any(|r| r.id == record.id));
+
+    // A push moves the head: the note follows its line, and the new file is
+    // not in the explanation.
+    git(&h.repo, &["checkout", "-q", "feature"]);
+    write(&h.repo, "src/more.rs", "fn more() {}\n");
+    git(&h.repo, &["add", "."]);
+    git(&h.repo, &["commit", "-q", "-m", "More"]);
+    git(&h.repo, &["checkout", "-q", "main"]);
+    facts.lock().unwrap().head_sha = h.head("feature");
+    let placed = h.explanations.placement(&record.id).await.unwrap();
+    assert!(placed.moved && !placed.gone);
+    assert!(!placed.notes[0].out_of_date);
+    assert_eq!(placed.uncovered, ["src/more.rs"]);
+
+    // A new head not on this Mac: the notes cannot be placed, and the
+    // dialog asks for a fetch first.
+    facts.lock().unwrap().head_sha = "0123456789abcdef0123456789abcdef01234567".into();
+    let placed = h.explanations.placement(&record.id).await.unwrap();
+    assert!(placed.moved && !placed.gone);
+    assert!(placed.notes.iter().all(|n| n.out_of_date));
+    let dialog = h
+        .explanations
+        .dialog(&h.repository_id, pull_request_subject())
+        .await
+        .unwrap();
+    assert!(dialog.fetch_first);
+    assert!(dialog.blocked.unwrap().contains("fetch"));
+    let refused = h.explain(pull_request_subject()).await.unwrap_err();
+    assert_eq!(refused.code, ErrorCode::NotFound);
+}
+
+#[tokio::test]
+async fn a_pull_request_from_a_fork_is_not_explained() {
+    let h = Harness::new().await;
+    h.allow().await;
+    let facts = pull_request(&h);
+    facts.lock().unwrap().from_fork = true;
+    let dialog = h
+        .explanations
+        .dialog(&h.repository_id, pull_request_subject())
+        .await
+        .unwrap();
+    assert!(dialog.blocked.unwrap().contains("fork"));
+    assert!(!dialog.fetch_first);
+    let refused = h.explain(pull_request_subject()).await.unwrap_err();
+    assert_eq!(refused.code, ErrorCode::Validation);
+    assert_eq!(h.engine.get().launches, 0);
 }

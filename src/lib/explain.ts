@@ -8,6 +8,7 @@ import type {
   ExplainDepth,
   ExplainEstimate,
   ExplainStep,
+  ExplainSubject,
   Explanation,
   ExplanationNote,
   ExplanationPlacement,
@@ -158,6 +159,28 @@ export function noteSequence(
     e,
   );
   return order.flatMap(({ path }) => notesIn(e, placement, path));
+}
+
+export function sameSubject(a: ExplainSubject, b: ExplainSubject): boolean {
+  return a.kind === b.kind && a.reference === b.reference;
+}
+
+/**
+ * Where an explanation was made, for a branch and a pull request that share
+ * one (SPEC.md, section 14, Pull requests): "the branch feature/x", "the
+ * pull request #42".
+ */
+export function subjectLabel(subject: ExplainSubject): string {
+  switch (subject.kind) {
+    case "branch":
+      return `the branch ${subject.reference.replace(/^refs\/(heads|remotes)\//, "")}`;
+    case "pull_request":
+      return `the pull request #${subject.reference.split("#").pop()}`;
+    case "commit":
+      return `commit ${subject.reference.slice(0, 7)}`;
+    case "run":
+      return "a run's result";
+  }
 }
 
 /** The one shown by default: the newest ready or working, else the newest. */

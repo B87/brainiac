@@ -6,7 +6,9 @@ import {
   formatDuration,
   type PlacedNote,
   readingOrder,
+  sameSubject,
   stepLabel,
+  subjectLabel,
   usageText,
 } from "../lib/explain";
 import { relativeTime } from "../lib/format";
@@ -14,6 +16,7 @@ import {
   type CitedQuote,
   type ConceptKind,
   type ExplainStep,
+  type ExplainSubject,
   type ExplanationRecord,
   errorMessage,
   ipc,
@@ -46,16 +49,30 @@ export function sourceLabel(q: CitedQuote): string {
 export function NoteCard({
   placed,
   onSource,
+  privateMark = false,
 }: {
   placed: PlacedNote;
   onSource: (path: string) => void;
+  /** Among a pull request's threads and drafts: say it is never posted. */
+  privateMark?: boolean;
 }) {
   const { note, outOfDate } = placed;
   return (
     <div
       id={`explain-note-${placed.index}`}
-      className="mx-3 my-1.5 rounded-md border border-accent/40 bg-panel px-3 py-2 font-sans text-[12.5px] leading-relaxed whitespace-normal"
+      className="mx-3 my-1.5 rounded-md border border-info-line bg-info-bg px-3 py-2 font-sans text-[12.5px] leading-relaxed whitespace-normal"
     >
+      <div className="mb-1 flex items-center gap-2 text-[11.5px]">
+        <span className="font-medium text-link">Explanation note</span>
+        {privateMark && (
+          <span
+            className="ml-auto text-muted"
+            title="Explanation notes are kept in Brainiac on this Mac. Nothing sends them to the provider."
+          >
+            Only on this Mac
+          </span>
+        )}
+      </div>
       {outOfDate && (
         <div className="mb-1 text-[11.5px] font-medium text-dirty">
           Out of date: these lines changed since it was explained.
@@ -97,6 +114,7 @@ export function NoteCard({
  */
 export default function ExplanationPanel({
   repositoryId,
+  subject,
   state,
   selectedPath,
   onSelectFile,
@@ -106,6 +124,9 @@ export default function ExplanationPanel({
   onNotice,
 }: {
   repositoryId: string;
+  /** The subject on screen; the explanation shown may be of another with
+   * the same changes (a branch and its pull request). */
+  subject: ExplainSubject;
   state: ExplanationState;
   selectedPath: string | null;
   onSelectFile: (path: string) => void;
@@ -151,11 +172,13 @@ export default function ExplanationPanel({
     }
   };
 
+  // Try again and Re-explain explain the subject on screen, with the same
+  // agent and depth.
   const again = (r: ExplanationRecord) =>
     act(() =>
       ipc.startExplanation({
         repository_id: r.repository_id,
-        subject: r.subject,
+        subject,
         profile_id: r.profile_id,
         host_id: r.host_id,
         depth: r.depth,
@@ -182,6 +205,9 @@ export default function ExplanationPanel({
             {records.map((r) => (
               <option key={r.id} value={r.id}>
                 {depthLabel(r.depth)} · {r.model || r.agent}
+                {sameSubject(r.subject, subject)
+                  ? ""
+                  : ` · from ${subjectLabel(r.subject)}`}
               </option>
             ))}
           </select>
@@ -232,6 +258,7 @@ export default function ExplanationPanel({
         {record?.state === "ready" && record.explanation && (
           <Ready
             repositoryId={repositoryId}
+            subject={subject}
             record={record}
             placementMoved={placement?.moved ?? false}
             placementGone={placement?.gone ?? false}
@@ -253,6 +280,23 @@ export default function ExplanationPanel({
       </div>
     </aside>
   );
+}
+
+/** The line above the summary when a branch or a pull request moved. */
+function movedText(
+  kind: ExplainSubject["kind"],
+  gone: boolean,
+  outOfDate: number,
+  uncovered: number,
+): string {
+  const pr = kind === "pull_request";
+  if (gone)
+    return pr
+      ? "The pull request has no changes against its target now; the explanation is kept as written."
+      : "The branch is gone or has no changes against the default branch; the explanation is kept as written.";
+  const notes = `${outOfDate} ${outOfDate === 1 ? "note" : "notes"} out of date`;
+  const files = `${uncovered} ${uncovered === 1 ? "file" : "files"} not covered`;
+  return `The ${pr ? "pull request" : "branch"} moved since this explanation: ${notes}, ${files}.`;
 }
 
 function elapsed(since: string): string {
@@ -384,6 +428,7 @@ function Ended({
 
 function Ready({
   repositoryId,
+  subject,
   record,
   placementMoved,
   placementGone,
@@ -400,6 +445,7 @@ function Ready({
   onExplain,
 }: {
   repositoryId: string;
+  subject: ExplainSubject;
   record: ExplanationRecord;
   placementMoved: boolean;
   placementGone: boolean;
@@ -449,11 +495,19 @@ function Ready({
 
   return (
     <div className="flex flex-col gap-3">
+      {!sameSubject(record.subject, subject) && (
+        <span className="text-[12px] text-fg-2">
+          The same changes as {subjectLabel(record.subject)}; explained there.
+        </span>
+      )}
       {placementMoved && (
         <div className="rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[12px] text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-100">
-          {placementGone
-            ? "The branch is gone or has no changes against the default branch; the explanation is kept as written."
-            : `The branch moved since this explanation: ${outOfDate} ${outOfDate === 1 ? "note" : "notes"} out of date, ${uncovered.length} ${uncovered.length === 1 ? "file" : "files"} not covered.`}{" "}
+          {movedText(
+            record.subject.kind,
+            placementGone,
+            outOfDate,
+            uncovered.length,
+          )}{" "}
           {!placementGone && (
             <button
               type="button"

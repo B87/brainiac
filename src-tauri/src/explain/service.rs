@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use futures_util::future::BoxFuture;
 use sha2::{Digest, Sha256};
 use tokio::sync::broadcast;
 
@@ -43,6 +44,34 @@ pub type ExplanationEmitter = Arc<dyn Fn(ExplanationChangedEvent) + Send + Sync>
 /// not the active app (SPEC.md, Explain: While it works).
 pub type ExplanationNotifier = Arc<dyn Fn(String, String) + Send + Sync>;
 
+/// What Explain needs to know of a pull request, as the pull request
+/// service (`forge`) last read it from the provider or its cache.
+#[derive(Debug, Clone)]
+pub struct PullRequestFacts {
+    /// The repository registration that tracks the pull request.
+    pub repository_id: String,
+    pub number: u64,
+    pub title: String,
+    pub head_sha: String,
+    /// The target branch's tip when the pull request was read.
+    pub base_sha: String,
+    pub source_branch: String,
+    pub target_branch: String,
+    /// The source branch is in another repository, such as a fork.
+    pub from_fork: bool,
+    /// Written by the account's user.
+    pub mine: bool,
+    pub author: String,
+}
+
+/// Reads a pull request by its reference. A `BoxFuture` is a future behind a
+/// pointer, which is how a stored closure can be async; the closure keeps this
+/// module from depending on `forge`, which is built first.
+pub type PullRequestReader =
+    Arc<dyn Fn(String) -> BoxFuture<'static, AppResult<PullRequestFacts>> + Send + Sync>;
+
+const FROM_FORK: &str = "This pull request comes from another repository, such as a fork: its agent settings would run with your token, so it is not explained.";
+
 /// How long an explanation waits for its run's next change before it looks
 /// again anyway.
 const LOOK_AGAIN: Duration = Duration::from_secs(20);
@@ -61,6 +90,7 @@ pub struct ExplanationService {
     notes: Arc<NoteService>,
     emitter: ExplanationEmitter,
     notifier: Mutex<Option<ExplanationNotifier>>,
+    pull_requests: Mutex<Option<PullRequestReader>>,
     /// The run service's change events, by run ID.
     run_events: broadcast::Sender<String>,
     /// One task per working explanation.
@@ -101,6 +131,7 @@ impl ExplanationService {
             notes,
             emitter,
             notifier: Mutex::new(None),
+            pull_requests: Mutex::new(None),
             run_events,
             driving: Mutex::new(HashMap::new()),
         })
@@ -108,6 +139,20 @@ impl ExplanationService {
 
     pub fn set_notifier(&self, notifier: ExplanationNotifier) {
         *self.notifier.lock().unwrap_or_else(|p| p.into_inner()) = Some(notifier);
+    }
+
+    pub fn set_pull_requests(&self, reader: PullRequestReader) {
+        *self.pull_requests.lock().unwrap_or_else(|p| p.into_inner()) = Some(reader);
+    }
+
+    async fn pull_request(&self, reference: &str) -> AppResult<PullRequestFacts> {
+        let reader = self
+            .pull_requests
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+            .ok_or_else(|| AppError::dependency("Pull requests are not available."))?;
+        reader(reference.to_string()).await
     }
 
     fn emit(&self, id: &str, repository_id: &str, deleted: bool) {
@@ -156,16 +201,53 @@ impl ExplanationService {
         repository_id: &str,
         subject: ExplainSubject,
     ) -> AppResult<Vec<ExplanationRecord>> {
-        let repository = repository_id.to_string();
-        let rows = self
-            .history
-            .call(move |conn| store::for_subject(conn, &repository, &subject))
-            .await?;
+        let rows = self.rows_for(repository_id, &subject).await?;
         let mut records = Vec::with_capacity(rows.len());
         for row in rows {
             records.push(self.present(row).await);
         }
         Ok(records)
+    }
+
+    /// A subject's explanations, newest first; then, for a branch or a pull
+    /// request, the ready ones of the other with the same changes, so one
+    /// explanation serves both (SPEC.md, section 14, Pull requests).
+    async fn rows_for(
+        &self,
+        repository_id: &str,
+        subject: &ExplainSubject,
+    ) -> AppResult<Vec<ExplanationRow>> {
+        let mut rows = {
+            let (repository, subject) = (repository_id.to_string(), subject.clone());
+            self.history
+                .call(move |conn| store::for_subject(conn, &repository, &subject))
+                .await?
+        };
+        if !shares_changes(subject.kind) {
+            return Ok(rows);
+        }
+        let Ok(summary) = self.repositories.summary(repository_id).await else {
+            return Ok(rows);
+        };
+        let root = PathBuf::from(&summary.canonical_root);
+        let Ok(range) = self.resolve(repository_id, &root, subject).await else {
+            return Ok(rows);
+        };
+        let repository = repository_id.to_string();
+        let shared = self
+            .history
+            .call(move |conn| store::for_range(conn, &repository, &range.base, &range.tip))
+            .await?;
+        for row in shared {
+            if row.subject != *subject
+                && shares_changes(row.subject.kind)
+                && row.state == ExplanationState::Ready
+                && !rows.iter().any(|r| r.id == row.id)
+            {
+                rows.push(row);
+            }
+        }
+        Ok(rows)
     }
 
     /// The row as the panel sees it: a working one with its run's progress.
@@ -431,15 +513,30 @@ impl ExplanationService {
         let settings = self.settings().await?;
         let agents = self.agent_settings.get().await?;
         let summary = self.repositories.summary(repository_id).await?;
-        let title = self
+        let resolved = self
             .resolve(
                 repository_id,
                 &PathBuf::from(&summary.canonical_root),
                 &subject,
             )
-            .await
-            .map(|r| r.title)
-            .unwrap_or_else(|_| subject.reference.clone());
+            .await;
+        let pull_request = match subject.kind {
+            ExplainSubjectKind::PullRequest => self.pull_request(&subject.reference).await.ok(),
+            _ => None,
+        };
+        let title = match (&resolved, &pull_request) {
+            (Ok(r), _) => r.title.clone(),
+            (Err(_), Some(pr)) => format!("#{} {}", pr.number, pr.title),
+            (Err(_), None) => subject.reference.clone(),
+        };
+        let blocked = resolved.as_ref().err().map(|e| e.message.clone());
+        // A pull request whose head is not here yet is explained after a fetch.
+        let fetch_first = matches!(&resolved, Err(e) if e.code == ErrorCode::NotFound)
+            && pull_request.as_ref().is_some_and(|pr| !pr.from_fork);
+        let head_author = pull_request
+            .as_ref()
+            .filter(|pr| !pr.mine)
+            .map(|pr| pr.author.clone());
         let workspaces = self.workspaces_of(repository_id).await?;
         let mut providers: Vec<crate::models::AgentProvider> = Vec::new();
         for p in &agents.profiles {
@@ -451,16 +548,12 @@ impl ExplanationService {
         for provider in providers {
             consents.push(self.consent(repository_id, provider, &workspaces).await?);
         }
-        let existing: Vec<ExplanationSummary> = {
-            let repository = repository_id.to_string();
-            let subject = subject.clone();
-            self.history
-                .call(move |conn| store::for_subject(conn, &repository, &subject))
-                .await?
-                .iter()
-                .map(|row| self.summary(row))
-                .collect()
-        };
+        let existing: Vec<ExplanationSummary> = self
+            .rows_for(repository_id, &subject)
+            .await?
+            .iter()
+            .map(|row| self.summary(row))
+            .collect();
         let mut estimates = Vec::new();
         for profile in &agents.profiles {
             for depth in [
@@ -489,6 +582,9 @@ impl ExplanationService {
             workspaces,
             existing,
             estimates,
+            blocked,
+            fetch_first,
+            head_author,
         })
     }
 
@@ -670,6 +766,70 @@ impl ExplanationService {
                         short_ref(&base_ref)
                     ),
                     title: short.to_string(),
+                    start: ExplainStart::Commit(tip.clone()),
+                    base,
+                    tip,
+                    root_commit: false,
+                })
+            }
+            ExplainSubjectKind::PullRequest => {
+                let pr = self.pull_request(&subject.reference).await?;
+                if pr.repository_id != repository_id {
+                    return Err(AppError::validation(
+                        "That pull request is of another repository.",
+                    ));
+                }
+                if pr.from_fork {
+                    return Err(AppError::validation(FROM_FORK));
+                }
+                // The head and the target's tip must both be here: the
+                // agent copies commits from this repository.
+                let local = |sha: String| {
+                    let git = &git;
+                    async move {
+                        crate::git::validate_revision(&sha)?;
+                        git(vec![
+                            "rev-parse".into(),
+                            "--verify".into(),
+                            "--end-of-options".into(),
+                            format!("{sha}^{{commit}}"),
+                        ])
+                        .await
+                        .map_err(|_| {
+                            AppError::not_found(format!(
+                                "Commit {} of the pull request is not on this Mac yet: fetch, then Explain.",
+                                &sha[..sha.len().min(7)]
+                            ))
+                        })
+                    }
+                };
+                let tip = local(pr.head_sha.clone()).await?;
+                let target = local(pr.base_sha.clone()).await?;
+                let base = git(vec![
+                    "merge-base".into(),
+                    "--end-of-options".into(),
+                    target,
+                    tip.clone(),
+                ])
+                .await
+                .map_err(|_| {
+                    AppError::validation(format!(
+                        "This pull request shares no history with {}.",
+                        pr.target_branch
+                    ))
+                })?;
+                if base == tip {
+                    return Err(AppError::validation(format!(
+                        "This pull request has no changes against {}.",
+                        pr.target_branch
+                    )));
+                }
+                Ok(Resolved {
+                    what: format!(
+                        "pull request #{}, the branch {} to be merged into {}, compared with {} from their merge base",
+                        pr.number, pr.source_branch, pr.target_branch, pr.target_branch
+                    ),
+                    title: format!("#{} {}", pr.number, pr.title),
                     start: ExplainStart::Commit(tip.clone()),
                     base,
                     tip,
@@ -1301,43 +1461,29 @@ impl ExplanationService {
                 .collect(),
             uncovered: Vec::new(),
         };
-        if row.subject.kind != ExplainSubjectKind::Branch {
+        if !shares_changes(row.subject.kind) {
             return Ok(as_written(false, false, row.tip.clone()));
         }
         let summary = self.repositories.summary(&row.repository_id).await?;
         let root = PathBuf::from(&summary.canonical_root);
-        let name = row.subject.reference.clone();
-        let tip = self
-            .artifacts
-            .read_git(
-                &root,
-                &[
-                    "rev-parse",
-                    "--verify",
-                    "--end-of-options",
-                    &format!("{name}^{{commit}}"),
-                ],
-            )
-            .await
-            .map(|t| t.trim().to_string());
-        let Ok(tip) = tip else {
-            return Ok(as_written(true, true, row.tip.clone()));
+        // Where the branch or the pull request is now.
+        let now = match self.resolve(&row.repository_id, &root, &row.subject).await {
+            Ok(now) => now,
+            // A pull request's new head that is not on this Mac yet: its
+            // notes cannot be placed, so all are out of date until a fetch.
+            Err(e)
+                if row.subject.kind == ExplainSubjectKind::PullRequest
+                    && e.code == ErrorCode::NotFound =>
+            {
+                return Ok(as_written(true, false, row.tip.clone()));
+            }
+            // Deleted, merged, or no longer comparable.
+            Err(_) => return Ok(as_written(true, true, row.tip.clone())),
         };
-        if tip == row.tip {
-            return Ok(as_written(false, false, tip));
+        if now.tip == row.tip {
+            return Ok(as_written(false, false, now.tip));
         }
-        let Ok(base_ref) = self.default_branch(&root).await else {
-            return Ok(as_written(true, true, tip));
-        };
-        let base = self
-            .artifacts
-            .read_git(&root, &["merge-base", "--end-of-options", &base_ref, &tip])
-            .await
-            .map(|b| b.trim().to_string());
-        let base = match base {
-            Ok(base) if base != tip => base,
-            _ => return Ok(as_written(true, true, tip)),
-        };
+        let (base, tip) = (now.base, now.tip);
         let subject = self.artifacts.read_subject(&root, &base, &tip).await?;
         let paths: BTreeSet<String> = explanation.notes.iter().map(|n| n.path.clone()).collect();
         let files = self.artifacts.read_files(&root, &tip, &paths).await?;
@@ -1399,13 +1545,25 @@ impl ExplanationService {
             ExplainSubjectKind::Commit => row.tip[..row.tip.len().min(8)].to_string(),
             ExplainSubjectKind::Branch => short_ref(&row.subject.reference).replace('/', "-"),
             ExplainSubjectKind::Run => format!("run {}", &row.tip[..row.tip.len().min(8)]),
+            ExplainSubjectKind::PullRequest => {
+                format!(
+                    "#{}",
+                    row.subject.reference.rsplit('#').next().unwrap_or_default()
+                )
+            }
         };
-        let title = format!("{short} — {}", row.title);
+        // A pull request's title already starts with its number.
+        let subject_title = row
+            .title
+            .strip_prefix(&format!("{short} "))
+            .unwrap_or(&row.title);
+        let title = format!("{short} — {subject_title}");
         let folder = format!("Explanations/{}", sanitize_folder(&row.repository_name));
         let subject_word = match row.subject.kind {
             ExplainSubjectKind::Commit => "commit",
             ExplainSubjectKind::Branch => "branch",
             ExplainSubjectKind::Run => "run",
+            ExplainSubjectKind::PullRequest => "pull request",
         };
         let frontmatter = vec![
             ("repository".to_string(), row.repository_name.clone()),
@@ -1524,6 +1682,15 @@ impl ExplanationService {
 }
 
 /// `refs/heads/x` → `x`; `refs/remotes/origin/x` → `origin/x`.
+/// A branch and a pull request can have the same changes, and then share
+/// one explanation; a commit's or a run's are its own.
+fn shares_changes(kind: ExplainSubjectKind) -> bool {
+    matches!(
+        kind,
+        ExplainSubjectKind::Branch | ExplainSubjectKind::PullRequest
+    )
+}
+
 fn short_ref(name: &str) -> &str {
     name.strip_prefix("refs/heads/")
         .or_else(|| name.strip_prefix("refs/remotes/"))

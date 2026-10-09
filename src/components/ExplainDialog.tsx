@@ -4,6 +4,8 @@ import {
   depthLabel,
   estimateText,
   formatDuration,
+  sameSubject,
+  subjectLabel,
   usageText,
 } from "../lib/explain";
 import { relativeTime } from "../lib/format";
@@ -91,14 +93,35 @@ export default function ExplainDialog({
         : data.settings.deep_minutes
     : 0;
   const missing = host?.missing ?? [];
+  // Explain again replaces only this subject's own; a branch's or a pull
+  // request's with the same changes is listed with where it was made.
   const same = data?.existing.find(
-    (e) => e.profile_id === profileId && e.depth === depth,
+    (e) =>
+      e.profile_id === profileId &&
+      e.depth === depth &&
+      sameSubject(e.subject, subject),
   );
   const others = data?.existing.filter((e) => e !== same) ?? [];
   const unasked = consent?.state === "unasked";
   const denied = consent?.state === "denied";
+  const blocked = data?.blocked ?? null;
   const ready =
-    !!profile && !!host && missing.length === 0 && !host.busy && !denied;
+    !!profile &&
+    !!host &&
+    missing.length === 0 &&
+    !host.busy &&
+    !denied &&
+    !blocked;
+  const [fetching, setFetching] = useState(false);
+  const fetchNow = () => {
+    setFetching(true);
+    setError(null);
+    ipc
+      .fetchRepository(repositoryId)
+      .then(() => load())
+      .catch((e) => setError(errorMessage(e)))
+      .finally(() => setFetching(false));
+  };
 
   const start = async (answer?: boolean) => {
     if (!profile || !host) return;
@@ -153,7 +176,16 @@ export default function ExplainDialog({
           <button type="button" className="btn btn-sm" onClick={onClose}>
             Cancel
           </button>
-          {unasked ? (
+          {data?.fetch_first ? (
+            <button
+              type="button"
+              className="btn btn-sm btn-primary"
+              disabled={fetching}
+              onClick={fetchNow}
+            >
+              {fetching ? "Fetching…" : "Fetch now"}
+            </button>
+          ) : unasked ? (
             <>
               <button
                 type="button"
@@ -268,6 +300,30 @@ export default function ExplainDialog({
               Add questions to check yourself
             </label>
 
+            {blocked && (
+              <div
+                role="alert"
+                className="rounded-lg bg-panel px-3 py-2.5 text-[12.5px] text-fg-2"
+              >
+                {blocked}
+              </div>
+            )}
+            {subject.kind === "pull_request" && !blocked && (
+              <p className="m-0 text-[12.5px] text-fg-2">
+                The agent reads the pull request's commits, from where its head
+                left the target branch. The description and comments are not
+                sent.
+              </p>
+            )}
+            {data.head_author && !blocked && (
+              <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-[12.5px] text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-100">
+                <span className="font-medium">
+                  {data.head_author} wrote this pull request, not you.
+                </span>{" "}
+                Its Claude Code settings and instructions in the repository run
+                in the container with your token or key.
+              </div>
+            )}
             {host?.busy && (
               <p role="note" className="m-0 text-[12.5px] text-muted">
                 {host.name} has a job in progress; it is not offered until the
@@ -384,6 +440,8 @@ export default function ExplainDialog({
                     {e.state === "ready" ? relativeTime(e.created_at) : e.state}
                     {usageText({ ...e, duration_secs: e.duration_secs }) &&
                       ` · ${usageText(e)}`}
+                    {!sameSubject(e.subject, subject) &&
+                      ` · from ${subjectLabel(e.subject)}`}
                   </button>
                 ))}
                 {same && (

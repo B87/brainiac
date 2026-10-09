@@ -8,6 +8,8 @@ import {
   notesIn,
   pickRecord,
   readingOrder,
+  sameSubject,
+  subjectLabel,
 } from "./explain";
 import type { Explanation, ExplanationNote, ExplanationRecord } from "./ipc";
 
@@ -127,5 +129,27 @@ describe("explanations", () => {
     expect(pickRecord(records, "a")?.id).toBe("a");
     expect(pickRecord([r("a", "failed"), r("b", "ready")], null)?.id).toBe("b");
     expect(pickRecord([], null)).toBeNull();
+  });
+});
+
+describe("subjects", () => {
+  it("names where a shared explanation was made", () => {
+    expect(
+      subjectLabel({ kind: "branch", reference: "refs/remotes/origin/feat/x" }),
+    ).toBe("the branch origin/feat/x");
+    expect(
+      subjectLabel({
+        kind: "pull_request",
+        reference: "github.com/acme/api#42",
+      }),
+    ).toBe("the pull request #42");
+  });
+
+  it("tells a subject from another with the same changes", () => {
+    const pr = { kind: "pull_request" as const, reference: "github.com/a/b#1" };
+    expect(sameSubject(pr, { ...pr })).toBe(true);
+    expect(sameSubject(pr, { kind: "branch", reference: "refs/heads/x" })).toBe(
+      false,
+    );
   });
 });

@@ -28,6 +28,8 @@ export type ExplanationState = {
 export function useExplanation(
   repositoryId: string,
   subject: ExplainSubject | null,
+  /** Changes when the subject moves (a pull request's head): read again. */
+  version: string | null = null,
 ): ExplanationState {
   const [records, setRecords] = useState<ExplanationRecord[]>([]);
   const [chosen, setChosen] = useState<string | null>(null);
@@ -36,6 +38,7 @@ export function useExplanation(
   const kind = subject?.kind;
   const reference = subject?.reference;
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `version` asks for a new read when the subject moved.
   const reload = useCallback(() => {
     if (!kind || !reference) {
       setRecords([]);
@@ -48,7 +51,7 @@ export function useExplanation(
         setError(null);
       })
       .catch((e) => setError(errorMessage(e)));
-  }, [repositoryId, kind, reference]);
+  }, [repositoryId, kind, reference, version]);
 
   useEffect(() => {
     setChosen(null);
@@ -75,9 +78,14 @@ export function useExplanation(
 
   const current = useMemo(() => pickRecord(records, chosen), [records, chosen]);
   const currentId = current?.state === "ready" ? current.id : null;
-  const branch = kind === "branch";
+  // A branch's or a pull request's notes move with it; the explanation
+  // shown may be the other's, with the same changes.
+  const moves =
+    current?.subject.kind === "branch" ||
+    current?.subject.kind === "pull_request";
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `version` places the notes again when the subject moved.
   useEffect(() => {
-    if (!currentId || !branch) {
+    if (!currentId || !moves) {
       setPlacement(null);
       return;
     }
@@ -89,7 +97,7 @@ export function useExplanation(
     return () => {
       live = false;
     };
-  }, [currentId, branch]);
+  }, [currentId, moves, version]);
 
   return {
     records,

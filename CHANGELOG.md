@@ -11,11 +11,12 @@ into the release's section.
 
 ## [Unreleased]
 
-- Explain asks an agent to explain a commit, a branch compared with the default branch, or a run's result: a summary, the files in reading order, notes beside the lines, the ideas the change relies on, and questions to check yourself, each claim checked against the code before it is shown.
+- Explain asks an agent to explain a commit, a branch compared with the default branch, a run's result, or a pull request: a summary, the files in reading order, notes beside the lines, the ideas the change relies on, and questions to check yourself, each claim checked against the code before it is shown.
 - The first Explain in a repository asks whether its code may be sent, for that repository or for every repository in a workspace; Settings → Explanations lists the answers.
 - The Explain dialog shows what an explanation usually takes in time and cost, and a finished or failed one shows what it took.
 - A branch's explanation stays with the branch: notes move with their lines, and those whose lines changed are marked out of date, with Re-explain.
 - Branches & tags shows a branch's changes against the default branch as one patch.
+- A pull request's Files Changed shows its explanation beside the review: notes marked as staying on this Mac, the files in reading order with your viewed marks, and the Overview says whether it is explained. A pull request and its branch share one explanation.
 - Settings → Explanations sets the agent, the model and time limit for each depth, your level by language, the concepts you know, and lists stored explanations to delete.
 - A run's header shows its cost when the agent reports one.
 

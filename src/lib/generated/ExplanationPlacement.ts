@@ -3,15 +3,17 @@ import type { NotePlacement } from "./NotePlacement";
 
 export type ExplanationPlacement = { explanation_id: string, 
 /**
- * The branch's tip now; the explanation's for a commit or a run.
+ * The branch's tip or the pull request's head now; the explanation's
+ * for a commit or a run.
  */
 tip: string, 
 /**
- * The branch moved since it was explained.
+ * The branch or the pull request moved since it was explained.
  */
 moved: boolean, 
 /**
- * The branch is gone, or has no changes against the default branch.
+ * The branch is gone, or has no changes against the default branch; the
+ * pull request has no changes against its target.
  */
 gone: boolean, notes: Array<NotePlacement>, 
 /**

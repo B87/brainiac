@@ -2242,6 +2242,9 @@ export class FakeBackend {
         return structuredClone(this.conversationOf(String(args.reference)));
       case "get_pull_request_repository":
         return repository;
+      // Explaining changes (SPEC.md, section 14): nothing is explained here.
+      case "list_subject_explanations":
+        return [];
       // Reviewing (SPEC.md, Reviewing): drafts stay here; the other writes
       // land in the conversation at once.
       case "list_review_drafts":

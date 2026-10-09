@@ -3,6 +3,7 @@ import type { ExplainSubjectKind } from "./ExplainSubjectKind";
 
 /**
  * What is explained: a commit's full ID, a branch's full ref name
- * (`refs/heads/x` or `refs/remotes/origin/x`), or a run's ID.
+ * (`refs/heads/x` or `refs/remotes/origin/x`), a run's ID, or a pull
+ * request's reference (`github.com/acme/api#42`).
  */
 export type ExplainSubject = { kind: ExplainSubjectKind, reference: string, };

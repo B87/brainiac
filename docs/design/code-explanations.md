@@ -12,7 +12,7 @@ Agents now write a growing share of the code (v0.5), and a diff shows what chang
 
 ## What the user gets
 
-- **Explain** (button and `E`) on a commit, a branch compared with the default branch, and a collected run's result; working-tree changes and pull requests in 0.6.x. Never automatic. A short dialog names the agent and host that will read the code, the depth (Brief, Teach me, Deep), and whether to add questions.
+- **Explain** (button and `E`) on a commit, a branch compared with the default branch, a collected run's result, and a pull request (moved into v0.6 on 9 October 2026, sharing one explanation with a branch of the same changes; `SPEC.md`, section 14, Pull requests); working-tree changes in 0.6.x. Never automatic. A short dialog names the agent and host that will read the code, the depth (Brief, Teach me, Deep), and whether to add questions.
 - **A panel beside the patch**, not a separate view: a summary; a source line (what the agent read); and three tabs:
   - **Tour:** the files in reading order (the rule, then the fix, then its helpers, then bookkeeping), each with its role. The file list switches between Reading order and Path, and `[` / `]` follow the tour.
   - **Concepts:** ideas the change relies on (a language feature, a library, a system tool, a project pattern), each with where it appears. **Got it** adds it to the ledger, and later explanations skip it unless a change uses it in a new way.
@@ -37,7 +37,7 @@ Agents now write a growing share of the code (v0.5), and a diff shows what chang
 ## Phases
 
 - **0.6.0:** commits, branch comparisons, and collected run results; the explain run, the checks, the panel, notes, concepts with the ledger, questions, staleness, code–docs disagreement, Save as note, and Settings → Explanations.
-- **0.6.x:** working-tree changes (sent as a patch the container applies to its copy, since Brainiac never writes the user's repository); pull requests; a question about one note as a follow-up prompt while the session lasts; and a direct model call for small changes, which would also allow a local model.
+- **0.6.x:** working-tree changes (sent as a patch the container applies to its copy, since Brainiac never writes the user's repository); a question about one note as a follow-up prompt while the session lasts; and a direct model call for small changes, which would also allow a local model.
 
 ## Spike before building
 

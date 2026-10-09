@@ -188,6 +188,7 @@ pub fn run() {
                 pr_emitter,
             ));
             app.manage(Arc::clone(&pull_requests));
+            let explain_prs = Arc::clone(&pull_requests);
             // A fetch that moves a pull request's branch refreshes it at once
             // (SPEC.md, Staying up to date), off the fetch's own task.
             let moved_handle = Arc::clone(&pull_requests);
@@ -377,6 +378,11 @@ pub fn run() {
                 explain_emitter,
                 run_changes,
             );
+            // Explain reads a pull request through the pull request service.
+            explanations.set_pull_requests(Arc::new(move |reference: String| {
+                let pull_requests = Arc::clone(&explain_prs);
+                Box::pin(async move { pull_requests.explain_facts(&reference).await })
+            }));
             let explain_notify = handle.clone();
             explanations.set_notifier(Arc::new(move |title, body| {
                 use tauri_plugin_notification::NotificationExt;

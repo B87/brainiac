@@ -4301,10 +4301,13 @@ pub enum ExplainSubjectKind {
     Branch,
     /// A collected run's result.
     Run,
+    /// A pull request, from where its head left the target branch to its head.
+    PullRequest,
 }
 
 /// What is explained: a commit's full ID, a branch's full ref name
-/// (`refs/heads/x` or `refs/remotes/origin/x`), or a run's ID.
+/// (`refs/heads/x` or `refs/remotes/origin/x`), a run's ID, or a pull
+/// request's reference (`github.com/acme/api#42`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct ExplainSubject {
@@ -4530,9 +4533,18 @@ pub struct ExplainDialog {
     pub consents: Vec<ExplainConsent>,
     /// The workspaces the repository is in, for answering for all of them.
     pub workspaces: Vec<ExplainWorkspaceOption>,
-    /// Other explanations of this subject.
+    /// Other explanations of this subject, and for a branch or a pull
+    /// request those of the other with the same changes.
     pub existing: Vec<ExplanationSummary>,
     pub estimates: Vec<ExplainEstimate>,
+    /// Why the subject cannot be explained now (a pull request from a fork,
+    /// a head not on this Mac, a branch with no changes).
+    pub blocked: Option<String>,
+    /// The pull request's head is not on this Mac: a fetch may bring it.
+    pub fetch_first: bool,
+    /// Who wrote the pull request, when it is not the account's user: their
+    /// agent settings run with the user's token.
+    pub head_author: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -4632,8 +4644,8 @@ pub struct StartExplanationRequest {
     pub questions: bool,
 }
 
-/// Where a branch explanation's notes are on the branch now (SPEC.md, Out
-/// of date).
+/// Where a branch's or a pull request's explanation's notes are now
+/// (SPEC.md, Out of date).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct NotePlacement {
@@ -4648,11 +4660,13 @@ pub struct NotePlacement {
 #[ts(export)]
 pub struct ExplanationPlacement {
     pub explanation_id: String,
-    /// The branch's tip now; the explanation's for a commit or a run.
+    /// The branch's tip or the pull request's head now; the explanation's
+    /// for a commit or a run.
     pub tip: String,
-    /// The branch moved since it was explained.
+    /// The branch or the pull request moved since it was explained.
     pub moved: bool,
-    /// The branch is gone, or has no changes against the default branch.
+    /// The branch is gone, or has no changes against the default branch; the
+    /// pull request has no changes against its target.
     pub gone: bool,
     pub notes: Vec<NotePlacement>,
     /// Files the branch changes now that the tour does not list.

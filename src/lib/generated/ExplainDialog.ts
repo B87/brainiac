@@ -25,6 +25,21 @@ consents: Array<ExplainConsent>,
  */
 workspaces: Array<ExplainWorkspaceOption>, 
 /**
- * Other explanations of this subject.
+ * Other explanations of this subject, and for a branch or a pull
+ * request those of the other with the same changes.
  */
-existing: Array<ExplanationSummary>, estimates: Array<ExplainEstimate>, };
+existing: Array<ExplanationSummary>, estimates: Array<ExplainEstimate>, 
+/**
+ * Why the subject cannot be explained now (a pull request from a fork,
+ * a head not on this Mac, a branch with no changes).
+ */
+blocked: string | null, 
+/**
+ * The pull request's head is not on this Mac: a fetch may bring it.
+ */
+fetch_first: boolean, 
+/**
+ * Who wrote the pull request, when it is not the account's user: their
+ * agent settings run with the user's token.
+ */
+head_author: string | null, };
