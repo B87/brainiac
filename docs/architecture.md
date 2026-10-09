@@ -657,7 +657,7 @@ What the user sees is `SPEC.md`, section 14. The reasons, the spike records, and
 Main WebView ── Tauri commands ──▶ ExplanationService  (explanations in history.db, the asked repositories, the ledger, Save as note)
                                     ├─ AgentRunService (an agent run of kind explain: start, journal, prompt, cancel, discard)
                                     │    └─ RunRuntime ──▶ RunController ── ReadExplanation ──▶ the agent container's archive
-                                    ├─ explain::prompt (subject, level, known concepts, depth, schema, rules)
+                                    ├─ explain::prompt (subject, level, known concepts, depth, plain-English style, schema, rules)
                                     ├─ explain::check  (schema, changed lines, verbatim quotes, re-anchoring)
                                     ├─ PullRequestReader ──▶ PullRequestService (a pull request's head, target, fork, author)
                                     └─ GitService on Brainiac's bare repository (the subject's diff and files)

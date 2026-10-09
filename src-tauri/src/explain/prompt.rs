@@ -27,6 +27,15 @@ pub struct Reader<'a> {
 /// prompt, never sent as a count of what the reader knows.
 const MAX_KNOWN: usize = 200;
 
+/// How every depth is written (SPEC.md, section 14, The explanation): for a
+/// reader whose first language may not be English. Depth changes how much is
+/// said, not how hard it is to read.
+const STYLE: &str = "How to write: in plain English that a reader whose first language is not English follows easily. This applies to the summary, each role, the notes, the concepts' explanations, and the questions and answers.\n\
+- Short sentences, one idea each. Common words. Active voice, with a clear subject (\"`load` returns the cached value\", not \"the cached value is returned\").\n\
+- No idioms, slang, jokes, or figures of speech.\n\
+- Define a technical term in a few words the first time you use it. Keep the term itself in English, and give each concept the usual English name of the idea.\n\
+- Name code by its identifiers in backticks.\n\n";
+
 pub fn prompt(
     subject: &PromptSubject<'_>,
     reader: &Reader<'_>,
@@ -90,6 +99,7 @@ pub fn prompt(
         ExplainDepth::TeachMe => "Depth: teach me. Explain why the change exists and how it fits the code around it; a note wherever the reader would learn something; the concepts the change relies on.\n\n",
         ExplainDepth::Deep => "Depth: deep. As teach me, and follow the change into the code it affects, the decisions it rests on, and what could go wrong.\n\n",
     });
+    p.push_str(STYLE);
 
     p.push_str("Write .brainiac/explanation.json, a single JSON object with:\n");
     p.push_str("- \"summary\": 2–4 sentences on why the change exists, not only what moved.\n");
@@ -149,6 +159,7 @@ mod tests {
         assert!(text.contains("new to Rust"));
         assert!(text.contains("traits (language)"));
         assert!(text.contains("Depth: deep"));
+        assert!(text.contains("plain English"));
         assert!(text.contains("\"questions\": an empty array"));
         assert!(text.contains(".brainiac/explanation.json"));
         assert!(text.contains("project_pattern"));
