@@ -8,10 +8,10 @@ import {
   sectionLabel,
 } from "../lib/settings";
 import AgentRunsPane from "./AgentRunsPane";
+import CodeSharingPane from "./CodeSharingPane";
 import {
   ExplainAgentPane,
   ExplainConceptsPane,
-  ExplainRepositoriesPane,
   ExplainStoredPane,
 } from "./ExplanationsPane";
 import {
@@ -50,9 +50,9 @@ const ICONS: Record<SettingsSection, ReactNode> = {
   secrets: <KeyIcon size={16} />,
   agents: <TerminalIcon size={16} />,
   runs: <PlayIcon size={16} />,
+  sharing: <LockIcon size={16} />,
   backup: <ArchiveIcon size={16} />,
   "explain-agent": <BulbIcon size={16} />,
-  "explain-repositories": <LockIcon size={16} />,
   "explain-concepts": <CheckIcon size={16} />,
   "explain-stored": <BoxIcon size={16} />,
 };
@@ -275,13 +275,13 @@ export default function SettingsPage({
             {section === "explain-agent" && (
               <ExplainAgentPane onOpenAgents={() => onSection("runs")} />
             )}
-            {section === "explain-repositories" && <ExplainRepositoriesPane />}
             {section === "explain-concepts" && (
               <ExplainConceptsPane titleSlot={titleSlot} />
             )}
             {section === "explain-stored" && (
               <ExplainStoredPane titleSlot={titleSlot} />
             )}
+            {section === "sharing" && <CodeSharingPane />}
             {section === "backup" && (
               <BackupPane onExport={onExport} onRestore={onRestore} />
             )}

@@ -136,6 +136,9 @@ struct Starting {
 pub struct AgentRunService {
     history: Db,
     settings: Arc<AgentSettingsService>,
+    /// Whether a repository's code may go to a provider (SPEC.md, section
+    /// 13, Code sharing), shared with explanations.
+    sharing: Arc<crate::sharing::CodeSharingService>,
     // `Arc` because accounts, connections, and agents share one credentials layer.
     credentials: Arc<CredentialService>,
     artifacts: Arc<RunArtifacts>,
@@ -165,9 +168,12 @@ pub struct AgentRunService {
 }
 
 impl AgentRunService {
+    // Each argument is one service the runs rest on; a struct would only rename them.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         history: Db,
         settings: Arc<AgentSettingsService>,
+        sharing: Arc<crate::sharing::CodeSharingService>,
         credentials: Arc<CredentialService>,
         artifacts: Arc<RunArtifacts>,
         runtime: Arc<RunRuntime>,
@@ -177,6 +183,7 @@ impl AgentRunService {
         Arc::new(AgentRunService {
             history,
             settings,
+            sharing,
             credentials,
             artifacts,
             runtime,
@@ -448,6 +455,11 @@ impl AgentRunService {
                 "Settings → Agents is not ready: {first}"
             )));
         }
+        // The repository's answer for this provider, before anything is
+        // copied; New run asked when there was none.
+        self.sharing
+            .require(&request.repository_id, profile.provider)
+            .await?;
         let prompt = request.prompt.trim().to_string();
         if prompt.is_empty() {
             return Err(AppError::validation("Write a prompt for the agent."));
@@ -595,6 +607,9 @@ impl AgentRunService {
         if remote {
             self.refuse_if_upgrading(&host_id)?;
         }
+        self.sharing
+            .require(&request.repository_id, profile.provider)
+            .await?;
         let model = settings::check_model(profile.agent, &request.model)?;
         let (name, root) = self.repositories.locate(&request.repository_id).await?;
         // A commit of the user's repository is checked as New run checks

@@ -3447,9 +3447,6 @@ pub struct AgentProfile {
     pub credential_saved_at: Option<String>,
     /// A Claude plan token saved eleven months ago or more: tokens last a year.
     pub credential_ageing: bool,
-    /// The user agreed that runs send code and prompts to the provider under
-    /// this payment.
-    pub sends_code_agreed: bool,
     pub permissions: RunPermissions,
     pub time_limit_minutes: u32,
     pub cpus: u32,
@@ -3461,7 +3458,7 @@ pub struct AgentProfile {
     /// `anthropic/claude-sonnet-5-5`.
     pub model: String,
     /// What this profile still lacks before any host can run it (the
-    /// token or key, the agreement, the model), in the order to do it.
+    /// token or key, the model), in the order to do it.
     pub missing: Vec<String>,
     #[ts(type = "number")]
     pub version: i64,
@@ -3653,7 +3650,6 @@ pub struct SaveAgentSettingsRequest {
     /// The version the pane shows; a save over a newer one is refused.
     #[ts(type = "number")]
     pub expected_version: i64,
-    pub sends_code_agreed: bool,
     pub permissions: RunPermissions,
     pub time_limit_minutes: u32,
     pub cpus: u32,
@@ -4420,22 +4416,26 @@ pub struct ExplanationSummary {
     pub size_bytes: u64,
 }
 
-/// Whether a repository's code may go to a provider for explanations.
+// ---------------------------------------------------------------------------
+// Code sharing (SPEC.md, section 13, Code sharing)
+// ---------------------------------------------------------------------------
+
+/// Whether a repository's code may go to a provider, for runs and explanations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
-pub enum ExplainConsentState {
+pub enum CodeConsentState {
     Allowed,
     Denied,
-    /// Not answered yet: Explain asks.
+    /// Not answered yet: New run and Explain ask.
     Unasked,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
-pub struct ExplainConsent {
+pub struct CodeConsent {
     pub provider: AgentProvider,
-    pub state: ExplainConsentState,
+    pub state: CodeConsentState,
     /// The workspace whose answer applies; `None` for the repository's own.
     pub workspace_name: Option<String>,
 }
@@ -4443,16 +4443,16 @@ pub struct ExplainConsent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
-pub enum ExplainAnswerScope {
+pub enum CodeAnswerScope {
     Repository,
     Workspace,
 }
 
-/// One answer in Settings → Explanations, Repositories.
+/// One answer in Settings → Code Sharing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
-pub struct ExplainAnswer {
-    pub scope: ExplainAnswerScope,
+pub struct CodeAnswer {
+    pub scope: CodeAnswerScope,
     pub scope_id: String,
     /// The repository's or workspace's name, when it still exists.
     pub scope_name: Option<String>,
@@ -4461,15 +4461,32 @@ pub struct ExplainAnswer {
     pub answered_at: String,
 }
 
-/// The question asked before a repository's first explanation.
+/// The question asked before a repository's code first goes to a provider.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
-pub struct AnswerExplainRequest {
+pub struct AnswerCodeSharingRequest {
     pub repository_id: String,
     pub provider: AgentProvider,
     pub allowed: bool,
     /// Answer for every repository in this workspace instead.
     pub workspace_id: Option<String>,
+}
+
+/// A workspace a repository is in, for answering for all its repositories.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RepositoryWorkspace {
+    pub id: String,
+    pub name: String,
+}
+
+/// What New run needs to ask the question: the repository's answer for
+/// each provider, and the workspaces it could be answered for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CodeSharingQuestion {
+    pub consents: Vec<CodeConsent>,
+    pub workspaces: Vec<RepositoryWorkspace>,
 }
 
 /// A host an explanation can run on, for one agent profile.
@@ -4508,13 +4525,6 @@ pub struct ExplainEstimate {
     pub from: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
-pub struct ExplainWorkspaceOption {
-    pub id: String,
-    pub name: String,
-}
-
 /// What the Explain dialog shows (SPEC.md, Explain).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -4530,9 +4540,9 @@ pub struct ExplainDialog {
     pub depth: ExplainDepth,
     pub settings: ExplanationSettings,
     /// The repository's answer for each provider.
-    pub consents: Vec<ExplainConsent>,
+    pub consents: Vec<CodeConsent>,
     /// The workspaces the repository is in, for answering for all of them.
-    pub workspaces: Vec<ExplainWorkspaceOption>,
+    pub workspaces: Vec<RepositoryWorkspace>,
     /// Other explanations of this subject, and for a branch or a pull
     /// request those of the other with the same changes.
     pub existing: Vec<ExplanationSummary>,
@@ -4633,7 +4643,6 @@ pub struct KnownConcept {
 pub struct ExplanationSettingsView {
     pub settings: ExplanationSettings,
     pub profiles: Vec<ExplainProfileOption>,
-    pub answers: Vec<ExplainAnswer>,
     pub concepts: Vec<KnownConcept>,
     pub stored: Vec<ExplanationSummary>,
     #[ts(type = "number")]

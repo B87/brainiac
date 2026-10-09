@@ -18,6 +18,7 @@ pub mod mcp;
 pub mod models;
 pub mod notes;
 pub mod secrets;
+pub mod sharing;
 pub mod tasks;
 pub mod vault;
 pub mod watcher;
@@ -53,6 +54,8 @@ pub const EVENT_PR_CHANGED: &str = "pr_changed";
 pub const EVENT_DB_HEALTH_SAMPLE: &str = "db_health_sample";
 pub const EVENT_AGENT_RUN_CHANGED: &str = "agent_run_changed";
 pub const EVENT_EXPLANATION_CHANGED: &str = "explanation_changed";
+/// An answer in Settings → Code Sharing changed (SPEC.md, section 13).
+pub const EVENT_CODE_SHARING_CHANGED: &str = "code_sharing_changed";
 /// A host job changed: a step, its output, or how it ended (SPEC.md, Host jobs).
 pub const EVENT_AGENT_HOST_JOB: &str = "agent_host_job";
 
@@ -257,9 +260,22 @@ pub fn run() {
                 machines,
             ));
             app.manage(Arc::clone(&agent_hosts));
+            // Whether a repository's code may go to a provider: one answer
+            // for runs and explanations (SPEC.md, section 13, Code sharing).
+            let sharing_handle = handle.clone();
+            let sharing = sharing::CodeSharingService::new(
+                stores.core.clone(),
+                Arc::new(move || {
+                    if let Err(e) = sharing_handle.emit(EVENT_CODE_SHARING_CHANGED, ()) {
+                        tracing::warn!(error = %e, "failed to emit code_sharing_changed");
+                    }
+                }),
+            );
+            app.manage(Arc::clone(&sharing));
             let runs = agents::AgentRunService::new(
                 stores.history.clone(),
                 Arc::clone(&agent_settings),
+                Arc::clone(&sharing),
                 Arc::clone(&credentials),
                 Arc::clone(&artifacts),
                 runtime,
@@ -372,6 +388,7 @@ pub fn run() {
                 explain_history,
                 Arc::clone(&explain_runs),
                 explain_agent_settings,
+                sharing,
                 artifacts,
                 Arc::clone(&service),
                 Arc::clone(&notes),
@@ -623,8 +640,10 @@ pub fn run() {
             commands::get_run_controller_status,
             commands::get_branch_comparison,
             commands::get_explain_dialog,
-            commands::answer_explain,
-            commands::forget_explain_answer,
+            commands::get_code_sharing_question,
+            commands::answer_code_sharing,
+            commands::forget_code_sharing_answer,
+            commands::list_code_sharing_answers,
             commands::start_explanation,
             commands::cancel_explanation,
             commands::get_explanation,

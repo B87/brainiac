@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
 import { DEPTHS, depthLabel } from "../lib/explain";
-import { relativeTime } from "../lib/format";
 import {
   type ExplanationSettings,
   type ExplanationSettingsView,
@@ -18,12 +17,6 @@ const LEVELS: { value: LanguageLevel; label: string }[] = [
   { value: "comfortable", label: "Comfortable" },
   { value: "expert", label: "Expert" },
 ];
-
-const PROVIDER: Record<string, string> = {
-  anthropic: "Anthropic",
-  openai: "OpenAI",
-  openrouter: "OpenRouter",
-};
 
 /**
  * Settings → Explanations' settings and lists, kept current, with how to save
@@ -327,81 +320,6 @@ export function ExplainAgentPane({
               Add
             </button>
           </form>
-        </div>
-      </Group>
-    </>
-  );
-}
-
-/** Settings → Repositories Asked: each answer to whether code may be sent. */
-export function ExplainRepositoriesPane() {
-  const { view, error, act } = useExplanationSettings();
-  if (!view) return <Loading error={error} />;
-  return (
-    <>
-      <Lede>
-        Before the first Explain in a repository, Brainiac asks whether its code
-        may be sent to the agent's provider, for that repository or every
-        repository in one of its workspaces. A No from any of its workspaces
-        wins over a Yes.
-      </Lede>
-      <ErrorLine error={error} />
-
-      <Group label="Answers">
-        <div className="settings-group">
-          {view.answers.length === 0 && (
-            <div className="settings-row text-muted">
-              No repository asked yet. The first Explain in each asks.
-            </div>
-          )}
-          {view.answers.map((a) => (
-            <div
-              key={`${a.scope}:${a.scope_id}:${a.provider}`}
-              className="settings-row"
-            >
-              <span className="flex min-w-55 flex-1 flex-col gap-0.5">
-                <span className="font-medium">
-                  {a.scope === "workspace" ? "Every repository in " : ""}
-                  {a.scope_name ?? "A removed repository"}
-                </span>
-                <Hint>
-                  {a.allowed ? "Sent" : "Never sent"} to{" "}
-                  {PROVIDER[a.provider] ?? a.provider} ·{" "}
-                  {relativeTime(a.answered_at)}
-                </Hint>
-              </span>
-              <select
-                className="field"
-                aria-label="Answer"
-                value={a.allowed ? "yes" : "no"}
-                onChange={(e) =>
-                  void act(() =>
-                    ipc.answerExplain({
-                      repository_id: a.scope === "repository" ? a.scope_id : "",
-                      provider: a.provider,
-                      allowed: e.target.value === "yes",
-                      workspace_id: a.scope === "workspace" ? a.scope_id : null,
-                    }),
-                  )
-                }
-              >
-                <option value="yes">Yes</option>
-                <option value="no">No</option>
-              </select>
-              <button
-                type="button"
-                className="btn btn-sm btn-ghost"
-                title="Ask again at the next Explain"
-                onClick={() =>
-                  void act(() =>
-                    ipc.forgetExplainAnswer(a.scope, a.scope_id, a.provider),
-                  )
-                }
-              >
-                Ask again
-              </button>
-            </div>
-          ))}
         </div>
       </Group>
     </>

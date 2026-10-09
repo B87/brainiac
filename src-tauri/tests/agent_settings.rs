@@ -1,7 +1,7 @@
 //! Settings → Agents (SPEC.md, section 13): the profiles, each an agent and
 //! a provider; the token or key through the credentials layer (the Keychain
-//! is in memory here), what still stops a run, a payment change asking again
-//! to agree to send code, an interrupted save staying blocked, cleanup of an
+//! is in memory here), what still stops a run, a payment change needing a
+//! new paste, an interrupted save staying blocked, cleanup of an
 //! old item, confirmation of a restored setup, and an engine change
 //! forgetting the image.
 
@@ -133,7 +133,6 @@ fn settings_request_for(settings: &AgentSettings, id: &str) -> SaveAgentSettings
     SaveAgentSettingsRequest {
         profile_id: id.to_string(),
         expected_version: p.version,
-        sends_code_agreed: p.sends_code_agreed,
         permissions: p.permissions,
         time_limit_minutes: p.time_limit_minutes,
         cpus: p.cpus,
@@ -219,7 +218,6 @@ async fn a_new_setup_lists_everything_a_run_still_needs() {
     let missing = missing(&s).join(" | ");
     for want in [
         "Add an Anthropic API key",
-        "Agree to send",
         "Choose where",
         "Build the image",
         "Pass a test of Claude Code on This Mac",
@@ -275,7 +273,7 @@ async fn a_pasted_key_goes_to_the_keychain_and_reaches_a_run() {
 }
 
 #[tokio::test]
-async fn a_new_payment_needs_a_new_paste_and_a_new_agreement() {
+async fn a_new_payment_needs_a_new_paste() {
     let h = Harness::new();
     let s = h.agents.get().await.unwrap();
     let s = h
@@ -288,10 +286,7 @@ async fn a_new_payment_needs_a_new_paste_and_a_new_agreement() {
         ))
         .await
         .unwrap();
-    let mut agree = settings_request(&s);
-    agree.sends_code_agreed = true;
-    let s = h.agents.save(agree).await.unwrap();
-    assert!(claude(&s).sends_code_agreed);
+    let s = h.agents.save(settings_request(&s)).await.unwrap();
 
     // A key pasted as a plan token is refused without echoing it.
     let err = h
@@ -332,7 +327,6 @@ async fn a_new_payment_needs_a_new_paste_and_a_new_agreement() {
         .await
         .unwrap();
     assert_eq!(claude(&s).payment, AgentPayment::ClaudePlan);
-    assert!(!claude(&s).sends_code_agreed);
     assert!(!claude(&s).credential_ageing);
     assert_eq!(h.credential().await.as_deref(), Some(PLAN));
 
@@ -616,10 +610,9 @@ async fn each_opencode_profile_takes_its_own_providers_key_and_a_model() {
         Some(OPENROUTER_KEY)
     );
     assert!(h.store.text(ITEM).is_none());
-    let mut agree = settings_request_for(&s, id);
-    agree.sends_code_agreed = true;
-    agree.model = "anthropic/claude-sonnet-5-5".into();
-    let s = h.agents.save(agree).await.unwrap();
+    let mut request = settings_request_for(&s, id);
+    request.model = "anthropic/claude-sonnet-5-5".into();
+    let s = h.agents.save(request).await.unwrap();
     assert_eq!(profile(&s, id).missing, Vec::<String>::new());
     assert_eq!(profile(&s, id).model, "anthropic/claude-sonnet-5-5");
     let entries = h.agents.secret_entries().await.unwrap();

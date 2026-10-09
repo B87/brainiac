@@ -11,8 +11,10 @@ import type {
   AgentProvider,
   AgentRun,
   AgentSettings,
+  AnswerCodeSharingRequest,
   AppSnapshot,
   Cell,
+  CodeAnswer,
   Comment,
   CommentRequest,
   Conversation,
@@ -772,7 +774,7 @@ const PROVIDER_NAME: Record<AgentProvider, string> = {
   openrouter: "OpenRouter",
 };
 
-/** A profile as a fresh install has it: no key, nothing agreed. */
+/** A profile as a fresh install has it: no key. */
 function agentProfile(
   id: string,
   agent: AgentKind,
@@ -787,7 +789,6 @@ function agentProfile(
     credential: { needs_approval: false, pending: null, revision: 1 },
     credential_saved_at: null,
     credential_ageing: false,
-    sends_code_agreed: false,
     permissions: "ask",
     time_limit_minutes: 60,
     cpus: 4,
@@ -814,14 +815,6 @@ function profileMissing(p: AgentProfile): string[] {
       p.payment === "claude_plan"
         ? "Add the token from claude setup-token."
         : `Add an ${PROVIDER_NAME[p.provider]} API key.`,
-    );
-  if (!p.sends_code_agreed)
-    missing.push(
-      `Agree to send code and prompts to ${
-        p.payment === "claude_plan"
-          ? "Anthropic, under your Claude plan"
-          : `${PROVIDER_NAME[p.provider]}, with an API key`
-      }.`,
     );
   if (p.agent === "opencode" && p.model === "")
     missing.push("Choose the model new runs use.");
@@ -961,6 +954,8 @@ export class FakeBackend {
   }
   /** Settings → Agents: nothing set up yet, OrbStack running. */
   hostKey = "SHA256:preview";
+  /** Settings → Code Sharing (SPEC.md, section 13): the answers so far. */
+  codeAnswers: CodeAnswer[] = [];
   agentSettings: AgentSettings = {
     profiles: [
       agentProfile("claude-code", "claude_code", "anthropic"),
@@ -990,8 +985,8 @@ export class FakeBackend {
     ];
   }
   /**
-   * A profile set up as a test needs it: a key in the Keychain, the
-   * agreement, a model for OpenCode, and a passed test on each host named.
+   * A profile set up as a test needs it: a key in the Keychain, a model
+   * for OpenCode, and a passed test on each host named.
    */
   readyProfile(profileId: string, hostIds: string[] = []) {
     const profile = this.agentSettings.profiles.find((p) => p.id === profileId);
@@ -999,7 +994,6 @@ export class FakeBackend {
     Object.assign(profile, {
       credential_source: { kind: "store" },
       credential_saved_at: "2026-10-05T12:00:00Z",
-      sends_code_agreed: true,
       model:
         profile.model ||
         (profile.agent === "opencode" ? "anthropic/claude-sonnet-5-5" : ""),
@@ -2010,6 +2004,22 @@ export class FakeBackend {
           (p) => p.id === request.profile_id,
         );
         if (!profile) throw { code: "VALIDATION", message: "Choose an agent." };
+        // The repository's answer, as Rust's `CodeSharingService::require`.
+        const answer = this.codeAnswers.find(
+          (a) =>
+            a.scope_id === request.repository_id &&
+            a.provider === profile.provider,
+        );
+        if (!answer)
+          throw {
+            code: "CONFLICT",
+            message: "Answer whether this repository's code may be sent first.",
+          };
+        if (!answer.allowed)
+          throw {
+            code: "VALIDATION",
+            message: "This repository is answered No.",
+          };
         const run = sampleRun({
           id: `run-${this.runs.length + 1}`,
           profile_id: profile.id,
@@ -2248,6 +2258,66 @@ export class FakeBackend {
         return [];
       case "get_explanation_settings":
         return structuredClone(explanationSettings);
+      // Code sharing (SPEC.md, section 13): one answer per repository and
+      // provider, for runs and explanations.
+      case "get_code_sharing_question": {
+        const providers = [
+          ...new Set(this.agentSettings.profiles.map((p) => p.provider)),
+        ];
+        return {
+          consents: providers.map((provider) => {
+            const answer = this.codeAnswers.find(
+              (a) =>
+                a.scope_id === args.repositoryId && a.provider === provider,
+            );
+            return {
+              provider,
+              state: !answer
+                ? "unasked"
+                : answer.allowed
+                  ? "allowed"
+                  : "denied",
+              workspace_name:
+                answer?.scope === "workspace" ? workspace.name : null,
+            };
+          }),
+          workspaces: [{ id: workspace.id, name: workspace.name }],
+        };
+      }
+      case "answer_code_sharing": {
+        const request = args.request as AnswerCodeSharingRequest;
+        const scope = request.workspace_id ? "workspace" : "repository";
+        const scopeId = request.workspace_id ?? request.repository_id;
+        this.codeAnswers = this.codeAnswers.filter(
+          (a) =>
+            !(
+              a.scope === scope &&
+              a.scope_id === scopeId &&
+              a.provider === request.provider
+            ),
+        );
+        this.codeAnswers.push({
+          scope,
+          scope_id: scopeId,
+          scope_name: scope === "workspace" ? workspace.name : repository.name,
+          provider: request.provider,
+          allowed: request.allowed,
+          answered_at: NOW,
+        });
+        return null;
+      }
+      case "forget_code_sharing_answer":
+        this.codeAnswers = this.codeAnswers.filter(
+          (a) =>
+            !(
+              a.scope === args.scope &&
+              a.scope_id === args.scopeId &&
+              a.provider === args.provider
+            ),
+        );
+        return null;
+      case "list_code_sharing_answers":
+        return structuredClone(this.codeAnswers);
       // Reviewing (SPEC.md, Reviewing): drafts stay here; the other writes
       // land in the conversation at once.
       case "list_review_drafts":
@@ -2786,16 +2856,6 @@ const explanationSettings: ExplanationSettingsView = {
     questions: true,
   },
   profiles: [],
-  answers: [
-    {
-      scope: "repository",
-      scope_id: repository.id,
-      scope_name: repository.name,
-      provider: "anthropic",
-      allowed: true,
-      answered_at: NOW,
-    },
-  ],
   concepts: [
     [
       "language",

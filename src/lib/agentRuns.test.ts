@@ -46,7 +46,6 @@ const profile: AgentProfile = {
   credential: { needs_approval: false, pending: null, revision: 1 },
   credential_saved_at: null,
   credential_ageing: false,
-  sends_code_agreed: false,
   permissions: "ask",
   time_limit_minutes: 60,
   cpus: 4,

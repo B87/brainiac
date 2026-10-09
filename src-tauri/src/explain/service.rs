@@ -27,16 +27,15 @@ use crate::agents::settings::{profile_name, run_missing};
 use crate::agents::{AgentRunService, AgentSettingsService, RunArtifacts};
 use crate::db::{self, Db};
 use crate::models::{
-    now_rfc3339, AgentKind, AgentRun, AgentSettings, AnswerExplainRequest, AppError, AppResult,
-    ConceptKind, CreateNoteRequest, ErrorCode, ExplainAnswerScope, ExplainConsent,
-    ExplainConsentState, ExplainCost, ExplainDepth, ExplainDialog, ExplainEstimate,
+    now_rfc3339, AgentKind, AgentRun, AgentSettings, AppError, AppResult, ConceptKind,
+    CreateNoteRequest, ErrorCode, ExplainCost, ExplainDepth, ExplainDialog, ExplainEstimate,
     ExplainHostOption, ExplainProfileOption, ExplainStep, ExplainSubject, ExplainSubjectKind,
-    ExplainWorkspaceOption, ExplanationChangedEvent, ExplanationPlacement, ExplanationRecord,
-    ExplanationSettings, ExplanationSettingsView, ExplanationState, ExplanationSummary,
-    NotePlacement, NoteSummary, RunActivity, RunCollection, RunOutcome, RunPhase, RunStartStep,
-    StartExplanationRequest,
+    ExplanationChangedEvent, ExplanationPlacement, ExplanationRecord, ExplanationSettings,
+    ExplanationSettingsView, ExplanationState, ExplanationSummary, NotePlacement, NoteSummary,
+    RunActivity, RunCollection, RunOutcome, RunPhase, RunStartStep, StartExplanationRequest,
 };
 use crate::notes::NoteService;
+use crate::sharing::CodeSharingService;
 use crate::workspaces::RepositoryService;
 
 pub type ExplanationEmitter = Arc<dyn Fn(ExplanationChangedEvent) + Send + Sync>;
@@ -79,12 +78,14 @@ const LOOK_AGAIN: Duration = Duration::from_secs(20);
 const ESTIMATE_FROM: u32 = 10;
 
 pub struct ExplanationService {
-    /// `brainiac.db`: answers, known concepts, Settings → Explanations.
+    /// `brainiac.db`: known concepts and Settings → Explanations.
     core: Db,
     /// `history.db`: the explanations.
     history: Db,
     runs: Arc<AgentRunService>,
     agent_settings: Arc<AgentSettingsService>,
+    /// Whether a repository's code may go to a provider, shared with runs.
+    sharing: Arc<CodeSharingService>,
     artifacts: Arc<RunArtifacts>,
     repositories: Arc<RepositoryService>,
     notes: Arc<NoteService>,
@@ -115,6 +116,7 @@ impl ExplanationService {
         history: Db,
         runs: Arc<AgentRunService>,
         agent_settings: Arc<AgentSettingsService>,
+        sharing: Arc<CodeSharingService>,
         artifacts: Arc<RunArtifacts>,
         repositories: Arc<RepositoryService>,
         notes: Arc<NoteService>,
@@ -126,6 +128,7 @@ impl ExplanationService {
             history,
             runs,
             agent_settings,
+            sharing,
             artifacts,
             repositories,
             notes,
@@ -392,90 +395,6 @@ impl ExplanationService {
         }
     }
 
-    /// The workspaces a repository is in.
-    async fn workspaces_of(&self, repository_id: &str) -> AppResult<Vec<ExplainWorkspaceOption>> {
-        let repository = repository_id.to_string();
-        self.core
-            .call(move |conn| {
-                let members = db::list_members(conn, None)?;
-                let workspaces = db::list_workspaces(conn)?;
-                Ok(workspaces
-                    .into_iter()
-                    .filter(|w| {
-                        members.iter().any(|m| {
-                            m.workspace_id == w.id
-                                && m.repository_id.as_deref() == Some(repository.as_str())
-                        })
-                    })
-                    .map(|w| ExplainWorkspaceOption {
-                        id: w.id,
-                        name: w.name,
-                    })
-                    .collect())
-            })
-            .await
-    }
-
-    /// The repository's answer for a provider: its own, else its
-    /// workspaces', where a No wins over a Yes.
-    async fn consent(
-        &self,
-        repository_id: &str,
-        provider: crate::models::AgentProvider,
-        workspaces: &[ExplainWorkspaceOption],
-    ) -> AppResult<ExplainConsent> {
-        let answers = self.core.call(|conn| store::answers(conn)).await?;
-        let own = answers.iter().find(|a| {
-            a.scope == ExplainAnswerScope::Repository
-                && a.scope_id == repository_id
-                && a.provider == provider
-        });
-        if let Some(own) = own {
-            return Ok(ExplainConsent {
-                provider,
-                state: if own.allowed {
-                    ExplainConsentState::Allowed
-                } else {
-                    ExplainConsentState::Denied
-                },
-                workspace_name: None,
-            });
-        }
-        let of_workspaces: Vec<(&ExplainWorkspaceOption, bool)> = workspaces
-            .iter()
-            .filter_map(|w| {
-                answers
-                    .iter()
-                    .find(|a| {
-                        a.scope == ExplainAnswerScope::Workspace
-                            && a.scope_id == w.id
-                            && a.provider == provider
-                    })
-                    .map(|a| (w, a.allowed))
-            })
-            .collect();
-        let pick = of_workspaces
-            .iter()
-            .find(|(_, allowed)| !allowed)
-            .or_else(|| of_workspaces.first());
-        Ok(match pick {
-            Some((w, allowed)) => ExplainConsent {
-                provider,
-                state: if *allowed {
-                    ExplainConsentState::Allowed
-                } else {
-                    ExplainConsentState::Denied
-                },
-                workspace_name: Some(w.name.clone()),
-            },
-            None => ExplainConsent {
-                provider,
-                state: ExplainConsentState::Unasked,
-                workspace_name: None,
-            },
-        })
-    }
-
     /// The model an explanation asks for at a depth.
     fn model_for(
         settings: &ExplanationSettings,
@@ -537,17 +456,13 @@ impl ExplanationService {
             .as_ref()
             .filter(|pr| !pr.mine)
             .map(|pr| pr.author.clone());
-        let workspaces = self.workspaces_of(repository_id).await?;
         let mut providers: Vec<crate::models::AgentProvider> = Vec::new();
         for p in &agents.profiles {
             if !providers.contains(&p.provider) {
                 providers.push(p.provider);
             }
         }
-        let mut consents = Vec::new();
-        for provider in providers {
-            consents.push(self.consent(repository_id, provider, &workspaces).await?);
-        }
+        let question = self.sharing.question(repository_id, &providers).await?;
         let existing: Vec<ExplanationSummary> = self
             .rows_for(repository_id, &subject)
             .await?
@@ -578,8 +493,8 @@ impl ExplanationService {
             host_id,
             depth: settings.default_depth,
             settings,
-            consents,
-            workspaces,
+            consents: question.consents,
+            workspaces: question.workspaces,
             existing,
             estimates,
             blocked,
@@ -630,37 +545,6 @@ impl ExplanationService {
             cost,
             from,
         }))
-    }
-
-    /// The question before a repository's first explanation, or a change
-    /// to an answer in Settings.
-    pub async fn answer(&self, request: AnswerExplainRequest) -> AppResult<()> {
-        let (scope, scope_id) = match &request.workspace_id {
-            Some(w) => (ExplainAnswerScope::Workspace, w.clone()),
-            None => (
-                ExplainAnswerScope::Repository,
-                request.repository_id.clone(),
-            ),
-        };
-        let (provider, allowed) = (request.provider, request.allowed);
-        self.core
-            .call(move |conn| store::set_answer(conn, scope, &scope_id, provider, allowed))
-            .await?;
-        self.emit("", &request.repository_id, false);
-        Ok(())
-    }
-
-    /// Settings → Explanations, **Change**: forget an answer, so the next
-    /// Explain asks again.
-    pub async fn forget_answer(
-        &self,
-        scope: ExplainAnswerScope,
-        scope_id: String,
-        provider: crate::models::AgentProvider,
-    ) -> AppResult<()> {
-        self.core
-            .call(move |conn| store::remove_answer(conn, scope, &scope_id, provider))
-            .await
     }
 
     // -----------------------------------------------------------------------
@@ -898,25 +782,11 @@ impl ExplanationService {
             .cloned()
             .ok_or_else(|| AppError::validation("Choose a host for the explanation."))?;
         let summary = self.repositories.summary(&request.repository_id).await?;
-        let workspaces = self.workspaces_of(&request.repository_id).await?;
-        let consent = self
-            .consent(&request.repository_id, profile.provider, &workspaces)
+        // The repository's answer (SPEC.md, section 13, Code sharing), before
+        // anything is copied; the dialog asked when there was none.
+        self.sharing
+            .require(&request.repository_id, profile.provider)
             .await?;
-        match consent.state {
-            ExplainConsentState::Allowed => {}
-            ExplainConsentState::Denied => {
-                return Err(AppError::new(
-                    ErrorCode::Validation,
-                    "This repository is answered No for explanations with this provider.",
-                ))
-            }
-            ExplainConsentState::Unasked => {
-                return Err(AppError::new(
-                    ErrorCode::Conflict,
-                    "Answer whether this repository's code may be sent for explanations first.",
-                ))
-            }
-        }
         let root = PathBuf::from(&summary.canonical_root);
         let resolved = self
             .resolve(&request.repository_id, &root, &request.subject)
@@ -1619,10 +1489,9 @@ impl ExplanationService {
     pub async fn settings_view(&self) -> AppResult<ExplanationSettingsView> {
         let settings = self.settings().await?;
         let agents = self.agent_settings.get().await?;
-        let (mut answers, mut concepts, names) = self
+        let (mut concepts, repository_names) = self
             .core
             .call(|conn| {
-                let answers = store::answers(conn)?;
                 let concepts = store::concepts(conn)?;
                 let repositories: HashMap<String, String> = db::list_repositories(conn)?
                     .into_iter()
@@ -1634,20 +1503,9 @@ impl ExplanationService {
                         (r.id, name)
                     })
                     .collect();
-                let workspaces: HashMap<String, String> = db::list_workspaces(conn)?
-                    .into_iter()
-                    .map(|w| (w.id, w.name))
-                    .collect();
-                Ok((answers, concepts, (repositories, workspaces)))
+                Ok((concepts, repositories))
             })
             .await?;
-        let (repository_names, workspace_names) = names;
-        for answer in &mut answers {
-            answer.scope_name = match answer.scope {
-                ExplainAnswerScope::Repository => repository_names.get(&answer.scope_id).cloned(),
-                ExplainAnswerScope::Workspace => workspace_names.get(&answer.scope_id).cloned(),
-            };
-        }
         for concept in &mut concepts {
             concept.repository_name = concept
                 .repository_id
@@ -1671,7 +1529,6 @@ impl ExplanationService {
         Ok(ExplanationSettingsView {
             settings,
             profiles: self.profile_options(&agents),
-            answers,
             concepts,
             stored,
             stored_bytes,

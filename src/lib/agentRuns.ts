@@ -223,7 +223,6 @@ export function settingsRequest(
   return {
     profile_id: profile.id,
     expected_version: profile.version,
-    sends_code_agreed: profile.sends_code_agreed,
     permissions: profile.permissions,
     time_limit_minutes: profile.time_limit_minutes,
     cpus: profile.cpus,

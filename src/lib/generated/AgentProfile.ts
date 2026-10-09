@@ -22,12 +22,7 @@ credential_saved_at: string | null,
 /**
  * A Claude plan token saved eleven months ago or more: tokens last a year.
  */
-credential_ageing: boolean, 
-/**
- * The user agreed that runs send code and prompts to the provider under
- * this payment.
- */
-sends_code_agreed: boolean, permissions: RunPermissions, time_limit_minutes: number, cpus: number, memory_mib: number, workspace_gib: number, 
+credential_ageing: boolean, permissions: RunPermissions, time_limit_minutes: number, cpus: number, memory_mib: number, workspace_gib: number, 
 /**
  * The model new runs ask for. Claude Code: an alias such as `sonnet`
  * or a full name, empty for its own default. OpenCode: the provider's
@@ -37,6 +32,6 @@ sends_code_agreed: boolean, permissions: RunPermissions, time_limit_minutes: num
 model: string, 
 /**
  * What this profile still lacks before any host can run it (the
- * token or key, the agreement, the model), in the order to do it.
+ * token or key, the model), in the order to do it.
  */
 missing: Array<string>, version: number, };

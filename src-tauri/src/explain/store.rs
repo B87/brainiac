@@ -7,8 +7,8 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 
 use crate::models::{
     now_rfc3339, AgentKind, AgentPayment, AgentProvider, AppError, AppResult, ConceptKind,
-    ExplainAnswer, ExplainAnswerScope, ExplainCost, ExplainDepth, ExplainStep, ExplainSubject,
-    Explanation, ExplanationSettings, ExplanationState, KnownConcept,
+    ExplainCost, ExplainDepth, ExplainStep, ExplainSubject, Explanation, ExplanationSettings,
+    ExplanationState, KnownConcept,
 };
 
 /// The settings key Settings → Explanations is saved under.
@@ -354,7 +354,7 @@ pub fn recent_usage(
 }
 
 // ---------------------------------------------------------------------------
-// brainiac.db: answers, known concepts, settings
+// brainiac.db: known concepts, settings
 // ---------------------------------------------------------------------------
 
 pub fn load_settings(conn: &Connection) -> AppResult<ExplanationSettings> {
@@ -375,62 +375,6 @@ pub fn save_settings(conn: &Connection, settings: &ExplanationSettings) -> AppRe
         "INSERT INTO settings (key, value_json, version) VALUES (?1, ?2, 1)
          ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, version = version + 1",
         params![SETTINGS_KEY, serde_json::to_string(settings)?],
-    )?;
-    Ok(())
-}
-
-pub fn answers(conn: &Connection) -> AppResult<Vec<ExplainAnswer>> {
-    let mut stmt = conn.prepare(
-        "SELECT scope, scope_id, provider, allowed, answered_at FROM explain_answers
-         ORDER BY scope, scope_id, provider",
-    )?;
-    let rows = stmt
-        .query_map([], |r| {
-            Ok(ExplainAnswer {
-                scope: parse(r.get(0)?)?,
-                scope_id: r.get(1)?,
-                scope_name: None,
-                provider: parse(r.get(2)?)?,
-                allowed: r.get(3)?,
-                answered_at: r.get(4)?,
-            })
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(rows)
-}
-
-pub fn set_answer(
-    conn: &Connection,
-    scope: ExplainAnswerScope,
-    scope_id: &str,
-    provider: AgentProvider,
-    allowed: bool,
-) -> AppResult<()> {
-    conn.execute(
-        "INSERT INTO explain_answers (scope, scope_id, provider, allowed, answered_at)
-         VALUES (?1, ?2, ?3, ?4, ?5)
-         ON CONFLICT (scope, scope_id, provider)
-         DO UPDATE SET allowed = excluded.allowed, answered_at = excluded.answered_at",
-        params![
-            word(&scope)?,
-            scope_id,
-            provider.as_str(),
-            allowed,
-            now_rfc3339()
-        ],
-    )?;
-    Ok(())
-}
-
-pub fn remove_answer(
-    conn: &Connection,
-    scope: ExplainAnswerScope,
-    scope_id: &str,
-    provider: AgentProvider,
-) -> AppResult<()> {
-    conn.execute(
-        "DELETE FROM explain_answers WHERE scope = ?1 AND scope_id = ?2 AND provider = ?3",
-        params![word(&scope)?, scope_id, provider.as_str()],
     )?;
     Ok(())
 }

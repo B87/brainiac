@@ -129,7 +129,7 @@ export default function ExplainDialog({
     setError(null);
     try {
       if (answer !== undefined) {
-        await ipc.answerExplain({
+        await ipc.answerCodeSharing({
           repository_id: repositoryId,
           provider: profile.provider,
           allowed: answer,
@@ -356,7 +356,7 @@ export default function ExplainDialog({
 
             {denied && (
               <div className="rounded-lg bg-panel px-3 py-2.5 text-[12.5px] text-fg-2">
-                This repository is answered No for explanations with{" "}
+                This repository is answered No for sending its code to{" "}
                 {providerName}
                 {consent?.workspace_name
                   ? `, by the workspace ${consent.workspace_name}`
@@ -367,7 +367,7 @@ export default function ExplainDialog({
                   className="text-link hover:underline"
                   onClick={() => {
                     onClose();
-                    requestSettings("explain-repositories");
+                    requestSettings("sharing");
                   }}
                 >
                   Change in Settings
@@ -377,13 +377,12 @@ export default function ExplainDialog({
             {unasked && (
               <div className="flex flex-col gap-2 rounded-lg border px-3 py-2.5 text-[12.5px] leading-relaxed">
                 <p className="m-0 font-medium">
-                  Send this repository's code to {providerName} for
-                  explanations?
+                  Send this repository's code to {providerName}?
                 </p>
                 <p className="m-0 text-fg-2">
                   The agent reads the change, its history, and the code around
                   it in a container, acting without asking, with the token or
-                  key and an open network.{" "}
+                  key and an open network. The answer covers runs too.{" "}
                   <button
                     type="button"
                     className="text-link hover:underline"

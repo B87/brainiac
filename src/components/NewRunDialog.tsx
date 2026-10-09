@@ -26,12 +26,14 @@ import {
   type AgentRun,
   type AgentSettings,
   type AppSnapshot,
+  type CodeSharingQuestion,
   errorMessage,
   ipc,
   type RunPermissions,
   type RunStartPreview,
 } from "../lib/ipc";
 import { plural } from "../lib/repo";
+import { requestSettings } from "../lib/settings";
 import Dialog from "./Dialog";
 import {
   AlertIcon,
@@ -89,6 +91,11 @@ export default function NewRunDialog({
   const [profileId, setProfileId] = useState("");
   const [hostId, setHostId] = useState("");
   const [limits, setLimits] = useState(false);
+  // Whether the repository's code may go to the agent's provider (SPEC.md,
+  // section 13, Code sharing): asked here the first time.
+  const [question, setQuestion] = useState<CodeSharingQuestion | null>(null);
+  const [scope, setScope] = useState("");
+  const [details, setDetails] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const id = useId();
@@ -116,6 +123,20 @@ export default function NewRunDialog({
       alive = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!repo) return;
+    let alive = true;
+    setQuestion(null);
+    setScope("");
+    ipc
+      .getCodeSharingQuestion(repo)
+      .then((q) => alive && setQuestion(q))
+      .catch((e) => alive && setError(errorMessage(e)));
+    return () => {
+      alive = false;
+    };
+  }, [repo]);
 
   // The start is resolved once, as the user leaves the field or picks a repository.
   useEffect(() => {
@@ -191,18 +212,42 @@ export default function NewRunDialog({
       ? `Choose a model: ${agentName(agent)} has no default.`
       : null;
   })();
+  const consent = question?.consents.find(
+    (c) => c.provider === profile?.provider,
+  );
+  const unasked = consent?.state === "unasked";
+  const denied = consent?.state === "denied";
   const ready =
     !!preview &&
     !!profile &&
+    !!question &&
+    !denied &&
     prompt.trim().length > 0 &&
     blocked.length === 0 &&
     !modelProblem;
 
-  const startRun = async () => {
-    if (!preview || !profile || !ready || busy) return;
+  /** Start run, or the question's answer first: Allow and start, Don't send. */
+  const startRun = async (answer?: boolean) => {
+    if (!profile || busy) return;
+    // The question is answered with its own buttons, never by ⌘↩; Don't
+    // send needs nothing else to be ready.
+    if (answer === undefined ? !ready || unasked : answer && !ready) return;
     setBusy(true);
     setError(null);
     try {
+      if (answer !== undefined) {
+        await ipc.answerCodeSharing({
+          repository_id: repo,
+          provider: profile.provider,
+          allowed: answer,
+          workspace_id: scope || null,
+        });
+        if (!answer) {
+          setQuestion(await ipc.getCodeSharingQuestion(repo));
+          return;
+        }
+      }
+      if (!preview) return;
       const run = await ipc.startAgentRun({
         repository_id: repo,
         start_commit: preview.commit,
@@ -241,16 +286,37 @@ export default function NewRunDialog({
           <button type="button" className="btn btn-sm" onClick={onClose}>
             Cancel
           </button>
-          <button
-            type="button"
-            className="btn btn-sm btn-primary"
-            disabled={!ready || busy}
-            title="Start run (⌘↩)"
-            onClick={() => void startRun()}
-          >
-            {busy ? "Starting…" : "Start run"}
-            <span className="font-normal opacity-80">⌘↩</span>
-          </button>
+          {unasked ? (
+            <>
+              <button
+                type="button"
+                className="btn btn-sm"
+                disabled={busy || !profile}
+                onClick={() => void startRun(false)}
+              >
+                Don't send
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm btn-primary"
+                disabled={!ready || busy}
+                onClick={() => void startRun(true)}
+              >
+                {busy ? "Starting…" : "Allow and start"}
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              className="btn btn-sm btn-primary"
+              disabled={!ready || busy}
+              title="Start run (⌘↩)"
+              onClick={() => void startRun()}
+            >
+              {busy ? "Starting…" : "Start run"}
+              <span className="font-normal opacity-80">⌘↩</span>
+            </button>
+          )}
         </>
       }
     >
@@ -562,6 +628,71 @@ export default function NewRunDialog({
               : "The agent runs any command and edits any file inside its container without asking. It can never push, get new credentials, or change where the run executes."}
           </span>
         </div>
+        {profile && denied && (
+          <div className="rounded-lg bg-panel px-3 py-2.5 text-[12.5px] text-fg-2">
+            This repository is answered No for sending its code to{" "}
+            {providerName(provider)}
+            {consent?.workspace_name
+              ? `, by the workspace ${consent.workspace_name}`
+              : ""}
+            . Nothing is sent.{" "}
+            <button
+              type="button"
+              className="text-link hover:underline"
+              onClick={() => {
+                onClose();
+                requestSettings("sharing");
+              }}
+            >
+              Change in Settings
+            </button>
+          </div>
+        )}
+        {profile && unasked && question && (
+          <div className="flex flex-col gap-2 rounded-lg border px-3 py-2.5 text-[12.5px] leading-relaxed">
+            <p className="m-0 font-medium">
+              Send this repository's code to {providerName(provider)}?
+            </p>
+            <p className="m-0 text-fg-2">
+              A run sends the repository's history up to the start commit, your
+              prompt, and anything the agent reads. Asked once for each
+              repository; the answer covers explanations too.{" "}
+              <button
+                type="button"
+                className="text-link hover:underline"
+                aria-expanded={details}
+                onClick={() => setDetails(!details)}
+              >
+                Details
+              </button>
+            </p>
+            {details && (
+              <p className="m-0 text-fg-3">
+                Change it any time in Settings → Code Sharing. A No stops runs
+                and explanations of this repository with{" "}
+                {providerName(provider)}; an agent of another provider asks
+                again.
+              </p>
+            )}
+            {question.workspaces.length > 0 && (
+              <label className="flex flex-col gap-1">
+                <FieldLabel>Answer for</FieldLabel>
+                <select
+                  className="field"
+                  value={scope}
+                  onChange={(e) => setScope(e.target.value)}
+                >
+                  <option value="">This repository</option>
+                  {question.workspaces.map((w) => (
+                    <option key={w.id} value={w.id}>
+                      Every repository in {w.name}, also those added later
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+          </div>
+        )}
         <section
           aria-labelledby={`${id}-before`}
           className="flex flex-col gap-2.5 rounded-[10px] border px-3.5 py-3 text-[12.5px] leading-relaxed"

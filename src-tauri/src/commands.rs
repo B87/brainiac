@@ -1586,25 +1586,6 @@ pub async fn get_explain_dialog(
     explanations.dialog(&repository_id, subject).await
 }
 
-/// The once-per-repository question, or Change in Settings.
-#[tauri::command]
-pub async fn answer_explain(
-    request: crate::models::AnswerExplainRequest,
-    explanations: State<'_, Explanations>,
-) -> AppResult<()> {
-    explanations.answer(request).await
-}
-
-#[tauri::command]
-pub async fn forget_explain_answer(
-    scope: crate::models::ExplainAnswerScope,
-    scope_id: String,
-    provider: crate::models::AgentProvider,
-    explanations: State<'_, Explanations>,
-) -> AppResult<()> {
-    explanations.forget_answer(scope, scope_id, provider).await
-}
-
 /// **Explain**
 #[tauri::command]
 pub async fn start_explanation(
@@ -1727,4 +1708,56 @@ pub async fn save_explanation_settings(
     explanations: State<'_, Explanations>,
 ) -> AppResult<()> {
     explanations.save_settings(settings).await
+}
+
+// ---------------------------------------------------------------------------
+// Code sharing (SPEC.md, section 13, Code sharing)
+// ---------------------------------------------------------------------------
+
+pub type Sharing = Arc<crate::sharing::CodeSharingService>;
+
+/// New run: the repository's answer for each provider that has an agent,
+/// and the workspaces it can be answered for.
+#[tauri::command]
+pub async fn get_code_sharing_question(
+    repository_id: String,
+    sharing: State<'_, Sharing>,
+    agents: State<'_, Arc<crate::agents::AgentSettingsService>>,
+) -> AppResult<crate::models::CodeSharingQuestion> {
+    let settings = agents.get().await?;
+    let mut providers: Vec<crate::models::AgentProvider> = Vec::new();
+    for p in &settings.profiles {
+        if !providers.contains(&p.provider) {
+            providers.push(p.provider);
+        }
+    }
+    sharing.question(&repository_id, &providers).await
+}
+
+/// The once-per-repository question, from New run or Explain, or Change in
+/// Settings → Code Sharing.
+#[tauri::command]
+pub async fn answer_code_sharing(
+    request: crate::models::AnswerCodeSharingRequest,
+    sharing: State<'_, Sharing>,
+) -> AppResult<()> {
+    sharing.answer(request).await
+}
+
+/// Settings → Code Sharing, **Ask again**.
+#[tauri::command]
+pub async fn forget_code_sharing_answer(
+    scope: crate::models::CodeAnswerScope,
+    scope_id: String,
+    provider: crate::models::AgentProvider,
+    sharing: State<'_, Sharing>,
+) -> AppResult<()> {
+    sharing.forget(scope, scope_id, provider).await
+}
+
+#[tauri::command]
+pub async fn list_code_sharing_answers(
+    sharing: State<'_, Sharing>,
+) -> AppResult<Vec<crate::models::CodeAnswer>> {
+    sharing.list().await
 }

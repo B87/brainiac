@@ -15,7 +15,7 @@ import type { AgentRunChangedEvent } from "./generated/AgentRunChangedEvent";
 import type { AgentRunList } from "./generated/AgentRunList";
 import type { AgentSettings } from "./generated/AgentSettings";
 import type { AgentTestResult } from "./generated/AgentTestResult";
-import type { AnswerExplainRequest } from "./generated/AnswerExplainRequest";
+import type { AnswerCodeSharingRequest } from "./generated/AnswerCodeSharingRequest";
 import type { AppError } from "./generated/AppError";
 import type { ApproveAgentHostRequest } from "./generated/ApproveAgentHostRequest";
 import type { AppSnapshot } from "./generated/AppSnapshot";
@@ -23,6 +23,9 @@ import type { BranchComparison } from "./generated/BranchComparison";
 import type { Cell } from "./generated/Cell";
 import type { CellValue } from "./generated/CellValue";
 import type { ChangesResult } from "./generated/ChangesResult";
+import type { CodeAnswer } from "./generated/CodeAnswer";
+import type { CodeAnswerScope } from "./generated/CodeAnswerScope";
+import type { CodeSharingQuestion } from "./generated/CodeSharingQuestion";
 import type { ColumnKind } from "./generated/ColumnKind";
 import type { CommentRequest } from "./generated/CommentRequest";
 import type { CommitDetail } from "./generated/CommitDetail";
@@ -56,7 +59,6 @@ import type { DiffResult } from "./generated/DiffResult";
 import type { DiffSelector } from "./generated/DiffSelector";
 import type { DockerContainer } from "./generated/DockerContainer";
 import type { DockerContainers } from "./generated/DockerContainers";
-import type { ExplainAnswerScope } from "./generated/ExplainAnswerScope";
 import type { ExplainDialog } from "./generated/ExplainDialog";
 import type { ExplainMode } from "./generated/ExplainMode";
 import type { ExplainSubject } from "./generated/ExplainSubject";
@@ -199,7 +201,7 @@ export type { AgentSettings } from "./generated/AgentSettings";
 export type { AgentTest } from "./generated/AgentTest";
 export type { AgentTestResult } from "./generated/AgentTestResult";
 export type { AgentTestStep } from "./generated/AgentTestStep";
-export type { AnswerExplainRequest } from "./generated/AnswerExplainRequest";
+export type { AnswerCodeSharingRequest } from "./generated/AnswerCodeSharingRequest";
 export type { Backlink } from "./generated/Backlink";
 export type { BranchComparison } from "./generated/BranchComparison";
 export type { ChangedFile } from "./generated/ChangedFile";
@@ -209,6 +211,11 @@ export type { Check } from "./generated/Check";
 export type { CheckState } from "./generated/CheckState";
 export type { ChecksSummary } from "./generated/ChecksSummary";
 export type { CitedQuote } from "./generated/CitedQuote";
+export type { CodeAnswer } from "./generated/CodeAnswer";
+export type { CodeAnswerScope } from "./generated/CodeAnswerScope";
+export type { CodeConsent } from "./generated/CodeConsent";
+export type { CodeConsentState } from "./generated/CodeConsentState";
+export type { CodeSharingQuestion } from "./generated/CodeSharingQuestion";
 export type { Comment } from "./generated/Comment";
 export type { CommitFile } from "./generated/CommitFile";
 export type { CommitSummary } from "./generated/CommitSummary";
@@ -220,10 +227,6 @@ export type { DiffSide } from "./generated/DiffSide";
 export type { DiffSource } from "./generated/DiffSource";
 export type { Disagreement } from "./generated/Disagreement";
 export type { DiscoveryMode } from "./generated/DiscoveryMode";
-export type { ExplainAnswer } from "./generated/ExplainAnswer";
-export type { ExplainAnswerScope } from "./generated/ExplainAnswerScope";
-export type { ExplainConsent } from "./generated/ExplainConsent";
-export type { ExplainConsentState } from "./generated/ExplainConsentState";
 export type { ExplainCost } from "./generated/ExplainCost";
 export type { ExplainDepth } from "./generated/ExplainDepth";
 export type { ExplainDialog } from "./generated/ExplainDialog";
@@ -233,7 +236,6 @@ export type { ExplainProfileOption } from "./generated/ExplainProfileOption";
 export type { ExplainStep } from "./generated/ExplainStep";
 export type { ExplainSubject } from "./generated/ExplainSubject";
 export type { ExplainSubjectKind } from "./generated/ExplainSubjectKind";
-export type { ExplainWorkspaceOption } from "./generated/ExplainWorkspaceOption";
 export type { Explanation } from "./generated/Explanation";
 export type { ExplanationChangedEvent } from "./generated/ExplanationChangedEvent";
 export type { ExplanationChecks } from "./generated/ExplanationChecks";
@@ -277,6 +279,7 @@ export type { RelocationConcern } from "./generated/RelocationConcern";
 export type { RepositoryForge } from "./generated/RepositoryForge";
 export type { RepositoryFreshness } from "./generated/RepositoryFreshness";
 export type { RepositorySuggestion } from "./generated/RepositorySuggestion";
+export type { RepositoryWorkspace } from "./generated/RepositoryWorkspace";
 export type { RequestBudget } from "./generated/RequestBudget";
 export type { ReviewDraft } from "./generated/ReviewDraft";
 export type { Reviewer } from "./generated/Reviewer";
@@ -670,14 +673,20 @@ export const ipc = {
   /** What the Explain dialog shows for a subject. */
   getExplainDialog: (repositoryId: string, subject: ExplainSubject) =>
     invoke<ExplainDialog>("get_explain_dialog", { repositoryId, subject }),
+  // Code sharing (SPEC.md, section 13, Code sharing): whether a repository's
+  // code may go to a provider, asked once by New run or Explain.
+  getCodeSharingQuestion: (repositoryId: string) =>
+    invoke<CodeSharingQuestion>("get_code_sharing_question", { repositoryId }),
   /** The once-per-repository question, for the repository or its workspace. */
-  answerExplain: (request: AnswerExplainRequest) =>
-    invoke<void>("answer_explain", { request }),
-  forgetExplainAnswer: (
-    scope: ExplainAnswerScope,
+  answerCodeSharing: (request: AnswerCodeSharingRequest) =>
+    invoke<void>("answer_code_sharing", { request }),
+  forgetCodeSharingAnswer: (
+    scope: CodeAnswerScope,
     scopeId: string,
     provider: AgentProvider,
-  ) => invoke<void>("forget_explain_answer", { scope, scopeId, provider }),
+  ) => invoke<void>("forget_code_sharing_answer", { scope, scopeId, provider }),
+  listCodeSharingAnswers: () =>
+    invoke<CodeAnswer[]>("list_code_sharing_answers"),
   startExplanation: (request: StartExplanationRequest) =>
     invoke<ExplanationRecord>("start_explanation", { request }),
   cancelExplanation: (id: string) =>
@@ -1055,6 +1064,11 @@ export function onExplanationChanged(
   return listen<ExplanationChangedEvent>("explanation_changed", (ev) =>
     handler(ev.payload),
   );
+}
+
+/** An answer in Settings → Code Sharing changed. */
+export function onCodeSharingChanged(handler: () => void): Promise<UnlistenFn> {
+  return listen<null>("code_sharing_changed", () => handler());
 }
 
 export function onIndexStatusChanged(

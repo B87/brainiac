@@ -21,11 +21,12 @@ use brainiac_lib::db::{self, Db};
 use brainiac_lib::explain::service::{ExplanationService, PullRequestFacts};
 use brainiac_lib::git::GitService;
 use brainiac_lib::models::{
-    AgentPayment, AgentProvider, AnswerExplainRequest, ConceptKind, ErrorCode, ExplainConsentState,
-    ExplainDepth, ExplainSubject, ExplainSubjectKind, ExplanationRecord, ExplanationState,
-    SaveAgentCredentialRequest, SecretSource, Settings, StartExplanationRequest,
+    AgentPayment, AgentProvider, AnswerCodeSharingRequest, CodeConsentState, ConceptKind,
+    ErrorCode, ExplainDepth, ExplainSubject, ExplainSubjectKind, ExplanationRecord,
+    ExplanationState, SaveAgentCredentialRequest, SecretSource, Settings, StartExplanationRequest,
 };
 use brainiac_lib::notes::{NoteService, Stores};
+use brainiac_lib::sharing::CodeSharingService;
 use brainiac_lib::workspaces::RepositoryService;
 use fake_engine::{git, FakeEngine, KEY};
 use serde_json::json;
@@ -41,6 +42,7 @@ struct Harness {
     _server: tokio::task::JoinHandle<()>,
     runs: Arc<AgentRunService>,
     explanations: Arc<ExplanationService>,
+    sharing: Arc<CodeSharingService>,
     notes: Arc<NoteService>,
 }
 
@@ -149,10 +151,6 @@ impl Harness {
             .revision;
         core.call(move |conn| {
             conn.execute(
-                "UPDATE agent_profiles SET sends_code_agreed = 1 WHERE id = ?1",
-                [CLAUDE_CODE],
-            )?;
-            conn.execute(
                 "INSERT OR REPLACE INTO agent_tests (host_id, profile_id, passed_at,
                    credential_revision, image_id, engine_socket)
                  VALUES ('local', ?1, '2026-10-05T00:00:00Z', ?2, 'sha256:abc', ?3)",
@@ -183,9 +181,11 @@ impl Harness {
         ));
         let (changes, _) = tokio::sync::broadcast::channel::<String>(256);
         let sender = changes.clone();
+        let sharing = CodeSharingService::new(core.clone(), Arc::new(|| {}));
         let runs = AgentRunService::new(
             history.clone(),
             Arc::clone(&settings),
+            Arc::clone(&sharing),
             credentials,
             Arc::clone(&artifacts),
             Arc::new(RunRuntime::attach(
@@ -208,6 +208,7 @@ impl Harness {
             history,
             Arc::clone(&runs),
             settings,
+            Arc::clone(&sharing),
             artifacts,
             repositories,
             Arc::clone(&notes),
@@ -222,6 +223,7 @@ impl Harness {
             _server: server,
             runs,
             explanations,
+            sharing,
             notes,
         }
     }
@@ -245,8 +247,8 @@ impl Harness {
     }
 
     async fn allow(&self) {
-        self.explanations
-            .answer(AnswerExplainRequest {
+        self.sharing
+            .answer(AnswerCodeSharingRequest {
                 repository_id: self.repository_id.clone(),
                 provider: AgentProvider::Anthropic,
                 allowed: true,
@@ -349,7 +351,7 @@ async fn a_commit_is_explained_after_one_follow_up_turn() {
         .iter()
         .find(|c| c.provider == AgentProvider::Anthropic)
         .unwrap();
-    assert_eq!(anthropic.state, ExplainConsentState::Unasked);
+    assert_eq!(anthropic.state, CodeConsentState::Unasked);
     assert!(dialog.estimates.is_empty());
     let refused = h.explain(subject.clone()).await.unwrap_err();
     assert_eq!(refused.code, ErrorCode::Conflict);
@@ -518,8 +520,8 @@ async fn a_file_that_fails_the_schema_twice_fails_with_its_errors() {
 #[tokio::test]
 async fn a_repository_answered_no_is_never_explained() {
     let h = Harness::new().await;
-    h.explanations
-        .answer(AnswerExplainRequest {
+    h.sharing
+        .answer(AnswerCodeSharingRequest {
             repository_id: h.repository_id.clone(),
             provider: AgentProvider::Anthropic,
             allowed: false,

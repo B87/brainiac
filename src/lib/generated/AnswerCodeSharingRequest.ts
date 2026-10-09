@@ -2,9 +2,9 @@
 import type { AgentProvider } from "./AgentProvider";
 
 /**
- * The question asked before a repository's first explanation.
+ * The question asked before a repository's code first goes to a provider.
  */
-export type AnswerExplainRequest = { repository_id: string, provider: AgentProvider, allowed: boolean, 
+export type AnswerCodeSharingRequest = { repository_id: string, provider: AgentProvider, allowed: boolean, 
 /**
  * Answer for every repository in this workspace instead.
  */

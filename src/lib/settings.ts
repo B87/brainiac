@@ -9,9 +9,9 @@ export type SettingsSection =
   | "secrets"
   | "agents"
   | "runs"
+  | "sharing"
   | "backup"
   | "explain-agent"
-  | "explain-repositories"
   | "explain-concepts"
   | "explain-stored";
 
@@ -31,14 +31,11 @@ export const SECTIONS: {
   { id: "secrets", label: "Secrets" },
   { id: "agents", label: "Agent Access" },
   { id: "runs", label: "Agents" },
+  // Whether a repository's code may be sent (SPEC.md, section 13).
+  { id: "sharing", label: "Code Sharing" },
   { id: "backup", label: "Backup" },
   // Settings → Explanations, one page each (SPEC.md, section 14).
   { id: "explain-agent", label: "Agent and Depth", group: "explanations" },
-  {
-    id: "explain-repositories",
-    label: "Repositories Asked",
-    group: "explanations",
-  },
   { id: "explain-concepts", label: "Concepts You Know", group: "explanations" },
   {
     id: "explain-stored",
