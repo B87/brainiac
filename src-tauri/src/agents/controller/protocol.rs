@@ -231,6 +231,13 @@ pub struct StartRun {
     /// (`docker::launch_env`); empty for Claude Code's default. Not a secret.
     #[serde(default)]
     pub model: String,
+    /// An explain run's known concepts, copied to
+    /// `/opt/brainiac/input/known-concepts.tsv` beside the start (docs/design/
+    /// code-explanations.md, How the ledger reaches the run). Added without a
+    /// protocol bump: a controller older than this Brainiac ignores it, and
+    /// the run then has no list.
+    #[serde(default)]
+    pub known_concepts: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

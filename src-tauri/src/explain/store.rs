@@ -521,28 +521,6 @@ pub fn merge_concept(conn: &Connection, from: &str, into: &str) -> AppResult<()>
     Ok(())
 }
 
-/// What a repository's prompt is told the reader knows: languages,
-/// libraries, and system tools from anywhere, and this repository's own
-/// project patterns, as "name (kind)".
-pub fn known_for(conn: &Connection, repository_id: &str) -> AppResult<Vec<String>> {
-    let mut stmt = conn.prepare(
-        "SELECT name, kind FROM known_concepts
-         WHERE repository_id = '' OR repository_id = ?1
-         ORDER BY learned_at DESC",
-    )?;
-    let rows = stmt
-        .query_map([repository_id], |r| {
-            let kind: String = r.get(1)?;
-            Ok(format!(
-                "{} ({})",
-                r.get::<_, String>(0)?,
-                kind.replace('_', " ")
-            ))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(rows)
-}
-
 /// A known concept as the checker matches it: its identity key, and the
 /// concept a merge points at (the one Undo forgets).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -551,14 +529,18 @@ pub struct KnownRef {
     pub name: String,
     pub kind: ConceptKind,
     pub key: String,
+    /// The explanation's own words for it, empty when not known.
+    pub description: String,
 }
 
 /// What a repository's explanation can leave out because the reader knows
-/// it: the same concepts `known_for` names in the prompt, newest first. A
-/// concept merged into another resolves to that one.
+/// it: languages, libraries, and system tools from anywhere and this
+/// repository's own project patterns, newest first, as the known-concepts
+/// file lists them. A concept merged into another resolves to that one.
 pub fn known_refs(conn: &Connection, repository_id: &str) -> AppResult<Vec<KnownRef>> {
     let mut stmt = conn.prepare(
-        "SELECT c.id, c.name, c.kind, c.key, c.merged_into, t.name, t.kind
+        "SELECT c.id, c.name, c.kind, c.key, c.merged_into, t.name, t.kind,
+                c.description, t.description
          FROM known_concepts c
          LEFT JOIN known_concepts t ON t.id = c.merged_into
          WHERE c.repository_id = '' OR c.repository_id = ?1
@@ -568,20 +550,24 @@ pub fn known_refs(conn: &Connection, repository_id: &str) -> AppResult<Vec<Known
     // `AppError`; the closure itself returns rusqlite's own error type.
     let rows = stmt
         .query_map([repository_id], |r| {
-            let merged_into: Option<String> = r.get(4)?;
-            let (id, name, kind) = match merged_into {
-                Some(target) => (
-                    target,
+            let key: String = r.get(3)?;
+            // A merged concept stands for the one it was merged into: its id,
+            // name, kind, and words, under its own key.
+            let (id, name, kind, description) = if r.get::<_, Option<String>>(4)?.is_some() {
+                (
+                    r.get::<_, String>(4)?,
                     r.get::<_, Option<String>>(5)?,
                     r.get::<_, Option<String>>(6)?,
-                ),
-                None => (r.get(0)?, Some(r.get(1)?), Some(r.get(2)?)),
+                    r.get::<_, Option<String>>(8)?,
+                )
+            } else {
+                (r.get(0)?, Some(r.get(1)?), Some(r.get(2)?), Some(r.get(7)?))
             };
-            Ok((id, name, kind, r.get::<_, String>(3)?))
+            Ok((id, name, kind, key, description))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut refs = Vec::new();
-    for (id, name, kind, key) in rows {
+    for (id, name, kind, key, description) in rows {
         // A merge target that is gone leaves no name: skip the dangling row.
         let (Some(name), Some(kind)) = (name, kind) else {
             continue;
@@ -591,6 +577,7 @@ pub fn known_refs(conn: &Connection, repository_id: &str) -> AppResult<Vec<Known
             name,
             kind: parse(kind)?,
             key,
+            description: description.unwrap_or_default(),
         });
     }
     Ok(refs)

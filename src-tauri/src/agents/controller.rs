@@ -769,6 +769,7 @@ impl<W: Workloads> Controller<W> {
             workspace_gib: start.workspace_gib,
             env: docker::launch_env(start.agent, start.provider, &start.model, start.permissions),
             bundle: start.bundle.clone(),
+            known_concepts: start.known_concepts.clone(),
             cancel: cancelled,
         };
         let launched = match self
@@ -1542,6 +1543,9 @@ impl<W: Workloads> Controller<W> {
     }
 }
 
+/// The most a run's known-concepts file may hold: far past what the app writes.
+const MAX_KNOWN_CONCEPTS_BYTES: usize = 2 << 20;
+
 fn check_start(start: &StartRun) -> AppResult<()> {
     if !valid_id(&start.run_id) || !valid_id(&start.prompt_id) || start.attempt == 0 {
         return Err(AppError::validation("Invalid run, attempt, or prompt ID."));
@@ -1566,6 +1570,15 @@ fn check_start(start: &StartRun) -> AppResult<()> {
     }
     if !start.bundle.is_file() {
         return Err(AppError::not_found("The run's start was not exported."));
+    }
+    if start
+        .known_concepts
+        .as_ref()
+        .is_some_and(|k| k.len() > MAX_KNOWN_CONCEPTS_BYTES)
+    {
+        return Err(AppError::validation(
+            "The list of known concepts is too long.",
+        ));
     }
     let value = &start.credential.value;
     if !(16..=4096).contains(&value.len()) || !value.chars().all(|c| c.is_ascii_graphic()) {

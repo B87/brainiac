@@ -38,6 +38,8 @@ pub struct Engine {
     pub launches: usize,
     /// The container environment of each launch, in order.
     pub envs: Vec<Vec<String>>,
+    /// The known-concepts file each launch was given, in order.
+    pub known_concepts: Vec<Option<String>>,
     pub discarded: Vec<String>,
     /// The current image each collection and discard named, in order.
     pub fallback_images: Vec<Option<String>>,
@@ -119,6 +121,7 @@ impl Workloads for FakeEngine {
         let mut engine = self.get();
         engine.launches += 1;
         engine.envs.push(spec.env.clone());
+        engine.known_concepts.push(spec.known_concepts.clone());
         engine.containers.insert(
             spec.run_id.clone(),
             Container {

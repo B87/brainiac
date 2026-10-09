@@ -22,6 +22,7 @@ const FILES: &[(&str, &str)] = &[
     ("Dockerfile", include_str!("image/Dockerfile")),
     ("entrypoint.mjs", include_str!("image/entrypoint.mjs")),
     ("collector.mjs", include_str!("image/collector.mjs")),
+    ("known.mjs", include_str!("image/known.mjs")),
     ("package.json", include_str!("image/package.json")),
     ("package-lock.json", include_str!("image/package-lock.json")),
     (
@@ -302,6 +303,53 @@ mod tests {
                 text
             );
         }
+    }
+
+    /// `known` is plain Node, so the test runs it where Node is installed.
+    #[test]
+    fn known_says_which_names_are_exact_matches_of_the_list() {
+        let node = std::process::Command::new("node").arg("--version").output();
+        if node.is_err() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let list = dir.path().join("known-concepts.tsv");
+        std::fs::write(
+            &list,
+            "go embed\tgo:embed\tlanguage\tPuts a file into the binary.\ndkim\tDKIM\tsystem\t\n",
+        )
+        .unwrap();
+        let script = dir.path().join("known.mjs");
+        std::fs::write(&script, include_str!("image/known.mjs")).unwrap();
+        let run = |args: &[&str]| {
+            let out = std::process::Command::new("node")
+                .arg(&script)
+                .args(args)
+                .env("BRAINIAC_KNOWN_FILE", &list)
+                .output()
+                .unwrap();
+            String::from_utf8(out.stdout).unwrap()
+        };
+        let out = run(&[
+            "GO:EMBED (language)",
+            "dkim",
+            "go",
+            "go:embed directive",
+            "spf",
+        ]);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(
+            lines[0],
+            "known: go:embed (language) - Puts a file into the binary."
+        );
+        assert_eq!(lines[1], "known: DKIM (system)");
+        // Exact names only: a shorter or longer name is new.
+        assert_eq!(lines[2], "new: go");
+        assert_eq!(lines[3], "new: go:embed directive");
+        assert_eq!(lines[4], "new: spf");
+        // No list: every name is new, and it says why.
+        std::fs::remove_file(&list).unwrap();
+        assert!(run(&["dkim"]).contains("treat every concept as new"));
     }
 
     #[test]

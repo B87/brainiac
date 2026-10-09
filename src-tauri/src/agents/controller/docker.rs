@@ -85,6 +85,9 @@ pub struct LaunchSpec {
     pub env: Vec<String>,
     /// Copied to `/opt/brainiac/input/input.bundle` before the container starts.
     pub bundle: PathBuf,
+    /// An explain run's known concepts, copied beside it as
+    /// `known-concepts.tsv`.
+    pub known_concepts: Option<String>,
     /// Becomes `true` when the run is stopped while its container is being
     /// made: the container is then not started.
     pub cancel: tokio::sync::watch::Receiver<bool>,
@@ -417,7 +420,11 @@ impl DockerEngine {
                 "The engine changed the run's container settings (terminal or logging), so the run was not started.",
             ));
         }
-        upload_input(docker, &id, &spec.bundle, None).await?;
+        let known = spec
+            .known_concepts
+            .as_ref()
+            .map(|text| ("known-concepts.tsv", text.as_bytes().to_vec()));
+        upload_input(docker, &id, &spec.bundle, known).await?;
         Ok(id)
     }
 }

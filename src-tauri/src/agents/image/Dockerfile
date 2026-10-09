@@ -25,7 +25,12 @@ RUN npm ci --omit=dev --no-audit --no-fund \
     && rm -rf node_modules/@anthropic-ai/*-musl node_modules/opencode-linux-*-musl \
     && npm cache clean --force
 
-COPY entrypoint.mjs collector.mjs /opt/claude/
+COPY entrypoint.mjs collector.mjs known.mjs /opt/claude/
+
+# `known <name>…` tells an explain run which concepts the reader knows, from
+# the file the controller copies in (a path, never a credential).
+RUN printf '#!/bin/sh\nexec node /opt/claude/known.mjs "$@"\n' > /usr/local/bin/known \
+    && chmod 755 /usr/local/bin/known
 
 # Claude Code's managed settings win over a repository's own .claude
 # settings, which runs otherwise use (CLAUDE.md, hooks, permissions). They

@@ -901,6 +901,7 @@ mod tests {
             name: name.to_string(),
             kind,
             key: concept_key(name),
+            description: String::new(),
         }
     }
 

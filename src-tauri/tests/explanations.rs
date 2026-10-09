@@ -329,6 +329,7 @@ fn good_commit_file() -> String {
         ],
         "questions": [{ "question": "What is the limit?", "answer": "Three." }],
         "disagreements": [],
+        "known_used": ["Limit Rule (project pattern)", "no such concept"],
     })
     .to_string()
 }
@@ -474,14 +475,30 @@ async fn a_commit_is_explained_after_one_follow_up_turn() {
     assert!(text.contains("The limit, as the docs say."));
     assert!(text.contains("Sources: `src/lib.rs:5`"));
 
-    // Explain again replaces it; the prompt names the known concepts.
+    // Explain again replaces it; the run is given the known concepts.
     h.engine.get().explanations.push_back(good_commit_file());
     let again = h.explain(subject.clone()).await.unwrap();
     let again = h.ended(&again.id).await;
     assert_eq!(again.state, ExplanationState::Ready);
     let last = h.engine.get().prompts.last().cloned().unwrap();
-    assert!(last.contains("Limit rule (project pattern)"));
-    assert!(last.contains("let (language)"));
+    // The names are in a file the container gets, never in the prompt.
+    assert!(last.contains("already knows 2 concepts"));
+    assert!(last.contains("/opt/brainiac/input/known-concepts.tsv"));
+    assert!(!last.contains("Limit rule"));
+    let file = h
+        .engine
+        .get()
+        .known_concepts
+        .last()
+        .cloned()
+        .flatten()
+        .expect("the run's container is given the known concepts");
+    assert!(file.contains("limit rule\tLimit rule\tproject pattern\t"));
+    assert!(file.contains("let\tlet\tlanguage\tBinds a name."));
+    // The agent named two concepts it left out: only the one in the ledger counts.
+    let left_out = &again.explanation.as_ref().unwrap().known_left_out;
+    assert_eq!(left_out.len(), 1);
+    assert_eq!(left_out[0].name, "Limit rule");
     assert!(h.explanations.get(&record.id).await.is_err());
     h.explanations.forget_concept(&concept).await.unwrap();
 

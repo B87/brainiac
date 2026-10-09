@@ -19,6 +19,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::broadcast;
 
 use super::check::{self, Attempt};
+use super::known;
 use super::prompt::{self, PromptSubject, Reader};
 use super::store::{self, Ending, ExplanationRow};
 use super::subject::EMPTY_TREE;
@@ -815,9 +816,11 @@ impl ExplanationService {
         let minutes = Self::minutes_for(&settings, request.depth);
         let known = {
             let repository = request.repository_id.clone();
-            self.core
-                .call(move |conn| store::known_for(conn, &repository))
-                .await?
+            let refs = self
+                .core
+                .call(move |conn| store::known_refs(conn, &repository))
+                .await?;
+            known::file(&refs)
         };
         let text = prompt::prompt(
             &PromptSubject {
@@ -828,7 +831,7 @@ impl ExplanationService {
             },
             &Reader {
                 levels: &settings.levels,
-                known: &known,
+                known_count: known.as_ref().map_or(0, |k| k.count),
             },
             request.depth,
             request.questions,
@@ -884,6 +887,7 @@ impl ExplanationService {
                 title: format!("Explain {}", resolved.title),
                 model,
                 time_limit_minutes: minutes,
+                known_concepts: known.map(|k| k.text),
             })
             .await;
         let run_id = match started {
