@@ -11,6 +11,7 @@ into the release's section.
 
 ## [Unreleased]
 
+- Text fields and menus in New Run, Explain, Code Sharing, and Settings → Explanations have a border and padding like the rest of the app.
 - An explanation says how many concepts it left out because you know them, lists them, and lets you undo one.
 - A concept you know can be edited: change its name or kind, and its old name stays with it.
 - Concepts You Know can be sorted by newest, name, or kind and grouped by repository, and a repository's concepts can be forgotten at once.
