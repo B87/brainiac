@@ -1326,6 +1326,17 @@ impl ExplanationService {
         Ok(())
     }
 
+    /// **Edit** a concept's name and kind; its old name stays as a name that
+    /// stands for it.
+    pub async fn edit_concept(&self, id: &str, name: &str, kind: ConceptKind) -> AppResult<()> {
+        let (id, name) = (id.to_string(), name.to_string());
+        self.core
+            .call(move |conn| store::edit_concept(conn, &id, &name, kind))
+            .await?;
+        self.emit("", "", false);
+        Ok(())
+    }
+
     /// **Merge** one concept into another.
     pub async fn merge_concept(&self, from: &str, into: &str) -> AppResult<()> {
         let (from, into) = (from.to_string(), into.to_string());

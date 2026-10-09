@@ -4,7 +4,9 @@ import { createPortal } from "react-dom";
 import {
   CONCEPT_KINDS,
   type ConceptSort,
+  conceptKindChoices,
   depthLabel,
+  editConceptQuestion,
   forgetGroupQuestion,
   formatCost,
   groupConceptsByRepository,
@@ -144,15 +146,21 @@ export function ConceptList({
   const [open, setOpen] = useState<Set<string> | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [keepOpen, setKeepOpen] = useState(false);
+  // The concept being edited, with the name and kind typed so far.
+  const [editing, setEditing] = useState<{
+    id: string;
+    name: string;
+    kind: ConceptKind;
+  } | null>(null);
 
   // A merged concept is shown inside the one it was merged into.
   const roots = concepts.filter((c) => !c.merged_into);
-  const mergedInto = new Map<string, string[]>();
+  const mergedInto = new Map<string, { name: string; kind: ConceptKind }[]>();
   for (const c of concepts)
     if (c.merged_into)
       mergedInto.set(c.merged_into, [
         ...(mergedInto.get(c.merged_into) ?? []),
-        c.name,
+        { name: c.name, kind: c.kind },
       ]);
   const needle = filter.trim().toLowerCase();
   const shown = roots.filter(
@@ -164,8 +172,8 @@ export function ConceptList({
         (c.repository_name ?? c.learned_in_name ?? "")
           .toLowerCase()
           .includes(needle) ||
-        (mergedInto.get(c.id) ?? []).some((n) =>
-          n.toLowerCase().includes(needle),
+        (mergedInto.get(c.id) ?? []).some((a) =>
+          a.name.toLowerCase().includes(needle),
         )),
   );
   const groups =
@@ -195,6 +203,84 @@ export function ConceptList({
         c.repository_id === chosen[0].repository_id,
     );
 
+  const saveEdit = async (
+    c: KnownConcept,
+    draft: { name: string; kind: ConceptKind },
+  ) => {
+    const name = draft.name.trim();
+    if (!name || (name === c.name && draft.kind === c.kind)) {
+      setEditing(null);
+      return;
+    }
+    const question = editConceptQuestion(c, name, draft.kind);
+    if (question) {
+      const sure = await ask(question, {
+        title: "Edit Concept",
+        kind: "warning",
+        okLabel: "Make it known everywhere",
+      });
+      if (!sure) return;
+    }
+    setEditing(null);
+    await act(async () => {
+      await ipc.editConcept(c.id, name, draft.kind);
+    });
+  };
+
+  const editRow = (
+    c: KnownConcept,
+    draft: { id: string; name: string; kind: ConceptKind },
+  ) => (
+    <li key={c.id} className="settings-row flex-wrap items-center gap-2">
+      <input
+        className="field min-w-55 flex-1"
+        aria-label="Name"
+        value={draft.name}
+        // biome-ignore lint/a11y/noAutofocus: the field opens because Edit was pressed
+        autoFocus
+        maxLength={200}
+        onChange={(e) => setEditing({ ...draft, name: e.target.value })}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") void saveEdit(c, draft);
+          if (e.key === "Escape") setEditing(null);
+        }}
+      />
+      <select
+        className="field"
+        aria-label="Kind"
+        value={draft.kind}
+        onChange={(e) =>
+          setEditing({ ...draft, kind: e.target.value as ConceptKind })
+        }
+      >
+        {conceptKindChoices(c.kind).map((k) => (
+          <option key={k} value={k}>
+            {KIND_WORD[k]}
+          </option>
+        ))}
+      </select>
+      <button
+        type="button"
+        className="btn btn-sm btn-primary"
+        disabled={!draft.name.trim()}
+        onClick={() => void saveEdit(c, draft)}
+      >
+        Save
+      </button>
+      <button
+        type="button"
+        className="btn btn-sm"
+        onClick={() => setEditing(null)}
+      >
+        Cancel
+      </button>
+      <Hint>
+        Its old name stays with it, so explanations still leave it out under
+        that name.
+      </Hint>
+    </li>
+  );
+
   const row = (c: KnownConcept) => {
     const also = mergedInto.get(c.id) ?? [];
     const from = [
@@ -204,6 +290,7 @@ export function ConceptList({
     ]
       .filter(Boolean)
       .join(" · ");
+    if (editing?.id === c.id) return editRow(c, editing);
     return (
       <li
         key={c.id}
@@ -229,9 +316,28 @@ export function ConceptList({
           {c.description && (
             <span className="text-[12.5px] text-fg-3">{c.description}</span>
           )}
-          {also.length > 0 && <Hint>Also called {also.join(", ")}</Hint>}
+          {also.length > 0 && (
+            <Hint>
+              Also called{" "}
+              {also
+                .map((a) =>
+                  a.kind === c.kind
+                    ? a.name
+                    : `${a.name} (${KIND_WORD[a.kind].toLowerCase()})`,
+                )
+                .join(", ")}
+            </Hint>
+          )}
         </span>
         <span className="shrink-0 text-[12px] text-muted">{from}</span>
+        <button
+          type="button"
+          className="shrink-0 text-[12px] text-link hover:underline"
+          aria-label={`Edit ${c.name}`}
+          onClick={() => setEditing({ id: c.id, name: c.name, kind: c.kind })}
+        >
+          Edit…
+        </button>
       </li>
     );
   };

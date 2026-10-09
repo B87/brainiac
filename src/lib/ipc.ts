@@ -725,6 +725,9 @@ export const ipc = {
   forgetConcept: (id: string) => invoke<void>("forget_concept", { id }),
   mergeConcept: (from: string, into: string) =>
     invoke<void>("merge_concept", { from, into }),
+  /** Change a concept's name and kind; the old name stays with it. */
+  editConcept: (id: string, name: string, kind: ConceptKind) =>
+    invoke<void>("edit_concept", { id, name, kind }),
   /** Where a branch explanation's notes are on the branch now. */
   placeExplanation: (id: string) =>
     invoke<ExplanationPlacement>("place_explanation", { id }),

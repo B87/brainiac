@@ -654,6 +654,7 @@ pub fn run() {
             commands::learn_concept,
             commands::forget_concept,
             commands::merge_concept,
+            commands::edit_concept,
             commands::place_explanation,
             commands::save_explanation_as_note,
             commands::get_explanation_settings,

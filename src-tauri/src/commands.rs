@@ -1667,6 +1667,17 @@ pub async fn forget_concept(id: String, explanations: State<'_, Explanations>) -
     explanations.forget_concept(&id).await
 }
 
+/// **Edit** a concept's name and kind.
+#[tauri::command]
+pub async fn edit_concept(
+    id: String,
+    name: String,
+    kind: crate::models::ConceptKind,
+    explanations: State<'_, Explanations>,
+) -> AppResult<()> {
+    explanations.edit_concept(&id, &name, kind).await
+}
+
 /// **Merge**
 #[tauri::command]
 pub async fn merge_concept(

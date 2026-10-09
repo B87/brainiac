@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   checksLine,
+  conceptKindChoices,
+  editConceptQuestion,
   estimateText,
   forgetGroupQuestion,
   formatCost,
@@ -318,5 +320,34 @@ describe("Concepts You Know", () => {
     expect(forgetGroupQuestion("widgets", [lang])).toContain(
       "1 of it is known in every repository",
     );
+  });
+
+  it("offer a project pattern every kind and anything else not that one", () => {
+    expect(conceptKindChoices("project_pattern")).toHaveLength(6);
+    expect(conceptKindChoices("tool")).toEqual([
+      "language",
+      "library",
+      "protocol",
+      "tool",
+      "technique",
+    ]);
+  });
+
+  it("ask only when a project pattern becomes known in every repository", () => {
+    const pattern = concept({
+      name: "outbox table",
+      kind: "project_pattern",
+      repository_id: "r1",
+      repository_name: "widgets",
+    });
+    expect(editConceptQuestion(pattern, " outbox ", "technique")).toContain(
+      "Make “outbox” known in every repository? It belongs only to widgets now.",
+    );
+    expect(
+      editConceptQuestion(pattern, "outbox table", "project_pattern"),
+    ).toBeNull();
+    expect(
+      editConceptQuestion(concept({ name: "x" }), "y", "library"),
+    ).toBeNull();
   });
 });

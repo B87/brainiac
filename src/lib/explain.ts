@@ -293,3 +293,25 @@ export function forgetGroupQuestion(
     ? `${head} ${everywhere} of ${n === 1 ? "it is" : "them are"} known in every repository (languages, libraries, protocols, tools, and techniques), so explanations will teach ${everywhere === 1 ? "it" : "them"} again everywhere.`
     : `${head} Explanations will teach ${n === 1 ? "it" : "them"} again.`;
 }
+
+/** The kinds Edit offers for a concept: a project pattern may become any
+ * kind (and then belongs to no repository), but a concept known in every
+ * repository cannot become one, or other repositories would teach it again. */
+export function conceptKindChoices(
+  kind: KnownConcept["kind"],
+): KnownConcept["kind"][] {
+  return kind === "project_pattern"
+    ? [...CONCEPT_KINDS]
+    : CONCEPT_KINDS.filter((k) => k !== "project_pattern");
+}
+
+/** What Edit asks first, or null when it need not: only a project pattern
+ * becoming known in every repository changes who is told about it. */
+export function editConceptQuestion(
+  c: KnownConcept,
+  name: string,
+  kind: KnownConcept["kind"],
+): string | null {
+  if (c.kind !== "project_pattern" || kind === "project_pattern") return null;
+  return `Make “${name.trim()}” known in every repository? It belongs only to ${c.repository_name ?? "a removed repository"} now. Explanations of every repository will leave it out, and its name will be listed for their agents.`;
+}
