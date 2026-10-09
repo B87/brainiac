@@ -218,7 +218,7 @@ The next try was a near-name lookup (`--variant similar`, the first prompt plus 
 - **It worked without the agent reading the file.** Claude Code went from 2 of 13 to 8 and OpenCode from 3 of 14 to 11, with the same ledgers, at about the cost of no lookup at all (Claude Code's cost and time were lower than the first runs, OpenCode's higher by 8% and 22%, which is within what a repeat run varies). OpenCode ran one `cut | grep` over the file in one of three commits and read none whole.
 - **What still missed:** a name with different words, not the same words in another form (an agent wrote "Slicing a string by byte index" for nothing known, which is right; "Versioned controller protocol" was found for "Controller protocol version" only through the longer name's words). Nothing was kept in Concepts under a known name, as before.
 - **`known_used` still includes filler** (`tokio`, `async/await`, `SQLite`, `Docker`) in six of the seven runs that named any, so the count can still overstate, and the checker cannot tell which names the change relies on.
-- **Not yet done:** `prompt.rs` does not describe `similar:` lines, so the app's agents see them unexplained; the lookup's behavior is not in `SPEC.md` or `architecture.md`; and near names are word-subset matches only, with no test beyond these runs.
+- **Built from it (9 October 2026):** `known` prints the `similar:` lines, the prompt describes them and tells the agent to name a similar concept that is the same idea in `known_used`, and `architecture.md` and the image tests cover them. Near names are word-subset matches only: the same idea in other words is still new. The exit gate counts the `known_used` names the change did not rely on.
 
 ## Open questions
 

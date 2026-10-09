@@ -16,6 +16,7 @@ into the release's section.
 - A concept you know can be edited: change its name or kind, and its old name stays with it.
 - Concepts You Know can be sorted by newest, name, or kind and grouped by repository, and a repository's concepts can be forgotten at once.
 - Concepts are labelled a protocol or standard (such as DKIM), a tool or service (such as git), or a technique (such as idempotency) instead of a "system tool"; concepts you already know become tools.
+- Explanations leave out a concept you know even when the agent words it a little differently, such as "Closure" for "Closures".
 
 ## [0.6.0] - 2026-10-09
 

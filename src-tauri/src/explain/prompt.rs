@@ -84,7 +84,7 @@ known <<'EOF'\n\
 borrow checker\n\
 Arc<Mutex<_>>\n\
 EOF\n\
-For each name it prints `known: ` followed by the concept's name, its kind in parentheses, and the words used before, or `new: ` followed by the name. A name of two kinds prints two lines. Leave a known concept out of \"concepts\" unless this change uses it in a new way, and say what is new about it. If `known` says there is no list, treat every concept as new.\n",
+For each name it prints `known: ` followed by the concept's name, its kind in parentheses, and the words used before, or `new: ` followed by the name. A name that is not known may be followed by up to three `similar: ` lines, known concepts with some of the same words: they are candidates, not matches. When one is the same idea as yours, it is known, so leave yours out and name the known concept, as printed, in \"known_used\". A name of two kinds prints two lines. Leave a known concept out of \"concepts\" unless this change uses it in a new way, and say what is new about it. If `known` says there is no list, treat every concept as new.\n",
             count = reader.known_count,
             path = super::known::PATH,
         ));
@@ -161,6 +161,7 @@ mod tests {
         assert!(text.contains("<<'EOF'"));
         assert!(text.contains("only the concept's name"));
         assert!(text.contains("\"known_used\""));
+        assert!(text.contains("`similar: ` lines"));
         assert!(text.contains("Depth: deep"));
         assert!(text.contains("plain English"));
         assert!(text.contains("\"questions\": an empty array"));

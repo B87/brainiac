@@ -165,7 +165,7 @@ Moved out on 9 October 2026, after a panel round (`design/code-explanations.md`,
 
 Not planned: a workspace level of scope, a scope chosen by the model, editing descriptions, pasted lists, and "related concept" skipping.
 
-**Exit gate:** for a week of explanations, a concept marked known is left out by exact name, every left-out concept is counted and can be undone from the explanation, a renamed concept behaves like any other, one repository's patterns never appear in another's prompt or file, the known-concepts file's size and its cost per explanation are known, and the number of project patterns learned in two or more repositories is counted.
+**Exit gate:** for a week of explanations, a concept marked known is left out by exact name, every left-out concept is counted and can be undone from the explanation, a renamed concept behaves like any other, one repository's patterns never appear in another's prompt or file, the known-concepts file's size and its cost per explanation are known, the number of project patterns learned in two or more repositories is counted, and so is how many names in `known_used` the change did not rely on (the lookup's `similar:` lines and the filler a lookup can match make the left-out count a ceiling).
 
 ### v0.7 — Content imports and global capture
 

@@ -386,13 +386,67 @@ dkim\tDKIM\tsystem\t\n",
         );
         assert_eq!(lines[1], "known: go:embed (library) - The crate.");
         assert_eq!(lines[2], "known: DKIM (system)");
-        // Exact names only: a shorter or longer name is new.
+        // Exact names only: a shorter or longer name is new, followed by what
+        // is similar to it (both kinds of go:embed).
         assert_eq!(lines[3], "new: go");
-        assert_eq!(lines[4], "new: go:embed directive");
-        assert_eq!(lines[5], "new: spf");
+        assert!(lines[4].starts_with("similar: go:embed"), "{out}");
+        assert!(lines[5].starts_with("similar: go:embed"), "{out}");
+        assert_eq!(lines[6], "new: go:embed directive");
+        assert!(lines[7].starts_with("similar: go:embed"), "{out}");
+        assert!(lines[8].starts_with("similar: go:embed"), "{out}");
+        assert_eq!(lines[9], "new: spf");
+        assert_eq!(lines.len(), 10, "{out}");
         // No list: every name is new, and it says why.
         std::fs::remove_file(&list).unwrap();
         assert!(run_known(&script, &list, None, &["dkim"]).contains("treat every concept as new"));
+    }
+
+    /// A name with no exact match is `new:` and then lists known concepts
+    /// with the same words, closest first, at most three: a plural, a missing
+    /// small word, or a longer name that contains this one.
+    #[test]
+    fn known_lists_similar_names_after_a_new_one() {
+        require_node();
+        let dir = tempfile::tempdir().unwrap();
+        let list = dir.path().join("known-concepts.tsv");
+        let mut tsv = String::from(
+            "closures\tClosures\ttechnique\tAnonymous functions.\n\
+result the operator\tResult and the ? operator\tlanguage\t\n\
+borrow checker\tBorrow checker\tlanguage\t\n",
+        );
+        for i in 0..5 {
+            tsv.push_str(&format!("arc {i}\tArc {i}\tlibrary\t\n"));
+        }
+        std::fs::write(&list, &tsv).unwrap();
+        let script = dir.path().join("known.mjs");
+        std::fs::write(&script, include_str!("image/known.mjs")).unwrap();
+        let out = run_known(
+            &script,
+            &list,
+            Some("Closure\nResult and ?\nArc\nborrowing\nBorrow checker\n"),
+            &[],
+        );
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines[0], "new: Closure");
+        assert_eq!(
+            lines[1],
+            "similar: Closures (technique) - Anonymous functions."
+        );
+        assert_eq!(lines[2], "new: Result and ?");
+        assert_eq!(lines[3], "similar: Result and the ? operator (language)");
+        // Five names contain "Arc", and three are shown.
+        assert_eq!(lines[4], "new: Arc");
+        assert_eq!(
+            lines[5..8]
+                .iter()
+                .filter(|l| l.starts_with("similar: Arc "))
+                .count(),
+            3
+        );
+        // Different words are not similar, and an exact name has no similar lines.
+        assert_eq!(lines[8], "new: borrowing");
+        assert_eq!(lines[9], "known: Borrow checker (language)");
+        assert_eq!(lines.len(), 10, "{out}");
     }
 
     /// The script's fold is the ledger's fold, including names a shell would
