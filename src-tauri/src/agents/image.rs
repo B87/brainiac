@@ -22,6 +22,7 @@ const FILES: &[(&str, &str)] = &[
     ("Dockerfile", include_str!("image/Dockerfile")),
     ("entrypoint.mjs", include_str!("image/entrypoint.mjs")),
     ("collector.mjs", include_str!("image/collector.mjs")),
+    ("known.mjs", include_str!("image/known.mjs")),
     ("package.json", include_str!("image/package.json")),
     ("package-lock.json", include_str!("image/package-lock.json")),
     (
@@ -302,6 +303,184 @@ mod tests {
                 text
             );
         }
+    }
+
+    /// `known` is plain Node. The test fails when Node is not installed:
+    /// a silent skip would hide a script that no longer matches the ledger.
+    fn require_node() {
+        let version = std::process::Command::new("node")
+            .arg("--version")
+            .output()
+            .unwrap_or_else(|error| panic!("node is required to test the known script: {error}"));
+        assert!(
+            version.status.success(),
+            "node --version failed: {version:?}"
+        );
+    }
+
+    fn run_known(
+        script: &std::path::Path,
+        list: &std::path::Path,
+        stdin: Option<&str>,
+        args: &[&str],
+    ) -> String {
+        let mut command = std::process::Command::new("node");
+        command
+            .arg(script)
+            .args(args)
+            .env("BRAINIAC_KNOWN_FILE", list)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        if stdin.is_some() {
+            command.stdin(std::process::Stdio::piped());
+        }
+        let mut child = command.spawn().unwrap();
+        if let Some(text) = stdin {
+            use std::io::Write;
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(text.as_bytes())
+                .unwrap();
+        }
+        let out = child.wait_with_output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap()
+    }
+
+    #[test]
+    fn known_says_which_names_are_exact_matches_of_the_list() {
+        require_node();
+        let dir = tempfile::tempdir().unwrap();
+        let list = dir.path().join("known-concepts.tsv");
+        std::fs::write(
+            &list,
+            "go embed\tgo:embed\tlanguage\tPuts a file into the binary.\n\
+go embed\tgo:embed\tlibrary\tThe crate.\n\
+dkim\tDKIM\tsystem\t\n",
+        )
+        .unwrap();
+        let script = dir.path().join("known.mjs");
+        std::fs::write(&script, include_str!("image/known.mjs")).unwrap();
+        let out = run_known(
+            &script,
+            &list,
+            None,
+            &[
+                "GO:EMBED (language)",
+                "dkim",
+                "go",
+                "go:embed directive",
+                "spf",
+            ],
+        );
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(
+            lines[0],
+            "known: go:embed (language) - Puts a file into the binary."
+        );
+        assert_eq!(lines[1], "known: go:embed (library) - The crate.");
+        assert_eq!(lines[2], "known: DKIM (system)");
+        // Exact names only: a shorter or longer name is new, followed by what
+        // is similar to it (both kinds of go:embed).
+        assert_eq!(lines[3], "new: go");
+        assert!(lines[4].starts_with("similar: go:embed"), "{out}");
+        assert!(lines[5].starts_with("similar: go:embed"), "{out}");
+        assert_eq!(lines[6], "new: go:embed directive");
+        assert!(lines[7].starts_with("similar: go:embed"), "{out}");
+        assert!(lines[8].starts_with("similar: go:embed"), "{out}");
+        assert_eq!(lines[9], "new: spf");
+        assert_eq!(lines.len(), 10, "{out}");
+        // No list: every name is new, and it says why.
+        std::fs::remove_file(&list).unwrap();
+        assert!(run_known(&script, &list, None, &["dkim"]).contains("treat every concept as new"));
+    }
+
+    /// A name with no exact match is `new:` and then lists known concepts
+    /// with the same words, closest first, at most three: a plural, a missing
+    /// small word, or a longer name that contains this one.
+    #[test]
+    fn known_lists_similar_names_after_a_new_one() {
+        require_node();
+        let dir = tempfile::tempdir().unwrap();
+        let list = dir.path().join("known-concepts.tsv");
+        let mut tsv = String::from(
+            "closures\tClosures\ttechnique\tAnonymous functions.\n\
+result the operator\tResult and the ? operator\tlanguage\t\n\
+borrow checker\tBorrow checker\tlanguage\t\n",
+        );
+        for i in 0..5 {
+            tsv.push_str(&format!("arc {i}\tArc {i}\tlibrary\t\n"));
+        }
+        std::fs::write(&list, &tsv).unwrap();
+        let script = dir.path().join("known.mjs");
+        std::fs::write(&script, include_str!("image/known.mjs")).unwrap();
+        let out = run_known(
+            &script,
+            &list,
+            Some("Closure\nResult and ?\nArc\nborrowing\nBorrow checker\n"),
+            &[],
+        );
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines[0], "new: Closure");
+        assert_eq!(
+            lines[1],
+            "similar: Closures (technique) - Anonymous functions."
+        );
+        assert_eq!(lines[2], "new: Result and ?");
+        assert_eq!(lines[3], "similar: Result and the ? operator (language)");
+        // Five names contain "Arc", and three are shown.
+        assert_eq!(lines[4], "new: Arc");
+        assert_eq!(
+            lines[5..8]
+                .iter()
+                .filter(|l| l.starts_with("similar: Arc "))
+                .count(),
+            3
+        );
+        // Different words are not similar, and an exact name has no similar lines.
+        assert_eq!(lines[8], "new: borrowing");
+        assert_eq!(lines[9], "known: Borrow checker (language)");
+        assert_eq!(lines.len(), 10, "{out}");
+    }
+
+    /// The script's fold is the ledger's fold, including names a shell would
+    /// split, and names come one per line on stdin.
+    #[test]
+    fn known_folds_names_as_the_ledger_does_and_reads_stdin() {
+        require_node();
+        let dir = tempfile::tempdir().unwrap();
+        let names = ["İstanbul", "AΣ", "Arc<Mutex<_>>", "go:embed", "Limit rule"];
+        let mut tsv = String::new();
+        for name in names {
+            let key = crate::explain::store::concept_key(name);
+            tsv.push_str(&format!("{key}\t{name}\tlanguage\t\n"));
+        }
+        let list = dir.path().join("known-concepts.tsv");
+        std::fs::write(&list, &tsv).unwrap();
+        let script = dir.path().join("known.mjs");
+        std::fs::write(&script, include_str!("image/known.mjs")).unwrap();
+        let out = run_known(
+            &script,
+            &list,
+            Some(&format!("{}\n", names.join("\n"))),
+            &[],
+        );
+        for name in names {
+            assert!(out.contains(&format!("known: {name} (language)")), "{out}");
+        }
+        let usage = std::process::Command::new("node")
+            .arg(&script)
+            .env("BRAINIAC_KNOWN_FILE", &list)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        assert_eq!(usage.status.code(), Some(2));
     }
 
     #[test]

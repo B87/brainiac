@@ -4,6 +4,7 @@ import type { Disagreement } from "./Disagreement";
 import type { ExplanationChecks } from "./ExplanationChecks";
 import type { ExplanationNote } from "./ExplanationNote";
 import type { ExplanationQuestion } from "./ExplanationQuestion";
+import type { LeftOutConcept } from "./LeftOutConcept";
 import type { TourStop } from "./TourStop";
 
 /**
@@ -27,4 +28,10 @@ questions: Array<ExplanationQuestion>, disagreements: Array<Disagreement>,
  * What the checks changed on the way (SPEC.md, The explanation, What
  * the checks did).
  */
-checks: ExplanationChecks, };
+checks: ExplanationChecks, 
+/**
+ * Concepts the reader knows that the agent left out, each confirmed
+ * against the ledger by its exact name (SPEC.md, The explanation).
+ * `default` reads explanations stored before this key existed.
+ */
+known_left_out: Array<LeftOutConcept>, };

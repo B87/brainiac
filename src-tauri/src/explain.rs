@@ -8,6 +8,8 @@
 //! - **`check`** is the checker, a pure function of the agent's file and the
 //!   subject: the schema, notes on changed lines, quotes found verbatim (and
 //!   moved to where they are when the agent cited the wrong lines).
+//! - **`known`** writes the reader's known concepts as the file an explain
+//!   run reads with the `known` script.
 //! - **`prompt`** writes Brainiac's prompt and the follow-up turn's.
 //! - **`store`** keeps explanations in `history.db`, and the answers, known
 //!   concepts, and Settings → Explanations in `brainiac.db`.
@@ -15,6 +17,7 @@
 //!   start to checked file, and everything the panel and Settings change.
 
 pub mod check;
+pub mod known;
 pub mod markdown;
 pub mod prompt;
 pub mod service;

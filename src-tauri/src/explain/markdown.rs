@@ -63,7 +63,9 @@ pub fn render(title: &str, e: &Explanation) -> String {
             let kind = match c.kind {
                 ConceptKind::Language => "language",
                 ConceptKind::Library => "library",
-                ConceptKind::System => "system",
+                ConceptKind::Protocol => "protocol",
+                ConceptKind::Tool => "tool",
+                ConceptKind::Technique => "technique",
                 ConceptKind::ProjectPattern => "project pattern",
             };
             md.push_str(&format!(
@@ -143,6 +145,7 @@ mod tests {
             }],
             disagreements: vec![],
             checks: ExplanationChecks::default(),
+            known_left_out: vec![],
         };
         let md = render("abc — Title", &e);
         assert!(md.starts_with("# abc — Title\n\nWhy.\n"));

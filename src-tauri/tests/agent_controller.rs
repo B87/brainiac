@@ -128,6 +128,7 @@ impl Harness {
             agent: AgentKind::ClaudeCode,
             provider: AgentProvider::Anthropic,
             model: "opus".into(),
+            known_concepts: None,
         }
     }
 
@@ -664,6 +665,7 @@ async fn a_run_on_a_real_engine() {
         agent: AgentKind::ClaudeCode,
         provider: AgentProvider::Anthropic,
         model: String::new(),
+        known_concepts: None,
     };
     runtime.start(start).await.unwrap();
 
@@ -967,6 +969,7 @@ async fn an_opencode_run_on_a_real_engine() {
         agent: AgentKind::Opencode,
         provider: AgentProvider::Openrouter,
         model: "anthropic/claude-sonnet-4.5".into(),
+        known_concepts: None,
     };
     runtime.start(start).await.unwrap();
 

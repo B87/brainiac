@@ -1,7 +1,15 @@
 import { ask } from "@tauri-apps/plugin-dialog";
 import { type ReactNode, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { depthLabel, formatCost } from "../lib/explain";
+import {
+  CONCEPT_KINDS,
+  type ConceptSort,
+  depthLabel,
+  forgetGroupQuestion,
+  formatCost,
+  groupConceptsByRepository,
+  sortConcepts,
+} from "../lib/explain";
 import {
   type ConceptKind,
   type ExplainCost,
@@ -11,6 +19,7 @@ import {
 } from "../lib/ipc";
 import { plural } from "../lib/repo";
 import { requestOpenSubject } from "../lib/windowEvents";
+import ConceptEditDialog from "./ConceptEditDialog";
 import { ChevronDown, ChevronRight } from "./icons";
 import Popover from "./Popover";
 import { Hint } from "./SettingsPanes";
@@ -35,19 +44,22 @@ const TOOLBAR =
 const KIND_WORD: Record<ConceptKind, string> = {
   language: "Language",
   library: "Library",
-  system: "System tool",
+  protocol: "Protocol or standard",
+  tool: "Tool or service",
+  technique: "Technique",
   project_pattern: "Project pattern",
 };
-const KINDS: ConceptKind[] = [
-  "language",
-  "library",
-  "system",
-  "project_pattern",
-];
+const SORT_WORD: Record<ConceptSort, string> = {
+  newest: "newest first",
+  name: "by name",
+  kind: "by kind",
+};
 const KIND_CHIP: Record<ConceptKind, string> = {
   language: "Language",
   library: "Library",
-  system: "System",
+  protocol: "Protocol",
+  tool: "Tool",
+  technique: "Technique",
   project_pattern: "Project patterns",
 };
 
@@ -127,17 +139,23 @@ export function ConceptList({
 }) {
   const [filter, setFilter] = useState("");
   const [kind, setKind] = useState<ConceptKind | "all">("all");
+  const [grouping, setGrouping] = useState<"all" | "repository">("all");
+  const [sort, setSort] = useState<ConceptSort>("newest");
+  // The group labels shown open; null until one is toggled (the first is open).
+  const [open, setOpen] = useState<Set<string> | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [keepOpen, setKeepOpen] = useState(false);
+  // The concept whose Edit Concept dialog is open.
+  const [editing, setEditing] = useState<string | null>(null);
 
   // A merged concept is shown inside the one it was merged into.
   const roots = concepts.filter((c) => !c.merged_into);
-  const mergedInto = new Map<string, string[]>();
+  const mergedInto = new Map<string, { name: string; kind: ConceptKind }[]>();
   for (const c of concepts)
     if (c.merged_into)
       mergedInto.set(c.merged_into, [
         ...(mergedInto.get(c.merged_into) ?? []),
-        c.name,
+        { name: c.name, kind: c.kind },
       ]);
   const needle = filter.trim().toLowerCase();
   const shown = roots.filter(
@@ -146,11 +164,32 @@ export function ConceptList({
       (!needle ||
         c.name.toLowerCase().includes(needle) ||
         c.description.toLowerCase().includes(needle) ||
-        (mergedInto.get(c.id) ?? []).some((n) =>
-          n.toLowerCase().includes(needle),
+        (c.repository_name ?? c.learned_in_name ?? "")
+          .toLowerCase()
+          .includes(needle) ||
+        (mergedInto.get(c.id) ?? []).some((a) =>
+          a.name.toLowerCase().includes(needle),
         )),
   );
+  const groups =
+    grouping === "repository" ? groupConceptsByRepository(shown, sort) : [];
+  // The first group starts open; a filter opens every group it matches.
+  const isOpen = (label: string) =>
+    !!needle || (open ? open.has(label) : label === groups[0]?.label);
+  const forgetGroup = async (label: string, items: KnownConcept[]) => {
+    const sure = await ask(forgetGroupQuestion(label, items), {
+      title: "Forget Concepts",
+      kind: "warning",
+      okLabel: "Forget",
+    });
+    if (!sure) return;
+    setSelected(new Set());
+    await act(async () => {
+      for (const c of items) await ipc.forgetConcept(c.id);
+    });
+  };
   const chosen = roots.filter((c) => selected.has(c.id));
+  const editingConcept = roots.find((c) => c.id === editing) ?? null;
   // One idea named two ways: same kind, and a project pattern in one repository.
   const mergeable =
     chosen.length > 1 &&
@@ -159,6 +198,66 @@ export function ConceptList({
         c.kind === chosen[0].kind &&
         c.repository_id === chosen[0].repository_id,
     );
+
+  const row = (c: KnownConcept) => {
+    const also = mergedInto.get(c.id) ?? [];
+    const from = [
+      c.learned_from && `from ${c.learned_from}`,
+      c.learned_in_name,
+      shortDate(c.learned_at),
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    return (
+      <li
+        key={c.id}
+        className="settings-row items-start"
+        aria-current={selected.has(c.id) || undefined}
+      >
+        <input
+          type="checkbox"
+          className="mt-1"
+          aria-label={`Select ${c.name}`}
+          checked={selected.has(c.id)}
+          onChange={() => setSelected(toggled(selected, c.id))}
+        />
+        <span className="flex min-w-55 flex-1 flex-col gap-0.5">
+          <span>
+            <span className="font-semibold">{c.name}</span>
+            <span className="ml-2 text-[11.5px] text-muted">
+              {KIND_WORD[c.kind]}
+              {c.repository_id &&
+                ` · only in ${c.repository_name ?? "a removed repository"}`}
+            </span>
+          </span>
+          {c.description && (
+            <span className="text-[12.5px] text-fg-3">{c.description}</span>
+          )}
+          {also.length > 0 && (
+            <Hint>
+              Also called{" "}
+              {also
+                .map((a) =>
+                  a.kind === c.kind
+                    ? a.name
+                    : `${a.name} (${KIND_WORD[a.kind].toLowerCase()})`,
+                )
+                .join(", ")}
+            </Hint>
+          )}
+        </span>
+        <span className="shrink-0 text-[12px] text-muted">{from}</span>
+        <button
+          type="button"
+          className="shrink-0 text-[12px] text-link hover:underline"
+          aria-label={`Edit ${c.name}`}
+          onClick={() => setEditing(c.id)}
+        >
+          Edit…
+        </button>
+      </li>
+    );
+  };
 
   const title = (
     <Title slot={titleSlot}>
@@ -194,7 +293,7 @@ export function ConceptList({
         />
         <fieldset className="m-0 flex flex-wrap gap-1 border-0 p-0">
           <legend className="sr-only">Kind</legend>
-          {(["all", ...KINDS] as const).map((k) => {
+          {(["all", ...CONCEPT_KINDS] as const).map((k) => {
             const count =
               k === "all"
                 ? roots.length
@@ -214,64 +313,126 @@ export function ConceptList({
             );
           })}
         </fieldset>
+        <div role="tablist" aria-label="Group by" className="seg seg-sm">
+          {(["all", "repository"] as const).map((g) => (
+            <button
+              key={g}
+              type="button"
+              role="tab"
+              aria-selected={grouping === g}
+              onClick={() => {
+                setGrouping(g);
+                setOpen(null);
+              }}
+            >
+              {g === "all" ? "All" : "Repository"}
+            </button>
+          ))}
+        </div>
+        <label className="flex items-center gap-1.5 text-[12.5px] text-fg-2">
+          Sort
+          <select
+            className="field"
+            value={sort}
+            onChange={(e) => setSort(e.target.value as ConceptSort)}
+          >
+            <option value="newest">Newest</option>
+            <option value="name">Name</option>
+            <option value="kind">Kind</option>
+          </select>
+        </label>
       </div>
       {needle && (
         <Hint>
-          {plural(shown.length, "concept")} match “{filter.trim()}” · newest
-          first
+          {plural(shown.length, "concept")} match “{filter.trim()}” ·{" "}
+          {SORT_WORD[sort]}
         </Hint>
       )}
-      <ul className="settings-group m-0 list-none p-0">
-        {shown.map((c) => {
-          const also = mergedInto.get(c.id) ?? [];
-          const from = [
-            c.learned_from && `from ${c.learned_from}`,
-            c.learned_in_name,
-            shortDate(c.learned_at),
-          ]
-            .filter(Boolean)
-            .join(" · ");
-          return (
-            <li
-              key={c.id}
-              className="settings-row items-start"
-              aria-current={selected.has(c.id) || undefined}
-            >
-              <input
-                type="checkbox"
-                className="mt-1"
-                aria-label={`Select ${c.name}`}
-                checked={selected.has(c.id)}
-                onChange={() => setSelected(toggled(selected, c.id))}
-              />
-              <span className="flex min-w-55 flex-1 flex-col gap-0.5">
-                <span>
-                  <span className="font-semibold">{c.name}</span>
-                  <span className="ml-2 text-[11.5px] text-muted">
-                    {KIND_WORD[c.kind]}
-                    {c.repository_id &&
-                      ` · only in ${c.repository_name ?? "a removed repository"}`}
+      {grouping === "repository" ? (
+        <div className="flex flex-col">
+          {groups.map(({ label, concepts: items }) => {
+            const expanded = isOpen(label);
+            const everySelected = items.every((c) => selected.has(c.id));
+            return (
+              <section key={label} className="flex flex-col">
+                <div className="flex flex-wrap items-center gap-2.5 border-b py-2">
+                  <input
+                    type="checkbox"
+                    aria-label={`Select all of ${label}`}
+                    checked={everySelected}
+                    onChange={() => {
+                      const next = new Set(selected);
+                      for (const c of items)
+                        if (everySelected) next.delete(c.id);
+                        else next.add(c.id);
+                      setSelected(next);
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="flex items-center gap-1 font-semibold"
+                    aria-expanded={expanded}
+                    onClick={() => {
+                      const base =
+                        open ?? new Set(groups.slice(0, 1).map((g) => g.label));
+                      setOpen(toggled(base, label));
+                    }}
+                  >
+                    {expanded ? (
+                      <ChevronDown size={10} />
+                    ) : (
+                      <ChevronRight size={10} />
+                    )}
+                    {label}
+                  </button>
+                  <span className="flex-1 text-[12px] text-muted">
+                    {items.length}
                   </span>
-                </span>
-                {c.description && (
-                  <span className="text-[12.5px] text-fg-3">
-                    {c.description}
-                  </span>
+                  <button
+                    type="button"
+                    className="text-[12px] text-conflict hover:underline"
+                    onClick={() => void forgetGroup(label, items)}
+                  >
+                    Forget these {items.length}…
+                  </button>
+                </div>
+                {expanded && (
+                  <ul className="settings-group m-0 list-none p-0">
+                    {items.map(row)}
+                  </ul>
                 )}
-                {also.length > 0 && <Hint>Also called {also.join(", ")}</Hint>}
-              </span>
-              <span className="shrink-0 text-[12px] text-muted">{from}</span>
-            </li>
-          );
-        })}
-        {shown.length === 0 && (
-          <li className="settings-row text-muted">No concept matches.</li>
-        )}
-      </ul>
+              </section>
+            );
+          })}
+          {groups.length === 0 && (
+            <span className="py-2 text-muted">No concept matches.</span>
+          )}
+        </div>
+      ) : (
+        <ul className="settings-group m-0 list-none p-0">
+          {sortConcepts(shown, sort).map(row)}
+          {shown.length === 0 && (
+            <li className="settings-row text-muted">No concept matches.</li>
+          )}
+        </ul>
+      )}
       <Hint>
         A project pattern belongs to its repository: one repository's patterns
         never reach another's explanations.
       </Hint>
+      {editingConcept && (
+        <ConceptEditDialog
+          concept={editingConcept}
+          concepts={concepts}
+          onClose={() => setEditing(null)}
+          onSave={(name, kind) =>
+            act(async () => {
+              await ipc.editConcept(editingConcept.id, name, kind);
+              setEditing(null);
+            })
+          }
+        />
+      )}
       {selected.size > 0 && (
         <SelectionBar>
           <span>{selected.size} selected</span>

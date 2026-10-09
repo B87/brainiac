@@ -4173,6 +4173,21 @@ pub struct Explanation {
     /// What the checks changed on the way (SPEC.md, The explanation, What
     /// the checks did).
     pub checks: ExplanationChecks,
+    /// Concepts the reader knows that the agent left out, each confirmed
+    /// against the ledger by its exact name (SPEC.md, The explanation).
+    /// `default` reads explanations stored before this key existed.
+    #[serde(default)]
+    pub known_left_out: Vec<LeftOutConcept>,
+}
+
+/// A known concept an explanation left out because the reader knows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct LeftOutConcept {
+    /// The ledger's concept (the one a merge points at), which Undo forgets.
+    pub id: String,
+    pub name: String,
+    pub kind: ConceptKind,
 }
 
 /// What the checks moved or left out of the agent's file.
@@ -4231,7 +4246,14 @@ pub struct CitedQuote {
 pub enum ConceptKind {
     Language,
     Library,
-    System,
+    /// A protocol, format, or standard: HTTP, DKIM, SPF.
+    Protocol,
+    /// A program or service the code runs or talks to: git, Docker, PostgreSQL.
+    Tool,
+    /// A way of solving a problem that means the same in any codebase:
+    /// idempotency, retry with backoff, optimistic locking. The table or helper
+    /// one repository uses to apply it is a project pattern.
+    Technique,
     ProjectPattern,
 }
 

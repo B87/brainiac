@@ -35,7 +35,8 @@ use self::journal::{journal_path, Append, Redactor, TraceJournal};
 use self::protocol::{
     decode_hex, valid_id, Activity, CollectManifest, Credential, Delivery, EventBody, EventPage,
     Outcome, PendingPermission, Phase, Request, Response, RunStatus, StartRun, StopReason,
-    MAX_LINE_BYTES, MAX_PROMPT_BYTES, MAX_TRANSFER, PROTOCOL, TRANSFER_CHUNK,
+    MAX_KNOWN_CONCEPTS_BYTES, MAX_LINE_BYTES, MAX_PROMPT_BYTES, MAX_TRANSFER, PROTOCOL,
+    TRANSFER_CHUNK,
 };
 use self::state::{Ledger, RunRecord, StateDir};
 use crate::models::{AppError, AppResult, ErrorCode};
@@ -769,6 +770,7 @@ impl<W: Workloads> Controller<W> {
             workspace_gib: start.workspace_gib,
             env: docker::launch_env(start.agent, start.provider, &start.model, start.permissions),
             bundle: start.bundle.clone(),
+            known_concepts: start.known_concepts.clone(),
             cancel: cancelled,
         };
         let launched = match self
@@ -1566,6 +1568,15 @@ fn check_start(start: &StartRun) -> AppResult<()> {
     }
     if !start.bundle.is_file() {
         return Err(AppError::not_found("The run's start was not exported."));
+    }
+    if start
+        .known_concepts
+        .as_ref()
+        .is_some_and(|k| k.len() > MAX_KNOWN_CONCEPTS_BYTES)
+    {
+        return Err(AppError::validation(
+            "The list of known concepts is too long.",
+        ));
     }
     let value = &start.credential.value;
     if !(16..=4096).contains(&value.len()) || !value.chars().all(|c| c.is_ascii_graphic()) {

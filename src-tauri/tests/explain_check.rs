@@ -175,7 +175,7 @@ async fn an_explanation_is_checked_against_a_real_commit() {
     let subject = read_subject(&git, &repo, &home, &first, &second, TIMEOUT)
         .await
         .unwrap();
-    let checked = check::check(draft, &subject, &files, check::Attempt::First).unwrap();
+    let checked = check::check(draft, &subject, &files, &[], check::Attempt::First).unwrap();
     let notes = &checked.explanation.notes;
     assert_eq!(notes.len(), 2);
     assert_eq!(
@@ -190,7 +190,7 @@ async fn an_explanation_is_checked_against_a_real_commit() {
     off["notes"][0]["new_start"] = json!(2);
     off["notes"][0]["new_end"] = json!(3);
     let draft = check::parse(&off.to_string()).unwrap();
-    let failed = check::check(draft, &subject, &files, check::Attempt::First).unwrap_err();
+    let failed = check::check(draft, &subject, &files, &[], check::Attempt::First).unwrap_err();
     assert_eq!(
         failed.errors,
         ["notes[0] (src/lib.rs 2–3): no line there is changed on the new side. Changed lines in this file: 5, removed after 9, 16."]

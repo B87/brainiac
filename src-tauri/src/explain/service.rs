@@ -19,6 +19,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::broadcast;
 
 use super::check::{self, Attempt};
+use super::known;
 use super::prompt::{self, PromptSubject, Reader};
 use super::store::{self, Ending, ExplanationRow};
 use super::subject::EMPTY_TREE;
@@ -815,9 +816,11 @@ impl ExplanationService {
         let minutes = Self::minutes_for(&settings, request.depth);
         let known = {
             let repository = request.repository_id.clone();
-            self.core
-                .call(move |conn| store::known_for(conn, &repository))
-                .await?
+            let refs = self
+                .core
+                .call(move |conn| store::known_refs(conn, &repository))
+                .await?;
+            known::file(&refs)
         };
         let text = prompt::prompt(
             &PromptSubject {
@@ -828,7 +831,7 @@ impl ExplanationService {
             },
             &Reader {
                 levels: &settings.levels,
-                known: &known,
+                known_count: known.as_ref().map_or(0, |k| k.count),
             },
             request.depth,
             request.questions,
@@ -884,6 +887,7 @@ impl ExplanationService {
                 title: format!("Explain {}", resolved.title),
                 model,
                 time_limit_minutes: minutes,
+                known_concepts: known.map(|k| k.text),
             })
             .await;
         let run_id = match started {
@@ -1128,7 +1132,15 @@ impl ExplanationService {
                     // not cut a cited one among a large change's others.
                     let paths = draft.cited_paths();
                     let files = self.artifacts.read_files(&repo, &row.tip, &paths).await?;
-                    check::check(draft, &subject, &files, attempt)
+                    // The ledger as it is now: a concept forgotten while the
+                    // agent worked is not counted as left out.
+                    let known = {
+                        let repository = row.repository_id.clone();
+                        self.core
+                            .call(move |conn| store::known_refs(conn, &repository))
+                            .await?
+                    };
+                    check::check(draft, &subject, &files, &known, attempt)
                 }
             },
         };
@@ -1309,6 +1321,17 @@ impl ExplanationService {
         let id = id.to_string();
         self.core
             .call(move |conn| store::remove_concept(conn, &id))
+            .await?;
+        self.emit("", "", false);
+        Ok(())
+    }
+
+    /// **Edit** a concept's name and kind; its old name stays as a name that
+    /// stands for it.
+    pub async fn edit_concept(&self, id: &str, name: &str, kind: ConceptKind) -> AppResult<()> {
+        let (id, name) = (id.to_string(), name.to_string());
+        self.core
+            .call(move |conn| store::edit_concept(conn, &id, &name, kind))
             .await?;
         self.emit("", "", false);
         Ok(())

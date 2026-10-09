@@ -24,10 +24,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+use super::store::{concept_key, KnownRef};
 use super::subject::{Files, Subject};
 use crate::models::{
     CitedQuote, Concept, ConceptKind, ConceptPlace, Disagreement, Explanation, ExplanationChecks,
-    ExplanationNote, ExplanationQuestion, TourStop,
+    ExplanationNote, ExplanationQuestion, LeftOutConcept, TourStop,
 };
 
 /// A follow-up prompt lists at most this many errors.
@@ -35,6 +36,7 @@ pub const MAX_ERRORS: usize = 20;
 const MAX_NOTES: usize = 200;
 const MAX_SOURCES: usize = 10;
 const MAX_CONCEPTS: usize = 60;
+const MAX_KNOWN_USED: usize = 200;
 const MAX_PLACES: usize = 20;
 const MAX_QUESTIONS: usize = 5;
 const MAX_DISAGREEMENTS: usize = 20;
@@ -60,6 +62,9 @@ struct RawExplanation {
     questions: Vec<ExplanationQuestion>,
     #[serde(default)]
     disagreements: Vec<RawDisagreement>,
+    /// Known concepts the change relies on that the agent left out, by name.
+    #[serde(default)]
+    known_used: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -156,7 +161,7 @@ pub fn parse(text: &str) -> Result<Draft, Failed> {
     for (i, concept) in raw.concepts.iter().enumerate() {
         if concept_kind(&concept.kind).is_none() {
             errors.push(format!(
-                "concepts[{i}]: \"kind\" must be language, library, system, or project_pattern (got {:?}).",
+                "concepts[{i}]: \"kind\" must be language, library, protocol, tool, technique, or project_pattern (got {:?}).",
                 concept.kind
             ));
         }
@@ -195,6 +200,7 @@ pub fn check(
     draft: Draft,
     subject: &Subject,
     files: &Files,
+    known: &[KnownRef],
     attempt: Attempt,
 ) -> Result<Checked, Failed> {
     let raw = draft.0;
@@ -396,6 +402,16 @@ pub fn check(
         .collect();
     let mut sources_read = raw.sources_read;
     sources_read.truncate(MAX_SOURCES_READ);
+    // A concept the agent kept (a new use) is not also "left out", even when
+    // `known_used` names it too. The match is the folded name and the kind.
+    let kept: Vec<(String, ConceptKind)> = concepts
+        .iter()
+        .filter_map(|c| {
+            let key = concept_key(&c.name);
+            (!key.is_empty()).then_some((key, c.kind))
+        })
+        .collect();
+    let known_left_out = confirm_known(&raw.known_used, known, &kept);
 
     Ok(Checked {
         explanation: Explanation {
@@ -410,8 +426,70 @@ pub fn check(
                 moved,
                 left_out: dropped,
             },
+            known_left_out,
         },
     })
+}
+
+/// The known concepts the agent says it left out, each confirmed against the
+/// ledger by its exact name (folded as the ledger folds it). A name the
+/// ledger does not hold is not counted, so the line can never claim more than
+/// the reader's own ledger says. One concept is listed once however it was
+/// spelled or merged. Two kinds of one name are both counted. A concept the
+/// agent kept in `concepts` (the same folded name and kind) is not counted:
+/// that is a known concept used in a new way.
+fn confirm_known(
+    named: &[String],
+    known: &[KnownRef],
+    kept: &[(String, ConceptKind)],
+) -> Vec<LeftOutConcept> {
+    let mut out: Vec<LeftOutConcept> = Vec::new();
+    for name in named.iter().take(MAX_KNOWN_USED) {
+        let key = concept_key(strip_kind(name));
+        if key.is_empty() {
+            continue;
+        }
+        for found in known.iter().filter(|k| k.key == key) {
+            if kept
+                .iter()
+                .any(|(k, kind)| k == &found.key && *kind == found.kind)
+            {
+                continue;
+            }
+            if out.iter().all(|o| o.id != found.id) {
+                out.push(LeftOutConcept {
+                    id: found.id.clone(),
+                    name: found.name.clone(),
+                    kind: found.kind,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// The prompt asks for the name alone. An agent that copies `name (kind)`
+/// gets that kind word dropped, and nothing else.
+fn strip_kind(name: &str) -> &str {
+    let name = name.trim();
+    if let Some(open) = name.rfind('(') {
+        let inner = name[open + 1..].trim_end_matches(')').trim().to_lowercase();
+        if name.ends_with(')')
+            && matches!(
+                inner.as_str(),
+                "language"
+                    | "library"
+                    | "protocol"
+                    | "tool"
+                    | "technique"
+                    | "system"
+                    | "project pattern"
+            )
+        {
+            return name[..open].trim_end();
+        }
+    }
+    name
 }
 
 /// A concept's kind, with `-` read as `_` (the spike's prompt asked for
@@ -420,7 +498,11 @@ fn concept_kind(kind: &str) -> Option<ConceptKind> {
     match kind.trim().replace('-', "_").as_str() {
         "language" => Some(ConceptKind::Language),
         "library" => Some(ConceptKind::Library),
-        "system" => Some(ConceptKind::System),
+        "protocol" => Some(ConceptKind::Protocol),
+        "tool" => Some(ConceptKind::Tool),
+        "technique" => Some(ConceptKind::Technique),
+        // The kind 0.6.1 replaced: still read, as a tool.
+        "system" => Some(ConceptKind::Tool),
         "project_pattern" => Some(ConceptKind::ProjectPattern),
         _ => None,
     }
@@ -569,12 +651,12 @@ mod tests {
 
     fn run(value: Value) -> Result<Checked, Failed> {
         let draft = parse(&value.to_string())?;
-        check(draft, &subject(), &files(), Attempt::First)
+        check(draft, &subject(), &files(), &[], Attempt::First)
     }
 
     fn run_last(value: Value) -> Result<Checked, Failed> {
         let draft = parse(&value.to_string())?;
-        check(draft, &subject(), &files(), Attempt::Last)
+        check(draft, &subject(), &files(), &[], Attempt::Last)
     }
 
     #[test]
@@ -842,5 +924,107 @@ mod tests {
         assert_eq!(text.locate("b\nc"), Some((2, 3)));
         assert_eq!(Text::new("").line_count(), 0);
         assert_eq!(Text::new("x\n").span(1, 1), Some("x"));
+    }
+    fn known(id: &str, name: &str, kind: ConceptKind) -> KnownRef {
+        KnownRef {
+            id: id.to_string(),
+            name: name.to_string(),
+            kind,
+            key: concept_key(name),
+            description: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_known_concept_the_agent_left_out_is_confirmed_against_the_ledger() {
+        let ledger = [
+            known("1", "go:embed", ConceptKind::Language),
+            known("2", "DKIM", ConceptKind::Protocol),
+        ];
+        let named = [
+            "GO:EMBED".to_string(),        // case does not matter
+            "DKIM (protocol)".to_string(), // the prompt's own form
+            "go embed".to_string(),        // the same folded name: listed once
+            "SPF".to_string(),             // not in the ledger: not counted
+            "  ".to_string(),
+        ];
+        let left = confirm_known(&named, &ledger, &[]);
+        assert_eq!(
+            left.iter().map(|l| l.id.as_str()).collect::<Vec<_>>(),
+            ["1", "2"]
+        );
+        assert_eq!(left[0].name, "go:embed");
+    }
+
+    #[test]
+    fn two_kinds_of_one_name_are_both_counted() {
+        let ledger = [
+            known("1", "Result", ConceptKind::Language),
+            known("2", "Result", ConceptKind::Library),
+        ];
+        let left = confirm_known(&["Result".to_string()], &ledger, &[]);
+        assert_eq!(
+            left.iter().map(|l| l.id.as_str()).collect::<Vec<_>>(),
+            ["1", "2"]
+        );
+    }
+
+    #[test]
+    fn a_name_that_only_looks_like_a_known_one_is_not_counted() {
+        let ledger = [known("1", "go:embed", ConceptKind::Language)];
+        // Exact name only: no prefix, substring, or related name.
+        let named = ["go".to_string(), "go:embed directive".to_string()];
+        assert!(confirm_known(&named, &ledger, &[]).is_empty());
+    }
+
+    #[test]
+    fn the_check_reports_what_the_ledger_confirms() {
+        let mut value = file();
+        value["known_used"] = json!(["let binding", "DKIM", "nothing like it"]);
+        let draft = parse(&value.to_string()).unwrap();
+        let ledger = [
+            known("7", "Let Binding", ConceptKind::Language),
+            known("8", "DKIM", ConceptKind::Protocol),
+        ];
+        let checked = check(draft, &subject(), &files(), &ledger, Attempt::First).unwrap();
+        // "let binding" is also in concepts, so it was taught, not left out.
+        assert_eq!(checked.explanation.known_left_out.len(), 1);
+        assert_eq!(checked.explanation.known_left_out[0].id, "8");
+    }
+
+    #[test]
+    fn a_kept_kind_is_not_left_out_and_the_other_kind_of_that_name_is() {
+        let ledger = [
+            known("1", "Result", ConceptKind::Language),
+            known("2", "Result", ConceptKind::Library),
+        ];
+        let kept = [(concept_key("RESULT"), ConceptKind::Language)];
+        let left = confirm_known(&["Result".to_string()], &ledger, &kept);
+        assert_eq!(
+            left.iter().map(|l| l.id.as_str()).collect::<Vec<_>>(),
+            ["2"]
+        );
+    }
+
+    #[test]
+    fn a_file_without_known_used_still_passes() {
+        let checked = run(file()).unwrap();
+        assert!(checked.explanation.known_left_out.is_empty());
+    }
+    #[test]
+    fn the_kinds_are_read_and_the_one_they_replaced_is_a_tool() {
+        assert_eq!(concept_kind("protocol"), Some(ConceptKind::Protocol));
+        assert_eq!(concept_kind("tool"), Some(ConceptKind::Tool));
+        assert_eq!(concept_kind("technique"), Some(ConceptKind::Technique));
+        assert_eq!(
+            concept_kind("project-pattern"),
+            Some(ConceptKind::ProjectPattern)
+        );
+        // A file written with the kind 0.6.1 replaced.
+        assert_eq!(concept_kind("system"), Some(ConceptKind::Tool));
+        assert_eq!(concept_kind("folklore"), None);
+        assert_eq!(strip_kind("git (tool)"), "git");
+        assert_eq!(strip_kind("idempotency (technique)"), "idempotency");
+        assert_eq!(strip_kind("git (system)"), "git");
     }
 }

@@ -1,18 +1,31 @@
 import { describe, expect, it } from "vitest";
 import {
   checksLine,
+  conceptEdit,
+  conceptKey,
+  conceptKindChoices,
   estimateText,
+  forgetGroupQuestion,
   formatCost,
   formatDuration,
+  groupConceptsByRepository,
+  knownLeftOutLine,
+  NO_REPOSITORY,
   noteSequence,
   notesIn,
   pickRecord,
   readingOrder,
   sameSubject,
+  sortConcepts,
   startsNotCovered,
   subjectLabel,
 } from "./explain";
-import type { Explanation, ExplanationNote, ExplanationRecord } from "./ipc";
+import type {
+  Explanation,
+  ExplanationNote,
+  ExplanationRecord,
+  KnownConcept,
+} from "./ipc";
 
 const note = (
   path: string,
@@ -41,6 +54,7 @@ const explanation = (over: Partial<Explanation> = {}): Explanation => ({
   questions: [],
   disagreements: [],
   checks: { moved: 2, left_out: ["x"] },
+  known_left_out: [],
   ...over,
 });
 
@@ -79,6 +93,20 @@ describe("explanations", () => {
         }),
       ),
     ).toBeNull();
+  });
+
+  it("count the known concepts left out, only when there were some", () => {
+    expect(knownLeftOutLine(explanation())).toBeNull();
+    expect(
+      knownLeftOutLine(
+        explanation({
+          known_left_out: [
+            { id: "1", name: "go:embed", kind: "language" },
+            { id: "2", name: "DKIM", kind: "protocol" },
+          ],
+        }),
+      ),
+    ).toBe("Left out because you know them: 2");
   });
 
   it("order files and notes by the tour", () => {
@@ -175,5 +203,196 @@ describe("startsNotCovered", () => {
     expect(files.some((_, i) => startsNotCovered(files, i, new Map()))).toBe(
       false,
     );
+  });
+});
+
+const concept = (over: Partial<KnownConcept>): KnownConcept => ({
+  id: over.name ?? "c",
+  kind: "language",
+  name: "c",
+  repository_id: null,
+  repository_name: null,
+  merged_into: null,
+  learned_at: "2026-10-01T00:00:00Z",
+  description: "",
+  learned_from: "",
+  learned_in: null,
+  learned_in_name: null,
+  explanation_id: null,
+  ...over,
+});
+
+describe("Concepts You Know", () => {
+  const list = [
+    concept({
+      name: "serde",
+      kind: "library",
+      learned_at: "2026-10-02T00:00:00Z",
+    }),
+    concept({
+      name: "Async",
+      kind: "language",
+      learned_at: "2026-10-03T00:00:00Z",
+    }),
+    concept({
+      name: "dkim",
+      kind: "protocol",
+      learned_at: "2026-10-01T00:00:00Z",
+    }),
+    concept({
+      name: "borrow",
+      kind: "language",
+      learned_at: "2026-10-01T00:00:00Z",
+    }),
+  ];
+  const names = (l: KnownConcept[]) => l.map((c) => c.name);
+
+  it("sort by newest, name, or kind, never changing the list given", () => {
+    const before = names(list);
+    expect(names(sortConcepts(list, "newest"))).toEqual([
+      "Async",
+      "serde",
+      "borrow",
+      "dkim",
+    ]);
+    expect(names(sortConcepts(list, "name"))).toEqual([
+      "Async",
+      "borrow",
+      "dkim",
+      "serde",
+    ]);
+    // Kinds in the page's order; equal kinds by name.
+    expect(names(sortConcepts(list, "kind"))).toEqual([
+      "Async",
+      "borrow",
+      "serde",
+      "dkim",
+    ]);
+    expect(names(list)).toEqual(before);
+  });
+
+  it("group by the repository a project pattern is in, else where it was learned", () => {
+    const grouped = groupConceptsByRepository(
+      [
+        concept({
+          name: "outbox table",
+          kind: "project_pattern",
+          repository_id: "r1",
+          repository_name: "widgets",
+          learned_in_name: "widgets",
+        }),
+        concept({ name: "go:embed", learned_in: "r2", learned_in_name: "api" }),
+        concept({ name: "spf", kind: "protocol", learned_in_name: null }),
+        concept({
+          name: "tls",
+          kind: "protocol",
+          learned_in: "r2",
+          learned_in_name: "api",
+        }),
+        concept({
+          name: "old pattern",
+          kind: "project_pattern",
+          repository_id: "gone",
+          repository_name: null,
+        }),
+      ],
+      "name",
+    );
+    expect(grouped.map((g) => [g.label, names(g.concepts)])).toEqual([
+      ["A removed repository", ["old pattern"]],
+      ["api", ["go:embed", "tls"]],
+      ["widgets", ["outbox table"]],
+      ["Not from a tracked repository", ["spf"]],
+    ]);
+  });
+
+  it("say what forgetting a repository's concepts also forgets", () => {
+    const pattern = concept({
+      name: "p",
+      kind: "project_pattern",
+      repository_id: "r",
+    });
+    const lang = concept({ name: "l" });
+    expect(forgetGroupQuestion("widgets", [pattern])).toBe(
+      "Forget 1 concept learned in widgets? Explanations will teach it again.",
+    );
+    expect(forgetGroupQuestion("widgets", [pattern, lang, lang])).toContain(
+      "2 of them are known in every repository",
+    );
+    expect(forgetGroupQuestion("widgets", [lang])).toContain(
+      "It is known in every repository",
+    );
+    // The fallback labels are not repository names.
+    expect(forgetGroupQuestion(NO_REPOSITORY, [lang])).toContain(
+      "learned outside a tracked repository?",
+    );
+    expect(forgetGroupQuestion("A removed repository", [pattern])).toContain(
+      "learned in a removed repository?",
+    );
+  });
+
+  it("offer a project pattern every kind and anything else not that one", () => {
+    expect(conceptKindChoices("project_pattern")).toHaveLength(6);
+    expect(conceptKindChoices("tool")).toEqual([
+      "language",
+      "library",
+      "protocol",
+      "tool",
+      "technique",
+    ]);
+  });
+
+  it("fold names as the ledger does", () => {
+    expect(conceptKey("  Arc<Mutex<_>> ")).toBe("arc mutex");
+    expect(conceptKey("Result / ?")).toBe("result");
+    expect(conceptKey("ts-rs")).toBe("ts rs");
+    expect(conceptKey("!!")).toBe("");
+    // A final sigma lowercases on its own, and a combining mark of a letter
+    // stays, as in the ledger.
+    expect(conceptKey("AΣ")).toBe("aσ");
+    expect(conceptKey("α\u0345 x")).toBe("α\u0345 x");
+  });
+
+  it("say what an edit would do before it is saved", () => {
+    const pattern = concept({
+      id: "p",
+      name: "outbox table",
+      kind: "project_pattern",
+      repository_id: "r1",
+      repository_name: "widgets",
+    });
+    const dkim = concept({ id: "d", name: "DKIM", kind: "tool" });
+    const spf = concept({ id: "s", name: "SPF", kind: "protocol" });
+    // An earlier name of DKIM itself, which an edit may take back.
+    const earlier = concept({
+      id: "e",
+      name: "DKIM",
+      kind: "protocol",
+      merged_into: "d",
+    });
+    const all = [pattern, dkim, spf, earlier];
+
+    expect(conceptEdit(dkim, "DKIM", "tool", all)).toMatchObject({
+      changed: false,
+      keepsOldName: false,
+    });
+    // A new spelling of the same name keeps no old name.
+    expect(conceptEdit(dkim, "dkim", "tool", all)).toMatchObject({
+      changed: true,
+      keepsOldName: false,
+      takenBy: null,
+    });
+    expect(conceptEdit(dkim, "DKIM", "protocol", all)).toMatchObject({
+      keepsOldName: true,
+      takenBy: null,
+    });
+    expect(conceptEdit(dkim, "spf!", "protocol", all).takenBy?.id).toBe("s");
+    expect(conceptEdit(pattern, "outbox", "technique", all)).toMatchObject({
+      becomesGlobal: true,
+      keepsOldName: true,
+    });
+    expect(
+      conceptEdit(pattern, "outbox", "project_pattern", all).becomesGlobal,
+    ).toBe(false);
   });
 });

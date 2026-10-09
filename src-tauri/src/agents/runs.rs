@@ -53,6 +53,8 @@ pub struct ExplainRun {
     pub title: String,
     pub model: String,
     pub time_limit_minutes: u32,
+    /// The reader's known concepts, as `explain::known::file` writes them.
+    pub known_concepts: Option<String>,
 }
 
 /// Where an explain run's start commit comes from.
@@ -566,6 +568,7 @@ impl AgentRunService {
             agent: profile.agent,
             provider: profile.provider,
             model,
+            known_concepts: None,
         };
         self.begin(row, start, host_id, request.repository_id.clone(), root)
             .await?;
@@ -698,6 +701,7 @@ impl AgentRunService {
             agent: profile.agent,
             provider: profile.provider,
             model,
+            known_concepts: request.known_concepts,
         };
         self.begin(row, start, host_id, request.repository_id, root)
             .await?;
@@ -2289,6 +2293,7 @@ impl AgentRunService {
             provider: profile.provider,
             // The profile's model, so a name the plan or key cannot use fails here.
             model: profile.model.clone(),
+            known_concepts: None,
         };
         self.rt(run_id).await?.start(start).await?;
         Ok(())

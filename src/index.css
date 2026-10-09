@@ -498,6 +498,26 @@
     user-select: text;
     min-height: 64px;
   }
+  /* Text fields, selects, and text areas in dialogs and panes. A size set
+     with a utility (h-7, text-[12px]) wins, since utilities come later. */
+  .field {
+    padding: 0 8px;
+    background: var(--field);
+    border: 1px solid var(--control-line);
+    border-radius: 6px;
+    color: var(--fg);
+    font: inherit;
+    font-size: 13px;
+    user-select: text;
+  }
+  input.field,
+  select.field {
+    height: 28px;
+  }
+  textarea.field {
+    padding: 6px 8px;
+    line-height: 1.45;
+  }
   .text-input {
     height: 28px;
     padding: 0 8px;

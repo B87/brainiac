@@ -270,9 +270,84 @@ test("Settings → Explanations has a page for each part", async ({ page }) => {
   await page.getByLabel("Filter concepts").fill("serde");
   await expect(page.getByText("Turns Rust values into JSON")).toBeVisible();
   await expect(page.getByText("async and await")).toBeHidden();
+  await page.getByLabel("Filter concepts").fill("");
+
+  // By name, the list reads in order; by repository, a group has a heading
+  // and a Forget for all of its concepts.
+  await page.getByLabel("Sort").selectOption("name");
+  const names = page.locator(".settings-row .font-semibold");
+  await expect(names).toHaveText([
+    "async and await",
+    "Retry until the lock is free",
+    "serde",
+  ]);
+  await page.getByRole("tab", { name: "Repository" }).click();
+  await expect(
+    page.getByRole("button", { name: "parser", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Forget these 3…" }),
+  ).toBeVisible();
+  await page.getByLabel("Select all of parser").check();
+  await expect(page.getByText("3 selected")).toBeVisible();
+
   await openSettings(page, "Stored Explanations");
   await expect(page.getByRole("button", { name: "Delete All…" })).toBeVisible();
   await expect(page.getByText("Fix installing over a running")).toBeVisible();
+});
+
+test("Concepts You Know edits a concept's name and kind", async ({ page }) => {
+  await openSettings(page, "Concepts You Know");
+  await page.getByRole("button", { name: "Edit serde" }).click();
+  const dialog = page.getByRole("dialog", { name: "Edit Concept" });
+  // A concept known everywhere cannot become a project pattern, and says why.
+  await expect(
+    dialog.getByRole("radio", { name: /Project pattern/ }),
+  ).toBeDisabled();
+  const save = dialog.getByRole("button", { name: "Save" });
+  await expect(save).toBeDisabled();
+  // Another concept's name is refused before anything is sent.
+  await dialog.getByLabel("Name").fill("Async and await");
+  await dialog.getByRole("radio", { name: /Language feature/ }).check();
+  await expect(dialog.getByRole("alert")).toContainText("Merge into One");
+  await expect(save).toBeDisabled();
+  await dialog.getByLabel("Name").fill("serde json");
+  await dialog.getByRole("radio", { name: /Library/ }).check();
+  await expect(dialog.getByText("stays with it as another name")).toBeVisible();
+  await save.click();
+  let edits = await calls(page, "edit_concept");
+  expect(edits.at(-1)).toMatchObject({
+    id: "concept-1",
+    name: "serde json",
+    kind: "library",
+  });
+  await expect(dialog).toBeHidden();
+  // The page reloads the saved list.
+  await expect(
+    page.getByRole("button", { name: "Edit serde json" }),
+  ).toBeVisible();
+
+  // A project pattern may become a technique; the dialog says what that
+  // does and the button says so too.
+  await page
+    .getByRole("button", { name: "Edit Retry until the lock is free" })
+    .click();
+  await dialog.getByRole("radio", { name: /Technique/ }).check();
+  await expect(dialog.getByRole("status")).toContainText(
+    "known in every repository",
+  );
+  await dialog
+    .getByRole("button", { name: "Save and Know Everywhere" })
+    .click();
+  edits = await calls(page, "edit_concept");
+  expect(edits.at(-1)).toMatchObject({ id: "concept-2", kind: "technique" });
+
+  // Escape closes it and sends nothing.
+  await page.getByRole("button", { name: "Edit async and await" }).click();
+  await dialog.getByLabel("Name").fill("something else");
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  expect(await calls(page, "edit_concept")).toHaveLength(2);
 });
 
 test("Settings shows the vault and turns note IDs off", async ({ page }) => {

@@ -13,8 +13,11 @@
 # stops, with no network and no credential.
 FROM node:22-bookworm-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c
 
+# `rg` is the search command both agents' prompts tell the model to run.
+# Without it on PATH, a shell search fails and OpenCode fetches its own
+# binary into the tmpfs home. jq stays out; the explain prompt uses `known`.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates git \
+    && apt-get install -y --no-install-recommends ca-certificates git ripgrep \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/claude
@@ -25,7 +28,13 @@ RUN npm ci --omit=dev --no-audit --no-fund \
     && rm -rf node_modules/@anthropic-ai/*-musl node_modules/opencode-linux-*-musl \
     && npm cache clean --force
 
-COPY entrypoint.mjs collector.mjs /opt/claude/
+COPY entrypoint.mjs collector.mjs known.mjs /opt/claude/
+
+# `known` tells an explain run which concepts the reader knows, from the
+# file the controller copies in. Names arrive one per line on stdin (a path,
+# never a credential).
+RUN printf '#!/bin/sh\nexec node /opt/claude/known.mjs "$@"\n' > /usr/local/bin/known \
+    && chmod 755 /usr/local/bin/known
 
 # Claude Code's managed settings win over a repository's own .claude
 # settings, which runs otherwise use (CLAUDE.md, hooks, permissions). They
