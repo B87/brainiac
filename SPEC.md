@@ -63,8 +63,8 @@ The product can eventually include PR and CI status, calendar context, recurring
 | Database and credential follow-ups | v0.4.x | SSH tunnels, editing rows in the grid, saved queries as files, and secrets from Google Secret Manager, Git's credential helper, and `.pgpass`; chosen by use |
 | Agent runs | v0.5 | Claude Code or OpenCode run in a container on this Mac's Docker engine or an approved Linux host, with guided setup, a live conversation, follow-up prompts, and a review of the collected work saved as a patch (section 13) |
 | Agent run follow-ups | v0.5 | Pushing the reviewed result to a new branch, Codex and Gemini CLI, and runs from tasks (`docs/design/agent-runs.md`) |
-| Explaining changes | v0.6 | A commit, a branch, or a run's result explained with a guided tour, notes beside the lines, concepts, and questions, each claim citing its source; written by an agent run in a container and checked by Brainiac (section 14) |
-| Explanation follow-ups | v0.6.x | Working-tree changes, pull requests, a question about one note, and a direct model call for small changes and local models |
+| Explaining changes | v0.6 | A commit, a branch, a run's result, or a pull request explained with a guided tour, notes beside the lines, concepts, and questions, each claim citing its source; written by an agent run in a container and checked by Brainiac (section 14) |
+| Explanation follow-ups | v0.6.x | Working-tree changes, a question about one note, and a direct model call for small changes and local models |
 | External content imports | v0.7 | Paste, bookmarks, Markdown copies, articles, `.eml`, provenance and duplicate handling |
 | Global capture window and Inbox | v0.7 | System shortcut, floating capture, Inbox triage of captured and imported items, shared backend state |
 | Authenticated import adapters | v0.7.x | Selected Jira issues/mail messages; provider choice and video transcript acquisition validated separately |

@@ -135,8 +135,15 @@ pub async fn read_subject(
 pub fn parse_subject(names: &[u8], patch: &[u8]) -> AppResult<Subject> {
     let mut files = parse_names(names)?;
     let mut index: Option<usize> = None;
+    let mut last_header: &[u8] = &[];
     for line in patch.split(|&b| b == b'\n') {
         if line.starts_with(b"diff --git ") {
+            // A path whose type changed (a file becomes a symlink) is one
+            // entry in the name list but two identical headers in the patch.
+            if index.is_some() && line == last_header {
+                continue;
+            }
+            last_header = line;
             let next = index.map_or(0, |i| i + 1);
             if next >= files.len() {
                 return Err(mismatch());
@@ -345,5 +352,15 @@ Binary files /dev/null and b/logo.png differ\n";
         assert!(Changed { start: 0, count: 0 }.touches(1, 1));
         assert_eq!(lines.describe(), "10–12");
         assert_eq!(removal.describe(), "removed after 5");
+    }
+
+    #[test]
+    fn a_type_change_is_one_file_with_two_headers() {
+        let names = b"T\0link\0M\0other.txt\0";
+        let patch = b"diff --git a/link b/link\ndeleted file mode 100644\n--- a/link\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\ndiff --git a/link b/link\nnew file mode 120000\n--- /dev/null\n+++ b/link\n@@ -0,0 +1 @@\n+target\ndiff --git a/other.txt b/other.txt\n--- a/other.txt\n+++ b/other.txt\n@@ -1 +1 @@\n-a\n+b\n";
+        let subject = parse_subject(names, patch).unwrap();
+        assert_eq!(subject.files.len(), 2);
+        assert_eq!(subject.files[0].path, "link");
+        assert_eq!(subject.files[1].changed.len(), 1);
     }
 }

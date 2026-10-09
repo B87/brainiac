@@ -242,10 +242,10 @@ export default function NewRunDialog({
           allowed: answer,
           workspace_id: scope || null,
         });
-        if (!answer) {
-          setQuestion(await ipc.getCodeSharingQuestion(repo));
-          return;
-        }
+        // Answered either way: a start that then fails shows Start run, not
+        // the question again.
+        setQuestion(await ipc.getCodeSharingQuestion(repo));
+        if (!answer) return;
       }
       if (!preview) return;
       const run = await ipc.startAgentRun({

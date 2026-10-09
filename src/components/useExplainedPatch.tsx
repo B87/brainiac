@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { noteSequence, notesIn, readingOrder } from "../lib/explain";
@@ -132,10 +133,21 @@ export function useExplainedPatch<T extends { path: string }>({
     () => (ready ? noteSequence(ready, state.placement) : []),
     [ready, state.placement],
   );
+  // The note last gone to, so a file with several notes is stepped through
+  // note by note; choosing a file another way starts from its first note.
+  const cursor = useRef(-1);
   const goNote = useCallback(
     (delta: number) => {
       if (!sequence.length) return;
-      const here = sequence.findIndex((n) => n.note.path === selectedPath);
+      const kept =
+        cursor.current >= 0 &&
+        sequence[cursor.current]?.note.path === selectedPath
+          ? cursor.current
+          : -1;
+      const here =
+        kept >= 0
+          ? kept
+          : sequence.findIndex((n) => n.note.path === selectedPath);
       const next =
         sequence[
           Math.max(
@@ -144,6 +156,7 @@ export function useExplainedPatch<T extends { path: string }>({
           )
         ];
       if (!next) return;
+      cursor.current = sequence.indexOf(next);
       if (next.note.path !== selectedPath) onSelectFile(next.note.path);
       // The patch draws the note once its file is shown.
       setTimeout(

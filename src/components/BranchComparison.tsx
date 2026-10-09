@@ -46,6 +46,9 @@ export default function BranchComparison({
 
   useEffect(() => {
     let live = true;
+    // Another branch starts clean: not the last one's file or merge base.
+    setComparison(null);
+    setSelected(null);
     ipc
       .getBranchComparison(repositoryId, branch)
       .then((c) => {

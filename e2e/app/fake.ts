@@ -956,6 +956,23 @@ export class FakeBackend {
   hostKey = "SHA256:preview";
   /** Settings → Code Sharing (SPEC.md, section 13): the answers so far. */
   codeAnswers: CodeAnswer[] = [];
+  /** The repository's answer, else its workspace's (a No wins), as Rust's `sharing::decide`. */
+  codeAnswer(repositoryId: string, provider: string): CodeAnswer | undefined {
+    const own = this.codeAnswers.find(
+      (a) =>
+        a.scope === "repository" &&
+        a.scope_id === repositoryId &&
+        a.provider === provider,
+    );
+    if (own) return own;
+    const inWorkspaces = this.codeAnswers.filter(
+      (a) =>
+        a.scope === "workspace" &&
+        a.scope_id === workspace.id &&
+        a.provider === provider,
+    );
+    return inWorkspaces.find((a) => !a.allowed) ?? inWorkspaces[0];
+  }
   agentSettings: AgentSettings = {
     profiles: [
       agentProfile("claude-code", "claude_code", "anthropic"),
@@ -2005,11 +2022,7 @@ export class FakeBackend {
         );
         if (!profile) throw { code: "VALIDATION", message: "Choose an agent." };
         // The repository's answer, as Rust's `CodeSharingService::require`.
-        const answer = this.codeAnswers.find(
-          (a) =>
-            a.scope_id === request.repository_id &&
-            a.provider === profile.provider,
-        );
+        const answer = this.codeAnswer(request.repository_id, profile.provider);
         if (!answer)
           throw {
             code: "CONFLICT",
@@ -2266,10 +2279,7 @@ export class FakeBackend {
         ];
         return {
           consents: providers.map((provider) => {
-            const answer = this.codeAnswers.find(
-              (a) =>
-                a.scope_id === args.repositoryId && a.provider === provider,
-            );
+            const answer = this.codeAnswer(String(args.repositoryId), provider);
             return {
               provider,
               state: !answer

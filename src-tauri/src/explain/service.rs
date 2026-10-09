@@ -1124,8 +1124,9 @@ impl ExplanationService {
                         .artifacts
                         .read_subject(&repo, &row.base, &row.tip)
                         .await?;
-                    let mut paths = draft.cited_paths();
-                    paths.extend(subject.files.iter().map(|f| f.path.clone()));
+                    // Only cited files are read: the cap on files read must
+                    // not cut a cited one among a large change's others.
+                    let paths = draft.cited_paths();
                     let files = self.artifacts.read_files(&repo, &row.tip, &paths).await?;
                     check::check(draft, &subject, &files, attempt)
                 }
