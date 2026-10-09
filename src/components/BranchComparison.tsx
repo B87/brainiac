@@ -25,12 +25,15 @@ export default function BranchComparison({
   branch,
   onBack,
   onError,
+  onOpenInEditor,
 }: {
   repositoryId: string;
   /** The branch's full ref name. */
   branch: string;
   onBack: () => void;
   onError: (message: string | null) => void;
+  /** Opens the file as it is in the working tree, as History's patches do. */
+  onOpenInEditor: (path: string, line?: number) => void;
 }) {
   const [comparison, setComparison] = useState<Comparison | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -56,6 +59,7 @@ export default function BranchComparison({
   );
   const explained = useExplainedPatch({
     repositoryId,
+    view: "branch",
     subject,
     files: comparison?.files ?? [],
     selectedPath: selected,
@@ -101,6 +105,8 @@ export default function BranchComparison({
             later commits are left out.
           </span>
         )}
+        <span className="flex-1" />
+        {explained.header}
       </div>
       <div className="flex min-h-0 flex-1">
         <div className="flex w-[260px] shrink-0 flex-col border-r">
@@ -130,6 +136,11 @@ export default function BranchComparison({
                     aria-current={f === file}
                     onClick={() => setSelected(f.path)}
                   >
+                    {explained.steps.size > 0 && (
+                      <span className="tabular mt-px w-4 shrink-0 text-right text-[11.5px] text-muted">
+                        {explained.steps.get(f.path) ?? ""}
+                      </span>
+                    )}
                     <span className="kind mt-px" data-tone={kindTone(f.kind)}>
                       {KIND_LETTER[f.kind]}
                     </span>
@@ -161,7 +172,7 @@ export default function BranchComparison({
             loading={loading}
             empty={comparison ? "Select a file" : "Loading…"}
             historical
-            onOpenInEditor={() => {}}
+            onOpenInEditor={onOpenInEditor}
             ignoreWhitespace={ignoreWhitespace}
             onIgnoreWhitespace={setIgnoreWhitespace}
             annotate={explained.annotate}

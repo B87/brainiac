@@ -34,6 +34,9 @@ type Props = {
   onSelectCommit: (id: string) => void;
   /** A short message in the window, such as "Saved as …". */
   onNotice?: (message: string) => void;
+  /** Says whether the explanation panel is on screen, so History can fold
+   * its commit list to make room for it. */
+  onPanelShown?: (shown: boolean) => void;
 };
 
 /** Message lines shown before "Show full message". */
@@ -46,6 +49,7 @@ export default function CommitDetails({
   onOpenInEditor,
   onSelectCommit,
   onNotice,
+  onPanelShown,
 }: Props) {
   const [parentIndex, setParentIndex] = useState(0);
   const [detail, setDetail] = useState<CommitDetail | null>(null);
@@ -116,12 +120,18 @@ export default function CommitDetails({
   );
   const explained = useExplainedPatch({
     repositoryId,
+    view: "commit",
     subject,
     files: byPath,
     selectedPath,
     onSelectFile: setSelectedPath,
     onNotice,
   });
+  const panelShown = explained.panelShown;
+  useEffect(() => {
+    onPanelShown?.(panelShown);
+  }, [panelShown, onPanelShown]);
+  useEffect(() => () => onPanelShown?.(false), [onPanelShown]);
   const reading = explained.hasExplanation && explained.order === "reading";
   const files = explained.ordered;
   const fileIndex = files.findIndex((f) => f.path === selectedPath);
@@ -146,6 +156,7 @@ export default function CommitDetails({
             {commit.short_id}
             <CopyIcon size={12} />
           </button>
+          {explained.header}
         </div>
         <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[12px] text-fg-2">
           <Avatar name={commit.author_name} size={20} />
@@ -234,6 +245,7 @@ export default function CommitDetails({
             onSelect={setSelectedPath}
             onHide={() => setShowFiles(false)}
             reading={reading ? files : null}
+            steps={explained.steps}
             orderSwitch={
               explained.hasExplanation && (
                 <OrderSwitch
@@ -310,6 +322,7 @@ function FileTree({
   onSelect,
   onHide,
   reading,
+  steps,
   orderSwitch,
 }: {
   detail: CommitDetail | null;
@@ -319,6 +332,7 @@ function FileTree({
   onHide: () => void;
   /** The files in reading order, listed flat instead of by folder. */
   reading: CommitFile[] | null;
+  steps: Map<string, number>;
   orderSwitch?: ReactNode;
 }) {
   const ready = detail && detail.compared_parent_index === parentIndex;
@@ -362,6 +376,7 @@ function FileTree({
               file={f}
               nested={false}
               full
+              step={steps.get(f.path)}
               selected={f.path === selectedPath}
               onSelect={() => onSelect(f.path)}
             />
@@ -401,6 +416,7 @@ function FileRow({
   selected,
   onSelect,
   full = false,
+  step,
 }: {
   file: CommitFile;
   nested: boolean;
@@ -408,6 +424,8 @@ function FileRow({
   onSelect: () => void;
   /** Show the whole path, as reading order lists files flat. */
   full?: boolean;
+  /** Its step in the explanation's tour, in reading order. */
+  step?: number;
 }) {
   const tone = kindTone(file.kind);
   const bar = barWidths(file.additions, file.deletions);
@@ -422,6 +440,11 @@ function FileRow({
       onClick={onSelect}
       title={`${file.old_path ? `${file.old_path} → ${file.path}` : file.path} (${stats})`}
     >
+      {full && (
+        <span className="tabular w-4 shrink-0 text-right text-[11.5px] text-muted">
+          {step ?? ""}
+        </span>
+      )}
       <span
         className="mono w-[13px] shrink-0 text-center text-[11px] font-semibold"
         style={{ color: `var(--k-${tone}-fg)` }}

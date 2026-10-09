@@ -25,7 +25,7 @@ import { requestSettings } from "../lib/settings";
 import type { ExplanationState } from "../lib/useExplanation";
 import { CloseIcon } from "./icons";
 
-type Tab = "tour" | "concepts" | "questions";
+type Tab = "concepts" | "questions";
 
 const STEPS: ExplainStep[] = ["copying", "starting", "reading", "checking"];
 
@@ -109,8 +109,9 @@ export function NoteCard({
 /**
  * The panel beside the patch (SPEC.md, section 14, The explanation): while
  * an explanation works, its steps and the files the agent opens; when it
- * failed, why; when it is ready, the summary, what the checks did, and the
- * Tour, Concepts, and Check yourself tabs, with the disagreements after.
+ * failed, why; when it is ready, the summary, what the checks did, the
+ * selected file's place in the tour (the file list is the tour, numbered),
+ * and the Concepts and Check yourself tabs, with the disagreements after.
  */
 export default function ExplanationPanel({
   repositoryId,
@@ -138,7 +139,7 @@ export default function ExplanationPanel({
   onNotice: (message: string) => void;
 }) {
   const { current: record, placement, records, choose } = state;
-  const [tab, setTab] = useState<Tab>("tour");
+  const [tab, setTab] = useState<Tab>("concepts");
   const [error, setError] = useState<string | null>(null);
   const box = useRef<HTMLDivElement>(null);
 
@@ -472,6 +473,9 @@ function Ready({
   const checks = checksLine(e);
   const usage = usageText(record);
   const tour = readingOrder(e.tour, e);
+  const step = selectedPath
+    ? tour.findIndex((s) => s.path === selectedPath)
+    : -1;
   const disagreements = e.disagreements
     .map((d, i) => ({ d, i }))
     .filter(({ i }) => showHidden || !record.hidden.includes(i));
@@ -563,14 +567,28 @@ function Ready({
         )}
       </div>
 
+      {step >= 0 && (
+        <div className="flex flex-col gap-0.5">
+          <span className="text-[11.5px] font-medium text-fg-2">
+            This file · step {step + 1} of {tour.length}
+          </span>
+          {tour[step].role && (
+            <span className="text-fg-2">{tour[step].role}</span>
+          )}
+        </div>
+      )}
+      {step < 0 && selectedPath && uncovered.includes(selectedPath) && (
+        <span className="text-[12px] text-fg-2">
+          This file is not in this explanation: it changed after it was
+          explained.
+        </span>
+      )}
+
       <div
         role="tablist"
         aria-label="Explanation"
         className="flex gap-1 border-b"
       >
-        <TabButton tab="tour" current={tab} onClick={setTab}>
-          Tour
-        </TabButton>
         <TabButton tab="concepts" current={tab} onClick={setTab}>
           Concepts {e.concepts.length > 0 && `(${e.concepts.length})`}
         </TabButton>
@@ -580,48 +598,6 @@ function Ready({
           </TabButton>
         )}
       </div>
-
-      {tab === "tour" && (
-        <ol className="m-0 flex flex-col gap-1.5 pl-0">
-          {tour.map((s, i) => (
-            <li key={s.path} className="flex gap-2">
-              <span className="tabular w-4 shrink-0 text-right text-muted">
-                {i + 1}
-              </span>
-              <span className="min-w-0 flex-1">
-                <button
-                  type="button"
-                  data-explain-item
-                  className={`mono block max-w-full truncate text-left text-[12px] hover:underline ${s.path === selectedPath ? "font-semibold text-fg" : "text-link"}`}
-                  title={s.path}
-                  onClick={() => onSelectFile(s.path)}
-                >
-                  {s.path}
-                </button>
-                {s.role && <span className="text-fg-2">{s.role}</span>}
-              </span>
-            </li>
-          ))}
-          {uncovered.length > 0 && (
-            <li className="mt-1 flex flex-col gap-0.5">
-              <span className="text-[11.5px] font-medium text-fg-2">
-                Not in this explanation
-              </span>
-              {uncovered.map((p) => (
-                <button
-                  key={p}
-                  type="button"
-                  data-explain-item
-                  className="mono truncate text-left text-[12px] text-link hover:underline"
-                  onClick={() => onSelectFile(p)}
-                >
-                  {p}
-                </button>
-              ))}
-            </li>
-          )}
-        </ol>
-      )}
 
       {tab === "concepts" && (
         <div className="flex flex-col gap-3">

@@ -1,5 +1,6 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { depthLabel, sameSubject, subjectLabel } from "../lib/explain";
 import { absoluteTime, relativeTime } from "../lib/format";
 import {
@@ -136,6 +137,9 @@ export default function PullRequestView({
   const [mergeOpen, setMergeOpen] = useState(false);
   /** The Overview's Explain… opens the dialog in Files Changed. */
   const [explainOnOpen, setExplainOnOpen] = useState(false);
+  // Files Changed draws Explain and the panel toggle here, in the header,
+  // since they act on the whole pull request (SPEC.md, section 14).
+  const [explainSlot, setExplainSlot] = useState<HTMLSpanElement | null>(null);
   const latest = useRef(createLatest()).current;
   const conversationLatest = useRef(createLatest()).current;
   const draftsLatest = useRef(createLatest()).current;
@@ -355,6 +359,7 @@ export default function PullRequestView({
             Open on {PROVIDER_LABEL[pr.kind]}
           </button>
         )}
+        {tab === "files" && <span ref={setExplainSlot} className="contents" />}
         {pr && (
           <button
             type="button"
@@ -400,6 +405,7 @@ export default function PullRequestView({
           repositoryId={repository?.id ?? null}
           explainOnOpen={explainOnOpen}
           onExplainOpened={() => setExplainOnOpen(false)}
+          explainSlot={explainSlot}
         />
       ) : tab === "checks" ? (
         <ChecksTab pr={pr} checks={checks} />
@@ -1215,6 +1221,7 @@ function FilesTab({
   repositoryId,
   explainOnOpen,
   onExplainOpened,
+  explainSlot,
 }: {
   pr: PullRequest;
   files: PullRequestFiles | null;
@@ -1236,6 +1243,8 @@ function FilesTab({
   /** The Overview's Explain… asked for the dialog. */
   explainOnOpen: boolean;
   onExplainOpened: () => void;
+  /** Where in the view's header Explain and the panel toggle go. */
+  explainSlot: HTMLElement | null;
 }) {
   const [showFiles, setShowFiles] = usePref("brainiac.pr.files", true);
   const [ignoreWhitespace, setIgnoreWhitespace] = usePref(
@@ -1303,6 +1312,7 @@ function FilesTab({
   const selectRef = useRef<(path: string) => void>(() => {});
   const explained = useExplainedPatch({
     repositoryId: repositoryId ?? "",
+    view: "pull_request",
     subject,
     files: sections.shown,
     selectedPath,
@@ -1762,6 +1772,9 @@ function FilesTab({
       </div>
       {explained.panel}
       {explained.dialog}
+      {explainSlot && explained.header
+        ? createPortal(explained.header, explainSlot)
+        : null}
     </div>
   );
 }

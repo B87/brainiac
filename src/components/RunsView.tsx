@@ -2138,6 +2138,7 @@ function SnapshotFiles({
   );
   const explained = useExplainedPatch({
     repositoryId,
+    view: "run",
     subject,
     files: byPath,
     selectedPath: selected,
@@ -2187,71 +2188,88 @@ function SnapshotFiles({
         }
       : undefined;
   return (
-    <div className="flex min-h-0 flex-1">
-      <div className="flex w-[260px] shrink-0 flex-col border-r">
-        {explained.hasExplanation && (
-          <div className="flex shrink-0 justify-center border-b px-2 py-1.5">
-            <OrderSwitch
-              order={explained.order}
-              setOrder={explained.setOrder}
-            />
-          </div>
-        )}
-        <ul
-          aria-label="Changed files"
-          className="m-0 min-h-0 flex-1 list-none overflow-y-auto p-1"
-        >
-          {files.map((f) => {
-            const { dir, name } = splitPath(f.path);
-            return (
-              <li key={f.path}>
-                <button
-                  type="button"
-                  className="side-row h-auto w-full items-start gap-2 py-1.5 text-left"
-                  aria-current={f === file}
-                  onClick={() => setSelected(f.path)}
-                >
-                  <span className="kind mt-px" data-tone={kindTone(f.kind)}>
-                    {KIND_LETTER[f.kind]}
-                  </span>
-                  <span className="flex min-w-0 flex-1 flex-col">
-                    <span className="truncate">{name}</span>
-                    {dir && (
-                      <span className="truncate text-[11px] text-muted">
-                        {dir.replace(/\/$/, "")}
+    <div className="flex min-h-0 flex-1 flex-col">
+      {explained.header && (
+        // Explain acts on the whole result, so it sits above the files and
+        // the patch rather than in the patch's toolbar.
+        <div className="flex shrink-0 items-center gap-2 border-b px-4 py-1.5 text-[12.5px]">
+          <span className="font-medium">The collected result</span>
+          <span className="text-muted">{plural(byPath.length, "file")}</span>
+          <span className="flex-1" />
+          {explained.header}
+        </div>
+      )}
+      <div className="flex min-h-0 flex-1">
+        <div className="flex w-[260px] shrink-0 flex-col border-r">
+          {explained.hasExplanation && (
+            <div className="flex shrink-0 justify-center border-b px-2 py-1.5">
+              <OrderSwitch
+                order={explained.order}
+                setOrder={explained.setOrder}
+              />
+            </div>
+          )}
+          <ul
+            aria-label="Changed files"
+            className="m-0 min-h-0 flex-1 list-none overflow-y-auto p-1"
+          >
+            {files.map((f) => {
+              const { dir, name } = splitPath(f.path);
+              return (
+                <li key={f.path}>
+                  <button
+                    type="button"
+                    className="side-row h-auto w-full items-start gap-2 py-1.5 text-left"
+                    aria-current={f === file}
+                    onClick={() => setSelected(f.path)}
+                  >
+                    {explained.steps.size > 0 && (
+                      <span className="tabular mt-px w-4 shrink-0 text-right text-[11.5px] text-muted">
+                        {explained.steps.get(f.path) ?? ""}
                       </span>
                     )}
-                  </span>
-                  <span className="mt-px shrink-0 text-[11px] tabular">
-                    {f.additions != null && (
-                      <span className="text-added">+{f.additions} </span>
-                    )}
-                    {f.deletions != null && (
-                      <span className="text-deleted">−{f.deletions}</span>
-                    )}
-                    {f.is_binary && <span className="text-muted">bin</span>}
-                  </span>
-                </button>
-              </li>
-            );
-          })}
-        </ul>
+                    <span className="kind mt-px" data-tone={kindTone(f.kind)}>
+                      {KIND_LETTER[f.kind]}
+                    </span>
+                    <span className="flex min-w-0 flex-1 flex-col">
+                      <span className="truncate">{name}</span>
+                      {dir && (
+                        <span className="truncate text-[11px] text-muted">
+                          {dir.replace(/\/$/, "")}
+                        </span>
+                      )}
+                    </span>
+                    <span className="mt-px shrink-0 text-[11px] tabular">
+                      {f.additions != null && (
+                        <span className="text-added">+{f.additions} </span>
+                      )}
+                      {f.deletions != null && (
+                        <span className="text-deleted">−{f.deletions}</span>
+                      )}
+                      {f.is_binary && <span className="text-muted">bin</span>}
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+        <div className="flex min-w-0 flex-1 flex-col">
+          <DiffView
+            diff={diff}
+            loading={loading}
+            empty="Select a file"
+            historical
+            onOpenInEditor={onOpenInEditor}
+            stepper={stepper}
+            ignoreWhitespace={ignoreWhitespace}
+            onIgnoreWhitespace={setIgnoreWhitespace}
+            annotate={explained.annotate}
+            extra={explained.toolbar}
+          />
+        </div>
+        {explained.panel}
       </div>
-      <div className="flex min-w-0 flex-1 flex-col">
-        <DiffView
-          diff={diff}
-          loading={loading}
-          empty="Select a file"
-          historical
-          onOpenInEditor={onOpenInEditor}
-          stepper={stepper}
-          ignoreWhitespace={ignoreWhitespace}
-          onIgnoreWhitespace={setIgnoreWhitespace}
-          annotate={explained.annotate}
-          extra={explained.toolbar}
-        />
-      </div>
-      {explained.panel}
       {explained.dialog}
     </div>
   );

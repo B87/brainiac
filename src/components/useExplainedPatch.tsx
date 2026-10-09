@@ -14,12 +14,14 @@ export type FileOrder = "reading" | "path";
 
 /**
  * A patch view with its explanation (SPEC.md, section 14): **Explain** and
- * `E`, the panel beside the patch (`Shift+E`), notes after their lines
- * (**Notes**), `Shift+N` / `Shift+P` between notes, and the file list in
- * reading order. The view gives its subject, its files, and its selection.
+ * `E`, and **Explanation** (`Shift+E`) for the panel beside the patch, both
+ * on the subject's header; notes after their lines (**Notes**, in the
+ * patch's toolbar), `Shift+N` / `Shift+P` between notes, and the file list
+ * in reading order. The view gives its subject, its files, and its selection.
  */
 export function useExplainedPatch<T extends { path: string }>({
   repositoryId,
+  view,
   subject,
   files,
   selectedPath,
@@ -29,6 +31,9 @@ export function useExplainedPatch<T extends { path: string }>({
   review = false,
 }: {
   repositoryId: string;
+  /** Which kind of view this is; the panel is shown or hidden per kind, so
+   * opening it in a pull request does not open it in History. */
+  view: ExplainSubject["kind"];
   subject: ExplainSubject | null;
   files: T[];
   selectedPath: string | null;
@@ -44,18 +49,29 @@ export function useExplainedPatch<T extends { path: string }>({
   ordered: T[];
   order: FileOrder;
   setOrder: (o: FileOrder) => void;
+  /** Each toured file's step, from 1, while the list is in reading order;
+   * the numbered list is the tour. Files the tour does not list have none. */
+  steps: Map<string, number>;
   hasExplanation: boolean;
-  /** Explain, the panel toggle, and the notes toggle, for the patch's toolbar. */
+  /** Explain and the panel toggle, for the subject's header: they act on
+   * the whole subject, not on the file shown. */
+  header: ReactNode;
+  /** The notes toggle, for the patch's toolbar. */
   toolbar: ReactNode;
   annotate: Annotate | undefined;
   panel: ReactNode;
+  /** Whether the panel is on screen, for a view that makes room for it. */
+  panelShown: boolean;
   dialog: ReactNode;
   /** Open the Explain dialog, as `E` does. */
   openDialog: () => void;
 } {
   const state = useExplanation(repositoryId, subject, version);
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [panelOpen, setPanelOpen] = usePref("brainiac.explain.panel", true);
+  const [panelOpen, setPanelOpen] = usePref(
+    `brainiac.explain.panel.${view}`,
+    true,
+  );
   const [notesOn, setNotesOn] = usePref(
     review ? "brainiac.explain.pr.notes" : "brainiac.explain.notes",
     true,
@@ -70,6 +86,16 @@ export function useExplainedPatch<T extends { path: string }>({
   const ordered = useMemo(
     () => (ready && order === "reading" ? readingOrder(files, ready) : files),
     [files, ready, order],
+  );
+
+  const steps = useMemo(
+    () =>
+      new Map(
+        ready && order === "reading"
+          ? readingOrder(ready.tour, ready).map((s, i) => [s.path, i + 1])
+          : [],
+      ),
+    [ready, order],
   );
 
   const sequence = useMemo(
@@ -143,8 +169,8 @@ export function useExplainedPatch<T extends { path: string }>({
     };
   }, [ready, notesOn, selectedPath, state.placement, onSelectFile, review]);
 
-  const toolbar = subject ? (
-    <span className="flex items-center gap-1.5">
+  const header = subject ? (
+    <span className="flex shrink-0 items-center gap-1.5">
       <button
         type="button"
         className="btn btn-sm"
@@ -162,22 +188,24 @@ export function useExplainedPatch<T extends { path: string }>({
           title="Show or hide the explanation (Shift+E)"
           onClick={() => setPanelOpen(!panelOpen)}
         >
-          Panel
-        </button>
-      )}
-      {ready && ready.notes.length > 0 && (
-        <button
-          type="button"
-          className="btn btn-sm"
-          aria-pressed={notesOn}
-          title="Show or hide the notes in the patch (Shift+N and Shift+P move between them)"
-          onClick={() => setNotesOn(!notesOn)}
-        >
-          Notes
+          Explanation
         </button>
       )}
     </span>
   ) : null;
+
+  const toolbar =
+    ready && ready.notes.length > 0 ? (
+      <button
+        type="button"
+        className="btn btn-sm"
+        aria-pressed={notesOn}
+        title="Show or hide the notes in the patch (Shift+N and Shift+P move between them)"
+        onClick={() => setNotesOn(!notesOn)}
+      >
+        Notes
+      </button>
+    ) : null;
 
   const panel =
     subject && panelOpen && (record || dialogOpen) ? (
@@ -218,10 +246,13 @@ export function useExplainedPatch<T extends { path: string }>({
     ordered,
     order,
     setOrder,
+    steps,
     hasExplanation: !!ready,
+    header,
     toolbar,
     annotate,
     panel,
+    panelShown: panel !== null,
     dialog,
     openDialog: () => setDialogOpen(true),
   };

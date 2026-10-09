@@ -397,6 +397,7 @@ export default function RepositoryView({
           refs={refs}
           onShowHistory={showRefHistory}
           onError={onError}
+          onOpenInEditor={openInEditor}
         />
       )}
     </div>

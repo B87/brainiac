@@ -31,6 +31,7 @@ type Props = {
   refs: RefsResult | null;
   onShowHistory: (ref: RefEntry) => void;
   onError: (message: string | null) => void;
+  onOpenInEditor: (path: string, line?: number) => void;
 };
 
 type Sort = "recent" | "name";
@@ -128,6 +129,7 @@ export default function BranchesTab({
   refs,
   onShowHistory,
   onError,
+  onOpenInEditor,
 }: Props) {
   const { open: panelOpen } = useSidePanel();
   const [filter, setFilter] = useState("");
@@ -196,6 +198,7 @@ export default function BranchesTab({
         branch={comparing}
         onBack={() => setComparing(null)}
         onError={onError}
+        onOpenInEditor={onOpenInEditor}
       />
     );
 

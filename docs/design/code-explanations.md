@@ -101,4 +101,4 @@ Left for the spike: scoring every note by hand; the same five commits with OpenC
 - Whether the panel and the canvas's Working state hold up with real progress from the journal.
 - A shared answer for a team (which repositories may reach which provider), set once rather than on each developer's Mac. Brainiac has one user per Mac; this belongs with shared workspaces (`docs/design/shared-workspaces.md`).
 - Whether the estimate from the last ten explanations is close enough to trust before Explain, once real runs in a container are timed.
-- Whether the panel, with the summary first and Tour open, reads well on a large change, or should start folded.
+- Whether the panel, with the summary first and Tour open, reads well on a large change, or should start folded. (9 October 2026: the Tour tab went; the numbered file list is the tour, and the panel names the selected file's step and role. `SPEC.md`, section 14.)
