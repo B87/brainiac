@@ -2271,6 +2271,11 @@ export class FakeBackend {
         return [];
       case "get_explanation_settings":
         return structuredClone(explanationSettings);
+      // Concepts You Know: the calls are what the tests check.
+      case "edit_concept":
+      case "forget_concept":
+      case "merge_concept":
+        return null;
       // Code sharing (SPEC.md, section 13): one answer per repository and
       // provider, for runs and explanations.
       case "get_code_sharing_question": {

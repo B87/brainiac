@@ -305,13 +305,49 @@ export function conceptKindChoices(
     : CONCEPT_KINDS.filter((k) => k !== "project_pattern");
 }
 
-/** What Edit asks first, or null when it need not: only a project pattern
- * becoming known in every repository changes who is told about it. */
-export function editConceptQuestion(
+/** A concept's name folded as the ledger folds it (`store::concept_key`):
+ * lowercase, every run of other characters one space. */
+export function conceptKey(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+}
+
+/** What an edit would do, for the Edit Concept dialog: whether the concept
+ * moves to a new identity (its old name then stays as a name that stands for
+ * it), whether it becomes known in every repository, and which concept
+ * already holds the new identity, if one does. */
+export function conceptEdit(
   c: KnownConcept,
   name: string,
   kind: KnownConcept["kind"],
-): string | null {
-  if (c.kind !== "project_pattern" || kind === "project_pattern") return null;
-  return `Make “${name.trim()}” known in every repository? It belongs only to ${c.repository_name ?? "a removed repository"} now. Explanations of every repository will leave it out, and its name will be listed for their agents.`;
+  all: KnownConcept[],
+): {
+  changed: boolean;
+  keepsOldName: boolean;
+  becomesGlobal: boolean;
+  takenBy: KnownConcept | null;
+} {
+  const key = conceptKey(name);
+  const repository = kind === "project_pattern" ? (c.repository_id ?? "") : "";
+  const keepsOldName = key !== conceptKey(c.name) || kind !== c.kind;
+  // One of this concept's own earlier names is taken back, not a conflict.
+  const holder = all.find(
+    (o) =>
+      o.id !== c.id &&
+      o.merged_into !== c.id &&
+      o.kind === kind &&
+      conceptKey(o.name) === key &&
+      (o.repository_id ?? "") === repository,
+  );
+  const takenBy = holder
+    ? (all.find((o) => o.id === holder.merged_into) ?? holder)
+    : null;
+  return {
+    changed: name.trim() !== c.name || kind !== c.kind,
+    keepsOldName: keepsOldName && !!key,
+    becomesGlobal: c.kind === "project_pattern" && kind !== "project_pattern",
+    takenBy: key ? takenBy : null,
+  };
 }

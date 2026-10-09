@@ -557,15 +557,22 @@ pub fn edit_concept(conn: &Connection, id: &str, name: &str, kind: ConceptKind) 
         )?;
         return Ok(());
     }
-    let taken = conn
+    // The identity may be held by another concept, or by one of this
+    // concept's own earlier names: going back to an earlier name takes it
+    // back, so that name stops being a separate row.
+    let holder = conn
         .query_row(
-            "SELECT 1 FROM known_concepts WHERE kind = ?1 AND key = ?2 AND repository_id = ?3 AND id <> ?4",
+            "SELECT id, merged_into FROM known_concepts
+             WHERE kind = ?1 AND key = ?2 AND repository_id = ?3 AND id <> ?4",
             params![word(&kind)?, key, new_repository, id],
-            |_| Ok(()),
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)),
         )
-        .optional()?
-        .is_some();
-    if taken {
+        .optional()?;
+    let own_earlier_name = match &holder {
+        Some((holder_id, Some(into))) if into == id => Some(holder_id.clone()),
+        _ => None,
+    };
+    if holder.is_some() && own_earlier_name.is_none() {
         return Err(AppError::new(
             crate::models::ErrorCode::Conflict,
             "Another concept of that kind already has this name: choose it with this one and use Merge into One.",
@@ -574,6 +581,9 @@ pub fn edit_concept(conn: &Connection, id: &str, name: &str, kind: ConceptKind) 
     // One change or none: the concept moves to its new identity and its old
     // one is kept as a name that stands for it.
     let tx = conn.unchecked_transaction()?;
+    if let Some(earlier) = &own_earlier_name {
+        tx.execute("DELETE FROM known_concepts WHERE id = ?1", [earlier])?;
+    }
     tx.execute(
         "UPDATE known_concepts SET kind = ?2, name = ?3, key = ?4, repository_id = ?5 WHERE id = ?1",
         params![id, word(&kind)?, name, key, new_repository],
@@ -942,5 +952,19 @@ mod tests {
         assert_eq!(known_refs(&conn, "r").unwrap().len(), 2);
         assert!(edit_concept(&conn, &a, "  ", ConceptKind::Library).is_err());
         assert!(edit_concept(&conn, "missing", "x", ConceptKind::Library).is_err());
+    }
+    #[test]
+    fn going_back_to_an_earlier_name_takes_it_back() {
+        let conn = ledger();
+        let id = add(&conn, ConceptKind::Tool, "DKIM", None);
+        edit_concept(&conn, &id, "DKIM", ConceptKind::Protocol).unwrap();
+        // Changed its mind: DKIM is a tool after all.
+        edit_concept(&conn, &id, "DKIM", ConceptKind::Tool).unwrap();
+        let refs = known_refs(&conn, "r").unwrap();
+        // The concept is a tool again; "DKIM (protocol)" now stands for it.
+        assert!(refs
+            .iter()
+            .all(|r| r.id == id && r.kind == ConceptKind::Tool));
+        assert_eq!(refs.len(), 2);
     }
 }

@@ -4,9 +4,7 @@ import { createPortal } from "react-dom";
 import {
   CONCEPT_KINDS,
   type ConceptSort,
-  conceptKindChoices,
   depthLabel,
-  editConceptQuestion,
   forgetGroupQuestion,
   formatCost,
   groupConceptsByRepository,
@@ -21,6 +19,7 @@ import {
 } from "../lib/ipc";
 import { plural } from "../lib/repo";
 import { requestOpenSubject } from "../lib/windowEvents";
+import ConceptEditDialog from "./ConceptEditDialog";
 import { ChevronDown, ChevronRight } from "./icons";
 import Popover from "./Popover";
 import { Hint } from "./SettingsPanes";
@@ -146,12 +145,8 @@ export function ConceptList({
   const [open, setOpen] = useState<Set<string> | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [keepOpen, setKeepOpen] = useState(false);
-  // The concept being edited, with the name and kind typed so far.
-  const [editing, setEditing] = useState<{
-    id: string;
-    name: string;
-    kind: ConceptKind;
-  } | null>(null);
+  // The concept whose Edit Concept dialog is open.
+  const [editing, setEditing] = useState<string | null>(null);
 
   // A merged concept is shown inside the one it was merged into.
   const roots = concepts.filter((c) => !c.merged_into);
@@ -194,6 +189,7 @@ export function ConceptList({
     });
   };
   const chosen = roots.filter((c) => selected.has(c.id));
+  const editingConcept = roots.find((c) => c.id === editing) ?? null;
   // One idea named two ways: same kind, and a project pattern in one repository.
   const mergeable =
     chosen.length > 1 &&
@@ -202,84 +198,6 @@ export function ConceptList({
         c.kind === chosen[0].kind &&
         c.repository_id === chosen[0].repository_id,
     );
-
-  const saveEdit = async (
-    c: KnownConcept,
-    draft: { name: string; kind: ConceptKind },
-  ) => {
-    const name = draft.name.trim();
-    if (!name || (name === c.name && draft.kind === c.kind)) {
-      setEditing(null);
-      return;
-    }
-    const question = editConceptQuestion(c, name, draft.kind);
-    if (question) {
-      const sure = await ask(question, {
-        title: "Edit Concept",
-        kind: "warning",
-        okLabel: "Make it known everywhere",
-      });
-      if (!sure) return;
-    }
-    setEditing(null);
-    await act(async () => {
-      await ipc.editConcept(c.id, name, draft.kind);
-    });
-  };
-
-  const editRow = (
-    c: KnownConcept,
-    draft: { id: string; name: string; kind: ConceptKind },
-  ) => (
-    <li key={c.id} className="settings-row flex-wrap items-center gap-2">
-      <input
-        className="field min-w-55 flex-1"
-        aria-label="Name"
-        value={draft.name}
-        // biome-ignore lint/a11y/noAutofocus: the field opens because Edit was pressed
-        autoFocus
-        maxLength={200}
-        onChange={(e) => setEditing({ ...draft, name: e.target.value })}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") void saveEdit(c, draft);
-          if (e.key === "Escape") setEditing(null);
-        }}
-      />
-      <select
-        className="field"
-        aria-label="Kind"
-        value={draft.kind}
-        onChange={(e) =>
-          setEditing({ ...draft, kind: e.target.value as ConceptKind })
-        }
-      >
-        {conceptKindChoices(c.kind).map((k) => (
-          <option key={k} value={k}>
-            {KIND_WORD[k]}
-          </option>
-        ))}
-      </select>
-      <button
-        type="button"
-        className="btn btn-sm btn-primary"
-        disabled={!draft.name.trim()}
-        onClick={() => void saveEdit(c, draft)}
-      >
-        Save
-      </button>
-      <button
-        type="button"
-        className="btn btn-sm"
-        onClick={() => setEditing(null)}
-      >
-        Cancel
-      </button>
-      <Hint>
-        Its old name stays with it, so explanations still leave it out under
-        that name.
-      </Hint>
-    </li>
-  );
 
   const row = (c: KnownConcept) => {
     const also = mergedInto.get(c.id) ?? [];
@@ -290,7 +208,6 @@ export function ConceptList({
     ]
       .filter(Boolean)
       .join(" · ");
-    if (editing?.id === c.id) return editRow(c, editing);
     return (
       <li
         key={c.id}
@@ -334,7 +251,7 @@ export function ConceptList({
           type="button"
           className="shrink-0 text-[12px] text-link hover:underline"
           aria-label={`Edit ${c.name}`}
-          onClick={() => setEditing({ id: c.id, name: c.name, kind: c.kind })}
+          onClick={() => setEditing(c.id)}
         >
           Edit…
         </button>
@@ -503,6 +420,19 @@ export function ConceptList({
         A project pattern belongs to its repository: one repository's patterns
         never reach another's explanations.
       </Hint>
+      {editingConcept && (
+        <ConceptEditDialog
+          concept={editingConcept}
+          concepts={concepts}
+          onClose={() => setEditing(null)}
+          onSave={(name, kind) =>
+            act(async () => {
+              await ipc.editConcept(editingConcept.id, name, kind);
+              setEditing(null);
+            })
+          }
+        />
+      )}
       {selected.size > 0 && (
         <SelectionBar>
           <span>{selected.size} selected</span>

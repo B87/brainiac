@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   checksLine,
+  conceptEdit,
+  conceptKey,
   conceptKindChoices,
-  editConceptQuestion,
   estimateText,
   forgetGroupQuestion,
   formatCost,
@@ -333,21 +334,53 @@ describe("Concepts You Know", () => {
     ]);
   });
 
-  it("ask only when a project pattern becomes known in every repository", () => {
+  it("fold names as the ledger does", () => {
+    expect(conceptKey("  Arc<Mutex<_>> ")).toBe("arc mutex");
+    expect(conceptKey("Result / ?")).toBe("result");
+    expect(conceptKey("ts-rs")).toBe("ts rs");
+    expect(conceptKey("!!")).toBe("");
+  });
+
+  it("say what an edit would do before it is saved", () => {
     const pattern = concept({
+      id: "p",
       name: "outbox table",
       kind: "project_pattern",
       repository_id: "r1",
       repository_name: "widgets",
     });
-    expect(editConceptQuestion(pattern, " outbox ", "technique")).toContain(
-      "Make “outbox” known in every repository? It belongs only to widgets now.",
-    );
+    const dkim = concept({ id: "d", name: "DKIM", kind: "tool" });
+    const spf = concept({ id: "s", name: "SPF", kind: "protocol" });
+    // An earlier name of DKIM itself, which an edit may take back.
+    const earlier = concept({
+      id: "e",
+      name: "DKIM",
+      kind: "protocol",
+      merged_into: "d",
+    });
+    const all = [pattern, dkim, spf, earlier];
+
+    expect(conceptEdit(dkim, "DKIM", "tool", all)).toMatchObject({
+      changed: false,
+      keepsOldName: false,
+    });
+    // A new spelling of the same name keeps no old name.
+    expect(conceptEdit(dkim, "dkim", "tool", all)).toMatchObject({
+      changed: true,
+      keepsOldName: false,
+      takenBy: null,
+    });
+    expect(conceptEdit(dkim, "DKIM", "protocol", all)).toMatchObject({
+      keepsOldName: true,
+      takenBy: null,
+    });
+    expect(conceptEdit(dkim, "spf!", "protocol", all).takenBy?.id).toBe("s");
+    expect(conceptEdit(pattern, "outbox", "technique", all)).toMatchObject({
+      becomesGlobal: true,
+      keepsOldName: true,
+    });
     expect(
-      editConceptQuestion(pattern, "outbox table", "project_pattern"),
-    ).toBeNull();
-    expect(
-      editConceptQuestion(concept({ name: "x" }), "y", "library"),
-    ).toBeNull();
+      conceptEdit(pattern, "outbox", "project_pattern", all).becomesGlobal,
+    ).toBe(false);
   });
 });

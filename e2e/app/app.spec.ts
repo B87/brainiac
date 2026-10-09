@@ -298,37 +298,51 @@ test("Settings → Explanations has a page for each part", async ({ page }) => {
 
 test("Concepts You Know edits a concept's name and kind", async ({ page }) => {
   await openSettings(page, "Concepts You Know");
-  // A concept known everywhere is not offered the project pattern kind.
   await page.getByRole("button", { name: "Edit serde" }).click();
+  const dialog = page.getByRole("dialog", { name: "Edit Concept" });
+  // A concept known everywhere cannot become a project pattern, and says why.
   await expect(
-    page.getByRole("combobox", { name: "Kind" }).locator("option"),
-  ).toHaveCount(5);
-  await page.getByRole("textbox", { name: "Name" }).fill("serde json");
-  await page.getByRole("button", { name: "Save" }).click();
+    dialog.getByRole("radio", { name: /Project pattern/ }),
+  ).toBeDisabled();
+  const save = dialog.getByRole("button", { name: "Save" });
+  await expect(save).toBeDisabled();
+  // Another concept's name is refused before anything is sent.
+  await dialog.getByLabel("Name").fill("Async and await");
+  await dialog.getByRole("radio", { name: /Language feature/ }).check();
+  await expect(dialog.getByRole("alert")).toContainText("Merge into One");
+  await expect(save).toBeDisabled();
+  await dialog.getByLabel("Name").fill("serde json");
+  await dialog.getByRole("radio", { name: /Library/ }).check();
+  await expect(dialog.getByText("stays with it as another name")).toBeVisible();
+  await save.click();
   let edits = await calls(page, "edit_concept");
   expect(edits.at(-1)).toMatchObject({
     id: "concept-1",
     name: "serde json",
     kind: "library",
   });
+  await expect(dialog).toBeHidden();
 
-  // A project pattern may become a technique, after asking: it is then
-  // known in every repository.
+  // A project pattern may become a technique; the dialog says what that
+  // does and the button says so too.
   await page
     .getByRole("button", { name: "Edit Retry until the lock is free" })
     .click();
-  await expect(
-    page.getByRole("combobox", { name: "Kind" }).locator("option"),
-  ).toHaveCount(6);
-  await page.getByRole("combobox", { name: "Kind" }).selectOption("technique");
-  await page.getByRole("button", { name: "Save" }).click();
+  await dialog.getByRole("radio", { name: /Technique/ }).check();
+  await expect(dialog.getByRole("status")).toContainText(
+    "known in every repository",
+  );
+  await dialog
+    .getByRole("button", { name: "Save and Know Everywhere" })
+    .click();
   edits = await calls(page, "edit_concept");
   expect(edits.at(-1)).toMatchObject({ id: "concept-2", kind: "technique" });
 
-  // Cancel changes nothing.
+  // Escape closes it and sends nothing.
   await page.getByRole("button", { name: "Edit async and await" }).click();
-  await page.getByRole("textbox", { name: "Name" }).fill("something else");
-  await page.getByRole("button", { name: "Cancel" }).click();
+  await dialog.getByLabel("Name").fill("something else");
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
   expect(await calls(page, "edit_concept")).toHaveLength(2);
 });
 
