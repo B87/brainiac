@@ -1075,9 +1075,15 @@
   .diff-comment-btn:focus-visible {
     opacity: 1;
   }
+  /* Commenting off: shown faintly on hover only; the patch's toolbar says why. */
   .diff-comment-btn:disabled {
     background: var(--muted);
-    opacity: 0.6;
+  }
+  .diff-row:hover .diff-comment-btn:disabled,
+  .half:hover .diff-comment-btn:disabled,
+  .diff-row[data-selected] .diff-comment-btn:disabled,
+  .half[data-selected] .diff-comment-btn:disabled {
+    opacity: 0.45;
   }
   .diff-extra {
     font-family: var(--sans);

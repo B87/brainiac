@@ -213,6 +213,16 @@ export default function DiffView({
       </div>
       <div className="flex min-h-[34px] min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 px-4 pb-2">
         {extra}
+        {annotate?.note && !annotate.onComment && (
+          // A disabled button shows no tooltip, so why commenting is off is
+          // said here, once, rather than on each line's "+".
+          <span
+            className="min-w-0 truncate text-[12px] text-muted"
+            title={annotate.note}
+          >
+            Comments off: {annotate.note}
+          </span>
+        )}
         <span className="flex-1" />
         {hunkCount > 1 && (
           <span className="flex items-center gap-1.5 text-[12px] text-muted">
