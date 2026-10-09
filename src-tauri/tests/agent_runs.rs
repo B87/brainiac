@@ -24,10 +24,12 @@ use brainiac_lib::credentials::{CommandRunner, CredentialService, MemoryStore};
 use brainiac_lib::db::{self, Db};
 use brainiac_lib::git::GitService;
 use brainiac_lib::models::{
-    AgentKind, AgentPayment, AgentProvider, AgentRun, AgentRunChangedEvent, ErrorCode, RunActivity,
-    RunCollection, RunDiffRequest, RunEventBody, RunOutcome, RunPermissions, RunPhase,
-    RunStartStep, SaveAgentCredentialRequest, SecretSource, StartRunRequest,
+    AgentKind, AgentPayment, AgentProvider, AgentRun, AgentRunChangedEvent,
+    AnswerCodeSharingRequest, ErrorCode, RunActivity, RunCollection, RunDiffRequest, RunEventBody,
+    RunOutcome, RunPermissions, RunPhase, RunStartStep, SaveAgentCredentialRequest, SecretSource,
+    StartRunRequest,
 };
+use brainiac_lib::sharing::CodeSharingService;
 use fake_engine::{git, FakeEngine, KEY};
 
 const SOCKET: &str = "/fake/docker.sock";
@@ -39,8 +41,8 @@ const OPENROUTER_KEY: &str = concat!(
     "v1-0123456789abcdef0123456789abcdef0123456789abcdef"
 );
 
-/// A profile as a user would leave it: its key saved, the agreement, its
-/// model, and a passed test on this Mac.
+/// A profile as a user would leave it: its key saved, its model, and a
+/// passed test on this Mac.
 async fn set_up(core: &Db, settings: &AgentSettingsService, id: &str, key: &str, model: &str) {
     let profile = settings.profile(id).await.unwrap();
     settings
@@ -57,7 +59,7 @@ async fn set_up(core: &Db, settings: &AgentSettingsService, id: &str, key: &str,
     let (profile_id, model) = (id.to_string(), model.to_string());
     core.call(move |conn| {
         conn.execute(
-            "UPDATE agent_profiles SET sends_code_agreed = 1, model = ?2 WHERE id = ?1",
+            "UPDATE agent_profiles SET model = ?2 WHERE id = ?1",
             rusqlite::params![profile_id, model],
         )?;
         conn.execute(
@@ -101,6 +103,7 @@ struct Harness {
     server: tokio::task::JoinHandle<()>,
     runs: Arc<AgentRunService>,
     settings: Arc<AgentSettingsService>,
+    sharing: Arc<CodeSharingService>,
     core: Db,
     events: Arc<Mutex<Vec<AgentRunChangedEvent>>>,
     start: String,
@@ -146,6 +149,18 @@ impl Harness {
         .await
         .unwrap();
         set_up(&core, &settings, CLAUDE_CODE, KEY, "").await;
+        // The repository's code may go to Anthropic (SPEC.md, section 13,
+        // Code sharing), as New run asked the first time.
+        let sharing = CodeSharingService::new(core.clone(), Arc::new(|| {}));
+        sharing
+            .answer(AnswerCodeSharingRequest {
+                repository_id: "repo-1".into(),
+                provider: AgentProvider::Anthropic,
+                allowed: true,
+                workspace_id: None,
+            })
+            .await
+            .unwrap();
 
         let engine = FakeEngine::default();
         engine.get().volumes = tmp.path().join("volumes");
@@ -160,6 +175,7 @@ impl Harness {
             runs: AgentRunService::new(
                 history,
                 Arc::clone(&settings),
+                Arc::clone(&sharing),
                 credentials,
                 artifacts,
                 Arc::new(RunRuntime::attach(
@@ -170,6 +186,7 @@ impl Harness {
                 Arc::new(move |event| seen.lock().unwrap().push(event)),
             ),
             settings,
+            sharing,
             core: core.clone(),
             events,
             tmp,
@@ -318,6 +335,7 @@ impl Harness {
         AgentRunService::new(
             Db::open_store(&data.join(db::HISTORY_FILE), &db::HISTORY).unwrap(),
             Arc::clone(&self.settings),
+            Arc::clone(&self.sharing),
             Arc::new(CredentialService::new(
                 Arc::new(MemoryStore::default()),
                 CommandRunner::new(data.join("commands")),
@@ -985,6 +1003,28 @@ async fn an_opencode_run_gets_its_provider_key_model_and_permissions() {
         "anthropic/claude-sonnet-5-5",
     )
     .await;
+    // OpenRouter is another provider: the repository is asked again, and a
+    // run before the answer is refused without a container.
+    let err = h
+        .start_with(
+            OPENROUTER,
+            "anthropic/claude-sonnet-5-5",
+            "hello",
+            RunPermissions::Ask,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ErrorCode::Conflict, "{err:?}");
+    assert!(err.message.contains("OpenRouter"), "{err:?}");
+    h.sharing
+        .answer(AnswerCodeSharingRequest {
+            repository_id: "repo-1".into(),
+            provider: AgentProvider::Openrouter,
+            allowed: true,
+            workspace_id: None,
+        })
+        .await
+        .unwrap();
     // OpenCode has no default of its own to fall back to.
     let err = h
         .start_with(OPENROUTER, "", "hello", RunPermissions::Ask)

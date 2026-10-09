@@ -580,7 +580,7 @@ impl HostJobService {
     /// Starts a job and returns at once; the window follows it by events.
     // `self: &Arc<Self>` lets the background task keep the service alive.
     /// `profile_id` is the profile Test runs; Add host's setup tests every
-    /// profile that is ready (its token or key, agreement, and model).
+    /// profile that is ready (its token or key, and model).
     pub async fn start(
         self: &Arc<Self>,
         host_id: &str,
@@ -694,7 +694,7 @@ impl HostJobService {
                 if profiles.is_empty() {
                     job.skip(
                         at,
-                        "Not run yet: no agent is set up. Add a token or key, and agree to send code, in Settings → Agents.",
+                        "Not run yet: no agent is set up. Add a token or key in Settings → Agents.",
                     );
                     return Ok(());
                 }

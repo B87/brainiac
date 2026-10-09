@@ -1,7 +1,6 @@
 //! Settings → Agents (SPEC.md, section 13): this Mac's engine and image,
 //! and the profiles: each an agent (Claude Code or OpenCode) with one model
-//! provider, how its runs are paid for, the agreement to send code to that
-//! provider, and its new runs' defaults.
+//! provider, how its runs are paid for, and its new runs' defaults.
 //!
 //! The token or key is never stored here. Like an account's token, it is
 //! read from its source through the credentials layer (owner
@@ -260,8 +259,7 @@ impl AgentSettingsService {
         })
     }
 
-    /// One profile's agreement and new runs' defaults: everything but its
-    /// token or key.
+    /// One profile's new runs' defaults: everything but its token or key.
     pub async fn save(&self, request: SaveAgentSettingsRequest) -> AppResult<AgentSettings> {
         let id = request.profile_id.clone();
         // Held so a credential save cannot interleave with this one.
@@ -276,22 +274,17 @@ impl AgentSettingsService {
         let memory = in_range("Memory in MiB", request.memory_mib, MEMORY_MIB)?;
         let workspace = in_range("The workspace in GiB", request.workspace_gib, WORKSPACE_GIB)?;
         let model = check_model(stored.agent, &request.model)?;
-        let (expected, agreed, permissions) = (
-            request.expected_version,
-            request.sends_code_agreed,
-            request.permissions,
-        );
+        let (expected, permissions) = (request.expected_version, request.permissions);
         let now = now_rfc3339();
         self.db
             .call(move |conn| {
                 let changed = conn.execute(
-                    "UPDATE agent_profiles SET sends_code_agreed = ?2, permissions = ?3,
-                       time_limit_minutes = ?4, cpus = ?5, memory_mib = ?6, workspace_gib = ?7,
-                       model = ?10, version = version + 1, updated_at = ?8
-                     WHERE id = ?1 AND version = ?9",
+                    "UPDATE agent_profiles SET permissions = ?2,
+                       time_limit_minutes = ?3, cpus = ?4, memory_mib = ?5, workspace_gib = ?6,
+                       model = ?9, version = version + 1, updated_at = ?7
+                     WHERE id = ?1 AND version = ?8",
                     params![
                         id,
-                        agreed,
                         permissions.as_str(),
                         time_limit,
                         cpus,
@@ -341,8 +334,7 @@ impl AgentSettingsService {
         self.get().await
     }
 
-    /// **Pay with**: a new token or key, or a new source for it. Changing
-    /// how runs are paid for asks again to agree to send code.
+    /// **Pay with**: a new token or key, or a new source for it.
     pub async fn save_credential(
         &self,
         request: SaveAgentCredentialRequest,
@@ -400,7 +392,6 @@ impl AgentSettingsService {
         let pending_cleanup = source != SecretSource::Store
             && (uncertain || old_pending == Some(CredentialPending::Cleanup));
         let cleanup = uncertain && !stored.credential.needs_approval;
-        let agreed = stored.sends_code_agreed && stored.payment == payment;
 
         if let Some(value) = &pasted {
             let (expected, id) = (request.expected_version, id.clone());
@@ -418,7 +409,7 @@ impl AgentSettingsService {
             let pending = pending_cleanup.then_some(CredentialPending::Cleanup);
             self.db
                 .call(move |conn| {
-                    commit_credential(conn, &id, payment, &source, revision, pending, agreed, &now)
+                    commit_credential(conn, &id, payment, &source, revision, pending, &now)
                 })
                 .await
         };
@@ -469,7 +460,6 @@ impl AgentSettingsService {
                     &SecretSource::None,
                     revision,
                     pending,
-                    false,
                     &now,
                 )
             })
@@ -710,7 +700,8 @@ pub fn run_missing(profile: &AgentProfile, host: &AgentHost) -> Vec<String> {
 }
 
 /// What stops a profile's runs on any host: the restored setup, the token
-/// or key, the agreement, and OpenCode's model (SPEC.md, Settings → Agents).
+/// or key, and OpenCode's model (SPEC.md, Settings → Agents). Whether a
+/// repository's code may be sent is asked for each repository (`sharing`).
 /// A host's own engine, image, and test are on its page.
 fn profile_missing(p: &AgentProfile) -> Vec<String> {
     let mut missing = Vec::new();
@@ -730,12 +721,6 @@ fn profile_missing(p: &AgentProfile) -> Vec<String> {
             AgentPayment::ApiKey => format!("Add an {} API key.", p.provider.name()),
         });
     }
-    if !p.sends_code_agreed {
-        missing.push(format!(
-            "Agree to send code and prompts to {}.",
-            destination(p.provider, p.payment)
-        ));
-    }
     if p.agent == AgentKind::Opencode && p.model.is_empty() {
         missing.push("Choose the model new runs use.".to_string());
     }
@@ -743,7 +728,7 @@ fn profile_missing(p: &AgentProfile) -> Vec<String> {
 }
 
 const COLUMNS: &str = "id, agent, provider, payment, secret_source, credential_revision,
-    source_approved, credential_pending, credential_saved_at, sends_code_agreed, permissions,
+    source_approved, credential_pending, credential_saved_at, permissions,
     time_limit_minutes, cpus, memory_mib, workspace_gib, model, version";
 
 /// Claude Code first, then OpenCode by provider.
@@ -789,15 +774,14 @@ fn from_row(r: &Row<'_>) -> rusqlite::Result<AgentProfile> {
         },
         credential_saved_at: saved_at,
         credential_ageing: ageing,
-        sends_code_agreed: r.get(9)?,
-        permissions: parse(r.get(10)?)?,
-        time_limit_minutes: r.get(11)?,
-        cpus: r.get(12)?,
-        memory_mib: r.get(13)?,
-        workspace_gib: r.get(14)?,
-        model: r.get(15)?,
+        permissions: parse(r.get(9)?)?,
+        time_limit_minutes: r.get(10)?,
+        cpus: r.get(11)?,
+        memory_mib: r.get(12)?,
+        workspace_gib: r.get(13)?,
+        model: r.get(14)?,
         missing: Vec::new(),
-        version: r.get(16)?,
+        version: r.get(15)?,
     };
     profile.missing = profile_missing(&profile);
     Ok(profile)
@@ -861,14 +845,13 @@ fn commit_credential(
     source: &SecretSource,
     revision: i64,
     pending: Option<CredentialPending>,
-    agreed: bool,
     now: &str,
 ) -> AppResult<()> {
     let saved_at = (*source != SecretSource::None).then_some(now);
     conn.execute(
         "UPDATE agent_profiles SET payment = ?2, secret_source = ?3, credential_revision = ?4,
            source_approved = 1, credential_pending = ?5, credential_saved_at = ?6,
-           sends_code_agreed = ?7, version = version + 1, updated_at = ?8
+           version = version + 1, updated_at = ?7
          WHERE id = ?1",
         params![
             id,
@@ -877,7 +860,6 @@ fn commit_credential(
             revision,
             pending.as_ref().map(word),
             saved_at,
-            agreed,
             now
         ],
     )?;

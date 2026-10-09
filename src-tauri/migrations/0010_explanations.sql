@@ -1,0 +1,25 @@
+-- v0.6: explaining changes (SPEC.md, section 14, Boundaries and Settings →
+-- Explanations). The explanations themselves are in history.db.
+
+-- The concepts the reader knows (Got it). `key` is the name folded to
+-- lowercase with spaces and punctuation collapsed. A project pattern
+-- belongs to the repository it was learned in; other kinds have ''.
+-- Merge points one concept at another.
+CREATE TABLE known_concepts (
+  id             TEXT PRIMARY KEY,
+  kind           TEXT NOT NULL CHECK (kind IN ('language', 'library', 'system', 'project_pattern')),
+  name           TEXT NOT NULL,
+  key            TEXT NOT NULL,
+  repository_id  TEXT NOT NULL DEFAULT '',
+  merged_into    TEXT REFERENCES known_concepts (id) ON DELETE SET NULL,
+  learned_at     TEXT NOT NULL,
+  -- The explanation's own words for it, and where it was learned: the
+  -- subject's short label ("287bdc9", "feature/x", "#42", "run 4f2a91c0"),
+  -- its repository, and the explanation (in history.db, so not a key).
+  description    TEXT NOT NULL DEFAULT '',
+  learned_from   TEXT NOT NULL DEFAULT '',
+  learned_in     TEXT NOT NULL DEFAULT '',
+  explanation_id TEXT,
+  UNIQUE (kind, key, repository_id),
+  CHECK ((kind = 'project_pattern') = (repository_id <> ''))
+);

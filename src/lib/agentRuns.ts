@@ -223,7 +223,6 @@ export function settingsRequest(
   return {
     profile_id: profile.id,
     expected_version: profile.version,
-    sends_code_agreed: profile.sends_code_agreed,
     permissions: profile.permissions,
     time_limit_minutes: profile.time_limit_minutes,
     cpus: profile.cpus,
@@ -513,10 +512,29 @@ export function timeLeft(deadline: string, now = Date.now()): string {
 }
 
 /** "Uses your Claude plan", or that the provider reports no cost. */
-export function costLabel(payment: AgentPayment): string {
-  return payment === "claude_plan"
-    ? "Uses your Claude plan"
-    : "Cost unavailable";
+/** The cost a run's agent last reported, from its journal. */
+export function reportedCost(
+  events: RunEvent[],
+): { micros: number; currency: string } | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i];
+    if (event.type === "usage")
+      return { micros: event.cost_micros, currency: event.currency };
+  }
+  return null;
+}
+
+export function costLabel(
+  payment: AgentPayment,
+  cost: { micros: number; currency: string } | null = null,
+): string {
+  if (payment === "claude_plan") return "Uses your Claude plan";
+  if (!cost) return "Cost unavailable";
+  const amount = cost.micros / 1_000_000;
+  const digits = amount < 0.1 ? 3 : 2;
+  return cost.currency === "USD"
+    ? `$${amount.toFixed(digits)}`
+    : `${amount.toFixed(digits)} ${cost.currency}`;
 }
 
 export type ToolState = {

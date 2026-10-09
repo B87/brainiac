@@ -54,6 +54,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0009_agent_runs",
         include_str!("../migrations/0009_agent_runs.sql"),
     ),
+    (
+        "0010_explanations",
+        include_str!("../migrations/0010_explanations.sql"),
+    ),
+    (
+        "0011_code_sharing",
+        include_str!("../migrations/0011_code_sharing.sql"),
+    ),
 ];
 
 /// How many daily backups to keep.
@@ -137,6 +145,14 @@ pub const HISTORY: Store = Store {
         (
             "0004_agent_runs",
             include_str!("../migrations/history/0004_agent_runs.sql"),
+        ),
+        (
+            "0005_explanations",
+            include_str!("../migrations/history/0005_explanations.sql"),
+        ),
+        (
+            "0006_pull_request_explanations",
+            include_str!("../migrations/history/0006_pull_request_explanations.sql"),
         ),
     ],
     backups: Backups::Every { days: 7, keep: 2 },

@@ -130,9 +130,9 @@ A coding agent's command-line tool run in a container, on the Mac or a remote ho
   4. The remote host gate above, on a real host with the packaged app. Install on a fresh host is verified (8 October, with `pnpm tauri:dev`), including replacing a controller an earlier setup left running; Upgrade across a protocol change, removal, and the Mac-sleep proof are not.
   5. After 0.5.0, in 0.5.x: **Export files…** for a failed collection (moved out of 0.5.0 in `SPEC.md` on 8 October), the Workspace full state (nothing detects a full filesystem yet), workspace use in the side panel (only the limit is shown), and New run from a repository's page (only Runs, the palette, and the menu open the dialog).
   6. The collector's 200 MB limit against a real large file. Fixed on 8 October, with tests: the controller started once when many runs reconnect, journal events kept once after a crash between the mirror's append and its cursor, the helper container removed when a launch is cancelled during it (no test: it needs Docker), a memory floor of 3 GB, Collect work offered only for interrupted runs, Upgrade's check of live runs on a controller of an older protocol, and binary files, links, executable bits, and a deleted `.gitignore` in the collector. Test gaps left for 0.5.x: nothing exercises the Docker layer except the opt-in real-engine test; the protocol against oversized or partial lines; the controller's SIGTERM, idle exit, and journal-full paths; retention.
-  7. The exit gate below, by hand, for a week; then `pnpm release 0.5.0`.
+  7. Released as 0.5.0 on 8 October 2026, before the week of use; the exit gate below is still to do by hand, alongside v0.6.
 - **Open:** Anthropic's answer on the subscription token (the API key does not wait for it; the plan option is compiled in only for debug builds until then); a launchd agent so runs survive logging out; keeping the key out of the agent's processes for repositories the user does not trust; file paths in the left-out list and the diff are not redacted, so an agent naming a file after the key would put it in `history.db` (within the stated best-effort limit; to note in `SPEC.md`).
-- **Also pending, outside v0.5:** 0.4.0's draft release is built but not published (`pnpm release:publish v0.4.0`); the v0.4 and secrets exit gates by hand; v0.2.x's exit gate against a packaged build.
+- **Also pending, outside v0.5:** the v0.4 and secrets exit gates by hand; v0.2.x's exit gate against a packaged build.
 
 Local and remote use the same controller/session contract; client disconnect or app restart does not interrupt a healthy controller. Mac sleep suspends local execution, while remote execution remains independent of the Mac.
 
@@ -140,14 +140,15 @@ Local and remote use the same controller/session contract; client disconnect or 
 
 ### v0.6 — Explaining changes
 
-Brainiac explains a commit, a branch, or a run's result to the person reading it, so they learn the software being built: a summary, a guided tour of the files in reading order, notes beside the lines, the concepts the change relies on, and questions to check understanding, each claim citing the code or the project's docs. An agent writes it in a run of its own kind on v0.5's machinery; Brainiac checks it and shows it beside the diff. Design: [`design/code-explanations.md`](design/code-explanations.md). Its spike needs no code and can run during v0.5's week of use; building starts after 0.5.0.
+Brainiac explains a commit, a branch, a run's result, or a pull request to the person reading it, so they learn the software being built: a summary, a guided tour of the files in reading order, notes beside the lines, the concepts the change relies on, and questions to check understanding, each claim citing the code or the project's docs. An agent writes it in a run of its own kind on v0.5's machinery; Brainiac checks it and shows it beside the diff. Design: [`design/code-explanations.md`](design/code-explanations.md). Started on 8 October 2026: its behavior is [`SPEC.md`](../SPEC.md) section 14 and its build [`architecture.md`](architecture.md), Explaining changes — v0.6.
 
 - [ ] Spike: ordinary runs on this repository with the explain prompt over about five commits, with Claude Code and OpenCode, every note scored by hand, and the time and cost recorded. A first round with Claude Code (Opus and Sonnet) ran on 8 October 2026 (`design/code-explanations.md`, Spike, first round); the hand scoring, OpenCode, and a run inside Brainiac are left.
-- [ ] Explain runs: a run kind with Brainiac's prompt (subject, reader level, known concepts, depth, schema), a short time limit, no review, no place in Runs, and only `.brainiac/explanation.json` collected; the file checked against its schema and every quote verified, with one follow-up turn to fix errors.
-- [ ] The Explain dialog, the panel (summary, Tour, Concepts, Check yourself), notes in the patch, reading order in the file list, progress from the journal, staleness, code–docs disagreement, Save as note, and Settings → Explanations, for commits, branches, and collected run results.
-- [ ] 0.6.x: working-tree changes, pull requests, a question about one note as a follow-up prompt, and a direct model call for small changes and local models.
+- [x] Explain runs: a run kind with Brainiac's prompt (subject, reader level, known concepts, depth, schema), a short time limit, no review, no place in Runs, and only `.brainiac/explanation.json` collected; the file checked against its schema and every quote verified, with one follow-up turn to fix errors.
+- [x] The Explain dialog, the panel (summary, Tour, Concepts, Check yourself), notes in the patch, reading order in the file list, progress from the journal, staleness, code–docs disagreement, Save as note, and Settings → Explanations, for commits, branches, and collected run results.
+- [x] Pull requests, moved from 0.6.x on 9 October 2026: Explain in Files Changed, one explanation shared with a branch of the same changes, notes marked as staying on this Mac among threads and drafts, reading order with the viewed marks as progress, the Overview's line, Fetch now for a head not here, and no pull request from a fork.
+- [ ] 0.6.x: working-tree changes, a question about one note as a follow-up prompt, and a direct model call for small changes and local models.
 
-**Exit gate:** for a week, read every commit and agent result in Brainiac with an explanation, with Claude Code and with OpenCode. Most notes are correct and point to the right lines; no claim without a verified source is shown; a change made after explaining marks only the affected notes; nothing reaches a provider from a repository whose answer was no; the repository is unchanged; and the time and cost of each explanation are known.
+**Exit gate:** for a week, read every commit, agent result, and pull request you review in Brainiac with an explanation, with Claude Code and with OpenCode. Most notes are correct and point to the right lines; no claim without a verified source is shown; a change made after explaining marks only the affected notes; nothing reaches a provider from a repository whose answer was no; the repository is unchanged; and the time and cost of each explanation are known.
 
 ### v0.7 — Content imports and global capture
 
@@ -237,7 +238,7 @@ Phase 1 (local runs and review) is in [`SPEC.md`](../SPEC.md) section 13 and [`a
 
 ### Explaining changes — v0.6
 
-The UX, the explain run and its checks, the phases, the spike, and the open questions are in [`design/code-explanations.md`](design/code-explanations.md).
+Started: the behavior is in [`SPEC.md`](../SPEC.md) section 14 and the build in [`architecture.md`](architecture.md), Explaining changes — v0.6. The reasons, the spike, and the open questions remain in [`design/code-explanations.md`](design/code-explanations.md).
 
 ### Additions of v0.7 onward to storage and contracts
 

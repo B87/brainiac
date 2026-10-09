@@ -56,6 +56,13 @@ pub struct Engine {
     pub preview_delay: Duration,
     /// Previews whose container was never started: the run was stopping.
     pub previews_cancelled: usize,
+    /// What an explain prompt writes to `.brainiac/explanation.json`, one
+    /// per turn in order; with none left, the agent writes nothing.
+    pub explanations: std::collections::VecDeque<String>,
+    /// The session's cost the agent reports after each turn, in dollars.
+    pub cost: Option<f64>,
+    /// Files read from containers, by path.
+    pub reads: Vec<String>,
 }
 
 #[derive(Clone, Default)]
@@ -226,6 +233,29 @@ impl Workloads for FakeEngine {
         Ok(manifest)
     }
 
+    async fn read_file(
+        &self,
+        _: &str,
+        container_id: &str,
+        path: &str,
+        max_bytes: u64,
+    ) -> AppResult<Option<Vec<u8>>> {
+        let run_id = container_id.trim_start_matches("container-");
+        let work = {
+            let mut engine = self.get();
+            engine.reads.push(path.to_string());
+            engine.volumes.join(run_id)
+        };
+        let rel = path.trim_start_matches("/workspace/");
+        match std::fs::read(work.join(rel)) {
+            Ok(bytes) if bytes.len() as u64 > max_bytes => Err(
+                brainiac_lib::models::AppError::validation("The file is over its limit."),
+            ),
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(_) => Ok(None),
+        }
+    }
+
     async fn discard(
         &self,
         _: &str,
@@ -251,7 +281,8 @@ impl Workloads for FakeEngine {
 /// "ask" asks a permission, "hang" works until cancelled, "die" exits,
 /// "fail-auth" is refused, "echo-secret" repeats the key in two pieces,
 /// "edit" changes files in the workspace ("edit and report" also reports
-/// the edit as a diff).
+/// the edit as a diff), and a prompt naming `.brainiac/explanation.json`
+/// writes the engine's next explanation there.
 pub async fn fake_agent(
     engine: FakeEngine,
     work: PathBuf,
@@ -335,7 +366,24 @@ pub async fn fake_agent(
                         .to_string();
                     engine.get().prompts.push(text.clone());
                     let refusal_as_reply = engine.get().refusal_as_reply;
-                    if refusal_as_reply {
+                    if text.contains(".brainiac/explanation.json") {
+                        let (next, cost) = {
+                            let mut engine = engine.get();
+                            (engine.explanations.pop_front(), engine.cost)
+                        };
+                        if let Some(next) = next {
+                            std::fs::create_dir_all(work.join(".brainiac")).unwrap();
+                            std::fs::write(work.join(".brainiac/explanation.json"), next).unwrap();
+                        }
+                        if let Some(cost) = cost {
+                            say(json!({ "jsonrpc": "2.0", "method": "session/update", "params": { "sessionId": "sess-1",
+                                "update": { "sessionUpdate": "usage_update", "used": 1000, "size": 200000,
+                                    "cost": { "amount": cost, "currency": "USD" } } } }))
+                            .await;
+                        }
+                        say(update("written")).await;
+                        say(json!({ "jsonrpc": "2.0", "id": id, "result": { "stopReason": "end_turn" } })).await;
+                    } else if refusal_as_reply {
                         say(update(
                             "Failed to authenticate. API Error: 401 {\"type\":\"error\"}",
                         ))

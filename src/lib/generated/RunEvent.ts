@@ -25,4 +25,4 @@ outcome: string,
 /**
  * `user`, `auto` (Act without asking), or `run` (the run ended).
  */
-by: string, } | { "type": "turn_ended", turn: number, reason: string, message: string | null, } | { "type": "notice", text: string, } | { "type": "stopping", outcome: RunOutcome, } | { "type": "ended", outcome: RunOutcome, message: string | null, });
+by: string, } | { "type": "turn_ended", turn: number, reason: string, message: string | null, } | { "type": "usage", turn: number, cost_micros: number, currency: string, } | { "type": "notice", text: string, } | { "type": "stopping", outcome: RunOutcome, } | { "type": "ended", outcome: RunOutcome, message: string | null, });

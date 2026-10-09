@@ -75,6 +75,11 @@ snapshot_accepted: boolean,
  */
 cleanup_pending: string | null, 
 /**
+ * An explain run (SPEC.md, section 14): its conversation is How it was
+ * written, read only, and it is not listed in Runs.
+ */
+explain: boolean, 
+/**
  * The journal sequence mirrored so far.
  */
 cursor: number, created_at: string, updated_at: string, version: number, 

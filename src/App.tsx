@@ -57,8 +57,15 @@ import {
   relocatedNotice,
   relocationQuestion,
 } from "./lib/repo";
-import type { SettingsSection } from "./lib/settings";
+import { OPEN_SETTINGS_EVENT, type SettingsSection } from "./lib/settings";
 import { SIDE_PANEL_KEY, SidePanelState } from "./lib/sidePanel";
+import {
+  NOTICE_EVENT,
+  OPEN_RUN_EVENT,
+  OPEN_SUBJECT_EVENT,
+  requestToggleExplanation,
+  type SubjectToOpen,
+} from "./lib/windowEvents";
 import { workspaceRepositories } from "./lib/workspace";
 
 /** The section open when Brainiac quit, reopened at launch (SPEC.md, Main window v0.2). */
@@ -473,6 +480,43 @@ export default function App() {
     [fetching, reloadSnapshot],
   );
 
+  // Views deep in the window open Settings, a run's conversation, or say
+  // something in the notice line through window events (v0.6).
+  useEffect(() => {
+    const settings = (e: Event) =>
+      openSettings((e as CustomEvent<SettingsSection>).detail);
+    const run = (e: Event) =>
+      showView({ kind: "runs", runId: (e as CustomEvent<string>).detail });
+    const say = (e: Event) => setNotice((e as CustomEvent<string>).detail);
+    const subject = (e: Event) => {
+      const s = (e as CustomEvent<SubjectToOpen>).detail;
+      if (s.kind === "run") showView({ kind: "runs", runId: s.reference });
+      else if (s.kind === "pull_request")
+        // Back returns to where Open was pressed, such as Settings.
+        setView((back) => ({
+          kind: "pullRequest",
+          reference: s.reference,
+          back,
+        }));
+      else
+        showView({
+          kind: "repository",
+          id: s.repositoryId,
+          focus: { tab: "history", commitId: s.reference },
+        });
+    };
+    window.addEventListener(OPEN_SETTINGS_EVENT, settings);
+    window.addEventListener(OPEN_RUN_EVENT, run);
+    window.addEventListener(OPEN_SUBJECT_EVENT, subject);
+    window.addEventListener(NOTICE_EVENT, say);
+    return () => {
+      window.removeEventListener(OPEN_SETTINGS_EVENT, settings);
+      window.removeEventListener(OPEN_RUN_EVENT, run);
+      window.removeEventListener(OPEN_SUBJECT_EVENT, subject);
+      window.removeEventListener(NOTICE_EVENT, say);
+    };
+  }, [openSettings, showView]);
+
   // A fetch notice fades after a few seconds.
   useEffect(() => {
     if (!notice) return;
@@ -716,6 +760,7 @@ export default function App() {
       if (e.id === "toggle_source") setLivePreview(!livePreviewRef.current);
       if (e.id === "toggle_sidebar") toggleSidebarRef.current();
       if (e.id === "toggle_context") toggleSidePanelRef.current();
+      if (e.id === "toggle_explanation") requestToggleExplanation();
       if (e.id === "export") void actions.current.exportNow();
       if (e.id === "restore") setDialog("restore");
       if (e.id === "settings") actions.current.openSettings();

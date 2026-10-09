@@ -14,7 +14,11 @@
  */
 import { useEffect, useRef } from "react";
 
-/** A binding: `"j"`, `"ArrowDown"`, `"["`, `"/"`, or with `mod+` for ⌘ (`"mod+1"`). */
+/**
+ * A binding: `"j"`, `"ArrowDown"`, `"["`, `"/"`, with `mod+` for ⌘ (`"mod+1"`),
+ * or with `shift+` for a shifted letter (`"shift+e"`). A shifted letter that
+ * nothing binds as `shift+` goes to its plain binding.
+ */
 export type KeyMap = Record<string, (e: KeyboardEvent) => void>;
 
 type Registration = { map: { current: KeyMap } };
@@ -73,6 +77,14 @@ export function bindingOf(
   return key;
 }
 
+/** `shift+x` for a shifted letter, tried before its plain binding. */
+export function shiftedBindingOf(
+  e: Pick<KeyboardEvent, "key" | "altKey" | "ctrlKey" | "metaKey" | "shiftKey">,
+): string | null {
+  if (!e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return null;
+  return /^[a-z]$/i.test(e.key) ? `shift+${e.key.toLowerCase()}` : null;
+}
+
 /** Whether the app may take this key press, or it belongs to what has focus. */
 export function shortcutAllowed(
   binding: string,
@@ -113,10 +125,10 @@ function dispatch(e: KeyboardEvent) {
   };
   const target = e.target instanceof Element ? (e.target as HTMLElement) : null;
   if (!shortcutAllowed(binding, target, ctx)) return;
-  const handler = pickHandler(
-    binding,
-    registrations.map((r) => r.map.current),
-  );
+  const maps = registrations.map((r) => r.map.current);
+  const shifted = shiftedBindingOf(e);
+  const handler =
+    (shifted && pickHandler(shifted, maps)) || pickHandler(binding, maps);
   if (handler) {
     e.preventDefault();
     handler(e);

@@ -54,6 +54,9 @@ const SUSPEND_GAP: Duration = Duration::from_secs(15);
 const MAX_INCLUDE: usize = 1000;
 /// Memory for the collector's container, which hashes files one at a time.
 const COLLECTOR_MEMORY_MIB: u32 = 2048;
+/// Where an explain run's agent writes its explanation, and its limit.
+pub const EXPLANATION_PATH: &str = "/workspace/.brainiac/explanation.json";
+const MAX_EXPLANATION_BYTES: u64 = 2 * 1024 * 1024;
 /// The shortest and longest time limits a run may have.
 const MIN_TIME_LIMIT: u64 = 1;
 const MAX_TIME_LIMIT: u64 = 8 * 60 * 60;
@@ -616,6 +619,10 @@ impl<W: Workloads> Controller<W> {
                 .build_image(&socket, &tag, &hex)
                 .await
                 .map(|id| Response::Image { id }),
+            Request::ReadExplanation { run_id } => self
+                .read_explanation(&run_id)
+                .await
+                .map(|text| Response::Explanation { text }),
             Request::EmergencyStop => {
                 self.emergency_stop().await;
                 Ok(Response::Done)
@@ -1284,6 +1291,32 @@ impl<W: Workloads> Controller<W> {
         inner.previewing = false;
         inner.cancel_preview = None;
         result
+    }
+
+    /// An explain run's file, from its agent's container, while the session
+    /// waits for a prompt or after it stopped and before Discard.
+    async fn read_explanation(&self, run_id: &str) -> AppResult<Option<String>> {
+        let run = self.run(run_id)?;
+        let (socket, container) = {
+            let inner = run.lock();
+            if inner.launching {
+                return Err(conflict("The run is still starting."));
+            }
+            let Some(container) = inner.record.container_id.clone() else {
+                return Err(conflict("The run has no container to read from."));
+            };
+            (inner.record.engine_socket.clone(), container)
+        };
+        let bytes = self
+            .workloads
+            .read_file(&socket, &container, EXPLANATION_PATH, MAX_EXPLANATION_BYTES)
+            .await?;
+        bytes
+            .map(|b| {
+                String::from_utf8(b)
+                    .map_err(|_| AppError::validation("The explanation's file is not UTF-8."))
+            })
+            .transpose()
     }
 
     async fn discard(&self, run_id: &str, fallback_image: Option<String>) -> AppResult<()> {

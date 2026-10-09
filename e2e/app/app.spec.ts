@@ -253,12 +253,27 @@ async function openSettings(page: Page, section: string) {
   await page.evaluate(() => window.emitEvent("menu", { id: "settings" }));
   await page
     .getByRole("navigation", { name: "Settings" })
-    .getByRole("button", { name: section })
+    .getByRole("button", { name: section, exact: true })
     .click();
   await expect(
     page.getByRole("heading", { name: section, level: 1 }),
   ).toBeVisible();
 }
+
+test("Settings → Explanations has a page for each part", async ({ page }) => {
+  await openSettings(page, "Agent and Depth");
+  await expect(page.getByText("Brief, Claude Code's model")).toBeVisible();
+  await openSettings(page, "Code Sharing");
+  await expect(page.getByText("No repository asked yet.")).toBeVisible();
+  await openSettings(page, "Concepts You Know");
+  await expect(page.getByText("· 3", { exact: true })).toBeVisible();
+  await page.getByLabel("Filter concepts").fill("serde");
+  await expect(page.getByText("Turns Rust values into JSON")).toBeVisible();
+  await expect(page.getByText("async and await")).toBeHidden();
+  await openSettings(page, "Stored Explanations");
+  await expect(page.getByRole("button", { name: "Delete All…" })).toBeVisible();
+  await expect(page.getByText("Fix installing over a running")).toBeVisible();
+});
 
 test("Settings shows the vault and turns note IDs off", async ({ page }) => {
   await openSettings(page, "Notes and Search");
@@ -325,7 +340,7 @@ test("Settings → Agents chooses This Mac's engine on its page and saves a past
   await expect(page.getByText(key)).toBeHidden();
 });
 
-test("Settings → Agents lists four agents, and OpenCode · OpenRouter's page saves its key, agreement, and model", async ({
+test("Settings → Agents lists four agents, and OpenCode · OpenRouter's page saves its key and model", async ({
   page,
 }) => {
   await openSettings(page, "Agents");
@@ -358,14 +373,9 @@ test("Settings → Agents lists four agents, and OpenCode · OpenRouter's page s
   await expect(page.getByText("API key · Keychain")).toBeVisible();
   await expect(page.getByText("Add an OpenRouter API key.")).toBeHidden();
 
-  await page
-    .getByRole("switch", {
-      name: /Send code and prompts from runs to OpenRouter, with an API key/,
-    })
-    .check();
-  expect((await calls(page, "save_agent_settings")).at(-1)).toMatchObject({
-    request: { profile_id: "opencode-openrouter", sends_code_agreed: true },
-  });
+  await expect(
+    page.getByText(/Runs send code to OpenRouter, with an API key/),
+  ).toBeVisible();
   await expect(page.getByText("Choose the model new runs use.")).toBeVisible();
   const model = page.getByLabel("Model");
   await expect(model).toHaveAttribute("placeholder", "Required");
@@ -416,11 +426,24 @@ test("New run offers an OpenCode agent once it is ready on This Mac, and needs i
   await expect(
     newRun.getByText("Choose a model: OpenCode has no default."),
   ).toBeVisible();
+  // The first run of this repository asks whether its code may go to the
+  // provider (SPEC.md, section 13, Code sharing).
   await expect(
-    newRun.getByRole("button", { name: "Start run" }),
+    newRun.getByText("Send this repository's code to OpenRouter?"),
+  ).toBeVisible();
+  await expect(
+    newRun.getByRole("button", { name: "Allow and start" }),
   ).toBeDisabled();
   await model.fill("openai/gpt-6.1-sol");
-  await newRun.getByRole("button", { name: "Start run" }).click();
+  await newRun.getByRole("button", { name: "Allow and start" }).click();
+  expect((await calls(page, "answer_code_sharing")).at(-1)).toMatchObject({
+    request: {
+      repository_id: "repo-1",
+      provider: "openrouter",
+      allowed: true,
+      workspace_id: null,
+    },
+  });
   expect((await calls(page, "start_agent_run")).at(-1)).toMatchObject({
     request: {
       profile_id: "opencode-openrouter",
@@ -510,7 +533,7 @@ test("Add host trusts the key and follows its setup as steps, and New run waits 
   await newRun
     .getByPlaceholder("What should the agent do?")
     .fill("Fix the flaky test");
-  await newRun.getByRole("button", { name: "Start run" }).click();
+  await newRun.getByRole("button", { name: "Allow and start" }).click();
   await expect(newRun).toBeHidden();
   const starting = page.getByRole("region", { name: "Starting the run" });
   await expect(starting.getByText("Starting on runner.example")).toBeVisible();
@@ -780,7 +803,7 @@ test("Settings checks a value before saving it, and saves it when the field is l
   // Leaving Settings from the menu, with no blur, still saves what was typed.
   await page
     .getByRole("navigation", { name: "Settings" })
-    .getByRole("button", { name: "Repositories" })
+    .getByRole("button", { name: "Repositories", exact: true })
     .click();
   await page.getByLabel("Stop a fetch after").fill("120");
   await page.evaluate(() => window.emitEvent("menu", { id: "show_today" }));

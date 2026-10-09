@@ -9,6 +9,7 @@ import {
   type RefsResult,
 } from "../lib/ipc";
 import { step, useKeys } from "../lib/keys";
+import { usePref } from "../lib/prefs";
 import {
   avatarTone,
   decorations,
@@ -18,7 +19,13 @@ import {
 } from "../lib/repo";
 import { createLatest } from "../lib/stale";
 import CommitDetails from "./CommitDetails";
-import { BranchIcon, ChevronDown, SearchIcon, TagIcon } from "./icons";
+import {
+  BranchIcon,
+  ChevronDown,
+  SearchIcon,
+  SidebarIcon,
+  TagIcon,
+} from "./icons";
 import Popover from "./Popover";
 
 /** The branch or tag whose history is shown; a `RefEntry` fits. */
@@ -58,6 +65,14 @@ export default function HistoryTab({
   const [selectedId, setSelectedId] = useState<string | null>(initialCommitId);
   const [loading, setLoading] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
+  // While a commit's explanation panel is open, the commit list folds to a
+  // rail so the patch keeps its width; showing it anyway is remembered.
+  const [panelShown, setPanelShown] = useState(false);
+  const [listWithPanel, setListWithPanel] = usePref(
+    "brainiac.history.listWithPanel",
+    false,
+  );
+  const folded = panelShown && !listWithPanel;
   const latest = useRef(createLatest()).current;
   const filterRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -175,12 +190,43 @@ export default function HistoryTab({
 
   return (
     <div className="flex min-h-0 flex-1">
+      {folded && (
+        <div className="flex w-11 shrink-0 flex-col items-center border-r bg-panel pt-2.5">
+          <button
+            type="button"
+            className="btn btn-sm h-auto w-8 flex-col gap-1.5 px-0 py-2"
+            title="Show the commit list beside the explanation"
+            onClick={() => setListWithPanel(true)}
+          >
+            <SidebarIcon size={13} />
+            <span className="text-[11.5px] [writing-mode:vertical-rl]">
+              Commits
+            </span>
+          </button>
+        </div>
+      )}
+      {/* Kept mounted while folded, so its scroll position stays. */}
       <section
         aria-label="Commits"
-        className="flex w-[360px] shrink-0 flex-col border-r bg-panel"
+        className={
+          folded
+            ? "hidden"
+            : "flex w-[360px] shrink-0 flex-col border-r bg-panel"
+        }
       >
         <div className="flex flex-col gap-2 border-b px-3 py-2.5">
           <div className="flex items-center gap-2">
+            {panelShown && (
+              <button
+                type="button"
+                className="btn btn-sm btn-ghost w-6 px-0"
+                aria-label="Fold the commit list while the explanation is open"
+                title="Fold the commit list while the explanation is open"
+                onClick={() => setListWithPanel(false)}
+              >
+                <SidebarIcon size={13} />
+              </button>
+            )}
             <div className="relative min-w-0">
               <button
                 type="button"
@@ -293,6 +339,7 @@ export default function HistoryTab({
             commit={selected}
             onError={onError}
             onOpenInEditor={onOpenInEditor}
+            onPanelShown={setPanelShown}
             onSelectCommit={(id) => {
               if (commits.some((c) => c.id === id)) setSelectedId(id);
             }}

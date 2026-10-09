@@ -9,21 +9,28 @@ import type { AgentAccessStatus } from "./generated/AgentAccessStatus";
 import type { AgentEngine } from "./generated/AgentEngine";
 import type { AgentHost } from "./generated/AgentHost";
 import type { AgentHostPreview } from "./generated/AgentHostPreview";
+import type { AgentProvider } from "./generated/AgentProvider";
 import type { AgentRun } from "./generated/AgentRun";
 import type { AgentRunChangedEvent } from "./generated/AgentRunChangedEvent";
 import type { AgentRunList } from "./generated/AgentRunList";
 import type { AgentSettings } from "./generated/AgentSettings";
 import type { AgentTestResult } from "./generated/AgentTestResult";
+import type { AnswerCodeSharingRequest } from "./generated/AnswerCodeSharingRequest";
 import type { AppError } from "./generated/AppError";
 import type { ApproveAgentHostRequest } from "./generated/ApproveAgentHostRequest";
 import type { AppSnapshot } from "./generated/AppSnapshot";
+import type { BranchComparison } from "./generated/BranchComparison";
 import type { Cell } from "./generated/Cell";
 import type { CellValue } from "./generated/CellValue";
 import type { ChangesResult } from "./generated/ChangesResult";
+import type { CodeAnswer } from "./generated/CodeAnswer";
+import type { CodeAnswerScope } from "./generated/CodeAnswerScope";
+import type { CodeSharingQuestion } from "./generated/CodeSharingQuestion";
 import type { ColumnKind } from "./generated/ColumnKind";
 import type { CommentRequest } from "./generated/CommentRequest";
 import type { CommitDetail } from "./generated/CommitDetail";
 import type { CommitPage } from "./generated/CommitPage";
+import type { ConceptKind } from "./generated/ConceptKind";
 import type { Conversation } from "./generated/Conversation";
 import type { CreateNoteRequest } from "./generated/CreateNoteRequest";
 import type { CreateWorkspaceRequest } from "./generated/CreateWorkspaceRequest";
@@ -52,7 +59,14 @@ import type { DiffResult } from "./generated/DiffResult";
 import type { DiffSelector } from "./generated/DiffSelector";
 import type { DockerContainer } from "./generated/DockerContainer";
 import type { DockerContainers } from "./generated/DockerContainers";
+import type { ExplainDialog } from "./generated/ExplainDialog";
 import type { ExplainMode } from "./generated/ExplainMode";
+import type { ExplainSubject } from "./generated/ExplainSubject";
+import type { ExplanationChangedEvent } from "./generated/ExplanationChangedEvent";
+import type { ExplanationPlacement } from "./generated/ExplanationPlacement";
+import type { ExplanationRecord } from "./generated/ExplanationRecord";
+import type { ExplanationSettings } from "./generated/ExplanationSettings";
+import type { ExplanationSettingsView } from "./generated/ExplanationSettingsView";
 import type { ExportFormat } from "./generated/ExportFormat";
 import type { ExportRequest } from "./generated/ExportRequest";
 import type { ExportResult } from "./generated/ExportResult";
@@ -145,6 +159,7 @@ import type { SecretSource } from "./generated/SecretSource";
 import type { SecretsOverview } from "./generated/SecretsOverview";
 import type { SetRepositoryForgeRequest } from "./generated/SetRepositoryForgeRequest";
 import type { Settings } from "./generated/Settings";
+import type { StartExplanationRequest } from "./generated/StartExplanationRequest";
 import type { StartRunRequest } from "./generated/StartRunRequest";
 import type { StatementResult } from "./generated/StatementResult";
 import type { StatementRun } from "./generated/StatementRun";
@@ -186,21 +201,51 @@ export type { AgentSettings } from "./generated/AgentSettings";
 export type { AgentTest } from "./generated/AgentTest";
 export type { AgentTestResult } from "./generated/AgentTestResult";
 export type { AgentTestStep } from "./generated/AgentTestStep";
+export type { AnswerCodeSharingRequest } from "./generated/AnswerCodeSharingRequest";
 export type { Backlink } from "./generated/Backlink";
+export type { BranchComparison } from "./generated/BranchComparison";
 export type { ChangedFile } from "./generated/ChangedFile";
 export type { ChangedFileStatus } from "./generated/ChangedFileStatus";
 export type { ChangeEntry } from "./generated/ChangeEntry";
 export type { Check } from "./generated/Check";
 export type { CheckState } from "./generated/CheckState";
 export type { ChecksSummary } from "./generated/ChecksSummary";
+export type { CitedQuote } from "./generated/CitedQuote";
+export type { CodeAnswer } from "./generated/CodeAnswer";
+export type { CodeAnswerScope } from "./generated/CodeAnswerScope";
+export type { CodeConsent } from "./generated/CodeConsent";
+export type { CodeConsentState } from "./generated/CodeConsentState";
+export type { CodeSharingQuestion } from "./generated/CodeSharingQuestion";
 export type { Comment } from "./generated/Comment";
 export type { CommitFile } from "./generated/CommitFile";
 export type { CommitSummary } from "./generated/CommitSummary";
+export type { Concept } from "./generated/Concept";
+export type { ConceptKind } from "./generated/ConceptKind";
 export type { DiffContent } from "./generated/DiffContent";
 export type { DiffLine } from "./generated/DiffLine";
 export type { DiffSide } from "./generated/DiffSide";
 export type { DiffSource } from "./generated/DiffSource";
+export type { Disagreement } from "./generated/Disagreement";
 export type { DiscoveryMode } from "./generated/DiscoveryMode";
+export type { ExplainCost } from "./generated/ExplainCost";
+export type { ExplainDepth } from "./generated/ExplainDepth";
+export type { ExplainDialog } from "./generated/ExplainDialog";
+export type { ExplainEstimate } from "./generated/ExplainEstimate";
+export type { ExplainHostOption } from "./generated/ExplainHostOption";
+export type { ExplainProfileOption } from "./generated/ExplainProfileOption";
+export type { ExplainStep } from "./generated/ExplainStep";
+export type { ExplainSubject } from "./generated/ExplainSubject";
+export type { ExplainSubjectKind } from "./generated/ExplainSubjectKind";
+export type { Explanation } from "./generated/Explanation";
+export type { ExplanationChangedEvent } from "./generated/ExplanationChangedEvent";
+export type { ExplanationChecks } from "./generated/ExplanationChecks";
+export type { ExplanationNote } from "./generated/ExplanationNote";
+export type { ExplanationPlacement } from "./generated/ExplanationPlacement";
+export type { ExplanationRecord } from "./generated/ExplanationRecord";
+export type { ExplanationSettings } from "./generated/ExplanationSettings";
+export type { ExplanationSettingsView } from "./generated/ExplanationSettingsView";
+export type { ExplanationState } from "./generated/ExplanationState";
+export type { ExplanationSummary } from "./generated/ExplanationSummary";
 export type { FolderEntry } from "./generated/FolderEntry";
 export type { ForgeAccount } from "./generated/ForgeAccount";
 export type { ForgeSource } from "./generated/ForgeSource";
@@ -214,11 +259,15 @@ export type { HostJobStep } from "./generated/HostJobStep";
 export type { HostJobStepState } from "./generated/HostJobStepState";
 export type { Hunk } from "./generated/Hunk";
 export type { IndexState } from "./generated/IndexState";
+export type { KnownConcept } from "./generated/KnownConcept";
+export type { LanguageLevel } from "./generated/LanguageLevel";
+export type { LanguageSetting } from "./generated/LanguageSetting";
 export type { LeftOutFile } from "./generated/LeftOutFile";
 export type { LinkedRepository } from "./generated/LinkedRepository";
 export type { MemberOrigin } from "./generated/MemberOrigin";
 export type { MemberStatus } from "./generated/MemberStatus";
 export type { NoteDraft } from "./generated/NoteDraft";
+export type { NotePlacement } from "./generated/NotePlacement";
 export type { NoteTextState } from "./generated/NoteTextState";
 export type { PendingReview } from "./generated/PendingReview";
 export type { Pin } from "./generated/Pin";
@@ -230,6 +279,7 @@ export type { RelocationConcern } from "./generated/RelocationConcern";
 export type { RepositoryForge } from "./generated/RepositoryForge";
 export type { RepositoryFreshness } from "./generated/RepositoryFreshness";
 export type { RepositorySuggestion } from "./generated/RepositorySuggestion";
+export type { RepositoryWorkspace } from "./generated/RepositoryWorkspace";
 export type { RequestBudget } from "./generated/RequestBudget";
 export type { ReviewDraft } from "./generated/ReviewDraft";
 export type { Reviewer } from "./generated/Reviewer";
@@ -256,6 +306,7 @@ export type { RunStartStep } from "./generated/RunStartStep";
 export type { SearchGroup } from "./generated/SearchGroup";
 export type { SearchHit } from "./generated/SearchHit";
 export type { SearchKind } from "./generated/SearchKind";
+export type { StartExplanationRequest } from "./generated/StartExplanationRequest";
 export type { StartRunRequest } from "./generated/StartRunRequest";
 export type { SuggestedMove } from "./generated/SuggestedMove";
 export type { TaskNote } from "./generated/TaskNote";
@@ -263,6 +314,7 @@ export type { TaskStatus } from "./generated/TaskStatus";
 export type { TextPart } from "./generated/TextPart";
 export type { Thread } from "./generated/Thread";
 export type { ThreadAnchor } from "./generated/ThreadAnchor";
+export type { TourStop } from "./generated/TourStop";
 export type { UnresolvedLink } from "./generated/UnresolvedLink";
 export type { VaultInfo } from "./generated/VaultInfo";
 export type { WorkspaceMember } from "./generated/WorkspaceMember";
@@ -611,6 +663,77 @@ export const ipc = {
     invoke<AgentTestResult>("test_agent_setup", { profileId }),
   getRunControllerStatus: () =>
     invoke<RunControllerStatus>("get_run_controller_status"),
+
+  /** Changes against main: a branch's files since it left the default branch. */
+  getBranchComparison: (repositoryId: string, branch: string) =>
+    invoke<BranchComparison>("get_branch_comparison", {
+      repositoryId,
+      branch,
+    }),
+  /** What the Explain dialog shows for a subject. */
+  getExplainDialog: (repositoryId: string, subject: ExplainSubject) =>
+    invoke<ExplainDialog>("get_explain_dialog", { repositoryId, subject }),
+  // Code sharing (SPEC.md, section 13, Code sharing): whether a repository's
+  // code may go to a provider, asked once by New run or Explain.
+  getCodeSharingQuestion: (repositoryId: string) =>
+    invoke<CodeSharingQuestion>("get_code_sharing_question", { repositoryId }),
+  /** The once-per-repository question, for the repository or its workspace. */
+  answerCodeSharing: (request: AnswerCodeSharingRequest) =>
+    invoke<void>("answer_code_sharing", { request }),
+  forgetCodeSharingAnswer: (
+    scope: CodeAnswerScope,
+    scopeId: string,
+    provider: AgentProvider,
+  ) => invoke<void>("forget_code_sharing_answer", { scope, scopeId, provider }),
+  listCodeSharingAnswers: () =>
+    invoke<CodeAnswer[]>("list_code_sharing_answers"),
+  startExplanation: (request: StartExplanationRequest) =>
+    invoke<ExplanationRecord>("start_explanation", { request }),
+  cancelExplanation: (id: string) =>
+    invoke<ExplanationRecord>("cancel_explanation", { id }),
+  getExplanation: (id: string) =>
+    invoke<ExplanationRecord>("get_explanation", { id }),
+  /** Every explanation of a subject, newest first. */
+  listSubjectExplanations: (repositoryId: string, subject: ExplainSubject) =>
+    invoke<ExplanationRecord[]>("list_subject_explanations", {
+      repositoryId,
+      subject,
+    }),
+  deleteExplanation: (id: string) => invoke<void>("delete_explanation", { id }),
+  deleteAllExplanations: () => invoke<number>("delete_all_explanations"),
+  /** Not a problem on a disagreement, or Show to bring it back. */
+  setDisagreementHidden: (id: string, index: number, hidden: boolean) =>
+    invoke<ExplanationRecord>("set_disagreement_hidden", {
+      id,
+      index,
+      hidden,
+    }),
+  /** I know this; the concept's ID, for Undo. Given the explanation it is
+   * in, the concept keeps its description and where it was learned. */
+  learnConcept: (
+    repositoryId: string,
+    kind: ConceptKind,
+    name: string,
+    explanationId: string | null = null,
+  ) =>
+    invoke<string>("learn_concept", {
+      repositoryId,
+      kind,
+      name,
+      explanationId,
+    }),
+  forgetConcept: (id: string) => invoke<void>("forget_concept", { id }),
+  mergeConcept: (from: string, into: string) =>
+    invoke<void>("merge_concept", { from, into }),
+  /** Where a branch explanation's notes are on the branch now. */
+  placeExplanation: (id: string) =>
+    invoke<ExplanationPlacement>("place_explanation", { id }),
+  saveExplanationAsNote: (id: string) =>
+    invoke<NoteSummary>("save_explanation_as_note", { id }),
+  getExplanationSettings: () =>
+    invoke<ExplanationSettingsView>("get_explanation_settings"),
+  saveExplanationSettings: (settings: ExplanationSettings) =>
+    invoke<void>("save_explanation_settings", { settings }),
   /** The host key, before anything is saved. */
   previewAgentHost: (host: string, port: number) =>
     invoke<AgentHostPreview>("preview_agent_host", { host, port }),
@@ -933,6 +1056,19 @@ export function onAgentRunChanged(
   return listen<AgentRunChangedEvent>("agent_run_changed", (ev) =>
     handler(ev.payload),
   );
+}
+
+export function onExplanationChanged(
+  handler: (e: ExplanationChangedEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<ExplanationChangedEvent>("explanation_changed", (ev) =>
+    handler(ev.payload),
+  );
+}
+
+/** An answer in Settings → Code Sharing changed. */
+export function onCodeSharingChanged(handler: () => void): Promise<UnlistenFn> {
+  return listen<null>("code_sharing_changed", () => handler());
 }
 
 export function onIndexStatusChanged(

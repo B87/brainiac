@@ -17,6 +17,7 @@ import {
 } from "../lib/repo";
 import { useSidePanel } from "../lib/sidePanel";
 import { createLatest } from "../lib/stale";
+import BranchComparison from "./BranchComparison";
 import {
   BranchIcon,
   ChevronDown,
@@ -30,6 +31,7 @@ type Props = {
   refs: RefsResult | null;
   onShowHistory: (ref: RefEntry) => void;
   onError: (message: string | null) => void;
+  onOpenInEditor: (path: string, line?: number) => void;
 };
 
 type Sort = "recent" | "name";
@@ -127,6 +129,7 @@ export default function BranchesTab({
   refs,
   onShowHistory,
   onError,
+  onOpenInEditor,
 }: Props) {
   const { open: panelOpen } = useSidePanel();
   const [filter, setFilter] = useState("");
@@ -135,6 +138,8 @@ export default function BranchesTab({
     "stale",
   ]);
   const [selectedName, setSelectedName] = useState<string | null>(null);
+  /** Changes against main, open for this branch. */
+  const [comparing, setComparing] = useState<string | null>(null);
   const filterRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -168,20 +173,34 @@ export default function BranchesTab({
       ?.querySelector(`[data-ref="${CSS.escape(next.full_name)}"]`)
       ?.scrollIntoView({ block: "nearest" });
   };
-  useKeys({
-    j: () => move(1),
-    k: () => move(-1),
-    ArrowDown: () => move(1),
-    ArrowUp: () => move(-1),
-    Enter: () => selected && onShowHistory(selected),
-    "/": () => filterRef.current?.focus(),
-  });
+  useKeys(
+    {
+      j: () => move(1),
+      k: () => move(-1),
+      ArrowDown: () => move(1),
+      ArrowUp: () => move(-1),
+      Enter: () => selected && onShowHistory(selected),
+      "/": () => filterRef.current?.focus(),
+    },
+    !comparing,
+  );
 
   const toggle = (key: string) =>
     setFolded(
       folded.includes(key) ? folded.filter((k) => k !== key) : [...folded, key],
     );
   const base = refs?.base ?? null;
+
+  if (comparing)
+    return (
+      <BranchComparison
+        repositoryId={repositoryId}
+        branch={comparing}
+        onBack={() => setComparing(null)}
+        onError={onError}
+        onOpenInEditor={onOpenInEditor}
+      />
+    );
 
   return (
     <div className="flex min-h-0 flex-1">
@@ -295,6 +314,7 @@ export default function BranchesTab({
           entry={selected}
           base={base}
           onShowHistory={() => onShowHistory(selected)}
+          onCompare={() => setComparing(selected.full_name)}
           onError={onError}
         />
       )}
@@ -373,12 +393,15 @@ function RefPreview({
   entry: r,
   base,
   onShowHistory,
+  onCompare,
   onError,
 }: {
   repositoryId: string;
   entry: RefEntry;
   base: string | null;
   onShowHistory: () => void;
+  /** Changes against main: one patch from the merge base, which can be explained. */
+  onCompare: () => void;
   onError: (message: string | null) => void;
 }) {
   const [recent, setRecent] = useState<CommitSummary[] | null>(null);
@@ -487,6 +510,11 @@ function RefPreview({
           >
             Show in History
           </button>
+          {compare && uniqueCount !== 0 && (
+            <button type="button" className="btn" onClick={onCompare}>
+              Changes against {base?.slice(base.indexOf("/") + 1)}
+            </button>
+          )}
           <button type="button" className="btn" onClick={() => copy(r.name)}>
             Copy name
           </button>

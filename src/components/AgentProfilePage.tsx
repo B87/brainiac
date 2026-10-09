@@ -31,7 +31,7 @@ import {
   sourceLabel,
   sourceOf,
 } from "../lib/secrets";
-import { parseInRange } from "../lib/settings";
+import { parseInRange, requestSettings } from "../lib/settings";
 import { HostPill } from "./HostJobView";
 import { Breadcrumb } from "./RunHostPage";
 import SecretSourceFields from "./SecretSourceFields";
@@ -180,31 +180,27 @@ export default function AgentProfilePage({
           }
         />
         <div className="settings-group">
-          <label className="settings-row">
+          <div className="settings-row">
             <span className="flex min-w-55 flex-1 flex-col gap-0.5">
               <span className="font-medium">
-                Send code and prompts from runs to {destinationLabel(profile)}
+                Runs send code to {destinationLabel(profile)}
               </span>
               <Hint>
-                A run sends the repository's history up to its start commit,
-                your prompts, and anything the agent reads. Reviewing a run
-                decides what leaves Brainiac as a patch, not what is sent.
+                The repository's history up to the start commit, your prompts,
+                and anything the agent reads. Each repository is asked once, in
+                New run or Explain, whether its code may go there.
                 {profile.payment === "claude_plan" &&
                   " Runs use your plan's usage limits, the same ones as Claude Code in your terminal, and your plan's terms apply."}
               </Hint>
             </span>
-            <input
-              type="checkbox"
-              role="switch"
-              className="switch"
-              aria-checked={profile.sends_code_agreed}
-              checked={profile.sends_code_agreed}
-              disabled={busy}
-              onChange={(e) =>
-                void save({ sends_code_agreed: e.target.checked })
-              }
-            />
-          </label>
+            <button
+              type="button"
+              className="btn btn-sm"
+              onClick={() => requestSettings("sharing")}
+            >
+              Code Sharing
+            </button>
+          </div>
         </div>
       </Group>
 

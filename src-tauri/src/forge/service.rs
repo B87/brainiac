@@ -893,6 +893,46 @@ impl PullRequestService {
         })
     }
 
+    /// What Explain needs of a pull request (SPEC.md, section 14, Pull
+    /// requests): the repository tracking it, its head and target, whether
+    /// it comes from a fork, and whose it is.
+    pub async fn explain_facts(
+        &self,
+        reference: &str,
+    ) -> AppResult<crate::explain::service::PullRequestFacts> {
+        let parsed: PullRequestRef = reference.parse()?;
+        let tracked = self.tracked_for(&parsed).await?;
+        let pr = self.get(reference, LIST_MAX_AGE_SECONDS).await?;
+        // The user's own `origin` is not a stranger's fork: pull requests
+        // tracked on an upstream come from it.
+        let origin = self
+            .repositories
+            .tracked_forges()
+            .await?
+            .into_iter()
+            .find(|(_, f)| *f == parsed.repository)
+            .and_then(|(row, _)| row.remote_url)
+            .and_then(|url| ForgeRepository::from_remote_url(&url));
+        let own = own_branch(&pr, &parsed.repository)
+            || origin.as_ref().is_some_and(|o| own_branch(&pr, o));
+        Ok(crate::explain::service::PullRequestFacts {
+            repository_id: tracked.repository_id,
+            number: pr.number,
+            from_fork: !own,
+            mine: pr.mine,
+            author: pr
+                .author
+                .display_name
+                .clone()
+                .unwrap_or(pr.author.login.clone()),
+            title: pr.title,
+            head_sha: pr.head_sha,
+            base_sha: pr.base_sha,
+            source_branch: pr.source_branch,
+            target_branch: pr.target_branch,
+        })
+    }
+
     /// The local checkout a pull request's repository is, for the side panel.
     pub async fn repository(&self, reference: &str) -> AppResult<RepositorySummary> {
         let parsed: PullRequestRef = reference.parse()?;

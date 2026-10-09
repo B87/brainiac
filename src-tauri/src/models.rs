@@ -3447,9 +3447,6 @@ pub struct AgentProfile {
     pub credential_saved_at: Option<String>,
     /// A Claude plan token saved eleven months ago or more: tokens last a year.
     pub credential_ageing: bool,
-    /// The user agreed that runs send code and prompts to the provider under
-    /// this payment.
-    pub sends_code_agreed: bool,
     pub permissions: RunPermissions,
     pub time_limit_minutes: u32,
     pub cpus: u32,
@@ -3461,7 +3458,7 @@ pub struct AgentProfile {
     /// `anthropic/claude-sonnet-5-5`.
     pub model: String,
     /// What this profile still lacks before any host can run it (the
-    /// token or key, the agreement, the model), in the order to do it.
+    /// token or key, the model), in the order to do it.
     pub missing: Vec<String>,
     #[ts(type = "number")]
     pub version: i64,
@@ -3653,7 +3650,6 @@ pub struct SaveAgentSettingsRequest {
     /// The version the pane shows; a save over a newer one is refused.
     #[ts(type = "number")]
     pub expected_version: i64,
-    pub sends_code_agreed: bool,
     pub permissions: RunPermissions,
     pub time_limit_minutes: u32,
     pub cpus: u32,
@@ -3911,6 +3907,9 @@ pub struct AgentRun {
     pub snapshot_accepted: bool,
     /// A container, volume, or file that could not be removed.
     pub cleanup_pending: Option<String>,
+    /// An explain run (SPEC.md, section 14): its conversation is How it was
+    /// written, read only, and it is not listed in Runs.
+    pub explain: bool,
     /// The journal sequence mirrored so far.
     #[ts(type = "number")]
     pub cursor: u64,
@@ -4030,6 +4029,13 @@ pub enum RunEventBody {
         reason: String,
         message: Option<String>,
     },
+    /// The session's cost so far, in millionths of `currency`.
+    Usage {
+        turn: u32,
+        #[ts(type = "number")]
+        cost_micros: u64,
+        currency: String,
+    },
     Notice {
         text: String,
     },
@@ -4143,4 +4149,570 @@ pub struct AgentRunChangedEvent {
     pub run_id: String,
     /// The run was deleted.
     pub deleted: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Explaining changes — v0.6 (SPEC.md, section 14)
+// ---------------------------------------------------------------------------
+
+/// A checked explanation (SPEC.md, The explanation): only what Brainiac
+/// verified against the subject survives the checks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Explanation {
+    pub summary: String,
+    /// The files and doc sections the agent says it relied on, as it wrote them.
+    pub sources_read: Vec<String>,
+    /// The changed files in reading order.
+    pub tour: Vec<TourStop>,
+    pub notes: Vec<ExplanationNote>,
+    pub concepts: Vec<Concept>,
+    /// Empty when questions were not asked for.
+    pub questions: Vec<ExplanationQuestion>,
+    pub disagreements: Vec<Disagreement>,
+    /// What the checks changed on the way (SPEC.md, The explanation, What
+    /// the checks did).
+    pub checks: ExplanationChecks,
+}
+
+/// What the checks moved or left out of the agent's file.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ExplanationChecks {
+    /// Quotes found at other lines than the agent cited.
+    pub moved: u32,
+    /// Each claim left out, in words ("notes[2] (src/a.rs 4–9): a quote not
+    /// found in docs/b.md").
+    pub left_out: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct TourStop {
+    pub path: String,
+    /// What the file does in the change ("the rule", "the fix").
+    pub role: String,
+}
+
+/// A note after the lines it explains, on the new side of the change.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ExplanationNote {
+    pub path: String,
+    pub start: u32,
+    pub end: u32,
+    /// Markdown.
+    pub text: String,
+    /// At least one, each found in its file.
+    pub sources: Vec<CitedQuote>,
+    /// Sources the agent gave that were not found, so the claim may have
+    /// rested on one of them.
+    pub sources_dropped: u32,
+    /// SHA-256 of the lines `start..=end` explained, so a note on a moved
+    /// branch can be found again or marked out of date.
+    pub lines_hash: String,
+}
+
+/// A quote found verbatim in a file at the subject's tip.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CitedQuote {
+    pub path: String,
+    pub start: u32,
+    pub end: u32,
+    pub quote: String,
+    /// The agent cited other lines, and Brainiac found the quote here instead.
+    pub moved: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ConceptKind {
+    Language,
+    Library,
+    System,
+    ProjectPattern,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Concept {
+    pub name: String,
+    pub kind: ConceptKind,
+    pub explanation: String,
+    /// Where it appears; only places that exist at the subject's tip.
+    pub appears: Vec<ConceptPlace>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ConceptPlace {
+    pub path: String,
+    pub line: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ExplanationQuestion {
+    pub question: String,
+    pub answer: String,
+}
+
+/// Code and docs disagree, with both quotes found (SPEC.md, Checks).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Disagreement {
+    pub claim: String,
+    pub code: CitedQuote,
+    pub doc: CitedQuote,
+}
+
+/// How much an explanation says (SPEC.md, Explain).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ExplainDepth {
+    Brief,
+    TeachMe,
+    Deep,
+}
+
+impl ExplainDepth {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ExplainDepth::Brief => "brief",
+            ExplainDepth::TeachMe => "teach_me",
+            ExplainDepth::Deep => "deep",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ExplainSubjectKind {
+    Commit,
+    /// A branch compared with the default branch.
+    Branch,
+    /// A collected run's result.
+    Run,
+    /// A pull request, from where its head left the target branch to its head.
+    PullRequest,
+}
+
+/// What is explained: a commit's full ID, a branch's full ref name
+/// (`refs/heads/x` or `refs/remotes/origin/x`), a run's ID, or a pull
+/// request's reference (`github.com/acme/api#42`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ExplainSubject {
+    pub kind: ExplainSubjectKind,
+    pub reference: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ExplanationState {
+    Working,
+    Ready,
+    Failed,
+    Cancelled,
+}
+
+/// Where a working explanation is (SPEC.md, Explain: While it works).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ExplainStep {
+    /// Copying the subject.
+    Copying,
+    /// Starting the agent.
+    Starting,
+    Reading,
+    Checking,
+    /// The file failed its checks, and the agent was asked to fix it.
+    FollowUp,
+}
+
+/// A cost the agent reported, in millionths of `currency`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ExplainCost {
+    #[ts(type = "number")]
+    pub micros: u64,
+    pub currency: String,
+}
+
+/// One explanation, as the panel shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ExplanationRecord {
+    pub id: String,
+    pub repository_id: String,
+    pub repository_name: String,
+    pub subject: ExplainSubject,
+    /// The commit's subject line, the branch's short name, or the run's title.
+    pub title: String,
+    /// The range explained: `base..tip`.
+    pub base: String,
+    pub tip: String,
+    pub profile_id: String,
+    pub agent: AgentKind,
+    pub provider: AgentProvider,
+    pub payment: AgentPayment,
+    pub host_id: String,
+    pub host_name: String,
+    /// The model asked for; empty for the agent's default.
+    pub model: String,
+    pub depth: ExplainDepth,
+    pub questions: bool,
+    pub time_limit_minutes: u32,
+    pub state: ExplanationState,
+    /// While working.
+    pub step: Option<ExplainStep>,
+    /// Why it failed, in words.
+    pub error: Option<String>,
+    /// The checker's errors, when the file failed them twice.
+    pub errors: Vec<String>,
+    /// The explain run, for How it was written.
+    pub run_id: Option<String>,
+    /// The files the agent has opened, while working.
+    pub files_read: Vec<String>,
+    pub cost: Option<ExplainCost>,
+    pub duration_secs: Option<u32>,
+    pub created_at: String,
+    /// When the time limit ends it, while working.
+    pub deadline_at: Option<String>,
+    pub ended_at: Option<String>,
+    pub explanation: Option<Explanation>,
+    /// Disagreements marked Not a problem, by index.
+    pub hidden: Vec<u32>,
+}
+
+/// One stored explanation in a list (Settings → Explanations, and the
+/// dialog's other explanations of a subject).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ExplanationSummary {
+    pub id: String,
+    pub repository_id: String,
+    pub repository_name: String,
+    pub subject: ExplainSubject,
+    pub title: String,
+    pub profile_id: String,
+    pub agent: AgentKind,
+    pub provider: AgentProvider,
+    pub payment: AgentPayment,
+    pub model: String,
+    pub depth: ExplainDepth,
+    pub state: ExplanationState,
+    pub created_at: String,
+    pub cost: Option<ExplainCost>,
+    pub duration_secs: Option<u32>,
+    /// The explanation and its run's conversation on disk.
+    #[ts(type = "number")]
+    pub size_bytes: u64,
+}
+
+// ---------------------------------------------------------------------------
+// Code sharing (SPEC.md, section 13, Code sharing)
+// ---------------------------------------------------------------------------
+
+/// Whether a repository's code may go to a provider, for runs and explanations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum CodeConsentState {
+    Allowed,
+    Denied,
+    /// Not answered yet: New run and Explain ask.
+    Unasked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CodeConsent {
+    pub provider: AgentProvider,
+    pub state: CodeConsentState,
+    /// The workspace whose answer applies; `None` for the repository's own.
+    pub workspace_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum CodeAnswerScope {
+    Repository,
+    Workspace,
+}
+
+/// One answer in Settings → Code Sharing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CodeAnswer {
+    pub scope: CodeAnswerScope,
+    pub scope_id: String,
+    /// The repository's or workspace's name, when it still exists.
+    pub scope_name: Option<String>,
+    pub provider: AgentProvider,
+    pub allowed: bool,
+    pub answered_at: String,
+}
+
+/// The question asked before a repository's code first goes to a provider.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AnswerCodeSharingRequest {
+    pub repository_id: String,
+    pub provider: AgentProvider,
+    pub allowed: bool,
+    /// Answer for every repository in this workspace instead.
+    pub workspace_id: Option<String>,
+}
+
+/// A workspace a repository is in, for answering for all its repositories.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RepositoryWorkspace {
+    pub id: String,
+    pub name: String,
+}
+
+/// What New run needs to ask the question: the repository's answer for
+/// each provider, and the workspaces it could be answered for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CodeSharingQuestion {
+    pub consents: Vec<CodeConsent>,
+    pub workspaces: Vec<RepositoryWorkspace>,
+}
+
+/// A host an explanation can run on, for one agent profile.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ExplainHostOption {
+    pub host_id: String,
+    pub name: String,
+    /// What it still lacks for this profile, in the order to do it.
+    pub missing: Vec<String>,
+    /// A job in progress there ("Upgrading"): the host is not offered until it ends.
+    pub busy: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ExplainProfileOption {
+    pub profile_id: String,
+    /// Such as "Claude Code" or "OpenCode · OpenRouter".
+    pub name: String,
+    pub agent: AgentKind,
+    pub provider: AgentProvider,
+    pub payment: AgentPayment,
+    pub hosts: Vec<ExplainHostOption>,
+}
+
+/// The usual time and cost of past explanations with a profile and depth.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ExplainEstimate {
+    pub profile_id: String,
+    pub depth: ExplainDepth,
+    pub duration_secs: u32,
+    pub cost: Option<ExplainCost>,
+    /// How many explanations it is the middle of.
+    pub from: u32,
+}
+
+/// What the Explain dialog shows (SPEC.md, Explain).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ExplainDialog {
+    pub repository_id: String,
+    pub repository_name: String,
+    pub subject: ExplainSubject,
+    pub title: String,
+    pub profiles: Vec<ExplainProfileOption>,
+    /// Settings → Explanations' profile and host, when they still exist.
+    pub profile_id: Option<String>,
+    pub host_id: Option<String>,
+    pub depth: ExplainDepth,
+    pub settings: ExplanationSettings,
+    /// The repository's answer for each provider.
+    pub consents: Vec<CodeConsent>,
+    /// The workspaces the repository is in, for answering for all of them.
+    pub workspaces: Vec<RepositoryWorkspace>,
+    /// Other explanations of this subject, and for a branch or a pull
+    /// request those of the other with the same changes.
+    pub existing: Vec<ExplanationSummary>,
+    pub estimates: Vec<ExplainEstimate>,
+    /// Why the subject cannot be explained now (a pull request from a fork,
+    /// a head not on this Mac, a branch with no changes).
+    pub blocked: Option<String>,
+    /// The pull request's head is not on this Mac: a fetch may bring it.
+    pub fetch_first: bool,
+    /// Who wrote the pull request, when it is not the account's user: their
+    /// agent settings run with the user's token.
+    pub head_author: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum LanguageLevel {
+    New,
+    Comfortable,
+    Expert,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct LanguageSetting {
+    pub language: String,
+    pub level: LanguageLevel,
+}
+
+/// Settings → Explanations, saved as one value in `brainiac.db`'s settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(default)]
+#[ts(export)]
+pub struct ExplanationSettings {
+    /// `None`: the profile and host of the last run, or before any run the
+    /// first profile whose test passed on this Mac.
+    pub profile_id: Option<String>,
+    pub host_id: Option<String>,
+    /// Claude Code's model for each depth; OpenCode uses its profile's.
+    pub brief_model: String,
+    pub teach_me_model: String,
+    pub deep_model: String,
+    pub brief_minutes: u32,
+    pub teach_me_minutes: u32,
+    pub deep_minutes: u32,
+    pub levels: Vec<LanguageSetting>,
+    pub default_depth: ExplainDepth,
+    pub questions: bool,
+}
+
+impl Default for ExplanationSettings {
+    fn default() -> Self {
+        ExplanationSettings {
+            profile_id: None,
+            host_id: None,
+            brief_model: "sonnet".into(),
+            teach_me_model: "sonnet".into(),
+            deep_model: "opus".into(),
+            brief_minutes: 10,
+            teach_me_minutes: 10,
+            deep_minutes: 20,
+            levels: Vec::new(),
+            default_depth: ExplainDepth::TeachMe,
+            questions: true,
+        }
+    }
+}
+
+/// A concept the reader marked Got it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct KnownConcept {
+    pub id: String,
+    pub kind: ConceptKind,
+    pub name: String,
+    /// A project pattern's repository.
+    pub repository_id: Option<String>,
+    pub repository_name: Option<String>,
+    /// Merged into this concept.
+    pub merged_into: Option<String>,
+    pub learned_at: String,
+    /// The explanation's one-line account of it, when learned from one.
+    pub description: String,
+    /// The subject it was learned on: "287bdc9", "feature/x", "#42", or
+    /// "run 4f2a91c0"; empty when not known.
+    pub learned_from: String,
+    /// The repository it was learned in, and its name while it is tracked.
+    pub learned_in: Option<String>,
+    pub learned_in_name: Option<String>,
+    /// The explanation it was learned from, while it is kept.
+    pub explanation_id: Option<String>,
+}
+
+/// Settings → Explanations.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ExplanationSettingsView {
+    pub settings: ExplanationSettings,
+    pub profiles: Vec<ExplainProfileOption>,
+    pub concepts: Vec<KnownConcept>,
+    pub stored: Vec<ExplanationSummary>,
+    #[ts(type = "number")]
+    pub stored_bytes: u64,
+    /// The cost reported in total, one per currency.
+    pub stored_cost: Vec<ExplainCost>,
+}
+
+/// Explain, from the dialog.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct StartExplanationRequest {
+    pub repository_id: String,
+    pub subject: ExplainSubject,
+    pub profile_id: String,
+    pub host_id: String,
+    pub depth: ExplainDepth,
+    pub questions: bool,
+}
+
+/// Where a branch's or a pull request's explanation's notes are now
+/// (SPEC.md, Out of date).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct NotePlacement {
+    /// The note's index in the explanation.
+    pub index: u32,
+    pub start: u32,
+    pub end: u32,
+    pub out_of_date: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ExplanationPlacement {
+    pub explanation_id: String,
+    /// The branch's tip or the pull request's head now; the explanation's
+    /// for a commit or a run.
+    pub tip: String,
+    /// The branch or the pull request moved since it was explained.
+    pub moved: bool,
+    /// The branch is gone, or has no changes against the default branch; the
+    /// pull request has no changes against its target.
+    pub gone: bool,
+    pub notes: Vec<NotePlacement>,
+    /// Files the branch changes now that the tour does not list.
+    pub uncovered: Vec<String>,
+}
+
+/// An explanation changed; the window reads it again.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ExplanationChangedEvent {
+    pub id: String,
+    pub repository_id: String,
+    pub deleted: bool,
+}
+
+/// **Changes against main** (SPEC.md, section 14, Boundaries): one patch
+/// from where a branch left the default branch to its tip.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct BranchComparison {
+    pub repository_id: String,
+    /// The branch's full ref name.
+    pub branch: String,
+    /// The default branch, full ref name.
+    pub base_branch: String,
+    /// The last commit the branch shares with the default branch.
+    pub merge_base: String,
+    pub tip: String,
+    pub files: Vec<CommitFile>,
 }

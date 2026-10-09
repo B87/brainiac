@@ -8,6 +8,7 @@ pub mod commands;
 pub mod credentials;
 pub mod databases;
 pub mod db;
+pub mod explain;
 pub mod fetcher;
 pub mod forge;
 pub mod git;
@@ -17,6 +18,7 @@ pub mod mcp;
 pub mod models;
 pub mod notes;
 pub mod secrets;
+pub mod sharing;
 pub mod tasks;
 pub mod vault;
 pub mod watcher;
@@ -51,6 +53,9 @@ pub const EVENT_INDEX_STATUS_CHANGED: &str = "index_status_changed";
 pub const EVENT_PR_CHANGED: &str = "pr_changed";
 pub const EVENT_DB_HEALTH_SAMPLE: &str = "db_health_sample";
 pub const EVENT_AGENT_RUN_CHANGED: &str = "agent_run_changed";
+pub const EVENT_EXPLANATION_CHANGED: &str = "explanation_changed";
+/// An answer in Settings → Code Sharing changed (SPEC.md, section 13).
+pub const EVENT_CODE_SHARING_CHANGED: &str = "code_sharing_changed";
 /// A host job changed: a step, its output, or how it ended (SPEC.md, Host jobs).
 pub const EVENT_AGENT_HOST_JOB: &str = "agent_host_job";
 
@@ -186,6 +191,7 @@ pub fn run() {
                 pr_emitter,
             ));
             app.manage(Arc::clone(&pull_requests));
+            let explain_prs = Arc::clone(&pull_requests);
             // A fetch that moves a pull request's branch refreshes it at once
             // (SPEC.md, Staying up to date), off the fetch's own task.
             let moved_handle = Arc::clone(&pull_requests);
@@ -233,7 +239,12 @@ pub fn run() {
             // it and starts it when a run needs one.
             let runtime = Arc::new(agents::RunRuntime::new(&data_dir, &app.config().identifier));
             let run_handle = handle.clone();
+            // Explanations follow their explain runs through the same
+            // changes the window gets (v0.6).
+            let (run_changes, _) = tokio::sync::broadcast::channel::<String>(256);
+            let run_changes_sender = run_changes.clone();
             let run_emitter: agents::RunEmitter = Arc::new(move |event| {
+                let _ = run_changes_sender.send(event.run_id.clone());
                 if let Err(e) = run_handle.emit(EVENT_AGENT_RUN_CHANGED, &event) {
                     tracing::warn!(error = %e, "failed to emit agent_run_changed");
                 }
@@ -249,17 +260,33 @@ pub fn run() {
                 machines,
             ));
             app.manage(Arc::clone(&agent_hosts));
+            // Whether a repository's code may go to a provider: one answer
+            // for runs and explanations (SPEC.md, section 13, Code sharing).
+            let sharing_handle = handle.clone();
+            let sharing = sharing::CodeSharingService::new(
+                stores.core.clone(),
+                Arc::new(move || {
+                    if let Err(e) = sharing_handle.emit(EVENT_CODE_SHARING_CHANGED, ()) {
+                        tracing::warn!(error = %e, "failed to emit code_sharing_changed");
+                    }
+                }),
+            );
+            app.manage(Arc::clone(&sharing));
             let runs = agents::AgentRunService::new(
                 stores.history.clone(),
                 Arc::clone(&agent_settings),
+                Arc::clone(&sharing),
                 Arc::clone(&credentials),
-                artifacts,
+                Arc::clone(&artifacts),
                 runtime,
                 Arc::clone(&service) as Arc<dyn agents::RepositoryLookup>,
                 run_emitter,
             );
             runs.set_hosts(Arc::clone(&agent_hosts));
             app.manage(Arc::clone(&runs));
+            let explain_runs = Arc::clone(&runs);
+            let explain_agent_settings = Arc::clone(&agent_settings);
+            let (explain_core, explain_history) = (stores.core.clone(), stores.history.clone());
             let job_handle = handle.clone();
             let job_emitter: agents::host_jobs::HostJobEmitter = Arc::new(move |job| {
                 if let Err(e) = job_handle.emit(EVENT_AGENT_HOST_JOB, job) {
@@ -348,6 +375,49 @@ pub fn run() {
             let notes = NoteService::new(stores, data_dir.clone(), knowledge_emitter);
             notes.set_write_note_ids(settings.write_note_ids);
             app.manage(Arc::clone(&notes));
+
+            // --- Explaining changes (v0.6) ----------------------------------
+            let explain_handle = handle.clone();
+            let explain_emitter: explain::service::ExplanationEmitter = Arc::new(move |event| {
+                if let Err(e) = explain_handle.emit(EVENT_EXPLANATION_CHANGED, &event) {
+                    tracing::warn!(error = %e, "failed to emit explanation_changed");
+                }
+            });
+            let explanations = explain::service::ExplanationService::new(
+                explain_core,
+                explain_history,
+                Arc::clone(&explain_runs),
+                explain_agent_settings,
+                sharing,
+                artifacts,
+                Arc::clone(&service),
+                Arc::clone(&notes),
+                explain_emitter,
+                run_changes,
+            );
+            // Explain reads a pull request through the pull request service.
+            explanations.set_pull_requests(Arc::new(move |reference: String| {
+                let pull_requests = Arc::clone(&explain_prs);
+                Box::pin(async move { pull_requests.explain_facts(&reference).await })
+            }));
+            let explain_notify = handle.clone();
+            explanations.set_notifier(Arc::new(move |title, body| {
+                use tauri_plugin_notification::NotificationExt;
+                let active = explain_notify
+                    .webview_windows()
+                    .values()
+                    .any(|w| w.is_focused().unwrap_or(false));
+                if active {
+                    return;
+                }
+                if let Err(e) = explain_notify.notification().builder().title(title).body(body).show() {
+                    tracing::warn!(error = %e, "could not show a notification");
+                }
+            }));
+            app.manage(Arc::clone(&explanations));
+            tauri::async_runtime::spawn(async move {
+                explanations.reconnect().await;
+            });
             let tasks = Arc::new(TaskService::new(Arc::clone(&notes)));
             app.manage(Arc::clone(&tasks));
 
@@ -568,6 +638,26 @@ pub fn run() {
             commands::get_agent_host_job_log,
             commands::remove_agent_host,
             commands::get_run_controller_status,
+            commands::get_branch_comparison,
+            commands::get_explain_dialog,
+            commands::get_code_sharing_question,
+            commands::answer_code_sharing,
+            commands::forget_code_sharing_answer,
+            commands::list_code_sharing_answers,
+            commands::start_explanation,
+            commands::cancel_explanation,
+            commands::get_explanation,
+            commands::list_subject_explanations,
+            commands::delete_explanation,
+            commands::delete_all_explanations,
+            commands::set_disagreement_hidden,
+            commands::learn_concept,
+            commands::forget_concept,
+            commands::merge_concept,
+            commands::place_explanation,
+            commands::save_explanation_as_note,
+            commands::get_explanation_settings,
+            commands::save_explanation_settings,
             commands::set_repository_forge,
             commands::update_workspace_pull_requests,
             commands::list_pull_requests,
@@ -820,6 +910,13 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
         true,
         Some("Alt+CmdOrCtrl+B"),
     )?;
+    let toggle_explanation = MenuItem::with_id(
+        app,
+        "toggle_explanation",
+        "Show or Hide Explanation",
+        true,
+        Some("Shift+CmdOrCtrl+B"),
+    )?;
     let show_today = MenuItem::with_id(app, "show_today", "Today", true, None::<&str>)?;
     let show_tasks = MenuItem::with_id(app, "show_tasks", "Tasks", true, None::<&str>)?;
     let show_notes = MenuItem::with_id(app, "show_notes", "Notes", true, None::<&str>)?;
@@ -901,6 +998,7 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
             &PredefinedMenuItem::separator(app)?,
             &toggle_sidebar,
             &toggle_context,
+            &toggle_explanation,
             &toggle_source,
             &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::fullscreen(app, None)?,

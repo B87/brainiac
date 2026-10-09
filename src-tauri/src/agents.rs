@@ -5,8 +5,8 @@
 //! - **`AgentSettingsService`** (`settings.rs`) is Settings → Agents: the
 //!   engine, how runs are paid for (a Claude plan token or an API key, read
 //!   through the credentials layer under the owner `agent:<profile id>`),
-//!   the agreement to send code to the provider, new runs' defaults, and the
-//!   image.
+//!   new runs' defaults, and the image. Whether a repository's code may go
+//!   to a provider is `crate::sharing`.
 //! - **`engine`** finds this Mac's Docker engines by their sockets and asks
 //!   each what it is.
 //! - **`image`** holds the readable Dockerfile and entrypoint Brainiac builds,

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { bindingOf, pickHandler, shortcutAllowed, step } from "./keys";
+import {
+  bindingOf,
+  pickHandler,
+  shiftedBindingOf,
+  shortcutAllowed,
+  step,
+} from "./keys";
 
 const key = (k: string, mods: Partial<KeyboardEvent> = {}) =>
   ({
@@ -18,6 +24,15 @@ describe("bindingOf", () => {
     expect(bindingOf(key("1", { metaKey: true }))).toBe("mod+1");
     expect(bindingOf(key("1", { metaKey: true, shiftKey: true }))).toBeNull();
     expect(bindingOf(key("j", { ctrlKey: true }))).toBeNull();
+  });
+
+  it("names a shifted letter for bindings that tell it apart", () => {
+    expect(shiftedBindingOf(key("E", { shiftKey: true }))).toBe("shift+e");
+    expect(shiftedBindingOf(key("E"))).toBeNull();
+    expect(shiftedBindingOf(key("[", { shiftKey: true }))).toBeNull();
+    expect(
+      shiftedBindingOf(key("e", { shiftKey: true, metaKey: true })),
+    ).toBeNull();
   });
 });
 
