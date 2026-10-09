@@ -158,14 +158,14 @@ Refines v0.6's concepts after use: the labels, the Concepts You Know page, and h
 - [x] **The ledger as a file in the run's input**: `known-concepts.tsv` outside the repository (capped at 5,000 concepts and 2 MiB, not filtered by language), and a small `known` lookup script in the run's image that reads names on stdin and reports known or new with the stored description. What that adds to time and cost is the spike below.
 - [x] **Kinds renamed**: "system" becomes protocol or standard and tool or service, and a technique kind is added, with the schema, the checker, the prompt, and a migration of existing "system" rows (all become tools, so every Merge group survives; the reader corrects them once concepts can be edited).
 - [x] **Concepts You Know**: group by repository, sort, search over names, descriptions, and repositories, bulk Forget by repository.
-- [x] **Change kind and rename as a Merge**: the old kind and name stay as a visible alias; a kind changes only within its scope, and a project pattern becoming known everywhere asks first (the reverse, a known-everywhere concept becoming a project pattern, is refused; Copy to another repository comes with its own item).
-- [ ] **Add one concept by hand**, marked "added by you" wherever it is left out.
-- [ ] **Copy a project pattern to another repository**, one at a time, visible in the target's list.
-- [ ] Spike: a ledger of a few hundred entries with Claude Code and OpenCode: how often the lookup runs, how many known concepts are still written, and what it adds to time and cost; the container's start timed in the same runs.
+- [x] **Change kind and rename as a Merge**: the old kind and name stay as a visible alias; a kind changes only within its scope, and a project pattern becoming known everywhere asks first (the reverse, a known-everywhere concept becoming a project pattern, is refused).
+- [ ] Spike: a ledger of a few hundred entries with Claude Code and OpenCode: how often the lookup runs, how many known concepts are still written, and what it adds to time and cost; the container's start timed in the same runs. The harness is `spikes/known-concepts/` (headless agents on a clone, no container yet); its results go in `design/code-explanations.md`, Known-concepts spike.
+
+Moved out on 9 October 2026, after a panel round (`design/code-explanations.md`, Shared project patterns): **add one concept by hand**, marked "added by you" wherever it is left out, and **a project pattern that applies to several repositories**, one concept with a list of repositories, not a copy, and only its name sent to the other repositories' runs. Both wait for the exit-gate week, which counts how often a project pattern of the same name is learned in two or more repositories; clicking Got it again in the second repository does the same for a few cents meanwhile.
 
 Not planned: a workspace level of scope, a scope chosen by the model, editing descriptions, pasted lists, and "related concept" skipping.
 
-**Exit gate:** for a week of explanations, a concept marked known is left out by exact name, every left-out concept is counted and can be undone from the explanation, a hand-added or renamed concept behaves like any other, one repository's patterns never appear in another's prompt or file, and the known-concepts file's size and its cost per explanation are known.
+**Exit gate:** for a week of explanations, a concept marked known is left out by exact name, every left-out concept is counted and can be undone from the explanation, a renamed concept behaves like any other, one repository's patterns never appear in another's prompt or file, the known-concepts file's size and its cost per explanation are known, and the number of project patterns learned in two or more repositories is counted.
 
 ### v0.7 — Content imports and global capture
 

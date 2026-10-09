@@ -1,0 +1,3 @@
+#!/bin/sh
+# The image's lookup script, pointed at the spike's ledger file.
+exec node "$(dirname "$0")/../../../src-tauri/src/agents/image/known.mjs" "$@"
