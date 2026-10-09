@@ -891,6 +891,13 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
         true,
         Some("Alt+CmdOrCtrl+B"),
     )?;
+    let toggle_explanation = MenuItem::with_id(
+        app,
+        "toggle_explanation",
+        "Show or Hide Explanation",
+        true,
+        Some("Shift+CmdOrCtrl+B"),
+    )?;
     let show_today = MenuItem::with_id(app, "show_today", "Today", true, None::<&str>)?;
     let show_tasks = MenuItem::with_id(app, "show_tasks", "Tasks", true, None::<&str>)?;
     let show_notes = MenuItem::with_id(app, "show_notes", "Notes", true, None::<&str>)?;
@@ -972,6 +979,7 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
             &PredefinedMenuItem::separator(app)?,
             &toggle_sidebar,
             &toggle_context,
+            &toggle_explanation,
             &toggle_source,
             &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::fullscreen(app, None)?,

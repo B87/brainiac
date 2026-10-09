@@ -1,10 +1,20 @@
-import { type ReactNode, useCallback, useMemo, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import { noteSequence, notesIn, readingOrder } from "../lib/explain";
 import type { DiffLine, ExplainSubject } from "../lib/ipc";
 import { useKeys } from "../lib/keys";
 import { usePref } from "../lib/prefs";
 import { useExplanation } from "../lib/useExplanation";
-import { requestNotice, requestRun } from "../lib/windowEvents";
+import {
+  requestNotice,
+  requestRun,
+  TOGGLE_EXPLANATION_EVENT,
+} from "../lib/windowEvents";
 import type { Annotate } from "./DiffView";
 import ExplainDialog from "./ExplainDialog";
 import ExplanationPanel, { NoteCard } from "./ExplanationPanel";
@@ -134,6 +144,14 @@ export function useExplainedPatch<T extends { path: string }>({
     },
     !!subject,
   );
+  // View → Show or Hide Explanation (⇧⌘B), a menu item, so it arrives as a
+  // window event rather than a key.
+  useEffect(() => {
+    if (!subject) return;
+    const toggle = () => setPanelOpen(!panelOpen);
+    window.addEventListener(TOGGLE_EXPLANATION_EVENT, toggle);
+    return () => window.removeEventListener(TOGGLE_EXPLANATION_EVENT, toggle);
+  }, [subject, panelOpen, setPanelOpen]);
   // Only with notes to move between: otherwise a shifted N or P still moves
   // by hunk, as it did before explanations.
   useKeys(
@@ -185,7 +203,7 @@ export function useExplainedPatch<T extends { path: string }>({
           type="button"
           className="btn btn-sm"
           aria-pressed={panelOpen}
-          title="Show or hide the explanation (Shift+E)"
+          title="Show or hide the explanation (⇧⌘B or Shift+E)"
           onClick={() => setPanelOpen(!panelOpen)}
         >
           Explanation

@@ -158,6 +158,7 @@ Repository name/path filtering and commit-message/hash filtering belong to the G
 | `Cmd+Shift+E`, v0.2 | Switch the note editor between Live Preview and Source |
 | `Cmd+B` | Show or hide the sidebar |
 | `Option+Cmd+B` | Show or hide the side panel |
+| `Shift+Cmd+B`, v0.6 | Show or hide the explanation panel beside a patch (section 14) |
 | `Option+Cmd+0`, v0.2 | Show or hide the context panel in Notes (the same panel as `Option+Cmd+B`) |
 | `Option+Cmd+N`, v0.5 | New run |
 | `Space`, v0.2 | Mark the selected task done or not done |
@@ -817,7 +818,8 @@ Brainiac explains a change to the person reading it, so they learn the software 
   - **Concepts:** the ideas the change relies on (a language feature, a library, a system tool, a project pattern), each with its explanation and where it appears. **Got it** adds one to the ledger, and later explanations leave a known concept out unless the change uses it in a new way; the concept then shows **Known**, with **Undo**.
   - **Check yourself:** two or three questions, each with **Reveal answer**, when they were asked for.
 - **The file list is the tour.** It switches between **Reading order** and **Path**. In reading order the files the tour lists come first, numbered by step, and the others last, unnumbered; `[` and `]` follow the list's order.
-- **Keys:** `Shift+E`, or **Explanation** beside Explain, shows or hides the panel, remembered for each kind of view (History, a branch's changes, a run's result, a pull request), and **Notes** in the patch's toolbar shows or hides the notes in the patch (both remembered); `Shift+N` / `Shift+P` move to the next or previous note, as `N` / `P` move by hunk. With focus in the panel, `J` / `K` move through its items and `Space` does the item's action (Got it or Undo, Reveal answer).
+- **Keys:** `Shift+Cmd+B` (View → Show or Hide Explanation), `Shift+E`, or **Explanation** beside Explain shows or hides the panel, remembered for each kind of view (History, a branch's changes, a run's result, a pull request), and **Notes** in the patch's toolbar shows or hides the notes in the patch (both remembered); `Shift+N` / `Shift+P` move to the next or previous note, as `N` / `P` move by hunk. With focus in the panel, `J` / `K` move through its items and `Space` does the item's action (Got it or Undo, Reveal answer).
+- **The panel's width** is dragged by its left edge (or set with the arrow keys when the edge has focus), between 280 points and three fifths of the window; double-clicking the edge returns it to the default. The width is remembered, one for every view.
 - **History makes room:** while the panel is open, the commit list folds to a **Commits** rail so the patch keeps its width. **Commits** shows the list beside the panel, and that choice is remembered; the fold button in the list's header folds it again.
 - **What the checks did:** a line under the summary, only when they changed something ("2 quotes found at other lines · 1 claim left out · 1 note with a source not found"), opens the list in words. A quote found at other lines than the agent cited is marked **moved** where it is shown; a note that lost one of its sources says so beside it, since its claim may have rested on that one.
 - **How it was written** opens the explain run's conversation in the run view, read only: Brainiac's prompt, the files the agent read and the commands it ran, its replies, the follow-up turn when there was one, and the time and cost. It goes with its explanation: Explain again, Try again, or Delete.

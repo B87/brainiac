@@ -21,11 +21,80 @@ import {
   errorMessage,
   ipc,
 } from "../lib/ipc";
+import { usePref } from "../lib/prefs";
 import { requestSettings } from "../lib/settings";
 import type { ExplanationState } from "../lib/useExplanation";
 import { CloseIcon } from "./icons";
 
 type Tab = "concepts" | "questions";
+
+/** The panel's width: dragged by its left edge, remembered, within bounds. */
+const PANEL_WIDTH = 360;
+const PANEL_MIN = 280;
+function panelMax(): number {
+  return Math.max(
+    PANEL_MIN,
+    Math.min(960, Math.round(window.innerWidth * 0.6)),
+  );
+}
+function clampWidth(w: number): number {
+  return Math.round(Math.min(panelMax(), Math.max(PANEL_MIN, w)));
+}
+
+/**
+ * The panel's left edge: drag to resize, arrow keys when focused, double
+ * click to go back to the default width.
+ */
+function ResizeEdge({
+  width,
+  onLive,
+  onDone,
+}: {
+  width: number;
+  /** The width while dragging, not yet remembered. */
+  onLive: (w: number | null) => void;
+  onDone: (w: number) => void;
+}) {
+  const drag = useRef<{ x: number; w: number } | null>(null);
+  return (
+    // biome-ignore lint/a11y/useSemanticElements: an <hr> cannot be dragged or focused; this is a focusable splitter.
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize the explanation"
+      aria-valuenow={width}
+      aria-valuemin={PANEL_MIN}
+      aria-valuemax={panelMax()}
+      tabIndex={0}
+      title="Drag to resize; double-click for the default width"
+      className="absolute top-0 bottom-0 -left-[3px] z-10 w-[6px] cursor-col-resize hover:bg-accent/40 focus-visible:bg-accent/60 focus-visible:outline-none"
+      onPointerDown={(e) => {
+        e.preventDefault();
+        e.currentTarget.setPointerCapture(e.pointerId);
+        drag.current = { x: e.clientX, w: width };
+      }}
+      onPointerMove={(e) => {
+        if (!drag.current) return;
+        // The panel is on the right, so dragging left makes it wider.
+        onLive(clampWidth(drag.current.w + drag.current.x - e.clientX));
+      }}
+      onPointerUp={(e) => {
+        if (!drag.current) return;
+        const w = clampWidth(drag.current.w + drag.current.x - e.clientX);
+        drag.current = null;
+        onLive(null);
+        onDone(w);
+      }}
+      onDoubleClick={() => onDone(PANEL_WIDTH)}
+      onKeyDown={(e) => {
+        if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+        e.preventDefault();
+        e.stopPropagation();
+        onDone(clampWidth(width + (e.key === "ArrowLeft" ? 24 : -24)));
+      }}
+    />
+  );
+}
 
 const STEPS: ExplainStep[] = ["copying", "starting", "reading", "checking"];
 
@@ -140,6 +209,13 @@ export default function ExplanationPanel({
 }) {
   const { current: record, placement, records, choose } = state;
   const [tab, setTab] = useState<Tab>("concepts");
+  const [savedWidth, setSavedWidth] = usePref(
+    "brainiac.explain.width",
+    PANEL_WIDTH,
+  );
+  const [liveWidth, setLiveWidth] = useState<number | null>(null);
+  // A narrower window than when the width was saved still leaves the patch room.
+  const width = liveWidth ?? clampWidth(savedWidth);
   const [error, setError] = useState<string | null>(null);
   const box = useRef<HTMLDivElement>(null);
 
@@ -191,9 +267,11 @@ export default function ExplanationPanel({
     <aside
       ref={box}
       aria-label="Explanation"
-      className="flex w-[360px] shrink-0 flex-col border-l bg-panel-2"
+      className="relative flex shrink-0 flex-col border-l bg-panel-2"
+      style={{ width }}
       onKeyDown={onKeyDown}
     >
+      <ResizeEdge width={width} onLive={setLiveWidth} onDone={setSavedWidth} />
       <div className="flex h-9 shrink-0 items-center gap-2 border-b pr-1.5 pl-3 text-[12px]">
         <span className="font-semibold">Explanation</span>
         {records.length > 1 && (
@@ -217,8 +295,8 @@ export default function ExplanationPanel({
         <button
           type="button"
           className="btn btn-sm btn-ghost w-6 px-0"
-          aria-label="Hide the explanation (Shift+E)"
-          title="Hide the explanation (Shift+E)"
+          aria-label="Hide the explanation (⇧⌘B or Shift+E)"
+          title="Hide the explanation (⇧⌘B or Shift+E)"
           onClick={onClose}
         >
           <CloseIcon size={12} />

@@ -7,6 +7,7 @@
 
 export const OPEN_RUN_EVENT = "brainiac:open-run";
 export const NOTICE_EVENT = "brainiac:notice";
+export const TOGGLE_EXPLANATION_EVENT = "brainiac:toggle-explanation";
 
 /** Open a run's conversation, such as an explanation's How it was written. */
 export function requestRun(runId: string) {
@@ -20,4 +21,9 @@ export function requestNotice(message: string) {
   window.dispatchEvent(
     new CustomEvent<string>(NOTICE_EVENT, { detail: message }),
   );
+}
+
+/** Show or hide the explanation panel of the patch on screen (⇧⌘B). */
+export function requestToggleExplanation() {
+  window.dispatchEvent(new CustomEvent(TOGGLE_EXPLANATION_EVENT));
 }

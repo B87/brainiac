@@ -59,7 +59,11 @@ import {
 } from "./lib/repo";
 import { OPEN_SETTINGS_EVENT, type SettingsSection } from "./lib/settings";
 import { SIDE_PANEL_KEY, SidePanelState } from "./lib/sidePanel";
-import { NOTICE_EVENT, OPEN_RUN_EVENT } from "./lib/windowEvents";
+import {
+  NOTICE_EVENT,
+  OPEN_RUN_EVENT,
+  requestToggleExplanation,
+} from "./lib/windowEvents";
 import { workspaceRepositories } from "./lib/workspace";
 
 /** The section open when Brainiac quit, reopened at launch (SPEC.md, Main window v0.2). */
@@ -735,6 +739,7 @@ export default function App() {
       if (e.id === "toggle_source") setLivePreview(!livePreviewRef.current);
       if (e.id === "toggle_sidebar") toggleSidebarRef.current();
       if (e.id === "toggle_context") toggleSidePanelRef.current();
+      if (e.id === "toggle_explanation") requestToggleExplanation();
       if (e.id === "export") void actions.current.exportNow();
       if (e.id === "restore") setDialog("restore");
       if (e.id === "settings") actions.current.openSettings();
