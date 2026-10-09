@@ -146,9 +146,26 @@ Brainiac explains a commit, a branch, a run's result, or a pull request to the p
 - [x] Explain runs: a run kind with Brainiac's prompt (subject, reader level, known concepts, depth, schema), a short time limit, no review, no place in Runs, and only `.brainiac/explanation.json` collected; the file checked against its schema and every quote verified, with one follow-up turn to fix errors.
 - [x] The Explain dialog, the panel (summary, Tour, Concepts, Check yourself), notes in the patch, reading order in the file list, progress from the journal, staleness, code–docs disagreement, Save as note, and Settings → Explanations, for commits, branches, and collected run results.
 - [x] Pull requests, moved from 0.6.x on 9 October 2026: Explain in Files Changed, one explanation shared with a branch of the same changes, notes marked as staying on this Mac among threads and drafts, reading order with the viewed marks as progress, the Overview's line, Fetch now for a head not here, and no pull request from a fork.
-- [ ] 0.6.x: working-tree changes, a question about one note as a follow-up prompt, and a direct model call for small changes and local models.
+- [ ] Later in 0.6.x, not planned: working-tree changes, a question about one note as a follow-up prompt, and a direct model call for small changes and local models. A panel round on 9 October 2026 found the first worth reading again after the exit gate, the second not workable as specified, and the third unmeasured (`design/code-explanations.md`, Follow-ups considered).
 
 **Exit gate:** for a week, read every commit, agent result, and pull request you review in Brainiac with an explanation, with Claude Code and with OpenCode. Most notes are correct and point to the right lines; no claim without a verified source is shown; a change made after explaining marks only the affected notes; nothing reaches a provider from a repository whose answer was no; the repository is unchanged; and the time and cost of each explanation are known.
+
+### v0.6.1 — Known concepts
+
+Refines v0.6's concepts after use: the labels, the Concepts You Know page, and how the ledger reaches an explain run. Branch `v0.6.1-concepts`, started 9 October 2026. Design and the panel rounds behind each item: [`design/code-explanations.md`](design/code-explanations.md), Concept classification and Editing the ledger, and scope. Proposed scope, in the panel's order; the maintainer decides what stays. `SPEC.md` section 14 changes before the code of each item.
+
+- [ ] **Left out because you know them: N**, in the explanation beside "Matched to the change", with Undo next to the concept; counted by Brainiac's checker (a concept whose exact name is in the ledger is dropped and counted), not by the agent.
+- [ ] **The ledger as a file in the run's input**: a sorted, folded, filtered and capped `known-concepts.txt` outside the repository, and a small `known` lookup script in the run's image that reports known or new with the stored description. The cap and the dialog's estimate follow from the spike below.
+- [ ] **Kinds renamed**: "system" becomes protocol or standard and tool or service, with the schema, the checker, the prompt, and a migration of existing "system" rows (and their Merge groups).
+- [ ] **Concepts You Know**: group by repository, sort, search over names and descriptions, bulk Forget by repository.
+- [ ] **Change kind and rename as a Merge**: the old kind and name stay as a visible alias; a kind changes only within its scope, and a change to or from project pattern names the repositories that will then be told about it or stop being told.
+- [ ] **Add one concept by hand**, marked "added by you" wherever it is left out.
+- [ ] **Copy a project pattern to another repository**, one at a time, visible in the target's list.
+- [ ] Spike: a ledger of a few hundred entries with Claude Code and OpenCode: how often the lookup runs, how many known concepts are still written, and what it adds to time and cost; the container's start timed in the same runs.
+
+Not planned: a workspace level of scope, a scope chosen by the model, editing descriptions, pasted lists, and "related concept" skipping.
+
+**Exit gate:** for a week of explanations, a concept marked known is left out by exact name, every left-out concept is counted and can be undone from the explanation, a hand-added or renamed concept behaves like any other, one repository's patterns never appear in another's prompt or file, and the known-concepts file's size and its cost per explanation are known.
 
 ### v0.7 — Content imports and global capture
 
