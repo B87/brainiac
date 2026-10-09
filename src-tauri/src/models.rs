@@ -4250,6 +4250,10 @@ pub enum ConceptKind {
     Protocol,
     /// A program or service the code runs or talks to: git, Docker, PostgreSQL.
     Tool,
+    /// A way of solving a problem that means the same in any codebase:
+    /// idempotency, retry with backoff, optimistic locking. The table or helper
+    /// one repository uses to apply it is a project pattern.
+    Technique,
     ProjectPattern,
 }
 

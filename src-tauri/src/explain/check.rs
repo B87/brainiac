@@ -161,7 +161,7 @@ pub fn parse(text: &str) -> Result<Draft, Failed> {
     for (i, concept) in raw.concepts.iter().enumerate() {
         if concept_kind(&concept.kind).is_none() {
             errors.push(format!(
-                "concepts[{i}]: \"kind\" must be language, library, protocol, tool, or project_pattern (got {:?}).",
+                "concepts[{i}]: \"kind\" must be language, library, protocol, tool, technique, or project_pattern (got {:?}).",
                 concept.kind
             ));
         }
@@ -477,7 +477,13 @@ fn strip_kind(name: &str) -> &str {
         if name.ends_with(')')
             && matches!(
                 inner.as_str(),
-                "language" | "library" | "protocol" | "tool" | "system" | "project pattern"
+                "language"
+                    | "library"
+                    | "protocol"
+                    | "tool"
+                    | "technique"
+                    | "system"
+                    | "project pattern"
             )
         {
             return name[..open].trim_end();
@@ -494,6 +500,7 @@ fn concept_kind(kind: &str) -> Option<ConceptKind> {
         "library" => Some(ConceptKind::Library),
         "protocol" => Some(ConceptKind::Protocol),
         "tool" => Some(ConceptKind::Tool),
+        "technique" => Some(ConceptKind::Technique),
         // The kind 0.6.1 replaced: still read, as a tool.
         "system" => Some(ConceptKind::Tool),
         "project_pattern" => Some(ConceptKind::ProjectPattern),
@@ -1008,6 +1015,7 @@ mod tests {
     fn the_kinds_are_read_and_the_one_they_replaced_is_a_tool() {
         assert_eq!(concept_kind("protocol"), Some(ConceptKind::Protocol));
         assert_eq!(concept_kind("tool"), Some(ConceptKind::Tool));
+        assert_eq!(concept_kind("technique"), Some(ConceptKind::Technique));
         assert_eq!(
             concept_kind("project-pattern"),
             Some(ConceptKind::ProjectPattern)
@@ -1016,6 +1024,7 @@ mod tests {
         assert_eq!(concept_kind("system"), Some(ConceptKind::Tool));
         assert_eq!(concept_kind("folklore"), None);
         assert_eq!(strip_kind("git (tool)"), "git");
+        assert_eq!(strip_kind("idempotency (technique)"), "idempotency");
         assert_eq!(strip_kind("git (system)"), "git");
     }
 }

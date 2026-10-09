@@ -106,6 +106,7 @@ const KIND_WORD: Record<ConceptKind, string> = {
   library: "Library",
   protocol: "Protocol or standard",
   tool: "Tool or service",
+  technique: "Technique",
   project_pattern: "Project pattern",
 };
 

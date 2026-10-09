@@ -77,6 +77,7 @@ fn system_concepts_become_tools_and_everything_else_is_kept() {
         )
     };
     assert!(insert("protocol").is_ok());
+    assert!(insert("technique").is_ok());
     assert!(insert("tool_two").is_err());
     assert!(insert("system").is_err());
 

@@ -103,7 +103,7 @@ For each name it prints `known: ` followed by the concept's name, its kind in pa
     p.push_str("- \"sources_read\": the files and doc sections you relied on.\n");
     p.push_str("- \"tour\": every changed file once, in reading order (the rule, then the fix, then its helpers, then bookkeeping), each {\"path\", \"role\"}.\n");
     p.push_str("- \"notes\": each {\"path\", \"new_start\", \"new_end\", \"text\", \"sources\": [{\"path\", \"start\", \"end\", \"quote\"}]}. new_start and new_end are line numbers on the NEW side of the change, and the lines must include at least one changed line. \"text\" is Markdown. Each quote is copied verbatim from that file at the checked-out commit, and lies within start..end.\n");
-    p.push_str("- \"concepts\": ideas the change relies on, each {\"name\", \"kind\", \"explanation\", \"appears\": [{\"path\", \"line\"}]}. \"kind\" is one of: \"language\" (a feature of a programming language), \"library\" (a package or framework), \"protocol\" (a protocol, file format, or standard, such as HTTP or DKIM), \"tool\" (a program or service the code runs or talks to, such as git or PostgreSQL), or \"project_pattern\" (a convention of this codebase).\n");
+    p.push_str("- \"concepts\": ideas the change relies on, each {\"name\", \"kind\", \"explanation\", \"appears\": [{\"path\", \"line\"}]}. \"kind\" is one of: \"language\" (a feature of a programming language), \"library\" (a package or framework), \"protocol\" (a protocol, file format, or standard, such as HTTP or DKIM), \"tool\" (a program or service the code runs or talks to, such as git or PostgreSQL), \"technique\" (a way of solving a problem that means the same in any codebase, such as idempotency, retry with backoff, or optimistic locking), or \"project_pattern\" (a convention of this codebase only: the table or helper this repository uses to apply a technique is a project pattern, and so is a domain word such as \"invoice\"). If you are not sure whether a concept is a technique or a project_pattern, choose project_pattern.\n");
     if reader.known_count > 0 {
         p.push_str("- \"known_used\": the names of the reader's known concepts that this change relies on and that you left out of \"concepts\". Each entry is only the concept's name, the text `known` printed between `known: ` and ` (`, with no kind and no description. An empty array if none.\n");
     }
@@ -168,6 +168,8 @@ mod tests {
         assert!(text.contains("project_pattern"));
         assert!(text.contains("\"protocol\" (a protocol, file format, or standard"));
         assert!(!text.contains("\"system\""));
+        assert!(text.contains("\"technique\" (a way of solving a problem"));
+        assert!(text.contains("choose project_pattern"));
 
         let root = prompt(
             &PromptSubject {

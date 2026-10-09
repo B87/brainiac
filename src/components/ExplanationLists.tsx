@@ -37,6 +37,7 @@ const KIND_WORD: Record<ConceptKind, string> = {
   library: "Library",
   protocol: "Protocol or standard",
   tool: "Tool or service",
+  technique: "Technique",
   project_pattern: "Project pattern",
 };
 const KINDS: ConceptKind[] = [
@@ -44,6 +45,7 @@ const KINDS: ConceptKind[] = [
   "library",
   "protocol",
   "tool",
+  "technique",
   "project_pattern",
 ];
 const KIND_CHIP: Record<ConceptKind, string> = {
@@ -51,6 +53,7 @@ const KIND_CHIP: Record<ConceptKind, string> = {
   library: "Library",
   protocol: "Protocol",
   tool: "Tool",
+  technique: "Technique",
   project_pattern: "Project patterns",
 };
 

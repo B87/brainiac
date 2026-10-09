@@ -37,6 +37,7 @@ fn kind_word(kind: ConceptKind) -> &'static str {
         ConceptKind::Library => "library",
         ConceptKind::Protocol => "protocol",
         ConceptKind::Tool => "tool",
+        ConceptKind::Technique => "technique",
         ConceptKind::ProjectPattern => "project pattern",
     }
 }

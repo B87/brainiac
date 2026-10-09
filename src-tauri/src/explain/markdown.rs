@@ -65,6 +65,7 @@ pub fn render(title: &str, e: &Explanation) -> String {
                 ConceptKind::Library => "library",
                 ConceptKind::Protocol => "protocol",
                 ConceptKind::Tool => "tool",
+                ConceptKind::Technique => "technique",
                 ConceptKind::ProjectPattern => "project pattern",
             };
             md.push_str(&format!(

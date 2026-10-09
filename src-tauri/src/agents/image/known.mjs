@@ -23,6 +23,7 @@ const KINDS = new Set([
   "library",
   "protocol",
   "tool",
+  "technique",
   "system",
   "project pattern",
 ]);
