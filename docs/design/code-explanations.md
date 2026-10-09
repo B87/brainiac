@@ -186,15 +186,15 @@ A third panel round (hypotheses, not user data) on one project pattern that **ap
 | Agent | Run | Time | Cost | Lookups (per commit) | Known concepts still written | Known concepts named in `known_used` |
 | --- | --- | --- | --- | --- | --- | --- |
 | Claude Code | no ledger | 301 s | $1.14 | 0 | n/a | n/a |
-| Claude Code | 300-entry ledger | 289 s | $1.12 | 2, 7, 2 | 2 of 13 | 0 of 13 |
+| Claude Code | 300-entry ledger | 289 s | $1.12 | 2, 7, 2 | 2 of 13 | 1 of 13 |
 | OpenCode | no ledger | 285 s | $0.98 | 0 | n/a | n/a |
-| OpenCode | 300-entry ledger | 278 s | $0.99 | 1, 2, 4 | 0 of 14 | 2 of 14 |
+| OpenCode | 300-entry ledger | 278 s | $0.99 | 1, 2, 4 | 0 of 14 | 3 of 14 |
 
 - **The ledger added no time or cost we could measure.** Each ledger run was within the spread of the same commit without one, in both directions (Claude Code's 7edf3c2 took 138 s against 128 s, OpenCode's 29bbc56 55 s against 62 s). The lookup is cheap; what a ledger of 5,000 costs is not measured.
 - **Both agents run the lookup every time**, usually once with a batch of 20 to 40 names, and Claude Code up to seven times.
-- **An exact name rarely matches.** Of the 27 known concepts (from a sibling run of the same commit), the agents left out two by name. For most of the rest they wrote the idea again under another name: "Closures" became "Closure", "Arc<T> shared ownership" became "Arc", "Role-on-a-machine pattern" became "Role on a machine". Claude Code also kept "Result and the ? operator" in Concepts twice under its exact known name; whether it was used in a new way was not checked. A ledger built from earlier explanations of other changes would have more variation than this sibling-run one.
+- **An exact name rarely matches.** Of the 27 known concepts (from a sibling run of the same commit), the agents left out four by name (three with OpenCode, one with Claude Code). For most of the rest they wrote the idea again under another name: "Closures" became "Closure", "Arc<T> shared ownership" became "Arc", "Role-on-a-machine pattern" became "Role on a machine". Claude Code also kept "Result and the ? operator" in Concepts twice under its exact known name; whether it was used in a new way was not checked. A ledger built from earlier explanations of other changes would have more variation than this sibling-run one.
 - **The agent looks up before it has settled its names.** It sent short words (`closure`, `Result`, `iterator`) from its first read of the diff, then wrote its concepts under longer names it never looked up.
-- **`known_used` can overclaim.** Four of the six names agents listed from the ledger's filler list (`React` for a Rust change, `tokio`, `closures`) were names the agent had looked up, not ideas the change relies on. The checker confirms a name is in the ledger, not that the change uses it, so "Left out because you know them: N" can count a name the explanation never needed. It stays a count of ledger names, never a count above the ledger.
+- **`known_used` can overclaim.** Ten of the fourteen names the agents listed were the ledger's filler (`React` for a Rust change, `tokio`, `async/await`, `SQLite`), which the agent had looked up; the change may not rely on them. The checker confirms a name is in the ledger, not that the change uses it, so "Left out because you know them: N" can count a name the explanation never needed. It stays a count of ledger names, never above the ledger.
 
 What this suggests, none of it decided: ask the agent to look up the names it is about to write, after drafting its concepts and as it writes them; and let `known` report a near name (the same words, a plural, an added type parameter) as "similar to", which the panel's "related concept skipping" would otherwise cover. The first costs a prompt change and a second run of this harness; the second reopens a not-planned item. The container's start is still untimed.
 
