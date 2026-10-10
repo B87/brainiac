@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 
 use crate::db::{self, Db};
+use crate::events::Emitter;
 use crate::index::{self, IndexDoc, EDIT_LIMIT};
 use crate::models::{
     now_rfc3339, AppError, AppResult, Backlink, CreateNoteRequest, ErrorCode, FolderEntry,
@@ -31,7 +32,10 @@ pub use files::{validate_relative, Found};
 use store::{FileState, NoteRow};
 
 /// A change committed by the notes or tasks services, for the frontend.
-#[derive(Debug, Clone, PartialEq)]
+/// `untagged` serializes a variant as its inner value alone, so the window
+/// receives the same payload under each variant's name.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(untagged)]
 pub enum KnowledgeEvent {
     NoteChanged(NoteChangedEvent),
     NoteMissing(NoteMissingEvent),
@@ -39,9 +43,16 @@ pub enum KnowledgeEvent {
     IndexStatus(IndexStatus),
 }
 
-/// Delivers committed changes; `lib.rs` turns them into Tauri events.
-/// `Arc<dyn Fn…>` lets every service share one closure across threads.
-pub type KnowledgeEmitter = Arc<dyn Fn(KnowledgeEvent) + Send + Sync>;
+impl crate::events::FrontendEvent for KnowledgeEvent {
+    fn name(&self) -> &'static str {
+        match self {
+            KnowledgeEvent::NoteChanged(_) => "note_changed",
+            KnowledgeEvent::NoteMissing(_) => "note_missing",
+            KnowledgeEvent::TaskChanged(_) => "task_changed",
+            KnowledgeEvent::IndexStatus(_) => "index_status_changed",
+        }
+    }
+}
 
 /// The v0.2 database files (docs/architecture.md, Storage layout).
 #[derive(Clone)]
@@ -84,7 +95,7 @@ pub struct NoteService {
     pub(crate) data_dir: PathBuf,
     pub(crate) vault: RwLock<Option<ActiveVault>>,
     status: Mutex<IndexStatus>,
-    events: KnowledgeEmitter,
+    events: Emitter<KnowledgeEvent>,
     /// One write at a time per note (docs/architecture.md, Concurrency).
     note_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// Notes Brainiac is writing right now; a reconciliation leaves them to the write.
@@ -216,7 +227,7 @@ pub(crate) fn describe(
 }
 
 impl NoteService {
-    pub fn new(stores: Stores, data_dir: PathBuf, events: KnowledgeEmitter) -> Arc<Self> {
+    pub fn new(stores: Stores, data_dir: PathBuf, events: Emitter<KnowledgeEvent>) -> Arc<Self> {
         Arc::new(NoteService {
             stores,
             data_dir,
@@ -272,7 +283,7 @@ impl NoteService {
     }
 
     pub(crate) fn emit(&self, event: KnowledgeEvent) {
-        (self.events)(event);
+        (self.events)(&event);
     }
 
     pub(crate) fn emit_changed(

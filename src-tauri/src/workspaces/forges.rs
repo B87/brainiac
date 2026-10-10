@@ -30,7 +30,7 @@ impl RepositoryService {
             .call(move |conn| db::set_repository_forge(conn, &id2, forge.as_ref(), &now))
             .await?;
         let version = self.bump_version();
-        (self.emitter)(RepositoryChangedEvent {
+        (self.emitter)(&RepositoryChangedEvent {
             repository_id: id.clone(),
             snapshot_version: version,
             origin: ChangeOrigin::Refresh,

@@ -23,6 +23,7 @@ mod forges;
 mod membership;
 mod relocation;
 use crate::activity::ActivityTracker;
+use crate::events::{Emitter, Notifier};
 use crate::fetcher::Fetcher;
 use crate::git::{GitService, LogQuery};
 use crate::models::{
@@ -42,16 +43,17 @@ const STALE_MULTIPLIER: u64 = 2;
 /// Concurrent `git status` jobs (docs/architecture.md, Concurrency: start with two, tune after measurement).
 const STATUS_CONCURRENCY: usize = 2;
 
-pub type Emitter = Arc<dyn Fn(RepositoryChangedEvent) + Send + Sync>;
-
-/// Shows a macOS notification with a title and body. Injected like `Emitter`
-/// so the service stays independent of Tauri; tests leave it unset.
-pub type Notifier = Arc<dyn Fn(String, String) + Send + Sync>;
-
 /// Told about every fetch that moved a ref, with its outcome. Injected like
-/// `Notifier`: the pull request service listens, and this service stays
+/// the notifier: the pull request service listens, and this service stays
 /// unaware of it (docs/architecture.md, Sync, cache, and request budget).
 pub type FetchListener = Arc<dyn Fn(FetchResult) + Send + Sync>;
+
+/// A repository's status, branches, or forge changed (SPEC.md, Workspaces and repositories).
+impl crate::events::FrontendEvent for RepositoryChangedEvent {
+    fn name(&self) -> &'static str {
+        "repository_changed"
+    }
+}
 
 /// Per-repository refresh bookkeeping: at most one running job and one pending request.
 #[derive(Default)]
@@ -66,7 +68,7 @@ pub struct RepositoryService {
     git_info: GitInfo,
     settings: Mutex<Settings>,
     version: AtomicU64,
-    emitter: Emitter,
+    emitter: Emitter<RepositoryChangedEvent>,
     slots: Mutex<HashMap<String, RefreshSlot>>,
     status_jobs: Arc<Semaphore>,
     notifier: Mutex<Option<Notifier>>,
@@ -80,7 +82,7 @@ impl RepositoryService {
         db: Db,
         git: Result<GitService, AppError>,
         settings: Settings,
-        emitter: Emitter,
+        emitter: Emitter<RepositoryChangedEvent>,
     ) -> Self {
         let (git, git_info) = match git {
             Ok(g) => {
@@ -275,7 +277,7 @@ impl RepositoryService {
         }
         self.slots.lock().expect("slots").remove(id);
         let version = self.bump_version();
-        (self.emitter)(RepositoryChangedEvent {
+        (self.emitter)(&RepositoryChangedEvent {
             repository_id: id.to_string(),
             snapshot_version: version,
             origin: ChangeOrigin::Refresh,
@@ -526,7 +528,7 @@ impl RepositoryService {
             || previous != status.as_ref().map(without_timestamp)
             || row.error != error;
         let version = self.bump_version();
-        (self.emitter)(RepositoryChangedEvent {
+        (self.emitter)(&RepositoryChangedEvent {
             repository_id: id.to_string(),
             snapshot_version: version,
             origin,

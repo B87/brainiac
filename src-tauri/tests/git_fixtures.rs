@@ -57,8 +57,8 @@ async fn service_for(
     let git = GitService::detect().await;
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink = Arc::clone(&events);
-    let emitter: brainiac_lib::workspaces::Emitter =
-        Arc::new(move |e| sink.lock().unwrap().push(e));
+    let emitter: brainiac_lib::events::Emitter<brainiac_lib::models::RepositoryChangedEvent> =
+        Arc::new(move |e| sink.lock().unwrap().push(e.clone()));
     (
         Arc::new(RepositoryService::new(
             db,

@@ -43,6 +43,6 @@ pub mod runtime;
 pub mod settings;
 
 pub use repository::{ExportedStart, RunArtifacts};
-pub use runs::{AgentRunService, RepositoryLookup, RunEmitter};
+pub use runs::{AgentRunService, RepositoryLookup};
 pub use runtime::{RunRuntime, StartError};
 pub use settings::{credential_owner, normalize_credential, AgentSettingsService, PLAN_OFFERED};

@@ -151,7 +151,7 @@ impl Harness {
         set_up(&core, &settings, CLAUDE_CODE, KEY, "").await;
         // The repository's code may go to Anthropic (SPEC.md, section 13,
         // Code sharing), as New run asked the first time.
-        let sharing = CodeSharingService::new(core.clone(), Arc::new(|| {}));
+        let sharing = CodeSharingService::new(core.clone(), Arc::new(|_| {}));
         sharing
             .answer(AnswerCodeSharingRequest {
                 repository_id: "repo-1".into(),
@@ -183,7 +183,7 @@ impl Harness {
                     tmp.path().join("c").join("runner.sock"),
                 )),
                 Arc::new(Repos(repo.clone())),
-                Arc::new(move |event| seen.lock().unwrap().push(event)),
+                Arc::new(move |event| seen.lock().unwrap().push(event.clone())),
             ),
             settings,
             sharing,

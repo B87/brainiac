@@ -182,7 +182,7 @@ impl Harness {
         ));
         let (changes, _) = tokio::sync::broadcast::channel::<String>(256);
         let sender = changes.clone();
-        let sharing = CodeSharingService::new(core.clone(), Arc::new(|| {}));
+        let sharing = CodeSharingService::new(core.clone(), Arc::new(|_| {}));
         let runs = AgentRunService::new(
             history.clone(),
             Arc::clone(&settings),
@@ -195,7 +195,7 @@ impl Harness {
             )),
             Arc::clone(&repositories) as Arc<dyn RepositoryLookup>,
             Arc::new(move |event| {
-                let _ = sender.send(event.run_id);
+                let _ = sender.send(event.run_id.clone());
             }),
         );
         for _ in 0..100 {

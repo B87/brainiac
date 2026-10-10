@@ -27,6 +27,7 @@ use crate::agents::runs::{ExplainRun, ExplainStart};
 use crate::agents::settings::{profile_name, run_missing};
 use crate::agents::{AgentRunService, AgentSettingsService, RunArtifacts};
 use crate::db::{self, Db};
+use crate::events::{Emitter, Notifier};
 use crate::forge::PullRequestFacts;
 use crate::models::{
     now_rfc3339, AgentKind, AgentRun, AgentSettings, AppError, AppResult, ConceptKind,
@@ -40,10 +41,12 @@ use crate::notes::NoteService;
 use crate::sharing::CodeSharingService;
 use crate::workspaces::RepositoryService;
 
-pub type ExplanationEmitter = Arc<dyn Fn(ExplanationChangedEvent) + Send + Sync>;
-/// Says that an explanation ended, as a macOS notification when Brainiac is
-/// not the active app (SPEC.md, Explain: While it works).
-pub type ExplanationNotifier = Arc<dyn Fn(String, String) + Send + Sync>;
+/// An explanation changed or was deleted (SPEC.md, section 14).
+impl crate::events::FrontendEvent for ExplanationChangedEvent {
+    fn name(&self) -> &'static str {
+        "explanation_changed"
+    }
+}
 
 /// Reads a pull request by its reference. A `BoxFuture` is a future behind a
 /// pointer, which is how a stored closure can be async. A closure, not the
@@ -71,8 +74,10 @@ pub struct ExplanationService {
     artifacts: Arc<RunArtifacts>,
     repositories: Arc<RepositoryService>,
     notes: Arc<NoteService>,
-    emitter: ExplanationEmitter,
-    notifier: Mutex<Option<ExplanationNotifier>>,
+    emitter: Emitter<ExplanationChangedEvent>,
+    /// Says that an explanation ended, as a macOS notification when
+    /// Brainiac is not the active app (SPEC.md, Explain: While it works).
+    notifier: Mutex<Option<Notifier>>,
     pull_requests: Mutex<Option<PullRequestReader>>,
     /// The run service's change events, by run ID.
     run_events: broadcast::Sender<String>,
@@ -102,7 +107,7 @@ impl ExplanationService {
         artifacts: Arc<RunArtifacts>,
         repositories: Arc<RepositoryService>,
         notes: Arc<NoteService>,
-        emitter: ExplanationEmitter,
+        emitter: Emitter<ExplanationChangedEvent>,
         run_events: broadcast::Sender<String>,
     ) -> Arc<Self> {
         Arc::new(ExplanationService {
@@ -122,7 +127,7 @@ impl ExplanationService {
         })
     }
 
-    pub fn set_notifier(&self, notifier: ExplanationNotifier) {
+    pub fn set_notifier(&self, notifier: Notifier) {
         *self.notifier.lock().unwrap_or_else(|p| p.into_inner()) = Some(notifier);
     }
 
@@ -141,7 +146,7 @@ impl ExplanationService {
     }
 
     fn emit(&self, id: &str, repository_id: &str, deleted: bool) {
-        (self.emitter)(ExplanationChangedEvent {
+        (self.emitter)(&ExplanationChangedEvent {
             id: id.to_string(),
             repository_id: repository_id.to_string(),
             deleted,

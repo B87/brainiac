@@ -8,6 +8,7 @@ pub mod commands;
 pub mod credentials;
 pub mod databases;
 pub mod db;
+pub mod events;
 pub mod explain;
 pub mod fetcher;
 pub mod forge;
@@ -32,32 +33,23 @@ use std::time::Duration;
 #[cfg(feature = "app")]
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 #[cfg(feature = "app")]
-use tauri::{Emitter, Manager, WindowEvent};
+use tauri::{Manager, WindowEvent};
 
 #[cfg(feature = "app")]
-use crate::models::{AppError, ChangeOrigin, MenuEvent, RepositoryChangedEvent};
+use crate::models::{AgentRunChangedEvent, AppError, ChangeOrigin, MenuEvent};
 #[cfg(feature = "app")]
-use crate::notes::{KnowledgeEvent, NoteService};
+use crate::notes::NoteService;
 #[cfg(feature = "app")]
 use crate::tasks::TaskService;
 #[cfg(feature = "app")]
 use crate::workspaces::RepositoryService;
 
-/// Event names shared with the frontend.
-pub const EVENT_REPOSITORY_CHANGED: &str = "repository_changed";
-pub const EVENT_MENU: &str = "menu";
-pub const EVENT_NOTE_CHANGED: &str = "note_changed";
-pub const EVENT_NOTE_MISSING: &str = "note_missing";
-pub const EVENT_TASK_CHANGED: &str = "task_changed";
-pub const EVENT_INDEX_STATUS_CHANGED: &str = "index_status_changed";
-pub const EVENT_PR_CHANGED: &str = "pr_changed";
-pub const EVENT_DB_HEALTH_SAMPLE: &str = "db_health_sample";
-pub const EVENT_AGENT_RUN_CHANGED: &str = "agent_run_changed";
-pub const EVENT_EXPLANATION_CHANGED: &str = "explanation_changed";
-/// An answer in Settings → Code Sharing changed (SPEC.md, section 13).
-pub const EVENT_CODE_SHARING_CHANGED: &str = "code_sharing_changed";
-/// A host job changed: a step, its output, or how it ended (SPEC.md, Host jobs).
-pub const EVENT_AGENT_HOST_JOB: &str = "agent_host_job";
+/// A native menu item was chosen; the window acts on its id.
+impl events::FrontendEvent for MenuEvent {
+    fn name(&self) -> &'static str {
+        "menu"
+    }
+}
 
 /// Minimum age of a vault scan before focus or wake triggers another.
 #[cfg(feature = "app")]
@@ -134,20 +126,13 @@ pub fn run() {
             }
 
             // --- Core service ------------------------------------------------
-            let emit_handle = handle.clone();
-            let emitter: workspaces::Emitter = Arc::new(move |event: RepositoryChangedEvent| {
-                if let Err(e) = emit_handle.emit(EVENT_REPOSITORY_CHANGED, &event) {
-                    tracing::warn!(error = %e, "failed to emit repository_changed");
-                }
-            });
-            let service = Arc::new(RepositoryService::new(db.clone(), git, settings.clone(), emitter));
-            let notify_handle = handle.clone();
-            service.set_notifier(Arc::new(move |title: String, body: String| {
-                use tauri_plugin_notification::NotificationExt;
-                if let Err(e) = notify_handle.notification().builder().title(title).body(body).show() {
-                    tracing::warn!(error = %e, "could not show a notification");
-                }
-            }));
+            let service = Arc::new(RepositoryService::new(
+                db.clone(),
+                git,
+                settings.clone(),
+                events::to_window(handle.clone()),
+            ));
+            service.set_notifier(events::notifier(handle.clone(), events::Notify::Always));
             app.manage(Arc::clone(&service));
 
             // --- Secrets (v0.4.x) -------------------------------------------
@@ -175,12 +160,6 @@ pub fn run() {
                     return Ok(());
                 }
             };
-            let pr_handle = handle.clone();
-            let pr_emitter: forge::PullRequestEmitter = Arc::new(move |event| {
-                if let Err(e) = pr_handle.emit(EVENT_PR_CHANGED, &event) {
-                    tracing::warn!(error = %e, "failed to emit pr_changed");
-                }
-            });
             let pull_requests = Arc::new(forge::PullRequestService::new(
                 Arc::clone(&service),
                 Arc::clone(&accounts),
@@ -188,7 +167,7 @@ pub fn run() {
                 forge_cache,
                 forge::http::Http::new()?,
                 forge::Endpoints::production(),
-                pr_emitter,
+                events::to_window(handle.clone()),
             ));
             app.manage(Arc::clone(&pull_requests));
             let explain_prs = Arc::clone(&pull_requests);
@@ -238,16 +217,14 @@ pub fn run() {
             // The run controller is a separate process; the runtime reaches
             // it and starts it when a run needs one.
             let runtime = Arc::new(agents::RunRuntime::new(&data_dir, &app.config().identifier));
-            let run_handle = handle.clone();
             // Explanations follow their explain runs through the same
             // changes the window gets (v0.6).
             let (run_changes, _) = tokio::sync::broadcast::channel::<String>(256);
             let run_changes_sender = run_changes.clone();
-            let run_emitter: agents::RunEmitter = Arc::new(move |event| {
+            let run_window = events::to_window(handle.clone());
+            let run_emitter: events::Emitter<AgentRunChangedEvent> = Arc::new(move |event| {
                 let _ = run_changes_sender.send(event.run_id.clone());
-                if let Err(e) = run_handle.emit(EVENT_AGENT_RUN_CHANGED, &event) {
-                    tracing::warn!(error = %e, "failed to emit agent_run_changed");
-                }
+                run_window(event);
             });
             let machines = Arc::new(machines::MachineService::new(
                 stores.core.clone(),
@@ -262,15 +239,7 @@ pub fn run() {
             app.manage(Arc::clone(&agent_hosts));
             // Whether a repository's code may go to a provider: one answer
             // for runs and explanations (SPEC.md, section 13, Code sharing).
-            let sharing_handle = handle.clone();
-            let sharing = sharing::CodeSharingService::new(
-                stores.core.clone(),
-                Arc::new(move || {
-                    if let Err(e) = sharing_handle.emit(EVENT_CODE_SHARING_CHANGED, ()) {
-                        tracing::warn!(error = %e, "failed to emit code_sharing_changed");
-                    }
-                }),
-            );
+            let sharing = sharing::CodeSharingService::new(stores.core.clone(), events::to_window(handle.clone()));
             app.manage(Arc::clone(&sharing));
             let runs = agents::AgentRunService::new(
                 stores.history.clone(),
@@ -287,35 +256,15 @@ pub fn run() {
             let explain_runs = Arc::clone(&runs);
             let explain_agent_settings = Arc::clone(&agent_settings);
             let (explain_core, explain_history) = (stores.core.clone(), stores.history.clone());
-            let job_handle = handle.clone();
-            let job_emitter: agents::host_jobs::HostJobEmitter = Arc::new(move |job| {
-                if let Err(e) = job_handle.emit(EVENT_AGENT_HOST_JOB, job) {
-                    tracing::warn!(error = %e, "failed to emit agent_host_job");
-                }
-            });
-            // The window says it too; a notification is for when Brainiac
-            // is not the active app (SPEC.md, Host jobs).
-            let job_notify = handle.clone();
-            let job_notifier: agents::host_jobs::HostJobNotifier = Arc::new(move |title, body| {
-                use tauri_plugin_notification::NotificationExt;
-                let active = job_notify
-                    .webview_windows()
-                    .values()
-                    .any(|w| w.is_focused().unwrap_or(false));
-                if active {
-                    return;
-                }
-                if let Err(e) = job_notify.notification().builder().title(title).body(body).show() {
-                    tracing::warn!(error = %e, "could not show a notification");
-                }
-            });
             app.manage(Arc::new(agents::host_jobs::HostJobService::new(
                 agent_hosts,
                 Arc::clone(&runs),
                 Arc::clone(&agent_settings),
                 &data_dir,
-                job_emitter,
-                job_notifier,
+                events::to_window(handle.clone()),
+                // The window says it too; a notification is for when Brainiac
+                // is not the active app (SPEC.md, Host jobs).
+                events::notifier(handle.clone(), events::Notify::WhenInactive),
             )));
             // Reconnect to runs left live or uncollected, and apply retention
             // once an hour (SPEC.md, Leaving and coming back; Deleting and keeping).
@@ -334,15 +283,9 @@ pub fn run() {
                 Arc::clone(&connections),
                 agent_settings,
             )));
-            let health_handle = handle.clone();
-            let health_emitter: databases::health::HealthEmitter = Arc::new(move |event| {
-                if let Err(e) = health_handle.emit(EVENT_DB_HEALTH_SAMPLE, &event) {
-                    tracing::warn!(error = %e, "failed to emit db_health_sample");
-                }
-            });
             app.manage(Arc::new(databases::health::HealthService::new(
                 Arc::clone(&connections),
-                health_emitter,
+                events::to_window(handle.clone()),
                 databases::health::GoogleConfig::production(),
             )));
             let query_sessions = Arc::new(
@@ -360,29 +303,11 @@ pub fn run() {
                 }
             });
 
-            let knowledge_handle = handle.clone();
-            let knowledge_emitter: notes::KnowledgeEmitter = Arc::new(move |event: KnowledgeEvent| {
-                let sent = match &event {
-                    KnowledgeEvent::NoteChanged(e) => knowledge_handle.emit(EVENT_NOTE_CHANGED, e),
-                    KnowledgeEvent::NoteMissing(e) => knowledge_handle.emit(EVENT_NOTE_MISSING, e),
-                    KnowledgeEvent::TaskChanged(e) => knowledge_handle.emit(EVENT_TASK_CHANGED, e),
-                    KnowledgeEvent::IndexStatus(e) => knowledge_handle.emit(EVENT_INDEX_STATUS_CHANGED, e),
-                };
-                if let Err(e) = sent {
-                    tracing::warn!(error = %e, "failed to emit a notes event");
-                }
-            });
-            let notes = NoteService::new(stores, data_dir.clone(), knowledge_emitter);
+            let notes = NoteService::new(stores, data_dir.clone(), events::to_window(handle.clone()));
             notes.set_write_note_ids(settings.write_note_ids);
             app.manage(Arc::clone(&notes));
 
             // --- Explaining changes (v0.6) ----------------------------------
-            let explain_handle = handle.clone();
-            let explain_emitter: explain::service::ExplanationEmitter = Arc::new(move |event| {
-                if let Err(e) = explain_handle.emit(EVENT_EXPLANATION_CHANGED, &event) {
-                    tracing::warn!(error = %e, "failed to emit explanation_changed");
-                }
-            });
             let explanations = explain::service::ExplanationService::new(
                 explain_core,
                 explain_history,
@@ -392,7 +317,7 @@ pub fn run() {
                 artifacts,
                 Arc::clone(&service),
                 Arc::clone(&notes),
-                explain_emitter,
+                events::to_window(handle.clone()),
                 run_changes,
             );
             // Explain reads a pull request through the pull request service.
@@ -400,20 +325,7 @@ pub fn run() {
                 let pull_requests = Arc::clone(&explain_prs);
                 Box::pin(async move { pull_requests.explain_facts(&reference).await })
             }));
-            let explain_notify = handle.clone();
-            explanations.set_notifier(Arc::new(move |title, body| {
-                use tauri_plugin_notification::NotificationExt;
-                let active = explain_notify
-                    .webview_windows()
-                    .values()
-                    .any(|w| w.is_focused().unwrap_or(false));
-                if active {
-                    return;
-                }
-                if let Err(e) = explain_notify.notification().builder().title(title).body(body).show() {
-                    tracing::warn!(error = %e, "could not show a notification");
-                }
-            }));
+            explanations.set_notifier(events::notifier(handle.clone(), events::Notify::WhenInactive));
             app.manage(Arc::clone(&explanations));
             tauri::async_runtime::spawn(async move {
                 explanations.reconnect().await;
@@ -495,7 +407,7 @@ pub fn run() {
                     quit(app);
                     return;
                 }
-                let _ = menu_handle.emit(EVENT_MENU, MenuEvent { id: event.id().0.clone() });
+                events::send(&menu_handle, &MenuEvent { id: event.id().0.clone() });
             });
 
             Ok(())

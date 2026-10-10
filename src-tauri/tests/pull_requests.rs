@@ -327,7 +327,8 @@ async fn harness(base: &str) -> Harness {
     let tmp = tempfile::tempdir().unwrap();
     let data = tmp.path().join("data");
     let db = Db::open(&data.join("brainiac.sqlite3")).unwrap();
-    let emitter: brainiac_lib::workspaces::Emitter = Arc::new(|_| {});
+    let emitter: brainiac_lib::events::Emitter<brainiac_lib::models::RepositoryChangedEvent> =
+        Arc::new(|_| {});
     let core = db.clone();
     let repositories = Arc::new(RepositoryService::new(
         db.clone(),
@@ -358,7 +359,7 @@ async fn harness(base: &str) -> Harness {
         PullRequestService::open_cache(&data).unwrap(),
         http,
         endpoints,
-        Arc::new(move |e| sink.lock().unwrap().push(e)),
+        Arc::new(move |e| sink.lock().unwrap().push(e.clone())),
     ));
     Harness {
         repositories,

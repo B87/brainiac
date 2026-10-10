@@ -30,6 +30,7 @@ use super::settings::{self, AgentSettingsService};
 use super::{RunArtifacts, RunRuntime};
 use crate::credentials::{CredentialService, Resolution};
 use crate::db::Db;
+use crate::events::Emitter;
 use crate::models::{
     now_rfc3339, AgentHost, AgentKind, AgentProfile, AgentRun, AgentRunChangedEvent, AgentRunList,
     AgentSettings, AgentTestResult, AgentTestStep, AppError, AppResult, DiffResult, ErrorCode,
@@ -81,7 +82,12 @@ pub const RETENTION: chrono::Duration = chrono::Duration::days(30);
 const TEST_TIME_LIMIT_MINUTES: u32 = 30;
 const TEST_PROMPT: &str = "Reply with the single word ready and nothing else.";
 
-pub type RunEmitter = Arc<dyn Fn(AgentRunChangedEvent) + Send + Sync>;
+/// A run changed or was deleted (SPEC.md, The run).
+impl crate::events::FrontendEvent for AgentRunChangedEvent {
+    fn name(&self) -> &'static str {
+        "agent_run_changed"
+    }
+}
 
 /// A repository's name and root, answered later.
 // A boxed future: a trait used through `dyn` cannot have `async fn`, so the
@@ -152,7 +158,7 @@ pub struct AgentRunService {
     /// A test run's controller, when it is not this Mac's.
     test_runtimes: Mutex<HashMap<String, Arc<RunRuntime>>>,
     repositories: Arc<dyn RepositoryLookup>,
-    emitter: RunEmitter,
+    emitter: Emitter<AgentRunChangedEvent>,
     /// One sync task per live run, by run ID.
     syncing: Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
     journals: Mutex<HashMap<String, Arc<Mutex<Journal>>>>,
@@ -180,7 +186,7 @@ impl AgentRunService {
         artifacts: Arc<RunArtifacts>,
         runtime: Arc<RunRuntime>,
         repositories: Arc<dyn RepositoryLookup>,
-        emitter: RunEmitter,
+        emitter: Emitter<AgentRunChangedEvent>,
     ) -> Arc<Self> {
         Arc::new(AgentRunService {
             history,
@@ -205,7 +211,7 @@ impl AgentRunService {
     }
 
     fn emit(&self, run_id: &str, deleted: bool) {
-        (self.emitter)(AgentRunChangedEvent {
+        (self.emitter)(&AgentRunChangedEvent {
             run_id: run_id.to_string(),
             deleted,
         });

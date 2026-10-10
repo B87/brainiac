@@ -18,6 +18,7 @@ use super::connections::ConnectionService;
 use super::driver::Target;
 use super::postgres::{PgSession, PgTarget};
 use crate::credentials::LeaseHandle;
+use crate::events::Emitter;
 use crate::models::{
     now_rfc3339, AppError, AppResult, DbAccess, DbKind, DockerContainer, DockerContainers,
     ErrorCode, HealthEvent, HealthPoint, HealthSample, HealthSession, HealthSnapshot,
@@ -38,8 +39,12 @@ const READ_WAIT: Duration = Duration::from_secs(10);
 /// read or that the server refused.
 const CREDENTIAL_RETRY: Duration = Duration::from_secs(60);
 
-/// Receives every sample, to emit as `db_health_sample`.
-pub type HealthEmitter = Arc<dyn Fn(HealthEvent) + Send + Sync>;
+/// One health sample of a connection (SPEC.md, Databases).
+impl crate::events::FrontendEvent for HealthEvent {
+    fn name(&self) -> &'static str {
+        "db_health_sample"
+    }
+}
 
 /// Where Google's token and Monitoring APIs are, and the credentials file:
 /// Google's in the app, a local stand-in in tests.
@@ -139,7 +144,7 @@ struct Monitor {
 
 pub struct HealthService {
     connections: Arc<ConnectionService>,
-    emitter: HealthEmitter,
+    emitter: Emitter<HealthEvent>,
     monitors: Mutex<HashMap<String, Arc<Monitor>>>,
     google: GoogleConfig,
     google_token: tokio::sync::Mutex<Option<(String, Instant)>>,
@@ -149,7 +154,7 @@ pub struct HealthService {
 impl HealthService {
     pub fn new(
         connections: Arc<ConnectionService>,
-        emitter: HealthEmitter,
+        emitter: Emitter<HealthEvent>,
         google: GoogleConfig,
     ) -> Self {
         let https = reqwest::Client::builder()
@@ -303,7 +308,7 @@ impl HealthService {
             points.push_back(point.clone());
         }
         *monitor.latest.lock().expect("latest lock") = Some(sample.clone());
-        (self.emitter)(HealthEvent { sample, point });
+        (self.emitter)(&HealthEvent { sample, point });
     }
 
     async fn health_target(
