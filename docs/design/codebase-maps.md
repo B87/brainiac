@@ -4,7 +4,7 @@ Notes on a navigable map of a whole repository, kept current as it changes: its 
 
 ## Status: idea, not planned (written 10 Oct 2026, rewritten 11 Oct 2026)
 
-Nothing in the app is built. On 10 October 2026 the first draft was written with the maintainer, reviewed by a client panel, and compared with existing tools, and `pnpm map:diff` started as an experiment. On 11 October a prototype map of Brainiac drawn with LikeC4 replaced the first draft's own diagrams and spec, and this file was rewritten around it: Brainiac computes and checks the facts, an agent composes the map, and LikeC4 draws it. The same day a diff of PR #13 was drawn on the prototype, and a design canvas explored how maps and their diffs would sit in Brainiac (The diff experience; Extending LikeC4).
+Nothing in the app is built. On 10 October 2026 the first draft was written with the maintainer, reviewed by a client panel, and compared with existing tools, and a script that printed how each pull request moved Brainiac's Rust modules ran in CI as an experiment (removed on 11 October; On Brainiac itself). On 11 October a prototype map of Brainiac drawn with LikeC4 replaced the first draft's own diagrams and spec, and this file was rewritten around it: Brainiac computes and checks the facts, an agent composes the map, and LikeC4 draws it. The same day a diff of PR #13 was drawn on the prototype, and a design canvas explored how maps and their diffs would sit in Brainiac (The diff experience; Extending LikeC4).
 
 UX design canvas: https://claude.ai/artifact/RKBX9GE1cVFwzBMhRciWuR (the Map tab, Architecture beside a pull request with Before / Diff / After, five ways to show a change, a flow marked by a change, and how it plugs into LikeC4)
 
@@ -14,7 +14,7 @@ With agents writing a growing share of the code, the hard part is no longer writ
 
 Two things the first attempts showed:
 
-- **Computed alone is dumb.** `pnpm map:diff` is always right and hard to learn from: its graph draws every import the same way, has no idea which arrows matter, and cannot show a flow.
+- **Computed alone is dumb.** The first experiment's module diff was always right and hard to learn from: its graph draws every import the same way, has no idea which arrows matter, and cannot show a flow.
 - **Written alone is not trusted.** An AI-written wiki is read once and skimmed (What exists already).
 
 So a map is composed by an agent, the way a person who knows the codebase would draw it, from facts Brainiac computes, in a fixed vocabulary of shapes, and checked against those facts before it is shown.
@@ -113,7 +113,7 @@ What fails is dropped and counted on the map, never shown; past a share of failu
 
 ### A missing fact is unknown, never removed
 
-A dependency is removed only when the import text found in the old version of a file is no longer in the new one, which Brainiac checks by searching the new blob. A file with no facts yet makes its relationships unknown, shown grey, never absent. `pnpm map:diff` met the problem on its first day: compared with a commit from before Brainiac's boundary test, the shell's imports looked removed because the old commit did not say which modules were the shell.
+A dependency is removed only when the import text found in the old version of a file is no longer in the new one, which Brainiac checks by searching the new blob. A file with no facts yet makes its relationships unknown, shown grey, never absent. The first experiment met the problem on its first day: compared with a commit from before Brainiac's boundary test, the shell's imports looked removed because the old commit did not say which modules were the shell.
 
 ### The parts of a repository
 
@@ -201,13 +201,13 @@ This design uses the second row to draw, the third and fifth to compute, the fou
 
 ## On Brainiac itself
 
-### `pnpm map:diff` (since 10 October 2026)
+### The module diff (10–11 October 2026, removed)
 
-`scripts/module-diff.sh` and `src-tauri/examples/module_map.rs` print, as Markdown, how a change moved Brainiac's Rust modules: modules, imports against the boundary rules, `ALLOWED`, sizes, and a Mermaid graph with the change in colour, read with the boundary test's own reader. CI adds it to each pull request's run summary. It is the computed half of the architecture diff, and stays as that: what it lacks is everything the agent adds (which arrows matter, flows, the frontend).
+A script (`pnpm map:diff`) printed, as Markdown, how a change moved Brainiac's Rust modules: modules, imports against the boundary rules, `ALLOWED`, sizes, and a Mermaid graph with the change in colour, read with the boundary test's own reader, and CI added it to each pull request's run summary. It was removed the next day: a diff computed and drawn with no composition is what the Why section calls dumb, every import drawn the same, no flows, no frontend, and the LikeC4 prototype showed the way forward. What it taught stays in this file: the shell's imports looking removed against an old commit (A missing fact is unknown) and the graph unreadable at 87 arrows until only changes and exceptions were drawn.
 
 ### The prototype (11 October 2026)
 
-A LikeC4 model of Brainiac, composed by an agent in a session with the maintainer, about 730 lines:
+A LikeC4 model of Brainiac, composed by an agent in a session with the maintainer, about 730 lines, kept in `docs/design/codebase-maps/`: `map/` is the map, `pr13-diff/` the same model merged with PR #13's change. Each folder is a LikeC4 project; `npx likec4@1.59.4 start docs/design/codebase-maps` serves both to browse, and `npx likec4@1.59.4 validate docs/design/codebase-maps/map` checks one. Neither is part of the build or `pnpm check`, and the model is not kept current with the code: it describes the code at `f0b4edc`.
 
 - **Facts it started from:** modules, files, and sizes from the sources, and for every import between modules the names it uses (`explain → agents` uses `AgentRunService`, `RunArtifacts`), computed by a script; the Explain flow traced through the code by a second agent, 47 steps with file and line.
 - **What the agent composed:** thirteen views. Brainiac in its context; inside the app (frontend, shell, core, five features, the run controller, the container, four stores); the frontend, the core, and each feature; Explain in two flows (from the click to a started run, 19 steps; the run, the checks, and the panel, 22 steps); the exceptions in `ALLOWED`; and where data lives. Labels from the imported names ("an explanation is an agent run of its own kind"), `models` left out because nearly everything imports it.
@@ -219,7 +219,7 @@ The prototype had no checks: it is what the agent writes, not yet what Brainiac 
 
 ## Phases, if it happens
 
-0. **On Brainiac itself:** `pnpm map:diff` in CI, and the prototype model kept and composed again after large changes, to see whether the maintainer reads them.
+0. **On Brainiac itself:** the prototype model composed again by an agent after large changes, with a diff drawn for the pull requests that move the structure, to see whether the maintainer reads them.
 1. **A map on demand:** facts, fact tools, the kit, composition, the checks, and the views drawn in the app.
 2. **The architecture diff:** the Architecture tab with the merged model, Before / Diff / After, the list driving the map, and flow steps marked; LikeC4 wrapped (Extending LikeC4, level 2).
 3. **Learning on an element:** Concepts and Questions.
