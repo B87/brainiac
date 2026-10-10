@@ -1,227 +1,225 @@
 # Design: codebase maps
 
-Notes on a map of a whole repository, kept current as it changes: its modules, how they depend on each other, what each one offers, and how a change moved any of that. Explain (v0.6) teaches one change; a map teaches the codebase the changes land in. Nothing here is on the roadmap or in scope for any release.
+Notes on a navigable map of a whole repository, kept current as it changes: its parts, how they depend on each other, how a user action flows through them, and how a change moved any of that. Explain (v0.6) teaches one change; a map teaches the codebase the changes land in. Nothing here is on the roadmap or in scope for any release.
 
-## Status: idea, not planned (written 10 Oct 2026)
+## Status: idea, not planned (written 10 Oct 2026, rewritten 11 Oct 2026)
 
-Nothing in the app is built. On 10 October 2026 the decisions below were made with the maintainer, a client panel reviewed the first draft (Panel review, below), and existing tools were surveyed (What exists already). An experiment on Brainiac's own repository runs first (The experiment on Brainiac itself), then a spike (Spike before building).
+Nothing in the app is built. On 10 October 2026 the first draft was written with the maintainer, reviewed by a client panel, and compared with existing tools, and `pnpm map:diff` started as an experiment. On 11 October a prototype map of Brainiac drawn with LikeC4 replaced the first draft's own diagrams and spec, and this file was rewritten around it: Brainiac computes and checks the facts, an agent composes the map, and LikeC4 draws it.
 
 ## Why
 
-With agents writing a growing share of the code, the hard part is no longer writing a change but knowing the codebase it lands in. Explain answers "what does this change do and why"; it does not answer "what is this module for, what does it hide, and what depends on it", and nobody reads a whole repository to find out. The maintainer found this while reshaping Brainiac's own modules (`modules.md`): the numbers that showed the problem (lines in `lib.rs`, commands, the size of `models.rs`, imports between features) were gathered by hand, once, and were stale a week later.
+With agents writing a growing share of the code, the hard part is no longer writing a change but knowing the codebase it lands in. Explain answers "what does this change do and why"; it does not answer "what is this part for, what depends on it, and what happens when I click this", and nobody reads a whole repository to find out. The maintainer found this while reshaping Brainiac's own modules (`modules.md`): the numbers that showed the problem were gathered by hand, once, and were stale a week later.
 
-A map has to be trusted to be read. So the design separates what code computes, which is then simply true, from what only a model can write, which is then checked, and says on screen which is which.
+Two things the first attempts showed:
 
-## What exists already
+- **Computed alone is dumb.** `pnpm map:diff` is always right and hard to learn from: its graph draws every import the same way, has no idea which arrows matter, and cannot show a flow.
+- **Written alone is not trusted.** An AI-written wiki is read once and skimmed (What exists already).
 
-Surveyed on 10 October 2026. Each part of this design exists somewhere; no tool found combines them.
-
-| Kind | Examples | What it does | What it lacks for this design |
-| --- | --- | --- | --- |
-| AI-written codebase wikis | DeepWiki (Cognition), DeepWiki-Open (self-hosted, local models, Mermaid diagrams) | A wiki per repository: architecture overview, module pages, diagrams, questions and answers | No diff between two commits, no check of its claims, and no use of history or pull requests, so the reasons behind a design are missing |
-| Dependency graphs and boundary rules | dependency-cruiser and Madge (JavaScript), import-linter (Python), ArchUnit (Java), cargo-modules (Rust), Nx's project graph; depdog (Go) | A computed import graph, rules on it, and in depdog's case a diff against a Git ref that lists edges added and removed between components | One language each, rules rather than understanding, no prose |
-| Change coupling from history | CodeScene; code-maat, after Adam Tornhill's *Your Code as a Crime Scene* | Modules that change in the same commits, by the same people, or under the same ticket, and whether that is getting stronger | No module pages or interfaces; a hosted product, or a command-line tool |
-| Pull request summaries | CodeRabbit's walkthrough | Prose and sometimes a diagram per pull request | Nothing computed or checked behind it |
-| Repository maps for agents | Aider's repo map | Definitions and references per file with tree-sitter, ranked, across many languages | Made for a model's context, not for a reader |
-
-What this means for the design:
-
-- **What is new is the combination:** facts kept per file version so any two commits compare, prose checked against those facts, learning that shares Explain's ledger, and all of it on the Mac.
-- **The computed tools are the trusted ones.** The wikis are read once and skimmed; the import checkers run on every pull request. The design leans on computed facts and keeps prose small.
-- **Change coupling is established,** with a name, a method, and a literature; this design uses CodeScene's framing that coupling is neither good nor bad by itself.
-- **Aider shows tree-sitter extracts definitions and references cheaply across many languages,** which argues for a parser over the agent for interface items (Open questions).
-
-Sources: [DeepWiki](https://www.x-cmd.com/blog/250502), [DeepWiki-Open](https://dev.co/devops/open-source/deepwiki-open), [depdog](https://pkg.go.dev/github.com/matterpale/depdog), [CodeScene, change coupling](https://docs.enterprise.codescene.io/versions/6.0.0/guides/technical/change-coupling.html), [architecture drift between releases](https://zof.ai/blog/the-graph-diff-detecting-architecture-drift-between-two-releases).
+So a map is composed by an agent, the way a person who knows the codebase would draw it, from facts Brainiac computes, in a fixed vocabulary of shapes, and checked against those facts before it is shown.
 
 ## What the user gets
 
-- **Map** on a repository, beside its other tabs. The first time, a dialog like Explain's names the agent and host that will read the code, says plainly that the agent reads **the whole repository**, and gives an estimate from the repository's size (Cost, time, and failure).
-- **Start here:** the repository in a paragraph, and the modules in the order to read them, for someone new to it.
-- **The module graph:** each module as a box in its group, its dependencies as arrows. Every arrow says where it comes from (Two kinds of content). A module opens its page; the arrow keys move between modules and `Return` opens one.
-- **A page per module:**
-  - what it is for and what it hides, in a few sentences, each citing files and lines;
-  - its interface: the items other modules use, with their signatures, and which modules use each;
-  - what it depends on and what depends on it, and the modules it changes together with;
-  - who changes it most often, from Git, so the reader knows whom to ask;
-  - its files in reading order, each with its role, as the file list of an explanation;
-  - **Concepts**, shared with Explain's ledger: **I know this** on a concept here leaves it out of explanations too, and the other way round;
-  - **Questions:** two or three, with Reveal answer, as in Explain.
-- **The architecture diff**, in the panel beside a pull request, a branch compared with the default branch, or a commit, next to its explanation:
-  - modules added or removed;
-  - dependencies added, removed, or unknown (A missing fact is unknown);
-  - interface items added, removed, or changed, with the before and after signature;
-  - sizes that moved, and modules that now change together;
-  - a short narrative over those facts, folded under the list, which comes first.
-- **Out of date:** a map knows the commit it describes. When the default branch moves, what Git computes (sizes, history, coupling) updates without a run; the graph and interfaces of the files that changed show as not read yet, and a module whose interface changed since its prose was written says so, with **Rewrite**.
-- **Save as note:** a module page or an architecture diff becomes a Markdown note, its diagrams as Mermaid blocks, which Obsidian also renders.
-- **Delete map,** and the map listed in Settings → Explanations with what it cost (Where it fits).
+- **Map** on a repository, beside its other tabs, drawn by LikeC4 inside Brainiac. The first time, a dialog like Explain's names the agent and host, says plainly that the agent reads **the whole repository**, and gives an estimate (Cost, time, and failure).
+- **Zoom levels:** the repository in its context (people, the systems it talks to) → its parts (frontend, backend layers, features, processes, stores) → each part's modules → a module's main files. Any box with a view of its own opens on click; the back button and ⌘K search work across all of them.
+- **Flows:** a user action traced through the code ("Explain a commit": 41 steps from the button to the panel in the prototype), as a diagram or a sequence, with **Start** to step through it one arrow at a time. Each step names the file and line it happens at, and links to it.
+- **Cross-cutting views:** where data lives (which part writes which store), and the exceptions to the repository's own rules where it has some (Brainiac's `ALLOWED`).
+- **Start here:** the first view, with a paragraph on the repository and the order to read its parts in.
+- **Learning on any element,** as in Explain's panel: what it is for in a few sentences citing lines, Concepts shared with Explain's ledger (**I know this**), and Questions with Reveal answer.
+- **The architecture diff:** beside a pull request, a branch compared with the default branch, or a commit, the map's views with the change drawn on them (added green, removed red, unknown grey), and the computed list under it (The architecture diff, below).
+- **Out of date:** what Git computes updates without a run; elements whose files changed since the map was composed are marked, with **Rewrite**.
+- **Save as note,** a map's views as images and its text as Markdown; **Delete map**; the map in Settings → Explanations with what it cost.
 
-A map never runs by itself (Not automatic, below), and it reads offline once made, as explanations do.
+A map never runs by itself (Not automatic), and it reads offline once made.
 
 ## How it works
 
-### Two kinds of content
+### The pipeline
 
-| | Facts | Prose |
-| --- | --- | --- |
-| What | Files, sizes, history, imports, interface items | Purpose, what a module hides, Start here, the narrative of a diff, file roles, questions |
-| Who produces it | Brainiac from Git; the agent for imports and interfaces, then checked | The agent, writing over the facts |
-| When it changes | Whenever a file changes | Only when the facts it rests on change |
-| Shown as | Each fact marked "from Git" or "read by the agent" | Each claim cites lines; quotes checked as Explain's are |
+1. **Facts.** Brainiac computes what it can from Git and the files, and stores it per file version (Facts, below).
+2. **Composition.** An explain run of its own kind: the agent, in its container, reads the code with **fact tools** (below) and writes a **LikeC4 model**, a text file of elements, relationships, and views, in Brainiac's fixed vocabulary (The kit).
+3. **Checks.** Brainiac reads back only the model, runs LikeC4's validation, exports the model as JSON, and checks every element, relationship, and flow step against the facts (Checks). What fails is dropped and counted, or gets one follow-up turn, as Explain's checks do.
+4. **Drawing.** Brainiac renders the checked model with LikeC4's components in the app. For a diff, Brainiac itself adds the change to the model as tags, which the kit colours.
 
-The words follow Explain's: a fact that passed its check is "matched to the code", never "verified", and the count of facts that failed their check is shown on the map, not only kept.
+The agent decides what is worth showing: which parts to group, which arrows matter, what each one is labelled, which flows to trace, and in what order to read. Brainiac decides what is true.
 
-### Facts are per file version
+### Why LikeC4
 
-A file's imports and interface items change only when its content does, and Git already names a file's content by its blob hash. So facts are stored per repository and blob:
+LikeC4 is an open-source (MIT) tool for architecture as code, after the C4 model: one model, many views, written in a small language. The prototype (The prototype, below) showed it already does what an own spec and renderer would have to rebuild:
 
-- The first map extracts facts for every file. A later map, for any commit, extracts them only for blobs not yet read, which for a typical commit is a handful of files.
-- Facts at any two commits are then lookups, and the architecture diff between them is a comparison Brainiac makes. The facts the agent read are as good as their checks; the comparison adds no model.
-- A pull request's head usually needs facts for only the files it changed. Explain on a pull request can extract them in the same session, as an option in its dialog with its share of the estimate, so the diff arrives with the explanation.
-- Facts are kept per repository even when two repositories hold the same blob (a vendored file), so one client's map never draws on another's.
+- **The kit is its `specification` block:** element kinds and relationship kinds with their shapes, colours, and line styles, declared once.
+- **Zoom levels for free:** a view scoped to an element opens when the element is clicked.
+- **Flows are first class:** dynamic views, as a diagram or a sequence, with a step-through.
+- **Layout,** the hard part of drawing graphs, done.
+- **A deterministic check on what the agent writes:** `likec4 validate` refuses unknown elements and broken references.
+- **An MCP server** (`likec4 mcp`), so an agent can read and edit the model through tools instead of writing text blind.
+- **Exports** to JSON (what Brainiac checks), images, draw.io, and Markdown, and a web component or React components for drawing it inside the app.
+
+What it costs:
+
+- A dependency of a few megabytes in the app (the prototype's single page was 3 MB), loaded only when a map opens. It is added only in the release that builds maps.
+- A language Brainiac does not control. The version is pinned, and the model can always be composed again from the facts, so nothing is kept only in LikeC4's form.
+- LikeC4's look, not Brainiac's, as far as its theming allows.
+- Quirks the agent must be told about: some words are reserved (`notes` cannot name an element), and a sequence cannot show an element and its own child as two actors.
+
+What it does not do, and Brainiac must: know whether an arrow is true.
+
+### The kit
+
+Brainiac owns one `specification` block, the same for every map, and the agent may use only its kinds. In the prototype:
+
+| Elements | Relationships |
+| --- | --- |
+| person, app, layer, feature, module, file, ui, store, process, sandbox, external | uses (an import), invokes (IPC or an API), emits (an event), stores (a write to a store), spawns (a process or container), network (a call to the outside) |
+
+and the tags Brainiac adds: `#exception` (outside the repository's rules), and for diffs `#added`, `#removed`, `#unknown`. A fixed kit keeps every map readable in the same way and gives the checks a fixed set of claims to verify.
+
+### Facts
 
 What Brainiac computes itself, for any language, with the same read-only Git the viewer uses:
 
-- files and lines per module;
-- who changed each module, and how much, over the last 30 and 90 days;
-- **change coupling:** pairs of modules that keep changing in the same commits. Commits that touch a large share of the repository (formatting, renames, dependency bumps, squashed merges of long branches) are left out, and the map says how many were.
+- files, lines, and folders;
+- who changed each part, and how much, over the last 30 and 90 days;
+- **change coupling:** parts that keep changing in the same commits, leaving out commits that touch a large share of the repository (formatting, renames, dependency bumps, squashed merges of long branches).
 
-What the agent extracts, in its container like any explain run, into `.brainiac/map.json`:
+What a parser computes, per file, where one exists for the language: definitions with their lines, and imports with their text. This is what tree-sitter gives for many languages (Aider's repository map does this), and what Brainiac's boundary test does for Rust today. Where no parser covers a language, the agent extracts the same facts and each is checked by finding its text in the file.
 
-- each file's imports, as the text of the import and the path or module it names;
-- each file's interface items: name, kind, signature, and the line it is declared on.
+Facts are stored per repository and Git blob: a file's imports and definitions change only when its content does, so a later map reads only the blobs it has not seen, and facts at any two commits are lookups.
 
-Each fact is checked before it is kept: an interface item's declaration line must hold its name in that blob, and an import's text must be found verbatim in the importing file. Where the import names a path, Brainiac resolves it to a module with the module list, not the agent; where it names a package or namespace, the agent's resolution is kept and marked as the agent's.
+### Fact tools
+
+The agent works with commands in its container, as the known-concepts lookup (`known`) already does in explain runs:
+
+- `facts files [path]`, `facts imports <file>`, `facts defs <file>`: the computed facts;
+- `facts refs <name>`: where a name is used;
+- `facts coupling`, `facts owners <path>`: from history;
+- LikeC4's MCP tools to read and edit the model, and `likec4 validate` to check it before finishing.
+
+The tools save the agent reading every file to find structure, so its reading goes to what structure cannot say: what a part is for and how a flow runs.
+
+### Checks
+
+Before anything is shown:
+
+- **Structure:** the model validates, uses only the kit's kinds, and every element is in a view.
+- **Elements:** every element that names a path (a module, a file) names one that exists at the map's commit; a module's files are where the module list says.
+- **Imports:** every `uses` relationship between two elements matches computed imports between their files.
+- **Other relationships:** an `invokes`, `emits`, `stores`, or `spawns` relationship cites a file, a line, and a quote, and the quote must be found there (`invoke("start_explanation")`, `emit(...)`), as Explain's quotes are.
+- **Flows:** every step cites a file and line in the same way, and its two ends must be the elements those files belong to.
+- **Prose:** descriptions cite lines, checked like Explain's.
+
+What fails is dropped and counted on the map, never shown; past a share of failures the run gets one follow-up turn with the errors. A check that passed is "matched to the code", never "verified".
 
 ### A missing fact is unknown, never removed
 
-An agent can find an import in a file at one commit and miss it in the next version of the file. Compared naively, that shows "dependency removed" as if it were computed. So a removal needs evidence:
+A dependency is removed only when the import text found in the old version of a file is no longer in the new one, which Brainiac checks by searching the new blob. A file with no facts yet makes its relationships unknown, shown grey, never absent. `pnpm map:diff` met the problem on its first day: compared with a commit from before Brainiac's boundary test, the shell's imports looked removed because the old commit did not say which modules were the shell.
 
-- A dependency is **removed** only when the import text found in the old version is no longer in the new one. Brainiac checks that itself, by searching the new blob.
-- If the text is still there, the dependency stays, and the missed fact is counted as a failed extraction.
-- A file with no facts yet (not read, or its extraction failed) makes its dependencies **unknown**, shown as such in the graph and the diff, never as absent.
+### The parts of a repository
 
-The same rule applies to interface items. The experiment met the problem on a small scale: compared with a commit from before Brainiac's boundary test, the shell's imports looked removed, because the old commit did not say which modules were the shell (The experiment on Brainiac itself).
+A diff compares parts across commits, so their identity must be stable:
 
-### Modules: the list on this Mac, or a file in the repository
+- **A model in the repository, when there is one.** A team that wants one map for everyone checks in a LikeC4 model, or only its elements and the paths each covers. Brainiac only reads it, and it wins, so every member sees the same map and the same diff of a pull request. Map offers its own model as text for someone to commit; Brainiac never writes it.
+- **Otherwise, the parts on this Mac.** The first map's agent proposes them. The user can rename, merge, or split them, and later maps keep those identities. This is the case of a contractor who cannot add files to a client's repository.
+- Files no part covers go in **Other**, with the share of the code it holds; past a threshold the next map proposes where they belong, as a change the user can take, leave, or undo.
 
-A repository Brainiac does not know has no module list, and a diff compares modules, so the list must be stable:
+### The architecture diff
 
-- **A file in the repository, when there is one.** A team that wants one map for everyone checks in a small file (`.brainiac/modules.toml`, say: a name, a group, and path patterns per module). Brainiac only reads it, and it wins over everything else, so every member's diff of a pull request is the same. Map offers the current list as that file's text, for someone to commit; Brainiac never writes it.
-- **Otherwise, the list on this Mac.** The first map's agent proposes the modules, with a name and a one-line purpose each. The user can rename, merge, or split them, and later maps keep those identities. This is the case of a contractor who cannot add files to a client's repository.
-- A file no pattern covers goes in **Other**, and the map says what share of the code that is. Past a threshold, the next map proposes where those files belong, as a change the user can see and take or leave; a list change taken can be undone.
+Computed by Brainiac between the facts at two commits (a pull request's base and head, a branch and the default branch, a commit and its parent):
 
-A reader new to a repository is not asked to draw its modules: the proposal stands until someone who knows changes it.
+- parts whose files appeared or disappeared;
+- imports between parts added, removed, or unknown;
+- definitions added, removed, or changed in signature;
+- sizes beyond a threshold, and coupling that appeared.
 
-### Prose is rewritten only where its facts changed
-
-Each piece of prose records the facts it was written over: a module's interface, its dependencies, and its files' blobs. Rewrite sends the agent only the modules whose facts changed, with the previous prose, and asks it to keep what still holds. Prose stays stable between maps, so a reader sees what changed, not a new wording of the same thing.
-
-The narrative of a diff may describe only facts in the computed diff, so it cannot mention a dependency that is not there.
-
-### Stats
-
-Per module and for the repository, with each term explained in a few words where it first appears, as Explain does:
-
-- files, lines, interface items, dependencies in and out;
-- who changes it, and how often;
-- **changes together with:** the modules most often changed in the same commits. The one the panel valued most: it shows a dependency whatever the imports say.
-- **modules touched per commit:** how far a typical change spreads.
-- **lines per interface item:** how much code each public item stands for. Shown as a number with its explanation, never as a label such as "shallow", which reads as a grade of someone's code.
-
-Each map keeps its stats. Trends are not on the module page; they belong to the experiment until someone asks for them.
+Brainiac draws it by adding tags to the map's model (`#added`, `#removed`, `#unknown`), with no model call. A short narrative over the computed list is optional and folded under it. Explain on a pull request can extract the facts of the changed files in the same session, as an option in its dialog with its share of the estimate.
 
 ### Cost, time, and failure
 
-- **The estimate of a first map** comes from the repository's size (files and bytes the agent will read) and this Mac's earlier maps, since there are no earlier ones of this repository. On a Claude plan it says "Uses your Claude plan", as runs do.
-- **Large repositories** are read in batches of files, one run each, with the facts of each batch checked and kept as it finishes. A batch that fails or runs out of time leaves the batches before it, so a failure costs what it spent and keeps what it read; Map then continues from the next file.
-- **Sleep** pauses a run as for any explain run (SPEC section 14, Sleep and limits); batches keep that loss to one batch.
+- **The estimate of a first map** comes from the repository's size and this Mac's earlier maps; on a Claude plan it says "Uses your Claude plan".
+- **Large repositories** are composed in parts: the overview first, then each part's views in a run of their own, each checked and kept as it finishes. A run that fails leaves the parts before it.
+- **Sleep** pauses a run as for any explain run (SPEC section 14, Sleep and limits).
 
 ## Not automatic
 
-The first draft had **Keep it current**: rewrite whatever changed each time the default branch moved, up to a monthly cost. It is out of the design:
-
-- It contradicts the first rule of explanations (SPEC section 14: Never automatic). It would start an agent, with the repository's code, the user's token, and a container with network access, without anyone pressing anything.
-- A monthly cost cap means nothing on a Claude plan, which reports no cost.
-- The default branch moves only on a fetch, which is off by default, so it would run at surprising times.
-
-What stays automatic is what costs nothing: sizes, history, and coupling from Git, and marking what the map has not read yet. Prose and agent facts change only on Map, Rewrite, or Explain.
+The first draft had **Keep it current**, composing the map again whenever the default branch moved. It is out: it would start an agent with the repository's code and the user's token without anyone pressing anything, against the first rule of explanations (SPEC section 14: Never automatic); a cost cap means nothing on a Claude plan; and the default branch moves only on a fetch, which is off by default. What stays automatic costs nothing: facts from Git, and marking what the map has not read yet.
 
 ## Where it fits
 
-- **On v0.6's machinery.** A map run is an explain run with another subject (a repository at a commit instead of a change) and another output file. It reuses the container, the input bundle, the checks, the answer on sharing a repository's code (`sharing.rs`), the ledger, the panel's components, and Save as note.
-- **In the explanations feature, not beside it.** A separate feature would import agent runs and explanations, two new entries in the boundary test's `ALLOWED` list. Maps are Explain at another scope, so they live in `explain/` and add no import between features.
-- **Code sharing.** A repository's answer covers maps as it covers runs and explanations, but the first Map dialog says that the agent reads the whole repository, which is more than a run's "anything the agent reads" suggests.
-- **Storage.** Maps, facts per blob, module lists, and prose in `history.db` with explanations: they cost runs to rebuild, so they are not in a rebuildable file. Settings → Explanations lists each map with its cost; Delete map removes its facts, prose, list, and the conversations of its runs, which held the repository's code.
-- **Concepts.** A first map can find many project patterns at once. They join the ledger only as the reader marks them, per repository, as Explain's do; a map adds none by itself.
+- **On v0.6's machinery.** A map run is an explain run with another subject (a repository at a commit) and another output file (the model). It reuses the container, the input bundle, the checks' approach, the answer on sharing a repository's code (`sharing.rs`), the ledger, the panel, and Save as note.
+- **In the explanations feature,** so it adds no import between features to the boundary test's `ALLOWED` list.
+- **Code sharing:** a repository's answer covers maps, and the first Map dialog says the agent reads the whole repository.
+- **Storage:** models, facts per blob, the parts, and prose in `history.db` with explanations; Delete map removes them and the conversations of the map's runs, which held the repository's code.
+- **Concepts** join the ledger only as the reader marks them, per repository.
 
-## The experiment on Brainiac itself
+## What exists already
 
-Before any of this is built, the cheapest test of the central claim (that an architecture diff beside each change is worth reading) runs on Brainiac's own repository, with no model:
+Surveyed on 10 October 2026.
 
-- `pnpm map:diff [base] [head]` (`scripts/module-diff.sh`, `src-tauri/examples/module_map.rs`) prints, as Markdown, how a change moved the modules: modules added, removed, or placed in another group; imports between modules added and removed, each against the boundary rules; entries added to or removed from `ALLOWED`; the numbers `modules.md` tracked by hand (lines in `lib.rs`, commands, the size of `models.rs`, top-level modules, `ALLOWED` entries); sizes by module; and a Mermaid graph with what changed in color. With no arguments it compares the working tree with its merge base on `origin/main`.
-- It reads the sources with the boundary test's own reader, and each commit's copy of the test's lists, so the map shows exactly what the test sees and needs no second parser. Commits are read with `git archive` into a temporary folder.
-- CI adds the output to each pull request's run summary; it only reports.
+| Kind | Examples | What it does | What it lacks for this design |
+| --- | --- | --- | --- |
+| AI-written codebase wikis | DeepWiki (Cognition), DeepWiki-Open | A wiki per repository with diagrams and questions | No diff between commits, no check of its claims, no history |
+| Architecture as code | LikeC4, Structurizr (C4 model) | One model, many views: zoom levels, flows, layout, validation | Written by hand; nothing ties the model to the code |
+| Dependency graphs and rules | dependency-cruiser, import-linter, ArchUnit, cargo-modules, depdog (Go, with a diff against a Git ref) | Computed imports, rules on them | One language each; rules, not understanding |
+| Change coupling from history | CodeScene, code-maat | Parts that change together, and the trend | No model of the parts or their flows |
+| Repository maps for agents | Aider | Definitions and references per file with tree-sitter, across languages | Made for a model's context, not a reader |
 
-What it showed on its first day:
+This design uses the second row to draw, the third and fifth to compute, the fourth for coupling, and an agent to compose what none of them can: which parts and flows matter and what they are for, checked against the computed facts. Sources: [DeepWiki](https://www.x-cmd.com/blog/250502), [DeepWiki-Open](https://dev.co/devops/open-source/deepwiki-open), [depdog](https://pkg.go.dev/github.com/matterpale/depdog), [CodeScene, change coupling](https://docs.enterprise.codescene.io/versions/6.0.0/guides/technical/change-coupling.html).
 
-- On PR #13 it said in one line what the pull request did to the structure: "1 module added, 4 dependencies added, 2 dependencies removed, 2 entries removed from `ALLOWED`".
-- The full graph had 87 arrows and could not be read. The diff's graph now draws only what changed, the `ALLOWED` exceptions, and imports inside a feature (25 arrows); a map for learning needs the same choice of what to leave out.
-- A false "removed" appeared on the first try (A missing fact is unknown).
+## On Brainiac itself
 
-What to watch for a few weeks: whether the maintainer opens the summary, which part they read, and what they wished it said. That decides the order of the phases.
+### `pnpm map:diff` (since 10 October 2026)
+
+`scripts/module-diff.sh` and `src-tauri/examples/module_map.rs` print, as Markdown, how a change moved Brainiac's Rust modules: modules, imports against the boundary rules, `ALLOWED`, sizes, and a Mermaid graph with the change in colour, read with the boundary test's own reader. CI adds it to each pull request's run summary. It is the computed half of the architecture diff, and stays as that: what it lacks is everything the agent adds (which arrows matter, flows, the frontend).
+
+### The prototype (11 October 2026)
+
+A LikeC4 model of Brainiac, composed by an agent in a session with the maintainer, about 730 lines:
+
+- **Facts it started from:** modules, files, and sizes from the sources, and for every import between modules the names it uses (`explain → agents` uses `AgentRunService`, `RunArtifacts`), computed by a script; the Explain flow traced through the code by a second agent, 47 steps with file and line.
+- **What the agent composed:** thirteen views. Brainiac in its context; inside the app (frontend, shell, core, five features, the run controller, the container, four stores); the frontend, the core, and each feature; Explain in two flows (from the click to a started run, 19 steps; the run, the checks, and the panel, 22 steps); the exceptions in `ALLOWED`; and where data lives. Labels from the imported names ("an explanation is an agent run of its own kind"), `models` left out because nearly everything imports it.
+- **What it showed:** zooming, flows, and search came from LikeC4 with no code; the inside-the-app view is busy, because arrows between modules add up to many arrows between layers, so choosing what a view leaves out is the agent's real work; and LikeC4's quirks (reserved words, nested actors) are worth telling the agent in its prompt.
+
+The prototype had no checks: it is what the agent writes, not yet what Brainiac would show.
 
 ## Phases, if it happens
 
-0. **The experiment on Brainiac itself,** running now.
-1. **A map on demand:** the module list (file or proposal), facts with their checks, Start here, the graph, module pages, and stats.
-2. **The architecture diff** beside pull requests, branches, and commits, with facts extracted in the explain run.
-3. **Learning on a module:** reading order, Concepts with the ledger, and Questions.
-4. **Export** to a static HTML site.
+0. **On Brainiac itself:** `pnpm map:diff` in CI, and the prototype model kept and composed again after large changes, to see whether the maintainer reads them.
+1. **A map on demand:** facts, fact tools, the kit, composition, the checks, and the views drawn in the app.
+2. **The architecture diff** on a map's views, beside pull requests, branches, and commits.
+3. **Learning on an element:** Concepts and Questions.
 
-Each phase is useful without the next. Whether learning (3) comes before the diff (2) is open (Open questions).
+Each phase is useful without the next. Whether learning comes before the diff is open.
 
 ## Spike before building
 
-No app code, as for Explain: ordinary runs with a prompt that asks for `map.json` and the module proposal, on three repositories of different languages and sizes, with Claude Code and with OpenCode.
-
-- **Ground truth for Brainiac itself:** the boundary test's reader already finds every Rust import between top-level modules. The agent's edges are scored against it: missed, invented, and right, and how many of the misses the removal check would catch.
-- **Scored by hand on the others:** whether the proposed modules are the ones a maintainer would draw, and whether the prose is correct, useful, and grounded.
-- **Recorded:** time and cost of a first map per thousand files, of the facts for a typical commit, and how often a batch fails.
-
-The spike decides whether the agent's facts are good enough, or whether a parser per language is needed.
+- **Composition:** with Claude Code and with OpenCode, on three repositories of different languages and sizes, the agent writes a model with the fact tools and LikeC4's MCP server. Scored by hand: whether the parts are the ones a maintainer would draw, whether the flows are right, and whether the views can be read.
+- **Checks:** on Brainiac, the boundary test's reader is ground truth for Rust imports; how many `uses` relationships are invented, how many flow steps cite a line that does not hold their quote.
+- **Facts:** whether tree-sitter's definitions and imports are good enough for TypeScript and Python, and what the agent must extract where they are not.
+- **Recorded:** time and cost of a first map per thousand files, and of a map's diff for a typical pull request.
 
 ## Panel review (10 October 2026)
 
 A client panel (three fictional personas, so hypotheses to check with real users) reviewed the first draft: a CTO who reviews pull requests, a learner new to a monorepo, and a contractor working across client repositories.
 
-- **What they would use:** the CTO the architecture diff, a few times a week; the learner the module pages, daily at first; the contractor the graph, once per client repository at the start of an engagement.
-- **Agreed:** change coupling is the useful stat, and "depth" or "shallow" reads as a grade; the first map's cost and size were underspecified; the diff's computed list is trusted more than its narrative; Keep it current comes last.
-- **Disagreed:** the CTO wants the diff first and the learner wants learning first; the CTO and the learner want the module list in the repository and the contractor cannot add one to a client's; the contractor sees HTML export as a deliverable and the CTO as code-derived text leaving the Mac.
+- **What they would use:** the CTO the architecture diff; the learner the explanations of each part, daily at first; the contractor the overview, once per client repository.
+- **Agreed:** change coupling is the useful statistic, and a grade-like label such as "shallow" is not; the first map's cost and size need an answer; the computed list of a diff is trusted more than its narrative; automatic rewriting comes last.
+- **Disagreed:** the diff first (CTO) or learning first (learner); the parts defined in the repository (CTO, learner) or not (the contractor cannot add files to a client's repository).
 
-What changed in this file because of it:
-
-- A missing fact is unknown, never removed, with Brainiac's own check for a removal; each fact says where it comes from, and failed checks are counted on screen.
-- Keep it current is out (Not automatic).
-- The module list: a file in the repository when there is one, the list on this Mac otherwise, and a proposal the user can undo.
-- The first map: an estimate from size, batches that keep what they read, and the dialog saying "the whole repository".
-- Explain's names (I know this, Questions, the reading order in the file list), terms explained where they appear, and no grade-like labels.
-- Start here, who changes a module, keyboard navigation of the graph, Delete map, facts per repository, and the explain run's fact extraction as an option with its estimate.
+What it changed, all kept in this rewrite: a missing fact is unknown, never removed; Keep it current is out; the parts come from the repository when it defines them and from this Mac otherwise; the first map gets an estimate and is composed in parts; Explain's names (I know this, Questions); Start here, Delete map, and facts per repository.
 
 ## Not in this design
 
-- Maps written into the repository, or committed by Brainiac.
-- Running without the user: no automatic rewrite on new commits.
-- Rules a repository must follow (allowed dependencies between layers, as Brainiac's boundary test enforces). A map shows what is; deciding what should be is a later idea.
-- Call graphs and data flow: imports and interfaces only.
+- Maps written into the repository by Brainiac.
+- Running without the user.
+- Enforcing rules on a repository's structure; a map shows what is.
+- Call graphs computed for every function; flows are traced for the actions the agent chooses.
 - A score or grade for a codebase.
 
 ## Open questions
 
-- **The diff or learning first.** The maintainer and the CTO persona would use the diff most; the learner persona would use learning most. The experiment's weeks are the evidence.
-- **A parser instead of the agent for facts.** tree-sitter in Rust would make imports and interfaces computed and free for the languages it covers (Aider's repo map does this across many); it is a dependency and a grammar per language. The spike's missed and invented edges decide it.
-- **Rendering diagrams.** Mermaid is large for the app's bundle; a graph drawn by the app (with a layout library) is lighter and interactive. Save as note needs Mermaid text either way.
-- **The module file's format,** which, once read by Brainiac, has to stay compatible.
-- **A command line for CI in any repository.** `pnpm map:diff` serves Brainiac only. A `brainiac map --diff base..head` that prints the computed diff from stored facts needs no model, but CI does not have the Mac's stored facts.
-- **What counts as an interface item** in languages without visibility keywords (Python, JavaScript without exports), and in configuration such as Terraform.
-- **HTML export:** a static site is a deliverable for a contractor and code-derived text leaving the Mac for a CTO; who it is for decides whether it is built.
+- **The diff or learning first.** The maintainer and the CTO persona would use the diff most; the learner persona would use learning most.
+- **Which flows.** The agent chooses them from entry points (commands, routes, menu items, a CLI's subcommands); should the user ask for one ("what happens when I save a note?"), as a run of its own?
+- **Theming:** how far LikeC4's components can take Brainiac's look, and whether that matters.
+- **The web component or the React components** inside the app, and what loading a few megabytes on first open costs.
+- **A team's model in the repository:** whole models or only the parts and their paths, and how Brainiac merges its own views with a hand-written model.
+- **Interface items** in languages without visibility keywords, and in configuration such as Terraform.
+- **A command line for CI** in any repository: `brainiac map --diff` can print the computed diff from stored facts, but CI does not have the Mac's facts.
