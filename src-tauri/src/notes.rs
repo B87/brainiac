@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 
-use crate::db::{self, Db};
+use crate::db::{self, Db, Stores};
 use crate::events::Emitter;
 use crate::index::{self, IndexDoc, EDIT_LIMIT};
 use crate::models::{
@@ -51,33 +51,6 @@ impl crate::events::FrontendEvent for KnowledgeEvent {
             KnowledgeEvent::TaskChanged(_) => "task_changed",
             KnowledgeEvent::IndexStatus(_) => "index_status_changed",
         }
-    }
-}
-
-/// The v0.2 database files (docs/architecture.md, Storage layout).
-#[derive(Clone)]
-pub struct Stores {
-    /// `brainiac.db`, shared with the repository service.
-    pub core: Db,
-    /// The one writer of `index.db`.
-    pub index: Db,
-    /// A read-only connection to `index.db` for searches and lists.
-    pub reader: Db,
-    pub history: Db,
-}
-
-impl Stores {
-    /// Open `index.db` and `history.db` next to the core database.
-    pub fn open(data_dir: &Path, core: Db) -> AppResult<Self> {
-        let index = Db::open_index(&data_dir.join(db::INDEX_FILE))?;
-        let reader = Db::open_read_only(&data_dir.join(db::INDEX_FILE))?;
-        let history = Db::open_store(&data_dir.join(db::HISTORY_FILE), &db::HISTORY)?;
-        Ok(Stores {
-            core,
-            index,
-            reader,
-            history,
-        })
     }
 }
 

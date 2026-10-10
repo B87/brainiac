@@ -17,7 +17,7 @@ use brainiac_lib::agents::{
     image, AgentRunService, AgentSettingsService, RepositoryLookup, RunArtifacts, RunRuntime,
 };
 use brainiac_lib::credentials::{CommandRunner, CredentialService, MemoryStore};
-use brainiac_lib::db::{self, Db};
+use brainiac_lib::db::Stores;
 use brainiac_lib::explain::service::ExplanationService;
 use brainiac_lib::forge::PullRequestFacts;
 use brainiac_lib::git::GitService;
@@ -26,7 +26,7 @@ use brainiac_lib::models::{
     ErrorCode, ExplainDepth, ExplainSubject, ExplainSubjectKind, ExplanationRecord,
     ExplanationState, SaveAgentCredentialRequest, SecretSource, Settings, StartExplanationRequest,
 };
-use brainiac_lib::notes::{NoteService, Stores};
+use brainiac_lib::notes::NoteService;
 use brainiac_lib::sharing::CodeSharingService;
 use brainiac_lib::workspaces::RepositoryService;
 use fake_engine::{git, FakeEngine, KEY};
@@ -96,8 +96,8 @@ impl Harness {
         git(&repo, &["commit", "-q", "-m", "Check the limit"]);
         git(&repo, &["checkout", "-q", "main"]);
 
-        let core = Db::open(&data.join(db::CORE_FILE)).unwrap();
-        let stores = Stores::open(&data, core.clone()).unwrap();
+        let stores = Stores::open(&data).unwrap();
+        let core = stores.core.clone();
         let history = stores.history.clone();
         let notes = NoteService::new(stores, data.clone(), Arc::new(|_| {}));
         notes.disable_watching();

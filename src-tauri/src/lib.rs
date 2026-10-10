@@ -100,7 +100,6 @@ pub fn run() {
 
             // --- Persistence -------------------------------------------------
             let data_dir = app.path().app_data_dir()?;
-            let db_path = data_dir.join(db::CORE_FILE);
             // A restore staged before the last quit replaces the data now,
             // before anything opens it (SPEC.md, Backup and restore).
             if let Err(e) = backup::apply_pending_restore(&data_dir) {
@@ -108,15 +107,17 @@ pub fn run() {
                 show_startup_error(app, &e);
                 return Ok(());
             }
-            let db = match db::Db::open(&db_path) {
-                Ok(db) => db,
+            // Every shared database file, opened here so no feature owns one.
+            let stores = match db::Stores::open(&data_dir) {
+                Ok(stores) => stores,
                 Err(e) => {
-                    tracing::error!(error = %e, details = ?e.details, "cannot open the database");
+                    tracing::error!(error = %e, details = ?e.details, "cannot open the databases");
                     show_startup_error(app, &e);
                     return Ok(());
                 }
             };
-            tracing::info!(path = %db_path.display(), "database ready");
+            let db = stores.core.clone();
+            tracing::info!(path = %data_dir.display(), "databases ready");
             let settings = db.call_blocking(|conn| db::load_settings(conn))?;
 
             // --- Git ---------------------------------------------------------
@@ -190,15 +191,6 @@ pub fn run() {
                 }
             });
 
-            // --- Notes, tasks, and search (v0.2) ----------------------------
-            let stores = match notes::Stores::open(&data_dir, db) {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::error!(error = %e, details = ?e.details, "cannot open the notes databases");
-                    show_startup_error(app, &e);
-                    return Ok(());
-                }
-            };
             // --- Databases (v0.4) --------------------------------------------
             let connections = Arc::new(databases::ConnectionService::new(
                 stores.core.clone(),
@@ -304,6 +296,7 @@ pub fn run() {
                 }
             });
 
+            // --- Notes, tasks, and search (v0.2) ----------------------------
             let notes = NoteService::new(stores, data_dir.clone(), events::to_window(handle.clone()));
             notes.set_write_note_ids(settings.write_note_ids);
             app.manage(Arc::clone(&notes));
