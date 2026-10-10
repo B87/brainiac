@@ -11,22 +11,35 @@ use std::sync::Arc;
 use rusqlite::{params, Connection};
 
 use crate::db::{self, Db};
+use serde::Serialize;
+
+use crate::events::Emitter;
 use crate::models::{
     now_rfc3339, AgentProvider, AnswerCodeSharingRequest, AppError, AppResult, CodeAnswer,
     CodeAnswerScope, CodeConsent, CodeConsentState, CodeSharingQuestion, ErrorCode,
     RepositoryWorkspace,
 };
 
-/// Told when an answer changes, so open dialogs and Settings reload.
-pub type SharingEmitter = Arc<dyn Fn() + Send + Sync>;
+/// An answer in Settings → Code Sharing changed, so open dialogs and
+/// Settings reload (SPEC.md, section 13). It carries nothing: a unit struct,
+/// which is sent as `null`.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct CodeSharingChanged;
+
+/// Its name in the window.
+impl crate::events::FrontendEvent for CodeSharingChanged {
+    fn name(&self) -> &'static str {
+        "code_sharing_changed"
+    }
+}
 
 pub struct CodeSharingService {
     core: Db,
-    emitter: SharingEmitter,
+    emitter: Emitter<CodeSharingChanged>,
 }
 
 impl CodeSharingService {
-    pub fn new(core: Db, emitter: SharingEmitter) -> Arc<Self> {
+    pub fn new(core: Db, emitter: Emitter<CodeSharingChanged>) -> Arc<Self> {
         Arc::new(CodeSharingService { core, emitter })
     }
 
@@ -120,7 +133,7 @@ impl CodeSharingService {
         self.core
             .call(move |conn| set_answer(conn, scope, &scope_id, provider, allowed))
             .await?;
-        (self.emitter)();
+        (self.emitter)(&CodeSharingChanged);
         Ok(())
     }
 
@@ -135,7 +148,7 @@ impl CodeSharingService {
         self.core
             .call(move |conn| remove_answer(conn, scope, &scope_id, provider))
             .await?;
-        (self.emitter)();
+        (self.emitter)(&CodeSharingChanged);
         Ok(())
     }
 

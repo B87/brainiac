@@ -14,15 +14,18 @@ use tokio::sync::watch;
 use super::hosts::AgentHostService;
 use super::runs::AgentRunService;
 use super::settings::AgentSettingsService;
+use crate::events::{Emitter, Notifier};
 use crate::models::{
     now_rfc3339, AgentHost, AppError, AppResult, ErrorCode, HostJob, HostJobKind, HostJobState,
     HostJobStep, HostJobStepState,
 };
 
-/// Sends a job to the window each time it changes.
-pub type HostJobEmitter = Arc<dyn Fn(&HostJob) + Send + Sync>;
-/// Says a job ended, as a title and a body, when the window is not active.
-pub type HostJobNotifier = Arc<dyn Fn(String, String) + Send + Sync>;
+/// A job changed: a step, its output, or how it ended (SPEC.md, Host jobs). It is sent each time it changes.
+impl crate::events::FrontendEvent for HostJob {
+    fn name(&self) -> &'static str {
+        "agent_host_job"
+    }
+}
 
 /// Lines of output the window gets with each change.
 const TAIL_LINES: usize = 40;
@@ -148,7 +151,7 @@ pub struct JobProgress {
 struct JobInner {
     job: Mutex<HostJob>,
     cancel: watch::Sender<bool>,
-    emitter: Option<HostJobEmitter>,
+    emitter: Option<Emitter<HostJob>>,
     /// The host's folder, where `last-job.json` and `last-job.log` live.
     dir: Option<PathBuf>,
     log: Mutex<LogState>,
@@ -163,7 +166,7 @@ struct LogState {
 impl JobProgress {
     /// A job just started, with its log emptied. `dir` and `emitter` are
     /// `None` in tests that only follow the state.
-    pub fn new(job: HostJob, dir: Option<PathBuf>, emitter: Option<HostJobEmitter>) -> Self {
+    pub fn new(job: HostJob, dir: Option<PathBuf>, emitter: Option<Emitter<HostJob>>) -> Self {
         let file = dir.as_ref().and_then(|d| {
             std::fs::create_dir_all(d).ok()?;
             std::fs::File::create(d.join(LOG_FILE)).ok()
@@ -181,7 +184,7 @@ impl JobProgress {
     fn from_parts(
         job: HostJob,
         dir: Option<PathBuf>,
-        emitter: Option<HostJobEmitter>,
+        emitter: Option<Emitter<HostJob>>,
         file: Option<std::fs::File>,
     ) -> Self {
         let (cancel, _) = watch::channel(false);
@@ -474,8 +477,8 @@ pub struct HostJobService {
     hosts_dir: PathBuf,
     /// The last job of each host, running or ended, by host ID.
     jobs: Mutex<HashMap<String, JobProgress>>,
-    emitter: HostJobEmitter,
-    notifier: HostJobNotifier,
+    emitter: Emitter<HostJob>,
+    notifier: Notifier,
 }
 
 impl HostJobService {
@@ -486,8 +489,8 @@ impl HostJobService {
         runs: Arc<AgentRunService>,
         settings: Arc<AgentSettingsService>,
         data_dir: &Path,
-        emitter: HostJobEmitter,
-        notifier: HostJobNotifier,
+        emitter: Emitter<HostJob>,
+        notifier: Notifier,
     ) -> Self {
         let hosts_dir = data_dir.join("agent-runs").join("hosts");
         let mut jobs = HashMap::new();

@@ -38,7 +38,7 @@ fn harness(google: GoogleConfig) -> Harness {
     let seen = Arc::clone(&events);
     let health = Arc::new(HealthService::new(
         Arc::clone(&connections),
-        Arc::new(move |e| seen.lock().unwrap().push(e)),
+        Arc::new(move |e| seen.lock().unwrap().push(e.clone())),
         google,
     ));
     Harness {

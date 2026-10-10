@@ -67,7 +67,7 @@ impl Harness {
         let notes = NoteService::new(
             stores,
             data.to_path_buf(),
-            Arc::new(move |e| sink.lock().unwrap().push(e)),
+            Arc::new(move |e| sink.lock().unwrap().push(e.clone())),
         );
         (notes, events)
     }

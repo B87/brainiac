@@ -40,7 +40,8 @@ impl ClientHandler for Agent {
 type Client = RunningService<RoleClient, Agent>;
 
 async fn server(h: &Harness, access: AgentAccess) -> Arc<AgentServer> {
-    let emitter: brainiac_lib::workspaces::Emitter = Arc::new(|_| {});
+    let emitter: brainiac_lib::events::Emitter<brainiac_lib::models::RepositoryChangedEvent> =
+        Arc::new(|_| {});
     let repositories = Arc::new(RepositoryService::new(
         h.core.clone(),
         GitService::detect().await,

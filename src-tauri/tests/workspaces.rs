@@ -52,7 +52,8 @@ fn s(p: &Path) -> String {
 
 async fn service(tmp: &Path) -> Arc<RepositoryService> {
     let db = Db::open(&tmp.join("data").join("brainiac.sqlite3")).unwrap();
-    let emitter: brainiac_lib::workspaces::Emitter = Arc::new(|_| {});
+    let emitter: brainiac_lib::events::Emitter<brainiac_lib::models::RepositoryChangedEvent> =
+        Arc::new(|_| {});
     Arc::new(RepositoryService::new(
         db,
         GitService::detect().await,

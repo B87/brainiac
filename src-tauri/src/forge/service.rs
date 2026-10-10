@@ -24,6 +24,7 @@ use super::http::Http;
 use super::patch::split_patch;
 use super::{Endpoints, ForgeRepository, PullRequestRef};
 use crate::db::{Db, RepositoryRow};
+use crate::events::Emitter;
 use crate::git::{parse_unified_diff, validate_repo_path, GitService};
 use crate::models::{
     now_rfc3339, AppError, AppResult, ChangeKind, ChangedFile, ChangedFileStatus, CommentRequest,
@@ -41,7 +42,12 @@ pub const LIST_MAX_AGE_SECONDS: u64 = 300;
 /// The pull request on screen, and its checks, after this long.
 pub const DETAIL_MAX_AGE_SECONDS: u64 = 60;
 
-pub type PullRequestEmitter = Arc<dyn Fn(PullRequestChangedEvent) + Send + Sync>;
+/// A pull request was read again or changed (SPEC.md, section 10).
+impl crate::events::FrontendEvent for PullRequestChangedEvent {
+    fn name(&self) -> &'static str {
+        "pr_changed"
+    }
+}
 
 /// What one pull request is, for a feature that needs its facts and not the
 /// provider's whole shape (Explain, SPEC.md section 14, Pull requests), as
@@ -73,7 +79,7 @@ pub struct PullRequestService {
     budget: Arc<Budget>,
     github: Github,
     bitbucket: Bitbucket,
-    emitter: PullRequestEmitter,
+    emitter: Emitter<PullRequestChangedEvent>,
 }
 
 /// A tracked repository: its registration and its forge repository.
@@ -181,7 +187,7 @@ impl PullRequestService {
         cache: Db,
         http: Http,
         endpoints: Endpoints,
-        emitter: PullRequestEmitter,
+        emitter: Emitter<PullRequestChangedEvent>,
     ) -> Self {
         let budget = Arc::new(Budget::default());
         let github = Github::new(Client::new(
@@ -238,7 +244,7 @@ impl PullRequestService {
     }
 
     fn emit(&self, pr: &PullRequest) {
-        (self.emitter)(PullRequestChangedEvent {
+        (self.emitter)(&PullRequestChangedEvent {
             reference: pr.reference.clone(),
             version: pr.version.clone(),
             origin: PullRequestChangeOrigin::Remote,
@@ -1037,7 +1043,7 @@ impl PullRequestService {
     async fn after_write(&self, reference: &str) -> AppResult<WriteOutcome> {
         let conversation = self.conversation(reference, 0).await?;
         let pull_request = self.get(reference, 0).await?;
-        (self.emitter)(PullRequestChangedEvent {
+        (self.emitter)(&PullRequestChangedEvent {
             reference: reference.to_string(),
             version: pull_request.version.clone(),
             origin: PullRequestChangeOrigin::App,

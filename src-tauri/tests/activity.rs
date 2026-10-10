@@ -108,7 +108,8 @@ async fn fixture() -> Fixture {
         .success());
 
     let db = Db::open(&tmp.path().join("data").join("brainiac.sqlite3")).unwrap();
-    let emitter: brainiac_lib::workspaces::Emitter = Arc::new(|_| {});
+    let emitter: brainiac_lib::events::Emitter<brainiac_lib::models::RepositoryChangedEvent> =
+        Arc::new(|_| {});
     let svc = Arc::new(RepositoryService::new(
         db,
         GitService::detect_at(&wrapper).await,
