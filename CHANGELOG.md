@@ -11,6 +11,8 @@ into the release's section.
 
 ## [Unreleased]
 
+- A branch comparison marks binary files, as a run's result does.
+
 ## [0.6.1] - 2026-10-10
 
 - Text fields and menus in New Run, Explain, Code Sharing, and Settings → Explanations have a border and padding like the rest of the app.

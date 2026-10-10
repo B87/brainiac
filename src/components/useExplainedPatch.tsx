@@ -29,6 +29,11 @@ export type FileOrder = "reading" | "path";
 
 export type FileNoteCount = { notes: number; outOfDate: number };
 
+/** What `useExplainedPatch` gives a view, for a component that shows part of it. */
+export type ExplainedPatch<T extends { path: string }> = ReturnType<
+  typeof useExplainedPatch<T>
+>;
+
 /**
  * A patch view with its explanation (SPEC.md, section 14): **Explain** and
  * `E`, and **Explanation** (`Shift+E`) for the panel beside the patch, both
