@@ -4,7 +4,9 @@ Notes on a navigable map of a whole repository, kept current as it changes: its 
 
 ## Status: idea, not planned (written 10 Oct 2026, rewritten 11 Oct 2026)
 
-Nothing in the app is built. On 10 October 2026 the first draft was written with the maintainer, reviewed by a client panel, and compared with existing tools, and `pnpm map:diff` started as an experiment. On 11 October a prototype map of Brainiac drawn with LikeC4 replaced the first draft's own diagrams and spec, and this file was rewritten around it: Brainiac computes and checks the facts, an agent composes the map, and LikeC4 draws it.
+Nothing in the app is built. On 10 October 2026 the first draft was written with the maintainer, reviewed by a client panel, and compared with existing tools, and `pnpm map:diff` started as an experiment. On 11 October a prototype map of Brainiac drawn with LikeC4 replaced the first draft's own diagrams and spec, and this file was rewritten around it: Brainiac computes and checks the facts, an agent composes the map, and LikeC4 draws it. The same day a diff of PR #13 was drawn on the prototype, and a design canvas explored how maps and their diffs would sit in Brainiac (The diff experience; Extending LikeC4).
+
+UX design canvas: https://claude.ai/artifact/RKBX9GE1cVFwzBMhRciWuR (the Map tab, Architecture beside a pull request with Before / Diff / After, five ways to show a change, a flow marked by a change, and how it plugs into LikeC4)
 
 ## Why
 
@@ -25,7 +27,7 @@ So a map is composed by an agent, the way a person who knows the codebase would 
 - **Cross-cutting views:** where data lives (which part writes which store), and the exceptions to the repository's own rules where it has some (Brainiac's `ALLOWED`).
 - **Start here:** the first view, with a paragraph on the repository and the order to read its parts in.
 - **Learning on any element,** as in Explain's panel: what it is for in a few sentences citing lines, Concepts shared with Explain's ledger (**I know this**), and Questions with Reveal answer.
-- **The architecture diff:** beside a pull request, a branch compared with the default branch, or a commit, the map's views with the change drawn on them (added green, removed red, unknown grey), and the computed list under it (The architecture diff, below).
+- **Architecture**, a tab beside Explanation in the side panel of a pull request, a branch compared with the default branch, a commit, and a run's result: the map with the change drawn on it, a **Before / Diff / After** switch, and the computed list of changes linked to the patch (The diff experience, below).
 - **Out of date:** what Git computes updates without a run; elements whose files changed since the map was composed are marked, with **Rewrite**.
 - **Save as note,** a map's views as images and its text as Markdown; **Delete map**; the map in Settings → Explanations with what it cost.
 
@@ -130,7 +132,39 @@ Computed by Brainiac between the facts at two commits (a pull request's base and
 - definitions added, removed, or changed in signature;
 - sizes beyond a threshold, and coupling that appeared.
 
-Brainiac draws it by adding tags to the map's model (`#added`, `#removed`, `#unknown`), with no model call. A short narrative over the computed list is optional and folded under it. Explain on a pull request can extract the facts of the changed files in the same session, as an option in its dialog with its share of the estimate.
+A short narrative over the computed list is optional and folded under it. Explain on a pull request can extract the facts of the changed files in the same session, as an option in its dialog with its share of the estimate.
+
+### The diff experience
+
+Everything below is drawn from facts, with no model call.
+
+**One merged model.** Brainiac builds the diff's model itself: the head's map, plus every element and relationship only the base had, each tagged `#added`, `#removed`, `#changed` (its files changed), or `#unknown` (it could not be matched). One model means one layout. LikeC4 lays out each model on its own, so drawing the base and the head as two models would rearrange the boxes between them and the reader could not tell a change from a new layout. The prototype also showed why it must be merged, not layered: removed parts exist only in the base, and LikeC4 relationships have no names, so their tags cannot be added from a file beside the model.
+
+**Before / Diff / After** is the panel's switch, the way an image diff flips between two versions:
+
+- **Diff:** added parts green with +, removed parts kept where they were as faded, dashed **ghosts** with −, changed parts amber with ~, unknown grey with ?.
+- **Before:** the added parts hidden, the removed ones drawn as they were.
+- **After:** the removed parts hidden, the added ones drawn plainly.
+
+The modes only hide and restyle elements of the merged model, so nothing moves unless it changed. `[` and `]` flip between them, as they follow the tour in Explain. Badges and line styles carry the meaning as well as colour, so the marks read without telling green from red.
+
+**Any view, not one generated view.** The overview, a feature, the storage map, or a flow can each be shown "with this change". The panel opens on a view of only what the change touched (the parts it changed and their neighbours, the prototype's PR #13 view), and the reader can switch to any view of the map. A view the change does not touch says so.
+
+**The list drives the map.** The computed list comes first, and the map answers "where is this?": selecting a row dims the rest and centres its element, and selecting an element filters the list. The same link runs to the patch: a file in Files Changed highlights its element, and an element opens its hunks.
+
+**Flows marked by a change.** Each flow step cites a file and line. A step whose cited lines the change touched is marked ~ and keeps its place, with Show the hunk and Rewrite this step; a step whose quote is no longer found is ? and stays dotted until the map is rewritten, never silently kept. Steps whose files are the same blob as before are not read again.
+
+**Two more modes, later.** **Side by side** (before and after panning and zooming together) as a full-window mode opened from the panel, since it halves the space beside a patch. **Step through the commits** of a long pull request, cheap because facts are kept per file version, only if long pull requests ask for it.
+
+What to build first: the overlay on any view with the list driving it, and the Before / Diff / After switch on top.
+
+### Extending LikeC4
+
+Three levels, each taken only when the one before falls short:
+
+1. **The model only.** What the prototype did: the diff tags in the kit, and a generated view per change with a style per tag. No code in LikeC4. Enough for phase 0 on Brainiac itself; it gives one generated view, not any view, and no link between a list and the drawing.
+2. **Wrap the renderer** (for the release). LikeC4's React components inside Brainiac's panel, with Brainiac's own diff layer owning the change list, the modes, and the selection, and driving focus and highlight in the drawing. Which props and events LikeC4's components offer for that is not yet checked, and is the first thing to read before building.
+3. **Contribute upstream.** If hiding parts of the merged model still lets the layout move, a compare mode in LikeC4 itself (two models, one pinned layout, ghosts drawn natively), contributed to the project, which is MIT and would gain a feature every user reviewing architecture changes could use. A fork is the last resort: it would hold Brainiac to one version.
 
 ### Cost, time, and failure
 
@@ -149,6 +183,7 @@ The first draft had **Keep it current**, composing the map again whenever the de
 - **Code sharing:** a repository's answer covers maps, and the first Map dialog says the agent reads the whole repository.
 - **Storage:** models, facts per blob, the parts, and prose in `history.db` with explanations; Delete map removes them and the conversations of the map's runs, which held the repository's code.
 - **Concepts** join the ledger only as the reader marks them, per repository.
+- **In the window:** Map is a tab on a repository; Architecture is a tab beside Explanation in the side panel wherever a patch is (a pull request's Files Changed, a branch's changes, a commit, a run's result). LikeC4 is loaded only when a map opens.
 
 ## What exists already
 
@@ -178,13 +213,15 @@ A LikeC4 model of Brainiac, composed by an agent in a session with the maintaine
 - **What the agent composed:** thirteen views. Brainiac in its context; inside the app (frontend, shell, core, five features, the run controller, the container, four stores); the frontend, the core, and each feature; Explain in two flows (from the click to a started run, 19 steps; the run, the checks, and the panel, 22 steps); the exceptions in `ALLOWED`; and where data lives. Labels from the imported names ("an explanation is an agent run of its own kind"), `models` left out because nearly everything imports it.
 - **What it showed:** zooming, flows, and search came from LikeC4 with no code; the inside-the-app view is busy, because arrows between modules add up to many arrows between layers, so choosing what a view leaves out is the agent's real work; and LikeC4's quirks (reserved words, nested actors) are worth telling the agent in its prompt.
 
+- **A diff on it:** PR #13 drawn on the map from the computed facts: `hosting` added (green), the three imports into it added, the two old exceptions into `forge` removed (red, dashed), `forge` changed (amber), in a view of only the four modules the change touched. It read in seconds, and showed that a diff has to be one merged model (The diff experience).
+
 The prototype had no checks: it is what the agent writes, not yet what Brainiac would show.
 
 ## Phases, if it happens
 
 0. **On Brainiac itself:** `pnpm map:diff` in CI, and the prototype model kept and composed again after large changes, to see whether the maintainer reads them.
 1. **A map on demand:** facts, fact tools, the kit, composition, the checks, and the views drawn in the app.
-2. **The architecture diff** on a map's views, beside pull requests, branches, and commits.
+2. **The architecture diff:** the Architecture tab with the merged model, Before / Diff / After, the list driving the map, and flow steps marked; LikeC4 wrapped (Extending LikeC4, level 2).
 3. **Learning on an element:** Concepts and Questions.
 
 Each phase is useful without the next. Whether learning comes before the diff is open.
@@ -218,7 +255,9 @@ What it changed, all kept in this rewrite: a missing fact is unknown, never remo
 
 - **The diff or learning first.** The maintainer and the CTO persona would use the diff most; the learner persona would use learning most.
 - **Which flows.** The agent chooses them from entry points (commands, routes, menu items, a CLI's subcommands); should the user ask for one ("what happens when I save a note?"), as a run of its own?
+- **LikeC4's components:** which props and events they offer to focus, highlight, and hide elements by tag, and whether a merged model keeps its layout when parts are hidden or is laid out again (Extending LikeC4).
 - **Theming:** how far LikeC4's components can take Brainiac's look, and whether that matters.
+- **The size of a merged model** for a large repository, and of the view of only what a change touched.
 - **The web component or the React components** inside the app, and what loading a few megabytes on first open costs.
 - **A team's model in the repository:** whole models or only the parts and their paths, and how Brainiac merges its own views with a hand-written model.
 - **Interface items** in languages without visibility keywords, and in configuration such as Terraform.
