@@ -73,7 +73,8 @@ use std::sync::Arc;
 
 use brainiac_lib::forge::adapter::{ForgeAdapter, Session};
 use brainiac_lib::forge::budget::Budget;
-use brainiac_lib::forge::{adapter::Client, ForgeRepository, PullRequestRef};
+use brainiac_lib::forge::{adapter::Client, PullRequestRef};
+use brainiac_lib::hosting::ForgeRepository;
 use brainiac_lib::models::{ForgeAccount, ForgeKind};
 
 fn live_repo(var: &str, kind: ForgeKind) -> Option<ForgeRepository> {

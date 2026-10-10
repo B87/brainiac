@@ -27,6 +27,7 @@ const CORE: &[&str] = &[
     "models",
     "events",
     "git",
+    "hosting",
     "credentials",
     "sharing",
     "machines",
@@ -51,17 +52,6 @@ const FEATURES: &[(&str, &[&str])] = &[
 
 /// Imports outside the rules that exist today: (from, to, why).
 const ALLOWED: &[(&str, &str, &str)] = &[
-    // A repository's hosted identity lives in `forge` but is the core's.
-    (
-        "db",
-        "forge",
-        "ForgeRepository, the hosted repository an origin names, belongs with repositories",
-    ),
-    (
-        "workspaces",
-        "forge",
-        "ForgeRepository, the hosted repository an origin names, belongs with repositories",
-    ),
     // Core modules that name features until they become registries.
     ("backup", "notes", "export reads the vault through the notes service"),
     ("backup", "tasks", "export writes the tasks as JSON"),

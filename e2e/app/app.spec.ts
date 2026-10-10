@@ -250,11 +250,19 @@ test("a note is renamed, pinned, and shown as missing when deleted outside", asy
 
 /** Settings replaces the sidebar and the view; its sidebar lists the sections. */
 async function openSettings(page: Page, section: string) {
-  await page.evaluate(() => window.emitEvent("menu", { id: "settings" }));
-  await page
-    .getByRole("navigation", { name: "Settings" })
-    .getByRole("button", { name: section, exact: true })
-    .click();
+  const nav = page.getByRole("navigation", { name: "Settings" });
+  const menu = () =>
+    page.evaluate(() => window.emitEvent("menu", { id: "settings" }));
+  await menu();
+  // The app listens for menu events from an effect, which StrictMode runs
+  // twice, so an event sent as a test starts can arrive while nothing listens
+  // and is lost. Send it again until Settings opens: opening it twice is the
+  // same as once, and each send waits for the app's listeners to run.
+  await expect(async () => {
+    if (!(await nav.isVisible())) await menu();
+    await expect(nav).toBeVisible({ timeout: 1_000 });
+  }).toPass({ timeout: 15_000 });
+  await nav.getByRole("button", { name: section, exact: true }).click();
   await expect(
     page.getByRole("heading", { name: section, level: 1 }),
   ).toBeVisible();

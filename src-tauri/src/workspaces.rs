@@ -404,7 +404,7 @@ impl RepositoryService {
             ),
             fetch_error: row.last_fetch_error.clone(),
             remote_url: row.remote_url.clone(),
-            forge: crate::forge::ForgeRepository::of(
+            forge: crate::hosting::ForgeRepository::of(
                 row.remote_url.as_deref(),
                 row.forge_override.as_ref(),
             ),

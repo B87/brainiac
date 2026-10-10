@@ -86,8 +86,10 @@ brainiac/
       commands.rs              Thin IPC handlers calling application modules
       models.rs                Entities, DTOs, structured errors
       db.rs                    SQLite worker, migrations, backup
+      events.rs                One Emitter and Notifier for every service; each module names its events (FrontendEvent)
       workspaces.rs            Repository registration, membership, workspace import
       git.rs                   Git discovery, status, refs, history, diffs, fetch
+      hosting.rs               Where a repository is hosted: the forge repository its origin names (ForgeRepository)
       watcher.rs               Repository notifications and refresh scheduling
       fetcher.rs               How a fetch runs: remote, refspecs, locks, concurrency, backoff
       activity.rs              Ref tracking per Git directory, events, per-workspace feeds, team pulse
@@ -100,7 +102,7 @@ brainiac/
       backup.rs                Export, restore, and applying a restore at launch
       mcp.rs                   Agent access, v0.2.x: the socket, connections, and access mode
       mcp/                     The tools and their shapes, server instructions, the stdio helper
-      forge.rs                 Pull requests, v0.3: forge identity (repositories and references)
+      forge.rs                 Pull requests, v0.3: pull request references, accounts, the service, the adapters
       agents.rs                Agent runs, v0.5: Settings → Agents, engines, the image, a run's start, the run controller
       explain.rs               Explaining changes, v0.6
       explain/                 subject.rs (a range's changed lines and file text, read from a bare repository); check.rs (the checker); prompt.rs; markdown.rs (Save as note); store.rs (explanations in history.db; known concepts and settings in brainiac.db); service.rs (ExplanationService)

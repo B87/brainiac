@@ -22,10 +22,11 @@ use super::drafts;
 use super::github::Github;
 use super::http::Http;
 use super::patch::split_patch;
-use super::{Endpoints, ForgeRepository, PullRequestRef};
+use super::{Endpoints, PullRequestRef};
 use crate::db::{Db, RepositoryRow};
 use crate::events::Emitter;
 use crate::git::{parse_unified_diff, validate_repo_path, GitService};
+use crate::hosting::ForgeRepository;
 use crate::models::{
     now_rfc3339, AppError, AppResult, ChangeKind, ChangedFile, ChangedFileStatus, CommentRequest,
     CommitFile, Conversation, DiffContent, DiffResult, DiffSelector, DiffSource, ErrorCode,

@@ -12,8 +12,9 @@ use super::adapter::{
 };
 use super::http::{unexpected, Auth, Http, Response};
 use super::markdown;
-use super::{ForgeRepository, PullRequestRef};
+use super::PullRequestRef;
 use crate::credentials::Token;
+use crate::hosting::ForgeRepository;
 use crate::models::{
     ActionAvailability, AppError, AppResult, ChangedFile, ChangedFileStatus, Check, CheckState,
     Comment, DiffSide, ErrorCode, ForgeKind, ForgeTokenKind, ForgeUser, MergeMethod, MergeOptions,
