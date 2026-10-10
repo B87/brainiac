@@ -43,6 +43,27 @@ pub const DETAIL_MAX_AGE_SECONDS: u64 = 60;
 
 pub type PullRequestEmitter = Arc<dyn Fn(PullRequestChangedEvent) + Send + Sync>;
 
+/// What one pull request is, for a feature that needs its facts and not the
+/// provider's whole shape (Explain, SPEC.md section 14, Pull requests), as
+/// this service last read it from the provider or its cache.
+#[derive(Debug, Clone)]
+pub struct PullRequestFacts {
+    /// The repository registration that tracks the pull request.
+    pub repository_id: String,
+    pub number: u64,
+    pub title: String,
+    pub head_sha: String,
+    /// The target branch's tip when the pull request was read.
+    pub base_sha: String,
+    pub source_branch: String,
+    pub target_branch: String,
+    /// The source branch is in another repository, such as a fork.
+    pub from_fork: bool,
+    /// Written by the account's user.
+    pub mine: bool,
+    pub author: String,
+}
+
 pub struct PullRequestService {
     repositories: Arc<RepositoryService>,
     accounts: Arc<AccountService>,
@@ -896,10 +917,7 @@ impl PullRequestService {
     /// What Explain needs of a pull request (SPEC.md, section 14, Pull
     /// requests): the repository tracking it, its head and target, whether
     /// it comes from a fork, and whose it is.
-    pub async fn explain_facts(
-        &self,
-        reference: &str,
-    ) -> AppResult<crate::explain::service::PullRequestFacts> {
+    pub async fn explain_facts(&self, reference: &str) -> AppResult<PullRequestFacts> {
         let parsed: PullRequestRef = reference.parse()?;
         let tracked = self.tracked_for(&parsed).await?;
         let pr = self.get(reference, LIST_MAX_AGE_SECONDS).await?;
@@ -915,7 +933,7 @@ impl PullRequestService {
             .and_then(|url| ForgeRepository::from_remote_url(&url));
         let own = own_branch(&pr, &parsed.repository)
             || origin.as_ref().is_some_and(|o| own_branch(&pr, o));
-        Ok(crate::explain::service::PullRequestFacts {
+        Ok(PullRequestFacts {
             repository_id: tracked.repository_id,
             number: pr.number,
             from_fork: !own,

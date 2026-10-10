@@ -27,7 +27,8 @@ use crate::models::{AppError, AppResult, ForgeSource, ForgeTarget, RepositoryFor
 pub use crate::models::ForgeKind;
 pub use accounts::{AccountService, Endpoints};
 pub use service::{
-    PullRequestEmitter, PullRequestService, DETAIL_MAX_AGE_SECONDS, LIST_MAX_AGE_SECONDS,
+    PullRequestEmitter, PullRequestFacts, PullRequestService, DETAIL_MAX_AGE_SECONDS,
+    LIST_MAX_AGE_SECONDS,
 };
 
 impl ForgeKind {

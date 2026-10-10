@@ -140,6 +140,31 @@ impl Output {
     }
 }
 
+/// Git with `GitService::run_isolated`'s home folder and timeout fixed, so a
+/// reader can be handed Git that ignores the user's configuration without
+/// also knowing where that home folder is or how long to wait. Unlike the
+/// run artifacts' own reads, it adds no `safe.directory` from the user.
+#[derive(Debug, Clone)]
+pub struct IsolatedGit {
+    git: GitService,
+    home: PathBuf,
+    timeout: Duration,
+}
+
+impl IsolatedGit {
+    pub fn new(git: GitService, home: PathBuf, timeout: Duration) -> Self {
+        IsolatedGit { git, home, timeout }
+    }
+
+    /// `GitService::run_isolated` in `cwd`: only spawn, read, and timeout
+    /// failures are errors, and a non-zero exit is reported in `Output`.
+    pub async fn run(&self, cwd: &Path, args: &[&str]) -> AppResult<Output> {
+        self.git
+            .run_isolated(cwd, args, &self.home, self.timeout)
+            .await
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct GitService {
     binary: PathBuf,

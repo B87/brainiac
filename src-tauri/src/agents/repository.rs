@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::git::{validate_revision, GitService, Output};
+use crate::git::{validate_revision, GitService, IsolatedGit, Output};
 use crate::models::{
     AppError, AppResult, CommitFile, DiffContent, DiffLimits, DiffOptions, DiffResult,
     DiffSelector, ErrorCode, RunStartPreview,
@@ -946,40 +946,19 @@ impl RunArtifacts {
         Ok(())
     }
 
-    /// What an explanation is about: the change `base..tip` in `repo`,
-    /// Brainiac's own repository where the explain run's start was copied,
-    /// or the user's when a branch moved. Reads only, with no user
-    /// configuration.
-    pub async fn read_subject(
-        &self,
-        repo: &Path,
-        base: &str,
-        tip: &str,
-    ) -> AppResult<crate::explain::subject::Subject> {
-        let git = self.git.as_ref().ok_or_else(|| {
+    /// Git for reading Brainiac's own copy, or the user's repository, with
+    /// none of the user's configuration, in this folder's empty home and with
+    /// the timeout of a check (`explain::subject` reads changes with it).
+    pub fn isolated_git(&self) -> AppResult<IsolatedGit> {
+        let git = self.git.clone().ok_or_else(|| {
             AppError::dependency("Git was not found, so Brainiac cannot read the change.")
         })?;
-        crate::explain::subject::read_subject(git, repo, &self.home()?, base, tip, CHECK_TIMEOUT)
-            .await
+        Ok(IsolatedGit::new(git, self.home()?, CHECK_TIMEOUT))
     }
 
     /// Run a reading Git command in `repo` and return what it printed.
     pub async fn read_git(&self, repo: &Path, args: &[&str]) -> AppResult<String> {
         self.git_ok(repo, args, CHECK_TIMEOUT).await
-    }
-
-    /// The text of `paths` at `tip` in `repo`.
-    pub async fn read_files(
-        &self,
-        repo: &Path,
-        tip: &str,
-        paths: &std::collections::BTreeSet<String>,
-    ) -> AppResult<crate::explain::subject::Files> {
-        let git = self.git.as_ref().ok_or_else(|| {
-            AppError::dependency("Git was not found, so Brainiac cannot read the change.")
-        })?;
-        crate::explain::subject::read_files(git, repo, &self.home()?, tip, paths, CHECK_TIMEOUT)
-            .await
     }
 }
 

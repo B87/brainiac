@@ -18,7 +18,8 @@ use brainiac_lib::agents::{
 };
 use brainiac_lib::credentials::{CommandRunner, CredentialService, MemoryStore};
 use brainiac_lib::db::{self, Db};
-use brainiac_lib::explain::service::{ExplanationService, PullRequestFacts};
+use brainiac_lib::explain::service::ExplanationService;
+use brainiac_lib::forge::PullRequestFacts;
 use brainiac_lib::git::GitService;
 use brainiac_lib::models::{
     AgentPayment, AgentProvider, AnswerCodeSharingRequest, CodeConsentState, ConceptKind,
