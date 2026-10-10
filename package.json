@@ -20,6 +20,7 @@
     "test": "vitest run",
     "test:editor": "playwright test",
     "vault:gen": "cargo run --quiet --manifest-path src-tauri/Cargo.toml --example gen_vault --",
+    "map:diff": "scripts/module-diff.sh",
     "tauri": "scripts/with-dev-codesign.sh tauri",
     "tauri:dev": "scripts/with-dev-codesign.sh tauri dev --config '{\"identifier\":\"dev.brainiac.v02test\"}'",
     "version:check": "scripts/check-version.sh",
