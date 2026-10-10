@@ -52,7 +52,8 @@ import {
   type RunPreview,
   subscribe,
 } from "../lib/ipc";
-import { KIND_LETTER, kindTone, plural, splitPath } from "../lib/repo";
+import { plural } from "../lib/repo";
+import ChangedFileList from "./ChangedFileList";
 import DiffView from "./DiffView";
 import { StepIcon } from "./HostJobView";
 import {
@@ -68,13 +69,7 @@ import {
 } from "./icons";
 import { Markdown } from "./Markdown";
 import { RepoChip } from "./RepoChip";
-import {
-  FileNotes,
-  NotCoveredHeading,
-  OrderSwitch,
-  startsNotCovered,
-  useExplainedPatch,
-} from "./useExplainedPatch";
+import { useExplainedPatch } from "./useExplainedPatch";
 
 type Props = {
   snapshot: AppSnapshot;
@@ -2206,64 +2201,12 @@ function SnapshotFiles({
         </div>
       )}
       <div className="flex min-h-0 flex-1">
-        <div className="flex w-[260px] shrink-0 flex-col border-r">
-          {explained.hasExplanation && (
-            <div className="flex shrink-0 justify-center border-b px-2 py-1.5">
-              <OrderSwitch
-                order={explained.order}
-                setOrder={explained.setOrder}
-              />
-            </div>
-          )}
-          <ul
-            aria-label="Changed files"
-            className="m-0 min-h-0 flex-1 list-none overflow-y-auto p-1"
-          >
-            {files.map((f, i) => {
-              const { dir, name } = splitPath(f.path);
-              return (
-                <li key={f.path}>
-                  {startsNotCovered(files, i, explained.steps) && (
-                    <NotCoveredHeading />
-                  )}
-                  <button
-                    type="button"
-                    className="side-row h-auto w-full items-start gap-2 py-1.5 text-left"
-                    aria-current={f === file}
-                    onClick={() => setSelected(f.path)}
-                  >
-                    {explained.steps.size > 0 && (
-                      <span className="tabular mt-px w-4 shrink-0 text-right text-[11.5px] text-muted">
-                        {explained.steps.get(f.path) ?? ""}
-                      </span>
-                    )}
-                    <span className="kind mt-px" data-tone={kindTone(f.kind)}>
-                      {KIND_LETTER[f.kind]}
-                    </span>
-                    <span className="flex min-w-0 flex-1 flex-col">
-                      <span className="truncate">{name}</span>
-                      {dir && (
-                        <span className="truncate text-[11px] text-muted">
-                          {dir.replace(/\/$/, "")}
-                        </span>
-                      )}
-                    </span>
-                    <FileNotes count={explained.fileNotes.get(f.path)} />
-                    <span className="mt-px shrink-0 text-[11px] tabular">
-                      {f.additions != null && (
-                        <span className="text-added">+{f.additions} </span>
-                      )}
-                      {f.deletions != null && (
-                        <span className="text-deleted">−{f.deletions}</span>
-                      )}
-                      {f.is_binary && <span className="text-muted">bin</span>}
-                    </span>
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        </div>
+        <ChangedFileList
+          files={files}
+          selectedPath={file?.path ?? null}
+          onSelect={setSelected}
+          explained={explained}
+        />
         <div className="flex min-w-0 flex-1 flex-col">
           <DiffView
             diff={diff}
