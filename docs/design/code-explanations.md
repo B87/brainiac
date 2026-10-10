@@ -220,6 +220,31 @@ The next try was a near-name lookup (`--variant similar`, the first prompt plus 
 - **`known_used` still includes filler** (`tokio`, `async/await`, `SQLite`, `Docker`) in six of the seven runs that named any, so the count can still overstate, and the checker cannot tell which names the change relies on.
 - **Built from it (9 October 2026):** `known` prints the `similar:` lines, the prompt describes them and tells the agent to name a similar concept that is the same idea in `known_used`, and `architecture.md` and the image tests cover them. Near names are word-subset matches only: the same idea in other words is still new. The exit gate counts the `known_used` names the change did not rely on.
 
+## Speed (11 October 2026)
+
+Explanations felt slow in use. Three explain runs that completed in the app (OpenCode on Opus at Teach me, two commits and a pull request, on this Mac) took 89, 95, and 112 seconds and cost $0.45 to $0.71. Their journals show where the time goes; the fastest, a commit of a few files:
+
+| Phase | Time | What happened |
+| --- | --- | --- |
+| Copy the subject, start the container, open the session | about 3 s | Brainiac's own setup |
+| Reading | about 28 s | about six `git diff`, `sed`, and `grep` calls, each a few seconds of model time |
+| Writing `explanation.json` | about 37 s | one tool call while the model writes the whole file |
+| Checking its own work | about 13 s | the agent searched its quotes again, re-read the file, and edited it three times |
+| Closing message | about 8 s | a 2 KB summary in the conversation that nobody reads |
+
+The pull request's run had the same shape: about 40 s reading and 51 s writing the file. So the container's start is not where the time goes (Open questions), and a warm container or a host-side agent would save about two seconds. The model's own work is the time: the long write, and the tail after it.
+
+Options, cheapest first. None is built.
+
+1. **Cut the tail** (a prompt change; about 15 to 20 s, a fifth of a run). Tell the agent that Brainiac checks every note and quote and has one follow-up turn for what fails, so it should not check its quotes again, and should end its turn with one word rather than a summary. The risk is more follow-up turns or dropped notes when a quote is off; it is measured on the same commits before it ships.
+2. **A model for each depth with OpenCode too.** Claude Code profiles already take a model per depth (Settings → Explanations); an OpenCode profile always uses its own model, so every run above was Opus. The first spike found Sonnet about half the time and a third of the cost. Brief could use a smaller model still.
+3. **Less to write** (about 10 to 20 s). The write is mostly output tokens: ask for the shortest quote that pins a claim, cap the notes for each depth, and leave out the fields a depth does not use.
+4. **Less to read** (about 10 s). Put the change's stat and its patch, up to a size, in a file in the container (as the known concepts are) or in the prompt, which replaces the first few round trips.
+5. **Show it as it is written** (no shorter, but the first part is seen sooner). The agent writes the summary and the reading order first, then the notes, and the panel shows each part as it lands. The largest change: Brainiac reads the file only once, after the run, and the checks would run on each part.
+6. **A direct model call without an agent.** The largest gain for a small change; it is the 0.6.x follow-up above, with its doubts (fewer sources cited, so thinner notes).
+
+Suggested first: 1 and 2, small and safe, which together may bring Teach me from about 90 s to 40 or 50 s. That is an estimate until the same commits are run again, comparing time, cost, follow-up turns, and notes dropped by the checks. Then 3.
+
 ## Open questions
 
 - How long an explanation takes and costs on each agent, and the time limit to default to (the spike; Claude Code's first round is above, OpenCode is still to measure).
@@ -230,7 +255,7 @@ The next try was a near-name lookup (`--variant similar`, the first prompt plus 
 - Whether the panel, with the summary first and Tour open, reads well on a large change, or should start folded. (9 October 2026: the Tour tab went; the numbered file list is the tour, and the panel names the selected file's step and role. `SPEC.md`, section 14.)
 - The cap on the known-concepts file and what it adds to the dialog's estimate (the file, its filter, and the checker's backstop are in Editing the ledger, and scope; the cap and whether both agents use the lookup are for the spike).
 - Whether the ledger is part of export and restore, and what deleting an explanation leaves of what it taught.
-- Whether the explain run's container start is a large share of an explanation's time, once a run in a container is timed (the spike left it out). It decides whether a warm container or a host-side agent is worth anything.
+- Whether the explain run's container start is a large share of an explanation's time, once a run in a container is timed (the spike left it out). It decides whether a warm container or a host-side agent is worth anything. (11 October 2026: about 3 s of a 90 to 110 s run, so neither is worth building; Speed.)
 - Whether a local model can write a valid schema at all, and how a repository's answer is recorded for something with no provider.
 - What happens to aliases when a concept is forgotten, exported, or restored. Descriptions from another repository do not go into an explain run; the words included are from explanations of this repository.
 - What the user sees when a concept's scope changes: which repositories' prompts it now reaches or leaves.
