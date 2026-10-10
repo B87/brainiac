@@ -6,8 +6,9 @@ use std::sync::Arc;
 
 use super::budget::Budget;
 use super::http::{Auth, Http, Response};
-use super::{ForgeRepository, PullRequestRef};
+use super::PullRequestRef;
 use crate::credentials::{LeaseHandle, Token};
+use crate::hosting::ForgeRepository;
 use crate::models::{
     ActionAvailability, AppError, AppResult, AvailableActions, ChangedFile, Check, CheckState,
     ChecksSummary, ErrorCode, ForgeAccount, ForgeKind, MergeOptions, MergeRequest, PullRequest,

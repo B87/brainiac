@@ -16,7 +16,7 @@ use std::thread;
 
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 
-use crate::forge::ForgeRepository;
+use crate::hosting::ForgeRepository;
 use crate::models::{
     ActivitySettings, AppError, AppResult, DiscoveryMode, MemberOrigin, Pin, PinEntityType,
     RepositoryTab, Settings, StatusSnapshot,

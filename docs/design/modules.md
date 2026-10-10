@@ -33,6 +33,7 @@ The review on 10 October read the file against v0.6 (explaining changes, 52 comm
   | `commands.rs` | 162 commands | 187 commands |
   | `models.rs` | 3,901 lines | 4,740 lines |
   | Event names in `lib.rs` | | 12 constants, one or two per feature |
+
 - **Not everyone wants everything.** Someone who uses Brainiac only as a Git dashboard with databases pays for notes' indexing, settings, and sidebar section.
 - **Others could build what the maintainer will not.** Issue trackers (Jira, Linear), error monitoring (Sentry), cloud consoles, more database drivers, more forges: each is a feature some users need and the maintainer may never write.
 
@@ -56,7 +57,7 @@ Which backend modules import each feature (`crate::<module>` outside its own fol
 | `git` | `activity`, `agents`, `commands`, `db`, `explain`, `fetcher`, `forge`, `workspaces` |
 | `credentials` | `agents`, `commands`, `databases`, `forge`, `secrets` |
 | `sharing` | `agents`, `commands`, `explain` |
-| `forge` | `commands`, `db`, `secrets`, `workspaces` |
+| `forge` | `commands`, `secrets` (until 10 Oct 2026 also `db` and `workspaces`; Preparation) |
 | `databases` | `commands`, `secrets` |
 | `agents` | `commands`, `explain`, `secrets` |
 | `explain` | `commands` (until 10 Oct 2026 also `agents` and `forge`; Preparation) |
@@ -289,7 +290,7 @@ Each of these simplifies today's code on its own:
 - **One patch component.** First written as `DiffView` plus the decoration hook in one place that takes a subject, so the four views that call `useExplainedPatch` call nothing. Reading the views on 10 October 2026 showed that only half of that holds. The branch comparison and a run's result had the same file list, about sixty lines each, and now share `ChangedFileList` (the one visible change: a branch comparison marks binary files, as a run's result did). Commit details (a folder tree that can be hidden) and a pull request (a filter, review marks, viewed and generated folds, and review threads in the same patch) keep lists of their own built from the same pieces, because one component for all four would need a slot for almost everything each view does, an interface as wide as the views. A neutral decorations layer over `useExplainedPatch` was also left out: with one decorator it would only pass the hook's values through. When a second decorator arrives, it composes where the pull request's review threads already do (`composeAnnotate`), and the hook's result becomes the place both are gathered; until then, a second decorator edits the four views.
 - **New cross-feature reactions go through events or callbacks**, as `set_fetch_listener` already does for pull requests and `PullRequestReader` does for explain, not through one service holding another. A callback's types belong to the side that owns the concept.
 - **Links by ID, tolerant of a missing target**, as note-to-repository links already are. A new link table should be shaped so it could become the core's general one.
-- **New features as leaves.** A new feature imports the core (repositories, credentials, storage, sharing), and no other feature imports it except the command layer. v0.6 broke this in three places within a week of its start, so it has a check since 10 October 2026: `src-tauri/tests/module_boundaries.rs` reads the sources and places every top-level module in the shell (may import anything), the core (imports only the core), or a feature (imports the core and its own modules). Today's other imports are listed with their reasons, so a new one fails until someone adds it to the list, and an entry whose import is gone fails too, so the list only shrinks. Writing the list found one more leak: `db` and `workspaces` import `forge::ForgeRepository`, which hosted repository a local repository's `origin` names. That is repository identity, needs no network, and belongs with repositories in the core; moving it removes two entries.
+- **New features as leaves.** A new feature imports the core (repositories, credentials, storage, sharing), and no other feature imports it except the command layer. v0.6 broke this in three places within a week of its start, so it has a check since 10 October 2026: `src-tauri/tests/module_boundaries.rs` reads the sources and places every top-level module in the shell (may import anything), the core (imports only the core), or a feature (imports the core and its own modules). Today's other imports are listed with their reasons, so a new one fails until someone adds it to the list, and an entry whose import is gone fails too, so the list only shrinks. Writing the list found one more leak: `db` and `workspaces` imported `forge::ForgeRepository`, which hosted repository a local repository's `origin` names. That is repository identity and needs no network, so on 10 October 2026 it moved to a core module of its own, `hosting`, with the two `ForgeKind` methods that say which host a forge lives on, and the list lost its two entries. It is not in `workspaces` because `db` uses it too, and `workspaces` depends on `db`.
 - **No plugin dependency** (wasmtime, a manifest format, a registry) until a release takes this design.
 
 ## Phases, if it happens

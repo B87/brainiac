@@ -3,7 +3,7 @@
 //! chosen with **Change…**, and each workspace's pull request switch.
 
 use crate::db;
-use crate::forge::ForgeRepository;
+use crate::hosting::ForgeRepository;
 use crate::models::{
     now_rfc3339, AppResult, ChangeOrigin, RepositoryChangedEvent, RepositorySummary,
     SetRepositoryForgeRequest, Workspace,

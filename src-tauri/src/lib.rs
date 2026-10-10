@@ -13,6 +13,7 @@ pub mod explain;
 pub mod fetcher;
 pub mod forge;
 pub mod git;
+pub mod hosting;
 pub mod index;
 pub mod machines;
 pub mod mcp;

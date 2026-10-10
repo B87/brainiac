@@ -112,7 +112,12 @@ async fn fixture() -> Fixture {
         Arc::new(|_| {});
     let svc = Arc::new(RepositoryService::new(
         db,
-        GitService::detect_at(&wrapper).await,
+        // Unwrapped here so a failed start reports Git's own error. Under a
+        // full `pnpm check` this probe has failed, and the service then said
+        // only that Git was not found.
+        Ok(GitService::detect_at(&wrapper)
+            .await
+            .expect("the logging Git wrapper answers --version")),
         Settings::default(),
         emitter,
     ));

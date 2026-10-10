@@ -1,10 +1,11 @@
 //! Pull requests (SPEC.md, section 10): GitHub and Bitbucket Cloud.
 //!
-//! Identity needs no network: which hosted repository a local repository's
-//! `origin` names (a forge repository), and how a pull request is referred to
+//! Which hosted repository a local repository's `origin` names is the core's
+//! (`hosting`); here, how a pull request is referred to
 //! (`github.com/acme/api#42`). Accounts are checked with one request and keep
-//! their token where its source says (SPEC.md, Secrets). The pull request service, the adapters, and
-//! the cache follow (docs/architecture.md, Pull requests — v0.3).
+//! their token where its source says (SPEC.md, Secrets). The pull request
+//! service, the adapters, and the cache follow (docs/architecture.md, Pull
+//! requests — v0.3).
 
 mod accounts;
 pub mod adapter;
@@ -22,7 +23,8 @@ mod store;
 use std::fmt;
 use std::str::FromStr;
 
-use crate::models::{AppError, AppResult, ForgeSource, ForgeTarget, RepositoryForge};
+use crate::hosting::ForgeRepository;
+use crate::models::{AppError, AppResult};
 
 pub use crate::models::ForgeKind;
 pub use accounts::{AccountService, Endpoints};
@@ -30,15 +32,9 @@ pub use service::{
     PullRequestFacts, PullRequestService, DETAIL_MAX_AGE_SECONDS, LIST_MAX_AGE_SECONDS,
 };
 
+// A type's methods can be split across modules of one crate: those that say
+// where a forge is live in `hosting`, and these, about accounts, stay here.
 impl ForgeKind {
-    /// The host its repositories live on, as written in a forge repository.
-    pub fn host(self) -> &'static str {
-        match self {
-            ForgeKind::Github => "github.com",
-            ForgeKind::BitbucketCloud => "bitbucket.org",
-        }
-    }
-
     /// The account name of its Keychain item (service `brainiac`).
     pub fn keychain_account(self) -> &'static str {
         match self {
@@ -53,124 +49,6 @@ impl ForgeKind {
             ForgeKind::Github => "GitHub",
             ForgeKind::BitbucketCloud => "Bitbucket",
         }
-    }
-
-    /// The forge a remote's host belongs to. Each provider also serves SSH on
-    /// port 443 under another name, for networks that block port 22.
-    fn from_host(host: &str) -> Option<Self> {
-        match host.to_ascii_lowercase().as_str() {
-            "github.com" | "www.github.com" | "ssh.github.com" => Some(ForgeKind::Github),
-            "bitbucket.org" | "www.bitbucket.org" | "altssh.bitbucket.org" => {
-                Some(ForgeKind::BitbucketCloud)
-            }
-            _ => None,
-        }
-    }
-}
-
-/// A repository on a forge: `github.com/acme/api`, `bitbucket.org/acme-team/api`.
-/// The owner is a GitHub user or organization, or a Bitbucket workspace.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ForgeRepository {
-    pub kind: ForgeKind,
-    pub owner: String,
-    pub name: String,
-}
-
-impl ForgeRepository {
-    /// The forge repository a Git remote URL points to, from its HTTPS,
-    /// `ssh://`, `git://`, and SCP-style (`git@github.com:acme/api.git`)
-    /// forms. `None` for any other host (including an SSH alias from
-    /// `~/.ssh/config`), a local path, or a path that is not `owner/name`;
-    /// the user can then choose the repository by hand.
-    pub fn from_remote_url(url: &str) -> Option<Self> {
-        let url = url.trim();
-        let (authority, path) = match url.split_once("://") {
-            Some((scheme, rest)) => {
-                if !matches!(
-                    scheme.to_ascii_lowercase().as_str(),
-                    "https" | "http" | "ssh" | "git" | "git+ssh" | "ssh+git"
-                ) {
-                    return None;
-                }
-                rest.split_once('/')?
-            }
-            // SCP-style: `[user@]host:path`, where the colon comes before any
-            // slash (otherwise it is a local path such as `./a:b`).
-            None => {
-                let colon = url.find(':')?;
-                if url[..colon].contains('/') {
-                    return None;
-                }
-                (&url[..colon], &url[colon + 1..])
-            }
-        };
-        // Drop `user[:password]@` and `:port` around the host.
-        let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
-        let host = host.split_once(':').map_or(host, |(h, _)| h);
-        let kind = ForgeKind::from_host(host)?;
-        let path = path.trim_matches('/');
-        let path = path.strip_suffix(".git").unwrap_or(path);
-        let (owner, name) = path.split_once('/')?;
-        Self::new(kind, owner, name)
-    }
-
-    /// A forge repository from its parts, if both are plausible names. They
-    /// end up in API paths, so anything outside the characters both providers
-    /// allow (letters, digits, `.`, `_`, `-`) is refused rather than escaped:
-    /// `..` or a `/` must never reach a request URL.
-    pub fn new(kind: ForgeKind, owner: &str, name: &str) -> Option<Self> {
-        let plausible = |s: &str| {
-            !s.is_empty()
-                && s != "."
-                && s != ".."
-                && s.len() <= 100
-                && s.bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
-        };
-        (plausible(owner) && plausible(name)).then(|| ForgeRepository {
-            kind,
-            owner: owner.to_string(),
-            name: name.to_string(),
-        })
-    }
-}
-
-impl ForgeRepository {
-    /// The forge repository a stored repository's pull requests come from:
-    /// its override, else what its `origin` names.
-    pub fn of(
-        remote_url: Option<&str>,
-        override_: Option<&ForgeRepository>,
-    ) -> Option<RepositoryForge> {
-        let (repo, source) = match override_ {
-            Some(o) => (o.clone(), ForgeSource::Override),
-            None => (Self::from_remote_url(remote_url?)?, ForgeSource::Origin),
-        };
-        Some(RepositoryForge {
-            reference: repo.to_string(),
-            kind: repo.kind,
-            owner: repo.owner,
-            name: repo.name,
-            source,
-        })
-    }
-
-    /// A target the user typed, checked like any other name.
-    pub fn from_target(target: &ForgeTarget) -> AppResult<Self> {
-        Self::new(target.kind, target.owner.trim(), target.name.trim()).ok_or_else(|| {
-            AppError::validation(
-                "Name the repository as owner and name, with letters, digits, dots, dashes, and underscores.",
-            )
-        })
-    }
-}
-
-// `Display` is the trait behind `format!("{}")` and `.to_string()`; this is
-// the one place that decides how a forge repository is written.
-impl fmt::Display for ForgeRepository {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}/{}/{}", self.kind.host(), self.owner, self.name)
     }
 }
 
@@ -219,68 +97,6 @@ impl FromStr for PullRequestRef {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn repo(url: &str) -> Option<String> {
-        ForgeRepository::from_remote_url(url).map(|r| r.to_string())
-    }
-
-    #[test]
-    fn remote_urls_name_their_forge_repository() {
-        let cases = [
-            ("https://github.com/acme/api.git", "github.com/acme/api"),
-            ("https://github.com/acme/api", "github.com/acme/api"),
-            ("https://github.com/acme/api/", "github.com/acme/api"),
-            ("http://github.com/acme/api.git", "github.com/acme/api"),
-            ("https://GitHub.com/Acme/API.git", "github.com/Acme/API"),
-            ("git@github.com:acme/api.git", "github.com/acme/api"),
-            ("github.com:acme/api", "github.com/acme/api"),
-            ("ssh://git@github.com/acme/api.git", "github.com/acme/api"),
-            (
-                "ssh://git@ssh.github.com:443/acme/api.git",
-                "github.com/acme/api",
-            ),
-            ("git://github.com/acme/api.git", "github.com/acme/api"),
-            (
-                "https://bitbucket.org/acme-team/api.git",
-                "bitbucket.org/acme-team/api",
-            ),
-            (
-                "https://jo@bitbucket.org/acme-team/api.git",
-                "bitbucket.org/acme-team/api",
-            ),
-            (
-                "git@bitbucket.org:acme-team/api.git",
-                "bitbucket.org/acme-team/api",
-            ),
-            (
-                "ssh://git@altssh.bitbucket.org:443/acme-team/web.app.git",
-                "bitbucket.org/acme-team/web.app",
-            ),
-        ];
-        for (url, expected) in cases {
-            assert_eq!(repo(url).as_deref(), Some(expected), "{url}");
-        }
-    }
-
-    #[test]
-    fn other_remotes_name_no_forge_repository() {
-        for url in [
-            "",
-            "/Users/me/src/api",
-            "./a:b",
-            "file:///Users/me/src/api.git",
-            "https://gitlab.com/acme/api.git",
-            "git@gh-work:acme/api.git",
-            "https://github.com/acme",
-            "https://github.com/acme/api/tree/main",
-            "https://github.com/acme/.git",
-            "https://github.com/../api",
-            "https://github.com/acme/a%2Fb",
-            "ftp://github.com/acme/api",
-        ] {
-            assert_eq!(repo(url), None, "{url}");
-        }
-    }
 
     #[test]
     fn pull_request_references_round_trip() {
