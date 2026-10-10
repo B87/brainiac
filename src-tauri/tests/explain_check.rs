@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use brainiac_lib::explain::check;
 use brainiac_lib::explain::subject::{read_files, read_subject, Changed, EMPTY_TREE};
-use brainiac_lib::git::GitService;
+use brainiac_lib::git::{GitService, IsolatedGit};
 use serde_json::json;
 
 const TIMEOUT: Duration = Duration::from_secs(30);
@@ -78,11 +78,9 @@ async fn a_commit_is_read_as_its_changed_files_and_lines() {
     std::fs::create_dir_all(&repo).unwrap();
     std::fs::create_dir_all(&home).unwrap();
     let (first, second) = repository(&repo);
-    let git = GitService::detect().await.unwrap();
+    let git = IsolatedGit::new(GitService::detect().await.unwrap(), home, TIMEOUT);
 
-    let subject = read_subject(&git, &repo, &home, &first, &second, TIMEOUT)
-        .await
-        .unwrap();
+    let subject = read_subject(&git, &repo, &first, &second).await.unwrap();
     let paths: Vec<&str> = subject.files.iter().map(|f| f.path.as_str()).collect();
     assert_eq!(
         paths,
@@ -106,9 +104,7 @@ async fn a_commit_is_read_as_its_changed_files_and_lines() {
     );
 
     // A root commit is read against the empty tree.
-    let root = read_subject(&git, &repo, &home, EMPTY_TREE, &first, TIMEOUT)
-        .await
-        .unwrap();
+    let root = read_subject(&git, &repo, EMPTY_TREE, &first).await.unwrap();
     assert_eq!(root.files.len(), 3);
     assert_eq!(
         root.file("src/lib.rs").unwrap().changed,
@@ -128,9 +124,7 @@ async fn a_commit_is_read_as_its_changed_files_and_lines() {
     ]
     .map(String::from)
     .to_vec();
-    let files = read_files(&git, &repo, &home, &second, &wanted, TIMEOUT)
-        .await
-        .unwrap();
+    let files = read_files(&git, &repo, &second, &wanted).await.unwrap();
     let read: Vec<&str> = files.keys().map(String::as_str).collect();
     assert_eq!(read, ["notes/new name.md", "src/lib.rs"]);
     assert!(files["src/lib.rs"].contains("an added line"));
@@ -143,7 +137,7 @@ async fn an_explanation_is_checked_against_a_real_commit() {
     std::fs::create_dir_all(&repo).unwrap();
     std::fs::create_dir_all(&home).unwrap();
     let (first, second) = repository(&repo);
-    let git = GitService::detect().await.unwrap();
+    let git = IsolatedGit::new(GitService::detect().await.unwrap(), home, TIMEOUT);
 
     let tour = ["src/lib.rs", "notes/new name.md", "gone.txt", "logo.png"]
         .map(|p| json!({ "path": p, "role": "" }));
@@ -169,12 +163,8 @@ async fn an_explanation_is_checked_against_a_real_commit() {
     });
     let draft = check::parse(&file.to_string()).unwrap();
     let paths = draft.cited_paths();
-    let files = read_files(&git, &repo, &home, &second, &paths, TIMEOUT)
-        .await
-        .unwrap();
-    let subject = read_subject(&git, &repo, &home, &first, &second, TIMEOUT)
-        .await
-        .unwrap();
+    let files = read_files(&git, &repo, &second, &paths).await.unwrap();
+    let subject = read_subject(&git, &repo, &first, &second).await.unwrap();
     let checked = check::check(draft, &subject, &files, &[], check::Attempt::First).unwrap();
     let notes = &checked.explanation.notes;
     assert_eq!(notes.len(), 2);

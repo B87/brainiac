@@ -22,11 +22,12 @@ use super::check::{self, Attempt};
 use super::known;
 use super::prompt::{self, PromptSubject, Reader};
 use super::store::{self, Ending, ExplanationRow};
-use super::subject::EMPTY_TREE;
+use super::subject::{read_files, read_subject, EMPTY_TREE};
 use crate::agents::runs::{ExplainRun, ExplainStart};
 use crate::agents::settings::{profile_name, run_missing};
 use crate::agents::{AgentRunService, AgentSettingsService, RunArtifacts};
 use crate::db::{self, Db};
+use crate::forge::PullRequestFacts;
 use crate::models::{
     now_rfc3339, AgentKind, AgentRun, AgentSettings, AppError, AppResult, ConceptKind,
     CreateNoteRequest, ErrorCode, ExplainCost, ExplainDepth, ExplainDialog, ExplainEstimate,
@@ -44,29 +45,9 @@ pub type ExplanationEmitter = Arc<dyn Fn(ExplanationChangedEvent) + Send + Sync>
 /// not the active app (SPEC.md, Explain: While it works).
 pub type ExplanationNotifier = Arc<dyn Fn(String, String) + Send + Sync>;
 
-/// What Explain needs to know of a pull request, as the pull request
-/// service (`forge`) last read it from the provider or its cache.
-#[derive(Debug, Clone)]
-pub struct PullRequestFacts {
-    /// The repository registration that tracks the pull request.
-    pub repository_id: String,
-    pub number: u64,
-    pub title: String,
-    pub head_sha: String,
-    /// The target branch's tip when the pull request was read.
-    pub base_sha: String,
-    pub source_branch: String,
-    pub target_branch: String,
-    /// The source branch is in another repository, such as a fork.
-    pub from_fork: bool,
-    /// Written by the account's user.
-    pub mine: bool,
-    pub author: String,
-}
-
 /// Reads a pull request by its reference. A `BoxFuture` is a future behind a
-/// pointer, which is how a stored closure can be async; the closure keeps this
-/// module from depending on `forge`, which is built first.
+/// pointer, which is how a stored closure can be async. A closure, not the
+/// pull request service itself, so tests can give facts without one.
 pub type PullRequestReader =
     Arc<dyn Fn(String) -> BoxFuture<'static, AppResult<PullRequestFacts>> + Send + Sync>;
 
@@ -1124,14 +1105,12 @@ impl ExplanationService {
                 Err(failed) => Err(failed),
                 Ok(draft) => {
                     let repo = self.artifacts.repository_dir(&row.repository_id);
-                    let subject = self
-                        .artifacts
-                        .read_subject(&repo, &row.base, &row.tip)
-                        .await?;
+                    let git = self.artifacts.isolated_git()?;
+                    let subject = read_subject(&git, &repo, &row.base, &row.tip).await?;
                     // Only cited files are read: the cap on files read must
                     // not cut a cited one among a large change's others.
                     let paths = draft.cited_paths();
-                    let files = self.artifacts.read_files(&repo, &row.tip, &paths).await?;
+                    let files = read_files(&git, &repo, &row.tip, &paths).await?;
                     // The ledger as it is now: a concept forgotten while the
                     // agent worked is not counted as left out.
                     let known = {
@@ -1396,9 +1375,10 @@ impl ExplanationService {
             return Ok(as_written(false, false, now.tip));
         }
         let (base, tip) = (now.base, now.tip);
-        let subject = self.artifacts.read_subject(&root, &base, &tip).await?;
+        let git = self.artifacts.isolated_git()?;
+        let subject = read_subject(&git, &root, &base, &tip).await?;
         let paths: BTreeSet<String> = explanation.notes.iter().map(|n| n.path.clone()).collect();
-        let files = self.artifacts.read_files(&root, &tip, &paths).await?;
+        let files = read_files(&git, &root, &tip, &paths).await?;
         let notes = explanation
             .notes
             .iter()

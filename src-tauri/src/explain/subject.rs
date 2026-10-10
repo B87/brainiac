@@ -5,13 +5,12 @@
 //!
 //! The subject has been imported into Brainiac's repository for its run, so
 //! these reads never touch the user's repository. Every Git call goes
-//! through `GitService::run_isolated`.
+//! through `IsolatedGit`, which the run artifacts hand out.
 
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::time::Duration;
 
-use crate::git::{validate_repo_path, validate_revision, GitService};
+use crate::git::{validate_repo_path, validate_revision, IsolatedGit};
 use crate::models::{AppError, AppResult};
 
 /// Git's empty tree, the base of a root commit (SHA-1 repositories only, as
@@ -98,12 +97,10 @@ const DIFF_OPTIONS: [&str; 4] = [
 /// is the tip's parent for a commit, `EMPTY_TREE` for a root commit, and the
 /// merge base or the run's start for a range.
 pub async fn read_subject(
-    git: &GitService,
+    git: &IsolatedGit,
     repo: &Path,
-    home: &Path,
     base: &str,
     tip: &str,
-    timeout: Duration,
 ) -> AppResult<Subject> {
     validate_revision(base)?;
     validate_revision(tip)?;
@@ -114,7 +111,7 @@ pub async fn read_subject(
             args.extend_from_slice(&DIFF_OPTIONS);
             args.extend_from_slice(&["--end-of-options", base, tip, "--"]);
             async move {
-                let out = git.run_isolated(repo, &args, home, timeout).await?;
+                let out = git.run(repo, &args).await?;
                 if !out.success() || out.truncated {
                     return Err(AppError::io("Git could not read the change.")
                         .with_details(format!("git {}\n{}", args.join(" "), out.stderr)));
@@ -231,12 +228,10 @@ fn parse_hunk(line: &[u8]) -> AppResult<Changed> {
 /// cannot be quoted (binary, not UTF-8, too large). At most `MAX_FILES`
 /// paths are read; a path that could leave the repository is skipped.
 pub async fn read_files<'a>(
-    git: &GitService,
+    git: &IsolatedGit,
     repo: &Path,
-    home: &Path,
     tip: &str,
     paths: impl IntoIterator<Item = &'a String>,
-    timeout: Duration,
 ) -> AppResult<Files> {
     validate_revision(tip)?;
     let mut files = Files::new();
@@ -245,9 +240,7 @@ pub async fn read_files<'a>(
             continue;
         }
         let object = format!("{tip}:{path}");
-        let size = git
-            .run_isolated(repo, &["cat-file", "-s", &object], home, timeout)
-            .await?;
+        let size = git.run(repo, &["cat-file", "-s", &object]).await?;
         let fits = size.success()
             && String::from_utf8_lossy(&size.stdout)
                 .trim()
@@ -256,9 +249,7 @@ pub async fn read_files<'a>(
         if !fits {
             continue;
         }
-        let out = git
-            .run_isolated(repo, &["cat-file", "blob", &object], home, timeout)
-            .await?;
+        let out = git.run(repo, &["cat-file", "blob", &object]).await?;
         if !out.success() || out.truncated || out.stdout.contains(&0) {
             continue;
         }
