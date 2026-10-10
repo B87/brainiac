@@ -94,6 +94,9 @@ const SHOWN: Record<Show, RunGroup[]> = {
   ended: ["review", "ended"],
 };
 
+/** The list's Kind filter: runs started from New run, or by Explain. */
+type Kind = "" | "run" | "explain";
+
 /** Runs (SPEC.md, The run): the list, or one run. */
 export default function RunsView(props: Props) {
   const { runs, selectedId } = props;
@@ -137,6 +140,7 @@ function RunList({ snapshot, runs, onSelect, onNewRun }: Props) {
   const [show, setShow] = useState<Show>("all");
   const [repoFilter, setRepoFilter] = useState<string>("");
   const [hostFilter, setHostFilter] = useState<string>("");
+  const [kindFilter, setKindFilter] = useState<Kind>("");
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 30_000);
@@ -153,10 +157,12 @@ function RunList({ snapshot, runs, onSelect, onNewRun }: Props) {
       seen.set(isRemote(r) ? r.host_id : "local", hostLabel(r));
     return [...seen.entries()];
   }, [runs]);
+  const explained = (runs ?? []).some((r) => r.explain);
   const filtered = (runs ?? []).filter(
     (r) =>
       (!repoFilter || r.repository_id === repoFilter) &&
-      (!hostFilter || (isRemote(r) ? r.host_id : "local") === hostFilter),
+      (!hostFilter || (isRemote(r) ? r.host_id : "local") === hostFilter) &&
+      (!kindFilter || r.explain === (kindFilter === "explain")),
   );
   const needing = filtered.filter((r) => groupOf(r) === "needs_you").length;
   const shown = filtered.filter((r) => SHOWN[show].includes(groupOf(r)));
@@ -219,6 +225,18 @@ function RunList({ snapshot, runs, onSelect, onNewRun }: Props) {
                 {name}
               </option>
             ))}
+          </select>
+        )}
+        {explained && (
+          <select
+            className="field h-7 text-[12.5px]"
+            aria-label="Kind"
+            value={kindFilter}
+            onChange={(e) => setKindFilter(e.target.value as Kind)}
+          >
+            <option value="">Runs and explanations</option>
+            <option value="run">Runs</option>
+            <option value="explain">Explanations</option>
           </select>
         )}
         <span className="flex-1" />
@@ -291,7 +309,8 @@ function RunList({ snapshot, runs, onSelect, onNewRun }: Props) {
             </div>
             <p className="m-0 mt-3 text-[12px] text-muted">
               Ended runs are removed 30 days after they end. Work that waits for
-              your decision stays until you decide.
+              your decision stays until you decide. An explanation's run stays
+              as long as its explanation.
             </p>
           </>
         )}
@@ -321,7 +340,17 @@ function RunRow({
       onClick={onOpen}
     >
       <span className="flex min-w-0 flex-col gap-0.5">
-        <span className="truncate font-medium">{run.title}</span>
+        <span className="flex min-w-0 items-center gap-1.5">
+          {run.explain && (
+            <span
+              className="tag-box shrink-0"
+              title="Explain started it; its conversation is How it was written"
+            >
+              Explain
+            </span>
+          )}
+          <span className="truncate font-medium">{run.title}</span>
+        </span>
         <span className="flex min-w-0 items-center gap-1.5 text-[11.5px] text-muted">
           <RepoChip repo={repo} fallbackName={run.repository_name} />
           <span className="truncate">
@@ -570,7 +599,7 @@ function RunView({
                 className="text-muted hover:text-fg"
                 onClick={onBack}
               >
-                {explain ? "Back" : "Runs"}
+                Runs
               </button>
               <span aria-hidden="true">›</span>
               <span className="truncate">{run.repository_name}</span>

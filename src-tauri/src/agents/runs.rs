@@ -227,10 +227,10 @@ impl AgentRunService {
         let runs = self.history.call(store::list).await?;
         let connected = self.connected.load(std::sync::atomic::Ordering::SeqCst);
         Ok(AgentRunList {
-            // Explain runs belong to their explanation, not to Runs.
+            // Explain runs are listed too, marked by `explain`: Runs shows
+            // them read only, and they stay as long as their explanation.
             runs: runs
                 .into_iter()
-                .filter(|r| !r.explain)
                 .map(|r| {
                     let step = steps.get(&r.id).copied();
                     self.present(r, step)

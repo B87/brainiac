@@ -12,6 +12,7 @@ import {
   listWhen,
   modelLabel,
   modelSuggestions,
+  needsYou,
   parseModel,
   paymentLabel,
   paymentsOffered,
@@ -321,6 +322,27 @@ describe("Runs", () => {
     expect(groupOf({ ...ended, outcome: "interrupted", kept: false })).toBe(
       "ended",
     );
+  });
+
+  it("never asks the user about an explain run", () => {
+    const explain: AgentRun = { ...run, explain: true };
+    expect(groupOf({ ...explain, activity: "idle" })).toBe("active");
+    const ended: AgentRun = {
+      ...explain,
+      phase: "ended",
+      activity: "ended",
+      outcome: "interrupted",
+      stop_confirmed: true,
+      kept: true,
+    };
+    expect(groupOf(ended)).toBe("ended");
+    expect(needsYou(ended)).toBe(false);
+    expect(listResult(ended)).toBeNull();
+    expect(activityTone({ ...ended, outcome: "finished" })).toBe("green");
+    expect(activityTone({ ...ended, outcome: "cancelled" })).toBe("grey");
+    expect(
+      activityTone({ ...ended, explain: false, outcome: "finished" }),
+    ).toBe("grey");
   });
 
   it("says what the agent is doing and what the run produced", () => {

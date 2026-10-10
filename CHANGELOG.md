@@ -12,6 +12,7 @@ into the release's section.
 ## [Unreleased]
 
 - A branch comparison marks binary files, as a run's result does.
+- Runs lists the runs that wrote your explanations, tagged Explain, with a filter for them; one that wrote its explanation ends Finished rather than Cancelled.
 
 ## [0.6.1] - 2026-10-10
 

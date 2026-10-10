@@ -278,8 +278,10 @@ export const GROUP_LABEL: Record<RunGroup, string> = {
 /**
  * Whether the run waits on the user, and otherwise where it belongs: a
  * question, an idle session, or work that waits for a decision needs you.
+ * An explain run never does: Brainiac answers it and discards its work.
  */
 export function groupOf(run: AgentRun): RunGroup {
+  if (run.explain) return run.phase === "ended" ? "ended" : "active";
   if (run.phase !== "ended") {
     return run.activity === "permission" ||
       run.activity === "idle" ||
@@ -379,9 +381,9 @@ export type RunTone = "blue" | "amber" | "green" | "red" | "grey" | "dashed";
 export function activityTone(run: AgentRun): RunTone {
   if (run.phase !== "ended" && !run.connected) return "dashed";
   if (run.phase === "ended" || run.activity === "ended") {
-    return run.outcome === "failed" || run.outcome === "interrupted"
-      ? "red"
-      : "grey";
+    if (run.outcome === "failed" || run.outcome === "interrupted") return "red";
+    // An explain run has no result to review: its Finished is the success.
+    return run.explain && run.outcome === "finished" ? "green" : "grey";
   }
   switch (run.activity) {
     case "working":
@@ -476,6 +478,7 @@ export function listWhen(run: AgentRun, now = Date.now()): string {
 
 /** The Runs list's Result: what was collected, or that work waits uncollected. */
 export function listResult(run: AgentRun): string | null {
+  if (run.explain) return null;
   const produced = producedLabel(run);
   if (produced) return produced;
   if (run.phase === "ended" && run.kept && run.collection === "none")

@@ -24,7 +24,8 @@ use brainiac_lib::git::GitService;
 use brainiac_lib::models::{
     AgentPayment, AgentProvider, AnswerCodeSharingRequest, CodeConsentState, ConceptKind,
     ErrorCode, ExplainDepth, ExplainSubject, ExplainSubjectKind, ExplanationRecord,
-    ExplanationState, SaveAgentCredentialRequest, SecretSource, Settings, StartExplanationRequest,
+    ExplanationState, RunOutcome, SaveAgentCredentialRequest, SecretSource, Settings,
+    StartExplanationRequest,
 };
 use brainiac_lib::notes::NoteService;
 use brainiac_lib::sharing::CodeSharingService;
@@ -401,11 +402,14 @@ async fn a_commit_is_explained_after_one_follow_up_turn() {
     assert!(record.duration_secs.is_some());
     assert!(record.errors.is_empty());
 
-    // The explain run is gone from the engine, kept as a conversation, and
-    // never listed in Runs.
+    // The explain run is gone from the engine, kept as a conversation,
+    // ended finished, and listed in Runs as an explain run.
     let run_id = record.run_id.clone().unwrap();
     h.discarded(&run_id).await;
-    assert!(h.runs.list().await.unwrap().runs.is_empty());
+    let listed = h.runs.list().await.unwrap().runs;
+    assert_eq!(listed.len(), 1);
+    assert!(listed[0].id == run_id && listed[0].explain);
+    assert_eq!(listed[0].outcome, Some(RunOutcome::Finished));
     let events = h.runs.events(&run_id, 0).await.unwrap().events;
     assert!(!events.is_empty());
     assert!(h
@@ -543,7 +547,10 @@ async fn a_file_that_fails_the_schema_twice_fails_with_its_errors() {
     assert!(record.error.unwrap().contains("schema"));
     assert!(!record.errors.is_empty());
     assert!(record.explanation.is_none());
-    h.discarded(&record.run_id.unwrap()).await;
+    let run_id = record.run_id.unwrap();
+    h.discarded(&run_id).await;
+    let run = h.runs.get(&run_id).await.unwrap();
+    assert_eq!(run.outcome, Some(RunOutcome::Cancelled));
 }
 
 #[tokio::test]
