@@ -1,5 +1,6 @@
-//! Which modules may import which (docs/design/modules.md, Preparation, New
-//! features as leaves).
+//! Which modules may import which (docs/architecture.md, Decisions, 10 Oct
+//! 2026; docs/design/modules.md, Preparation, New features as leaves). What to
+//! do when it fails is a hard rule in AGENTS.md.
 //!
 //! The shell may import anything. The core imports only the core. A feature
 //! imports the core and its own modules. Any other import between top-level
@@ -249,8 +250,9 @@ fn modules_import_only_what_the_rules_or_the_list_allow() {
         outside.is_empty(),
         "These imports cross a module boundary (docs/design/modules.md, New \
          features as leaves). Reach the other module through the core (an \
-         event, a callback set in lib.rs, a type moved to its owner), or add \
-         the import to ALLOWED with its reason: {outside:?}"
+         event, a callback set in lib.rs, a type moved to its owner), or, only \
+         if the import is the right design, add it to ALLOWED with its reason \
+         (AGENTS.md, Hard rules): {outside:?}"
     );
 }
 
