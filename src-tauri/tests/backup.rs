@@ -7,7 +7,7 @@ mod common;
 use std::fs;
 
 use brainiac_lib::backup;
-use brainiac_lib::db::{self, Db};
+use brainiac_lib::db;
 use brainiac_lib::models::{RestoreRequest, TaskFields, TaskStatus};
 use brainiac_lib::notes::NoteService;
 use brainiac_lib::tasks::TaskService;
@@ -70,8 +70,9 @@ async fn an_export_restores_on_another_mac_with_tasks_and_links() {
     // Another Mac: its own data folder, the repository cloned elsewhere.
     let other = tempfile::tempdir().unwrap();
     let data = other.path().join("data");
-    let core = Db::open(&data.join(db::CORE_FILE)).unwrap();
-    let (notes, _) = Harness::service(&data, core.clone());
+    let stores = db::Stores::open(&data).unwrap();
+    let core = stores.core.clone();
+    let (notes, _) = Harness::service(&data, stores);
     notes.disable_watching();
     let clone_root = other.path().join("code").join("parser-clone");
     fs::create_dir_all(&clone_root).unwrap();
@@ -124,8 +125,9 @@ async fn an_export_restores_on_another_mac_with_tasks_and_links() {
 
     // The next launch applies it.
     assert!(backup::apply_pending_restore(&data).unwrap());
-    let core = Db::open(&data.join(db::CORE_FILE)).unwrap();
-    let (notes, _) = Harness::service(&data, core.clone());
+    let stores = db::Stores::open(&data).unwrap();
+    let core = stores.core.clone();
+    let (notes, _) = Harness::service(&data, stores);
     notes.disable_watching();
     notes.start().await.unwrap();
     notes
@@ -247,7 +249,8 @@ async fn migration_0002_upgrades_a_0_1_3_database_and_keeps_its_data() {
     let path = data.join(db::CORE_FILE);
     v013_database(&path);
 
-    let core = Db::open(&path).unwrap();
+    let stores = db::Stores::open(&data).unwrap();
+    let core = stores.core.clone();
     let (version, repos, members, pins, interval): (u32, i64, i64, i64, String) = core
         .call(|conn| {
             Ok((
@@ -276,7 +279,7 @@ async fn migration_0002_upgrades_a_0_1_3_database_and_keeps_its_data() {
     );
 
     // The new tables work on the upgraded file.
-    let (notes, _) = Harness::service(&data, core.clone());
+    let (notes, _) = Harness::service(&data, stores);
     notes.disable_watching();
     let vault = tmp.path().join("vault");
     fs::create_dir_all(&vault).unwrap();
@@ -344,8 +347,8 @@ async fn an_export_from_before_secret_sources_restores_with_every_source_to_allo
     }
     let other = tempfile::tempdir().unwrap();
     let data = other.path().join("data");
-    let core = Db::open(&data.join(db::CORE_FILE)).unwrap();
-    let (notes, _) = Harness::service(&data, core.clone());
+    let stores = db::Stores::open(&data).unwrap();
+    let (notes, _) = Harness::service(&data, stores);
     notes.disable_watching();
     backup::restore(
         &notes,
@@ -391,8 +394,8 @@ async fn a_restored_machine_waits_for_its_key_to_be_confirmed() {
     let result = backup::export(&h.notes, &exports).await.unwrap();
     let other = tempfile::tempdir().unwrap();
     let data = other.path().join("data");
-    let core = Db::open(&data.join(db::CORE_FILE)).unwrap();
-    let (notes, _) = Harness::service(&data, core.clone());
+    let stores = db::Stores::open(&data).unwrap();
+    let (notes, _) = Harness::service(&data, stores);
     notes.disable_watching();
     backup::restore(
         &notes,

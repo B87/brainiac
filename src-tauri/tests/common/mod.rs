@@ -7,9 +7,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use brainiac_lib::db::{self, Db, RepositoryRow};
+use brainiac_lib::db::{self, Db, RepositoryRow, Stores};
 use brainiac_lib::models::{IndexState, SearchKind, SearchRequest};
-use brainiac_lib::notes::{KnowledgeEvent, NoteService, Stores};
+use brainiac_lib::notes::{KnowledgeEvent, NoteService};
 use brainiac_lib::tasks::TaskService;
 use brainiac_lib::vault::Scope;
 
@@ -37,8 +37,9 @@ impl Harness {
     /// symbolic link to the real folder.
     pub async fn with_vault(tmp: tempfile::TempDir, vault_path: PathBuf, watch: bool) -> Harness {
         let data = tmp.path().join("data");
-        let core = Db::open(&data.join(db::CORE_FILE)).unwrap();
-        let (notes, events) = Self::service(&data, core.clone());
+        let stores = Stores::open(&data).unwrap();
+        let core = stores.core.clone();
+        let (notes, events) = Self::service(&data, stores);
         if !watch {
             notes.disable_watching();
         }
@@ -60,10 +61,12 @@ impl Harness {
         harness
     }
 
-    pub fn service(data: &Path, core: Db) -> (Arc<NoteService>, Arc<Mutex<Vec<KnowledgeEvent>>>) {
+    pub fn service(
+        data: &Path,
+        stores: Stores,
+    ) -> (Arc<NoteService>, Arc<Mutex<Vec<KnowledgeEvent>>>) {
         let events: Arc<Mutex<Vec<KnowledgeEvent>>> = Arc::default();
         let sink = Arc::clone(&events);
-        let stores = Stores::open(data, core).unwrap();
         let notes = NoteService::new(
             stores,
             data.to_path_buf(),

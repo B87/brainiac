@@ -65,7 +65,7 @@ Which backend modules import each feature (`crate::<module>` outside its own fol
 What it shows:
 
 - **Notes is the most entangled feature, not a self-contained one.**
-  - It owns part of the storage: `notes::Stores` (`notes.rs:48`) receives `brainiac.db` from `lib.rs` but opens `index.db` and `history.db` itself. Databases, agent runs, and explanations get their `history.db` handle from it (`stores.history` in `lib.rs`).
+  - It owned part of the storage until 10 October 2026: `notes::Stores` received `brainiac.db` from `lib.rs` but opened `index.db` and `history.db` itself, and databases, agent runs, and explanations got their `history.db` handle from it. All three files are now opened by the core (`db::Stores`; Preparation).
   - Tasks are built on it: `TaskService::new(notes)`, and `KnowledgeEvent` carries both note and task events.
   - Backup, search, agent access (`mcp.rs`), and Save as note (`explain/service.rs`) call `NoteService` directly.
 
@@ -175,7 +175,7 @@ What it would own: the vault and watcher, `index.db`, note revisions and drafts 
 
 What it would use from the core: links (note to repository, task to note), search, pins, backup, the palette, and the scheduler.
 
-What must move first: storage ownership (`notes::Stores` into the core), the task–note coupling (`TaskService` built on `NoteService`, the shared `KnowledgeEvent`), and the direct calls from `backup.rs` and `mcp.rs`. That is why notes is the last built-in to become a module, not the first.
+What must move first: the task–note coupling (`TaskService` built on `NoteService`, the shared `KnowledgeEvent`), and the direct calls from `backup.rs` and `mcp.rs` (storage ownership moved on 10 October 2026). That is why notes is the last built-in to become a module, not the first.
 
 ## Design it twice: how module code runs
 
@@ -283,7 +283,7 @@ Running a catalog means review, takedowns, and a service to host. It could start
 
 Each of these simplifies today's code on its own:
 
-- **Storage belongs to the core.** `brainiac.db` is already opened in `lib.rs` and handed to `notes::Stores`; move the opening of `index.db` and `history.db` the same way, into `db`, so databases, agent runs, and explanations stop getting their `history.db` handle from notes.
+- **Storage belongs to the core.** Done on 10 October 2026, with no behavior change. `db::Stores::open` opens `brainiac.db`, `index.db` (its writer and its reader), and `history.db` at launch, where `lib.rs` opened only `brainiac.db` before, and the setup block hands each feature the handles it uses; notes receives all of them like any other feature and opens none. `index.db` moved too although only notes and search use it: the core decides where every file lives, and restore already deletes it from outside notes. `forge.db` stays with pull requests, a cache only that feature reads, opened by `PullRequestService::open_cache`. What is still central is the migration lists themselves (`db::INDEX`, `db::HISTORY`), which become one per module with the storage contribution point.
 - **Reverse the v0.6 leaks** (What v0.6 showed). Done on 10 October 2026, with no behavior change: `PullRequestFacts` moved to `forge`; `agents` hands explain a `git::IsolatedGit` instead of wrapping explain's readers; the `known` script's tests moved to `explain/known.rs`. `agents` and `forge` import nothing from `explain`. The lesson for the next leak: look at what the borrowed function needs before moving it, because the leaked thing may be the dependency it was given, not the function.
 - **No feature-named flags on shared rows.** The next thing that owns a run says what it needs (a prompt, a file to read back, hidden from Runs, discarded after reading) as properties of the request, and the run service matches on those, not on `explain`. When that happens, fold the existing boolean into the same shape.
 - **One event channel.** Done on 10 October 2026, with no behavior change. `events.rs` holds one generic `Emitter<E>` and one `Notifier`, which replace the eleven aliases; a module names its own events by implementing `FrontendEvent` beside the code that emits them, which replaces the twelve constants in `lib.rs`; `lib.rs` connects every emitter with `to_window` and every notifier with `notifier`, in one line each. A test compares the names the Rust sources send with the names `src/lib/ipc.ts` listens for, so the one name still written twice, in Rust and in TypeScript, cannot drift unnoticed. An event is lent to the emitter (`&E`), not given, because a host job is sent on every log line. Not done: a typed subscription between modules (the explain service still follows runs through a broadcast channel `lib.rs` feeds from the run emitter), which waits for a second module that needs one.

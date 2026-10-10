@@ -193,6 +193,37 @@ pub const INDEX_FILE: &str = "index.sqlite3";
 pub const HISTORY_FILE: &str = "history.sqlite3";
 pub const FORGE_FILE: &str = "forge.sqlite3";
 
+/// The database files every feature shares, opened once by the core
+/// (docs/architecture.md, Storage layout). A feature is handed the ones it
+/// uses; none opens these itself.
+#[derive(Clone)]
+pub struct Stores {
+    /// `brainiac.db`: what cannot be rebuilt.
+    pub core: Db,
+    /// The one writer of `index.db`.
+    pub index: Db,
+    /// A read-only connection to `index.db` for searches and lists.
+    pub reader: Db,
+    /// `history.db`: note revisions and drafts, query history, runs, and explanations.
+    pub history: Db,
+}
+
+impl Stores {
+    /// Open the core database, `index.db`, and `history.db` in `data_dir`.
+    pub fn open(data_dir: &Path) -> AppResult<Self> {
+        let core = Db::open(&data_dir.join(CORE_FILE))?;
+        let index = Db::open_index(&data_dir.join(INDEX_FILE))?;
+        let reader = Db::open_read_only(&data_dir.join(INDEX_FILE))?;
+        let history = Db::open_store(&data_dir.join(HISTORY_FILE), &HISTORY)?;
+        Ok(Stores {
+            core,
+            index,
+            reader,
+            history,
+        })
+    }
+}
+
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
 
 /// Handle to a database worker. Cheap to clone; all clones share one thread.
