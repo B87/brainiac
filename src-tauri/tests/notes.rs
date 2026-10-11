@@ -453,9 +453,17 @@ async fn a_note_created_in_a_folder_spelled_differently_is_recorded_once() {
         })
         .await
         .unwrap();
-    assert_eq!(note.relative_path, "Projects/Roadmap.md");
+    // A volume that ignores case (most on macOS) puts it in `Projects/`; one
+    // that does not (Linux, case-sensitive APFS) makes a `projects/` folder.
+    // Either way it is recorded as spelled on disk.
+    let expected = if h.vault.join("PROJECTS").exists() {
+        "Projects/Roadmap.md"
+    } else {
+        "projects/Roadmap.md"
+    };
+    assert_eq!(note.relative_path, expected);
     h.scan().await;
-    assert_eq!(note_id_at(&h, "Projects/Roadmap.md").await, note.id);
+    assert_eq!(note_id_at(&h, expected).await, note.id);
     assert!(!h.notes.summary(&note.id).await.unwrap().missing);
 }
 

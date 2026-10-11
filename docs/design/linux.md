@@ -4,9 +4,20 @@ Design notes for a Linux build of the desktop app, beside the macOS one. Tauri v
 
 It builds on `docs/design/secrets.md` (phase 3 there is this document's secret store), the run controller and remote hosts (`SPEC.md` section 13; `docs/architecture.md`, Agent runs — v0.5), and the release pipeline (`docs/RELEASING.md`).
 
-## Status: proposal (10 Oct 2026)
+## Status: phase 1 started (11 Oct 2026)
 
-Nothing is built. The inventory below comes from reading the code on `main` at v0.6.1, not from a Linux build: no one has compiled Brainiac on Linux yet, so the first phase is a spike whose only job is to find what this list missed.
+Proposed 10 Oct 2026 from reading the code on `main` at v0.6.1. On 11 Oct the app was built and tested on Linux for the first time (below, Found by running), and the parts of phases 1 and 2 that change nothing on macOS went into 0.6.2: the build, a Linux CI job, the data folder, and the sockets. Nothing ships for Linux yet.
+
+## Found by running (11 Oct 2026)
+
+In an Ubuntu 22.04 container (arm64, under OrbStack on a Mac) with the Tauri build packages, Rust 1.99, Node 22.14, and PostgreSQL 14, as an ordinary user:
+
+- **The build failed in one place:** `lib.rs` built the Keychain store with no `cfg`, although `credentials/mod.rs` already compiled it only on macOS. `security-framework` itself built on Linux as an empty crate. Fixed: the store is chosen by target, and Linux gets `NoStore` (nothing in it; a save is refused) until phase 3; `security-framework` is a macOS-only dependency.
+- **One test assumed a case-insensitive volume** (`a_note_created_in_a_folder_spelled_differently_is_recorded_once`). The code was right: on a case-sensitive volume a note created in `projects/` beside `Projects/` gets its own folder and is recorded as spelled on disk. The test now expects whichever the volume does, which also covers case-sensitive APFS on a Mac.
+- **Then `pnpm check` passed in full:** Clippy with all targets and features, 793 Rust tests (the PostgreSQL ones included), Biome, TypeScript, 140 frontend tests, and the frontend build, with the TypeScript bindings unchanged.
+- **The WebKit view tests: 44 of 51 pass.** All seven failures press ⌘ (`Meta+Enter`, `Meta+z`, `Meta+a`, `Meta+ArrowUp`, `Meta+ArrowDown`) where Linux uses Ctrl: undo and copy in the editor, moving the cursor past a note's title and its images, and running a query. This is the Shortcuts and hints row: the tests move to Playwright's `ControlOrMeta` with the `mod` helper, and the CI job runs them after that.
+- **The linker ran out of memory** linking the test binaries in parallel in a container with 16 GB; `CARGO_BUILD_JOBS=4` was enough. CI's runners have their own limits.
+- **Built in 0.6.2 besides:** `mcp::data_dir` follows Tauri on Linux (`$XDG_DATA_HOME`, else `~/.local/share`), the socket limit is 107 bytes off macOS, and the socket fallback is `$XDG_RUNTIME_DIR/brainiac/` on Linux when the session has one. macOS behaves as before.
 
 ## Why
 
@@ -28,9 +39,9 @@ Found by reading the code. "Fix" is the proposed change; the phases below say wh
 
 | Area | Where | Today | Fix |
 | --- | --- | --- | --- |
-| Secret store | `credentials/macos.rs` (`security-framework`), gated by `cfg(target_os = "macos")` | Only the Keychain; on Linux the build has no store | `LinuxStore: SecretStore` over the Secret Service (below) |
-| Data folder | `mcp::data_dir` | Hard-codes `~/Library/Application Support/<identifier>` "as Tauri resolves it on macOS" | Use Tauri's `app_data_dir` result everywhere, or branch: `$XDG_DATA_HOME` / `~/.local/share/<identifier>` |
-| MCP and runner sockets | `mcp::socket_path`, `agents/runtime.rs` | Limit 103 bytes (macOS's `sun_path` is 104); fallback in `/tmp/brainiac-<uid>/` | Limit 107 on Linux; prefer `$XDG_RUNTIME_DIR` (already private to the user, mode 0700) for the fallback |
+| Secret store (builds, 0.6.2: `NoStore`) | `credentials/macos.rs` (`security-framework`), gated by `cfg(target_os = "macos")` | Only the Keychain; on Linux the build has no store | `LinuxStore: SecretStore` over the Secret Service (below) |
+| Data folder (done, 0.6.2) | `mcp::data_dir` | Hard-coded `~/Library/Application Support/<identifier>` "as Tauri resolves it on macOS" | Use Tauri's `app_data_dir` result everywhere, or branch: `$XDG_DATA_HOME` / `~/.local/share/<identifier>` |
+| MCP and runner sockets (done, 0.6.2) | `mcp::socket_path`, `agents/runtime.rs` | Limit 103 bytes (macOS's `sun_path` is 104); fallback in `/tmp/brainiac-<uid>/` | Limit 107 on Linux; prefer `$XDG_RUNTIME_DIR` (already private to the user, mode 0700) for the fallback |
 | Container engine | `agents/engine.rs`, `databases/health.rs` | Candidate sockets are Docker Desktop's, Colima's, OrbStack's, Rancher's, and `/var/run/docker.sock`; supported list is "OrbStack", "Docker Desktop" | Add `$XDG_RUNTIME_DIR/docker.sock` (rootless) and name `/var/run/docker.sock` "Docker Engine"; add it to the tested list only after the spike (below) |
 | Window chrome | `tauri.conf.json`: `titleBarStyle: Overlay`, `hiddenTitle`, `trafficLightPosition` | Draws under the macOS traffic lights; `data-tauri-drag-region` bars in `Dashboard.tsx` and `SettingsPage.tsx` leave room for them | A `tauri.linux.conf.json` with native decorations, and one platform flag in the frontend so only macOS reserves the traffic-light gutter |
 | Shortcuts and hints | `App.tsx` (`metaKey`), `CommandPalette.tsx`, `RunsView.tsx`, titles in about a dozen components, and the editor keymap | ⌘ and ⌥ glyphs written into strings; `metaKey` tested directly | One `mod` helper that both matches the event and renders the hint (⌘ / Ctrl, ⌥ / Alt, ⇧ / Shift) |

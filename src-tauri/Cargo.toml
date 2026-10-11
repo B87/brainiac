@@ -61,10 +61,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rmcp = { version = "3.5", default-features = false, features = ["server", "macros"] }
 schemars = "1"
 libc = "0.2"
-# Pull requests (v0.3): GitHub and Bitbucket Cloud over HTTPS (rustls, macOS trust store),
-# and account tokens in the macOS Keychain.
+# Pull requests (v0.3): GitHub and Bitbucket Cloud over HTTPS (rustls, the
+# system trust store); account tokens in the Keychain (below, macOS only).
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "json", "system-proxy"] }
-security-framework = { version = "3", optional = true }
 # Databases (v0.4): PostgreSQL over its extended protocol with rustls (the same
 # rustls, crypto provider, and macOS trust store verifier that reqwest uses).
 tokio-postgres = "0.7"
@@ -77,6 +76,11 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 # Engine API on the chosen engine's socket, including the attach stream
 # (an upgraded connection) that carries the agent's protocol.
 bollard = { version = "0.19", default-features = false, features = ["pipe"] }
+
+# The Keychain store (`credentials/macos.rs`); other systems have none yet
+# (docs/design/linux.md).
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = { version = "3", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

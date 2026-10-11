@@ -29,7 +29,7 @@ pub use command::{find_program, CommandRunner};
 pub use macos::MacStore;
 pub use service::{Binding, CredentialService, Lease, LeaseHandle, OwnerGate, Probe, Resolution};
 pub use sources::{check_source, describe};
-pub use store::{MemoryStore, SecretStore};
+pub use store::{MemoryStore, NoStore, SecretStore};
 
 use crate::models::{AppError, AppResult};
 
