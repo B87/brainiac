@@ -14,7 +14,7 @@ With agents writing a growing share of the code, the hard part is no longer writ
 
 Two things the first attempts showed:
 
-- **Computed alone is dumb.** The first experiment's module diff was always right and hard to learn from: its graph draws every import the same way, has no idea which arrows matter, and cannot show a flow.
+- **Computed alone is limited.** The first experiment's module diff could misclassify imports when historical module facts were missing, and was hard to learn from: its graph draws every import the same way, cannot identify which arrows matter, and cannot show a flow.
 - **Written alone is not trusted.** An AI-written wiki is read once and skimmed (What exists already).
 
 So a map is composed by an agent, the way a person who knows the codebase would draw it, from facts Brainiac computes, in a fixed vocabulary of shapes, and checked against those facts before it is shown.
