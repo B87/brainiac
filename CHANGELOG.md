@@ -11,6 +11,8 @@ into the release's section.
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-10-11
+
 - A branch comparison marks binary files, as a run's result does.
 - Runs lists the runs that wrote your explanations, tagged Explain, with a filter it remembers; each says what it explained and how deeply, whether its explanation is ready or failed, and opens it.
 - Runs keeps its filters when you open a run and go back.
@@ -185,7 +187,8 @@ First public build: a read-only Git viewer and multi-repository tracker for macO
 - The Branches tab is a placeholder.
 - Not signed with an Apple Developer certificate; the first launch needs right-click > Open (see the README).
 
-[Unreleased]: https://github.com/B87/brainiac/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/B87/brainiac/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/B87/brainiac/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/B87/brainiac/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/B87/brainiac/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/B87/brainiac/compare/v0.4.0...v0.5.0
