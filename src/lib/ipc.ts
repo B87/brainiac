@@ -137,6 +137,7 @@ import type { RunChanges } from "./generated/RunChanges";
 import type { RunControllerStatus } from "./generated/RunControllerStatus";
 import type { RunDiffRequest } from "./generated/RunDiffRequest";
 import type { RunEventPage } from "./generated/RunEventPage";
+import type { RunExplanation } from "./generated/RunExplanation";
 import type { RunMode } from "./generated/RunMode";
 import type { RunPreview } from "./generated/RunPreview";
 import type { RunStartPreview } from "./generated/RunStartPreview";
@@ -294,6 +295,7 @@ export type { RunDiffRequest } from "./generated/RunDiffRequest";
 export type { RunEvent } from "./generated/RunEvent";
 export type { RunEventBody } from "./generated/RunEventBody";
 export type { RunEventPage } from "./generated/RunEventPage";
+export type { RunExplanation } from "./generated/RunExplanation";
 export type { RunFileDiff } from "./generated/RunFileDiff";
 export type { RunOutcome } from "./generated/RunOutcome";
 export type { RunPermissionRequest } from "./generated/RunPermissionRequest";
@@ -693,6 +695,8 @@ export const ipc = {
     invoke<ExplanationRecord>("cancel_explanation", { id }),
   getExplanation: (id: string) =>
     invoke<ExplanationRecord>("get_explanation", { id }),
+  /** The explanation each explain run wrote, for Runs. */
+  listRunExplanations: () => invoke<RunExplanation[]>("list_run_explanations"),
   /** Every explanation of a subject, newest first. */
   listSubjectExplanations: (repositoryId: string, subject: ExplainSubject) =>
     invoke<ExplanationRecord[]>("list_subject_explanations", {

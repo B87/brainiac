@@ -35,7 +35,8 @@ use crate::models::{
     ExplainHostOption, ExplainProfileOption, ExplainStep, ExplainSubject, ExplainSubjectKind,
     ExplanationChangedEvent, ExplanationPlacement, ExplanationRecord, ExplanationSettings,
     ExplanationSettingsView, ExplanationState, ExplanationSummary, NotePlacement, NoteSummary,
-    RunActivity, RunCollection, RunOutcome, RunPhase, RunStartStep, StartExplanationRequest,
+    RunActivity, RunCollection, RunExplanation, RunOutcome, RunPhase, RunStartStep,
+    StartExplanationRequest,
 };
 use crate::notes::NoteService;
 use crate::sharing::CodeSharingService;
@@ -183,6 +184,11 @@ impl ExplanationService {
     pub async fn get(&self, id: &str) -> AppResult<ExplanationRecord> {
         let row = self.row(id).await?;
         Ok(self.present(row).await)
+    }
+
+    /// The explanation each explain run wrote, for Runs.
+    pub async fn run_links(&self) -> AppResult<Vec<RunExplanation>> {
+        self.history.call(store::run_links).await
     }
 
     /// Every explanation of a subject, newest first.
@@ -361,7 +367,12 @@ impl ExplanationService {
             return (Some(profile.to_string()), Some(host));
         }
         if let Ok(list) = self.runs.list().await {
-            if let Some(run) = list.runs.iter().find(|r| exists(&r.profile_id)) {
+            // The last run the user started, not one Explain started.
+            if let Some(run) = list
+                .runs
+                .iter()
+                .find(|r| !r.explain && exists(&r.profile_id))
+            {
                 return (Some(run.profile_id.clone()), Some(run.host_id.clone()));
             }
         }
@@ -1017,8 +1028,14 @@ impl ExplanationService {
                     };
                     match self.check_turn(&row, &run_id, attempt).await {
                         Ok(Some(ending)) => {
+                            let ready = ending.state == ExplanationState::Ready;
                             self.finish(&row, ending, Some(&run)).await;
-                            let _ = self.runs.cancel(&run_id).await;
+                            // A checked explanation's run ends finished, as
+                            // Finish and collect would; one that failed is
+                            // cancelled. Cancel also stops a run Finish refuses.
+                            if !ready || self.runs.finish(&run_id).await.is_err() {
+                                let _ = self.runs.cancel(&run_id).await;
+                            }
                         }
                         Ok(None) => followed_up = true,
                         Err(e) => {
