@@ -61,3 +61,51 @@ jobs:
         run: pnpm test:editor
       - name: Frontend build
         run: pnpm build
+
+  linux:
+    # Brainiac ships for macOS only; this job keeps the code building and its
+    # tests passing on Linux, so a new macOS-only assumption shows up here
+    # (docs/design/linux.md, phase 1). The oldest baseline the design names:
+    # glibc 2.35 and webkit2gtk-4.1. The WebKit view tests are not run yet:
+    # they press ⌘, which is Ctrl on Linux, until shortcuts have one helper.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tauri's Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config file \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev libxdo-dev
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Install Rust (version from rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # The runner image has PostgreSQL installed but not on the PATH; the
+      # database tests start a throwaway server with its initdb and pg_ctl.
+      - name: PostgreSQL for the database tests
+        run: echo "$(ls -d /usr/lib/postgresql/*/bin | sort -V | tail -1)" >> "$GITHUB_PATH"
+
+      - name: Project check (format, Clippy, Rust and frontend tests)
+        run: pnpm check
+      - name: Bindings are committed and current
+        run: git diff --exit-code -- src/lib/generated
+      - name: Frontend build
+        run: pnpm build
