@@ -2005,6 +2005,8 @@ export class FakeBackend {
         return "FROM node:22-bookworm-slim\n";
       case "list_agent_runs":
         return { runs: this.runs, controller_running: this.runs.length > 0 };
+      case "list_run_explanations":
+        return [];
       case "start_agent_run": {
         const request = args.request as {
           repository_id: string;

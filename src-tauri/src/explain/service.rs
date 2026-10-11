@@ -35,7 +35,8 @@ use crate::models::{
     ExplainHostOption, ExplainProfileOption, ExplainStep, ExplainSubject, ExplainSubjectKind,
     ExplanationChangedEvent, ExplanationPlacement, ExplanationRecord, ExplanationSettings,
     ExplanationSettingsView, ExplanationState, ExplanationSummary, NotePlacement, NoteSummary,
-    RunActivity, RunCollection, RunOutcome, RunPhase, RunStartStep, StartExplanationRequest,
+    RunActivity, RunCollection, RunExplanation, RunOutcome, RunPhase, RunStartStep,
+    StartExplanationRequest,
 };
 use crate::notes::NoteService;
 use crate::sharing::CodeSharingService;
@@ -183,6 +184,11 @@ impl ExplanationService {
     pub async fn get(&self, id: &str) -> AppResult<ExplanationRecord> {
         let row = self.row(id).await?;
         Ok(self.present(row).await)
+    }
+
+    /// The explanation each explain run wrote, for Runs.
+    pub async fn run_links(&self) -> AppResult<Vec<RunExplanation>> {
+        self.history.call(store::run_links).await
     }
 
     /// Every explanation of a subject, newest first.

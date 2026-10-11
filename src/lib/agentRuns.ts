@@ -4,6 +4,7 @@
  * stops a profile's runs on a host, and the request a change saves.
  */
 
+import { depthLabel } from "./explain";
 import type { SaveAgentSettingsRequest } from "./generated/SaveAgentSettingsRequest";
 import type {
   AgentEngine,
@@ -15,6 +16,7 @@ import type {
   AgentProvider,
   AgentRun,
   RunEvent,
+  RunExplanation,
   RunFileDiff,
   RunPermissionRequest,
   RunPlanEntry,
@@ -381,9 +383,9 @@ export type RunTone = "blue" | "amber" | "green" | "red" | "grey" | "dashed";
 export function activityTone(run: AgentRun): RunTone {
   if (run.phase !== "ended" && !run.connected) return "dashed";
   if (run.phase === "ended" || run.activity === "ended") {
-    if (run.outcome === "failed" || run.outcome === "interrupted") return "red";
-    // An explain run has no result to review: its Finished is the success.
-    return run.explain && run.outcome === "finished" ? "green" : "grey";
+    return run.outcome === "failed" || run.outcome === "interrupted"
+      ? "red"
+      : "grey";
   }
   switch (run.activity) {
     case "working":
@@ -395,6 +397,64 @@ export function activityTone(run: AgentRun): RunTone {
     default:
       return "grey";
   }
+}
+
+/**
+ * A run's title in Runs. An explain run's is "Explain <subject>"; its tag
+ * already says Explain, so the verb goes.
+ */
+export function runTitle(run: AgentRun): string {
+  return run.explain ? run.title.replace(/^Explain /, "") : run.title;
+}
+
+/** What an explain run explained, and how deeply: "Commit a1b2c3d · Teach me". */
+export function explainedLabel(link: RunExplanation): string {
+  const { kind, reference } = link.subject;
+  const subject =
+    kind === "commit"
+      ? `Commit ${reference.slice(0, 7)}`
+      : kind === "branch"
+        ? `Branch ${reference.replace(/^refs\/(heads|remotes)\//, "")}`
+        : kind === "pull_request"
+          ? `Pull request #${reference.split("#").pop()}`
+          : "Run result";
+  return `${subject} · ${depthLabel(link.depth)}`;
+}
+
+/**
+ * A run's state in the list and its header. Brainiac, not the user, stops
+ * an explain run, so an ended one says how its explanation ended: Failed
+ * rather than the Cancel that stopped it (SPEC.md, section 13, Runs).
+ */
+export function runState(
+  run: AgentRun,
+  link?: RunExplanation | null,
+): { label: string; tone: RunTone } {
+  if (run.explain && run.phase === "ended" && link) {
+    if (link.state === "ready") return { label: "Finished", tone: "grey" };
+    if (link.state === "failed") return { label: "Failed", tone: "red" };
+    if (link.state === "cancelled") return { label: "Cancelled", tone: "grey" };
+  }
+  return { label: activityLabel(run), tone: activityTone(run) };
+}
+
+/** The tone of the list's Result: green when there is something to read. */
+export function resultTone(
+  run: AgentRun,
+  link?: RunExplanation | null,
+): RunTone {
+  if (run.explain) {
+    if (link?.state === "ready") return "green";
+    if (link?.state === "failed") return "red";
+    return "grey";
+  }
+  if (run.collection === "ready") return "green";
+  if (
+    run.collection === "failed" ||
+    (run.kept && run.collection === "none" && run.phase === "ended")
+  )
+    return "red";
+  return "grey";
 }
 
 export function producedTone(run: AgentRun): RunTone {
@@ -477,8 +537,15 @@ export function listWhen(run: AgentRun, now = Date.now()): string {
 }
 
 /** The Runs list's Result: what was collected, or that work waits uncollected. */
-export function listResult(run: AgentRun): string | null {
-  if (run.explain) return null;
+export function listResult(
+  run: AgentRun,
+  link?: RunExplanation | null,
+): string | null {
+  if (run.explain) {
+    if (link?.state === "ready") return "Explanation ready";
+    if (link?.state === "failed") return "Explanation failed";
+    return null;
+  }
   const produced = producedLabel(run);
   if (produced) return produced;
   if (run.phase === "ended" && run.kept && run.collection === "none")

@@ -410,6 +410,13 @@ async fn a_commit_is_explained_after_one_follow_up_turn() {
     assert_eq!(listed.len(), 1);
     assert!(listed[0].id == run_id && listed[0].explain);
     assert_eq!(listed[0].outcome, Some(RunOutcome::Finished));
+    let links = h.explanations.run_links().await.unwrap();
+    assert_eq!(links.len(), 1);
+    assert_eq!(
+        (links[0].run_id.as_str(), links[0].id.as_str()),
+        (run_id.as_str(), record.id.as_str())
+    );
+    assert_eq!(links[0].state, ExplanationState::Ready);
     let events = h.runs.events(&run_id, 0).await.unwrap().events;
     assert!(!events.is_empty());
     assert!(h
@@ -551,6 +558,10 @@ async fn a_file_that_fails_the_schema_twice_fails_with_its_errors() {
     h.discarded(&run_id).await;
     let run = h.runs.get(&run_id).await.unwrap();
     assert_eq!(run.outcome, Some(RunOutcome::Cancelled));
+    // Runs shows it failed, from its explanation, not the Cancel that stopped it.
+    let links = h.explanations.run_links().await.unwrap();
+    assert_eq!(links[0].state, ExplanationState::Failed);
+    assert!(links[0].error.as_deref().unwrap().contains("schema"));
 }
 
 #[tokio::test]

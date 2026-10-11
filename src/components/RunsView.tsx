@@ -8,6 +8,7 @@ import {
   costLabel,
   destinationLabel,
   durationLabel,
+  explainedLabel,
   foldTurns,
   GROUP_LABEL,
   groupOf,
@@ -25,6 +26,9 @@ import {
   type RunGroup,
   type RunTone,
   reportedCost,
+  resultTone,
+  runState,
+  runTitle,
   samePreview,
   shortClock,
   spanLabel,
@@ -47,12 +51,16 @@ import {
   errorMessage,
   ipc,
   onAgentRunChanged,
+  onExplanationChanged,
   type RunEvent,
+  type RunExplanation,
   type RunFileDiff,
   type RunPreview,
   subscribe,
 } from "../lib/ipc";
+import { usePref } from "../lib/prefs";
 import { plural } from "../lib/repo";
+import { requestOpenSubject } from "../lib/windowEvents";
 import ChangedFileList from "./ChangedFileList";
 import DiffView from "./DiffView";
 import { StepIcon } from "./HostJobView";
@@ -97,15 +105,44 @@ const SHOWN: Record<Show, RunGroup[]> = {
 /** The list's Kind filter: runs started from New run, or by Explain. */
 type Kind = "" | "run" | "explain";
 
+/** The list's filters, kept while a run is open so Back returns to them. */
+type Filters = {
+  show: Show;
+  repo: string;
+  host: string;
+  kind: Kind;
+  setShow: (show: Show) => void;
+  setRepo: (repo: string) => void;
+  setHost: (host: string) => void;
+  setKind: (kind: Kind) => void;
+};
+
 /** Runs (SPEC.md, The run): the list, or one run. */
 export default function RunsView(props: Props) {
   const { runs, selectedId } = props;
+  const [show, setShow] = useState<Show>("all");
+  const [repo, setRepo] = useState("");
+  const [host, setHost] = useState("");
+  // Remembered across launches: someone who hides explanations keeps them hidden.
+  const [kind, setKind] = usePref<Kind>("brainiac.runs.kind", "");
+  const filters: Filters = {
+    show,
+    repo,
+    host,
+    kind,
+    setShow,
+    setRepo,
+    setHost,
+    setKind,
+  };
+  const links = useRunExplanations(runs);
   const selected = runs?.find((r) => r.id === selectedId) ?? null;
   if (selectedId && selected) {
     return (
       <RunView
         key={selected.id}
         run={selected}
+        link={links.get(selected.id) ?? null}
         snapshot={props.snapshot}
         onBack={() => props.onSelect(null)}
         onOpenRepo={props.onOpenRepo}
@@ -115,7 +152,31 @@ export default function RunsView(props: Props) {
       />
     );
   }
-  return <RunList {...props} />;
+  return <RunList {...props} filters={filters} links={links} />;
+}
+
+/** The explanation each explain run wrote, by run ID, kept up to date. */
+function useRunExplanations(
+  runs: AgentRun[] | null,
+): ReadonlyMap<string, RunExplanation> {
+  const [links, setLinks] = useState<ReadonlyMap<string, RunExplanation>>(
+    new Map(),
+  );
+  const load = useCallback(
+    () =>
+      ipc.listRunExplanations().then(
+        (list) => setLinks(new Map(list.map((l) => [l.run_id, l]))),
+        () => {},
+      ),
+    [],
+  );
+  // An explanation ends with its run, so a change to the runs reads again.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reload when the runs change
+  useEffect(() => {
+    void load();
+  }, [load, runs]);
+  useEffect(() => subscribe(onExplanationChanged(() => void load())), [load]);
+  return links;
 }
 
 /** A run's state in words, tinted by tone; a dot while the agent is live. */
@@ -136,11 +197,27 @@ function StatePill({
   );
 }
 
-function RunList({ snapshot, runs, onSelect, onNewRun }: Props) {
-  const [show, setShow] = useState<Show>("all");
-  const [repoFilter, setRepoFilter] = useState<string>("");
-  const [hostFilter, setHostFilter] = useState<string>("");
-  const [kindFilter, setKindFilter] = useState<Kind>("");
+function RunList({
+  snapshot,
+  runs,
+  onSelect,
+  onNewRun,
+  filters,
+  links,
+}: Props & {
+  filters: Filters;
+  links: ReadonlyMap<string, RunExplanation>;
+}) {
+  const {
+    show,
+    setShow,
+    repo: repoFilter,
+    setRepo: setRepoFilter,
+    host: hostFilter,
+    setHost: setHostFilter,
+    kind: kindFilter,
+    setKind: setKindFilter,
+  } = filters;
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 30_000);
@@ -162,12 +239,13 @@ function RunList({ snapshot, runs, onSelect, onNewRun }: Props) {
     (r) =>
       (!repoFilter || r.repository_id === repoFilter) &&
       (!hostFilter || (isRemote(r) ? r.host_id : "local") === hostFilter) &&
-      (!kindFilter || r.explain === (kindFilter === "explain")),
+      // A remembered Kind applies only while its menu is there to change it.
+      (!explained || !kindFilter || r.explain === (kindFilter === "explain")),
   );
   const needing = filtered.filter((r) => groupOf(r) === "needs_you").length;
   const shown = filtered.filter((r) => SHOWN[show].includes(groupOf(r)));
   const byId = new Map(snapshot.repositories.map((r) => [r.id, r]));
-  const filters: Array<[Show, string]> = [
+  const showOptions: Array<[Show, string]> = [
     ["all", "All"],
     ["needs_you", "Needs you"],
     ["active", "Active"],
@@ -179,7 +257,7 @@ function RunList({ snapshot, runs, onSelect, onNewRun }: Props) {
         <h1 className="m-0 text-[15px] font-semibold">Runs</h1>
         {(runs?.length ?? 0) > 0 && (
           <fieldset className="seg seg-sm m-0 border-0" aria-label="Show">
-            {filters.map(([value, label]) => (
+            {showOptions.map(([value, label]) => (
               <button
                 key={value}
                 type="button"
@@ -296,6 +374,7 @@ function RunList({ snapshot, runs, onSelect, onNewRun }: Props) {
                         <li key={run.id} className="border-b last:border-b-0">
                           <RunRow
                             run={run}
+                            link={links.get(run.id) ?? null}
                             now={now}
                             repo={byId.get(run.repository_id)}
                             onOpen={() => onSelect(run.id)}
@@ -319,18 +398,30 @@ function RunList({ snapshot, runs, onSelect, onNewRun }: Props) {
   );
 }
 
+const RESULT_CLASS: Record<RunTone, string> = {
+  green: "text-clean",
+  red: "text-conflict",
+  amber: "text-fg-2",
+  blue: "text-fg-2",
+  grey: "text-fg-2",
+  dashed: "text-fg-2",
+};
+
 function RunRow({
   run,
+  link,
   now,
   repo,
   onOpen,
 }: {
   run: AgentRun;
+  link: RunExplanation | null;
   now: number;
   repo: AppSnapshot["repositories"][number] | undefined;
   onOpen: () => void;
 }) {
-  const result = listResult(run);
+  const result = listResult(run, link);
+  const state = runState(run, link);
   const live = run.phase !== "ended";
   const label = live && !run.connected ? visibilityLabel(run) : null;
   return (
@@ -344,37 +435,32 @@ function RunRow({
           {run.explain && (
             <span
               className="tag-box shrink-0"
-              title="Explain started it; its conversation is How it was written"
+              title="The agent run that wrote an explanation: open it to see how"
             >
               Explain
             </span>
           )}
-          <span className="truncate font-medium">{run.title}</span>
+          <span className="truncate font-medium">{runTitle(run)}</span>
         </span>
         <span className="flex min-w-0 items-center gap-1.5 text-[11.5px] text-muted">
           <RepoChip repo={repo} fallbackName={run.repository_name} />
           <span className="truncate">
-            · {agentName(run.agent)} on {hostLabel(run)}
+            {link && `· ${explainedLabel(link)} `}· {agentName(run.agent)} on{" "}
+            {hostLabel(run)}
           </span>
         </span>
       </span>
       <span className="flex min-w-0 flex-wrap items-center gap-1">
-        <StatePill tone={activityTone(run)} dot={live && run.connected}>
-          {label ?? activityLabel(run)}
+        <StatePill tone={state.tone} dot={live && run.connected}>
+          {label ?? state.label}
         </StatePill>
         {run.cancel_requested && (
           <StatePill tone="red">Cancel requested</StatePill>
         )}
       </span>
       <span
-        className={`min-w-0 truncate text-[12px] ${
-          run.collection === "ready"
-            ? "text-clean"
-            : run.collection === "failed" ||
-                (run.kept && run.collection === "none" && !live)
-              ? "text-conflict"
-              : "text-fg-2"
-        }`}
+        className={`min-w-0 truncate text-[12px] ${RESULT_CLASS[resultTone(run, link)]}`}
+        title={link?.state === "failed" ? (link.error ?? undefined) : undefined}
       >
         {result ?? "—"}
       </span>
@@ -389,6 +475,7 @@ type Tab = "conversation" | "changes";
 
 function RunView({
   run: initial,
+  link,
   snapshot,
   onBack,
   onOpenRepo,
@@ -397,6 +484,8 @@ function RunView({
   onNotice,
 }: {
   run: AgentRun;
+  /** The explanation an explain run wrote, when it is one. */
+  link: RunExplanation | null;
   snapshot: AppSnapshot;
   onBack: () => void;
   onOpenRepo: (id: string) => void;
@@ -605,7 +694,7 @@ function RunView({
               <span className="truncate">{run.repository_name}</span>
             </nav>
             <h1 className="selectable m-0 text-[17px] font-semibold leading-snug">
-              {explain ? `How it was written: ${run.title}` : run.title}
+              {explain ? `How it was written: ${runTitle(run)}` : run.title}
             </h1>
             <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1 text-[12px] text-fg-2">
               <RepoChip
@@ -613,12 +702,16 @@ function RunView({
                 fallbackName={run.repository_name}
                 onClick={repo ? () => onOpenRepo(repo.id) : undefined}
               />
-              <span>
-                from{" "}
-                <code className="mono" title={run.start_commit}>
-                  {run.start_commit.slice(0, 7)}
-                </code>
-              </span>
+              {explain && link ? (
+                <span>{explainedLabel(link)}</span>
+              ) : (
+                <span>
+                  from{" "}
+                  <code className="mono" title={run.start_commit}>
+                    {run.start_commit.slice(0, 7)}
+                  </code>
+                </span>
+              )}
               <span>
                 {agentName(run.agent)} on {hostLabel(run)} · {modelLabel(run)}
               </span>
@@ -633,8 +726,14 @@ function RunView({
             {live ? (
               <LiveStatus run={run} now={now} cost={cost} />
             ) : (
-              <EndedStatus run={run} turns={folded.turns.length} cost={cost} />
+              <EndedStatus
+                run={run}
+                link={link}
+                turns={folded.turns.length}
+                cost={cost}
+              />
             )}
+            {explain && link && <OpenExplanation link={link} />}
             {live && !explain && (
               <button
                 type="button"
@@ -821,16 +920,53 @@ function LiveStatus({
 }
 
 /** An ended run's header: how it ended, what it produced, and how long it took. */
+/**
+ * An explain run's way to the explanation it wrote: its subject, where the
+ * explanation is shown. A branch's is opened from Branches & tags, as in
+ * Settings → Explanations.
+ */
+function OpenExplanation({ link }: { link: RunExplanation }) {
+  if (link.subject.kind === "branch") {
+    return (
+      <span
+        className="text-[12px] text-muted"
+        title="Open it from Branches & tags → Changes against the default branch"
+      >
+        Explanation of a branch
+      </span>
+    );
+  }
+  return (
+    <button
+      type="button"
+      className="btn btn-sm"
+      onClick={() =>
+        requestOpenSubject({
+          repositoryId: link.repository_id,
+          kind: link.subject.kind as "commit" | "pull_request" | "run",
+          reference: link.subject.reference,
+        })
+      }
+    >
+      Open explanation
+    </button>
+  );
+}
+
 function EndedStatus({
   run,
+  link,
   turns,
   cost,
 }: {
   run: AgentRun;
+  link: RunExplanation | null;
   turns: number;
   cost: ReturnType<typeof reportedCost>;
 }) {
-  const produced = producedLabel(run);
+  // An explain run's result is its explanation, as in the list.
+  const produced = run.explain ? listResult(run, link) : producedLabel(run);
+  const producedIn = run.explain ? resultTone(run, link) : producedTone(run);
   const visibility = visibilityLabel(run);
   const took =
     run.accepted_at && run.ended_at
@@ -839,13 +975,14 @@ function EndedStatus({
             new Date(run.accepted_at).getTime(),
         )
       : null;
+  const state = runState(run, link);
   return (
     <>
-      <StatePill tone={activityTone(run)}>
-        {activityLabel(run)}
+      <StatePill tone={state.tone}>
+        {state.label}
         {run.ended_at ? ` ${shortClock(run.ended_at)}` : ""}
       </StatePill>
-      {produced && <StatePill tone={producedTone(run)}>{produced}</StatePill>}
+      {produced && <StatePill tone={producedIn}>{produced}</StatePill>}
       {visibility && <StatePill tone="dashed">{visibility}</StatePill>}
       {run.cleanup_pending && (
         <StatePill tone="grey">Cleanup pending</StatePill>

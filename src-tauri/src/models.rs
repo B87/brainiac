@@ -4413,6 +4413,21 @@ pub struct ExplanationRecord {
     pub hidden: Vec<u32>,
 }
 
+/// The explanation an explain run wrote, for the run's row in Runs
+/// (SPEC.md, section 13, Runs): its outcome and the way to open it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RunExplanation {
+    pub run_id: String,
+    pub id: String,
+    pub repository_id: String,
+    pub subject: ExplainSubject,
+    pub depth: ExplainDepth,
+    pub state: ExplanationState,
+    /// Why it failed, in words safe to show.
+    pub error: Option<String>,
+}
+
 /// One stored explanation in a list (Settings → Explanations, and the
 /// dialog's other explanations of a subject).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

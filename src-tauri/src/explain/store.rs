@@ -8,7 +8,7 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 use crate::models::{
     now_rfc3339, AgentKind, AgentPayment, AgentProvider, AppError, AppResult, ConceptKind,
     ExplainCost, ExplainDepth, ExplainStep, ExplainSubject, Explanation, ExplanationSettings,
-    ExplanationState, KnownConcept,
+    ExplanationState, KnownConcept, RunExplanation,
 };
 
 /// The settings key Settings → Explanations is saved under.
@@ -123,6 +123,31 @@ pub fn by_run(conn: &mut Connection, run_id: &str) -> AppResult<Option<Explanati
             from_row,
         )
         .optional()?)
+}
+
+/// Every explanation that has a run, without its stored JSON (Runs).
+pub fn run_links(conn: &mut Connection) -> AppResult<Vec<RunExplanation>> {
+    let mut stmt = conn.prepare(
+        "SELECT run_id, id, repository_id, subject_kind, subject_ref, depth, state, error
+         FROM explanations WHERE run_id IS NOT NULL",
+    )?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(RunExplanation {
+                run_id: r.get(0)?,
+                id: r.get(1)?,
+                repository_id: r.get(2)?,
+                subject: ExplainSubject {
+                    kind: parse(r.get(3)?)?,
+                    reference: r.get(4)?,
+                },
+                depth: parse(r.get(5)?)?,
+                state: parse(r.get(6)?)?,
+                error: r.get(7)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
 }
 
 pub fn list(conn: &mut Connection) -> AppResult<Vec<ExplanationRow>> {

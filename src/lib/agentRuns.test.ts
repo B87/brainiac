@@ -5,6 +5,7 @@ import {
   destinationLabel,
   durationLabel,
   engineSummary,
+  explainedLabel,
   foldTurns,
   groupOf,
   imageSummary,
@@ -21,7 +22,10 @@ import {
   profileChoice,
   profileName,
   profileTestState,
+  resultTone,
   runMissing,
+  runState,
+  runTitle,
   samePreview,
   settingsRequest,
   spanLabel,
@@ -36,6 +40,7 @@ import type {
   AgentProfile,
   AgentRun,
   RunEvent,
+  RunExplanation,
 } from "./ipc";
 
 const profile: AgentProfile = {
@@ -338,11 +343,84 @@ describe("Runs", () => {
     expect(groupOf(ended)).toBe("ended");
     expect(needsYou(ended)).toBe(false);
     expect(listResult(ended)).toBeNull();
-    expect(activityTone({ ...ended, outcome: "finished" })).toBe("green");
-    expect(activityTone({ ...ended, outcome: "cancelled" })).toBe("grey");
+  });
+
+  it("shows an explain run's explanation as its outcome and result", () => {
+    // Brainiac stops an explain run with Cancel when its explanation failed.
+    const ended: AgentRun = {
+      ...run,
+      explain: true,
+      phase: "ended",
+      activity: "ended",
+      outcome: "cancelled",
+      stop_confirmed: true,
+      kept: false,
+    };
+    const link: RunExplanation = {
+      run_id: ended.id,
+      id: "e1",
+      repository_id: ended.repository_id,
+      subject: { kind: "commit", reference: "a".repeat(40) },
+      depth: "teach_me",
+      state: "ready",
+      error: null,
+    };
+    expect(runState(ended, link)).toEqual({ label: "Finished", tone: "grey" });
+    expect(listResult(ended, link)).toBe("Explanation ready");
+    expect(resultTone(ended, link)).toBe("green");
+    const failed: RunExplanation = { ...link, state: "failed", error: "x" };
+    expect(runState(ended, failed)).toEqual({ label: "Failed", tone: "red" });
+    expect(listResult(ended, failed)).toBe("Explanation failed");
+    expect(resultTone(ended, failed)).toBe("red");
+    const cancelled: RunExplanation = { ...link, state: "cancelled" };
+    expect(runState(ended, cancelled).label).toBe("Cancelled");
+    expect(listResult(ended, cancelled)).toBeNull();
+    // Without its explanation, the run's own state; ordinary runs as before.
+    expect(runState(ended, null).label).toBe("Cancelled");
+    const finished: AgentRun = {
+      ...ended,
+      explain: false,
+      outcome: "finished",
+    };
+    expect(runState(finished, null)).toEqual({
+      label: "Finished",
+      tone: "grey",
+    });
+    expect(resultTone({ ...finished, collection: "ready" })).toBe("green");
+  });
+
+  it("titles an explain run by its subject and depth, not the verb", () => {
+    const explain: AgentRun = {
+      ...run,
+      explain: true,
+      title: "Explain Fix it",
+    };
+    expect(runTitle(explain)).toBe("Fix it");
+    expect(runTitle({ ...explain, explain: false })).toBe("Explain Fix it");
+    const link: RunExplanation = {
+      run_id: run.id,
+      id: "e1",
+      repository_id: run.repository_id,
+      subject: { kind: "commit", reference: "a1b2c3d4".repeat(5) },
+      depth: "teach_me",
+      state: "ready",
+      error: null,
+    };
+    expect(explainedLabel(link)).toBe("Commit a1b2c3d · Teach me");
     expect(
-      activityTone({ ...ended, explain: false, outcome: "finished" }),
-    ).toBe("grey");
+      explainedLabel({
+        ...link,
+        subject: { kind: "branch", reference: "refs/heads/feature/x" },
+        depth: "brief",
+      }),
+    ).toBe("Branch feature/x · Brief");
+    expect(
+      explainedLabel({
+        ...link,
+        subject: { kind: "pull_request", reference: "acme/app#42" },
+        depth: "deep",
+      }),
+    ).toBe("Pull request #42 · Deep");
   });
 
   it("says what the agent is doing and what the run produced", () => {

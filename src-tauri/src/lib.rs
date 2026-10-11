@@ -553,6 +553,7 @@ pub fn run() {
             commands::start_explanation,
             commands::cancel_explanation,
             commands::get_explanation,
+            commands::list_run_explanations,
             commands::list_subject_explanations,
             commands::delete_explanation,
             commands::delete_all_explanations,

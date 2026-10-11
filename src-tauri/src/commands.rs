@@ -1611,6 +1611,14 @@ pub async fn get_explanation(
     explanations.get(&id).await
 }
 
+/// The explanation each explain run wrote, for Runs (SPEC.md, section 13).
+#[tauri::command]
+pub async fn list_run_explanations(
+    explanations: State<'_, Explanations>,
+) -> AppResult<Vec<crate::models::RunExplanation>> {
+    explanations.run_links().await
+}
+
 /// Every explanation of a subject, newest first.
 #[tauri::command]
 pub async fn list_subject_explanations(
