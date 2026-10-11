@@ -27,6 +27,40 @@ pub trait SecretStore: Send + Sync {
     fn name(&self) -> &'static str;
 }
 
+/// The store where the platform has none Brainiac supports yet (Linux, until
+/// it has a Secret Service store; docs/design/linux.md). Nothing is ever in
+/// it, and saving to it is refused rather than written anywhere else, so a
+/// secret never lands in a file; an environment variable or a command still
+/// works as a source.
+pub struct NoStore;
+
+impl NoStore {
+    fn refused() -> AppError {
+        AppError::dependency(
+            "This system has no secret store Brainiac can use. Choose an environment variable or a command as the source.",
+        )
+    }
+}
+
+impl SecretStore for NoStore {
+    fn contains(&self, _key: &str) -> AppResult<bool> {
+        Ok(false)
+    }
+    fn get(&self, _key: &str) -> AppResult<Option<SecretBytes>> {
+        Err(Self::refused())
+    }
+    fn set(&self, _key: &str, _value: &SecretBytes) -> AppResult<()> {
+        Err(Self::refused())
+    }
+    fn delete(&self, _key: &str) -> AppResult<()> {
+        // Nothing was ever saved, so there is nothing to delete.
+        Ok(())
+    }
+    fn name(&self) -> &'static str {
+        "No secret store"
+    }
+}
+
 /// Items in memory, for tests, with switches that make writes fail and a
 /// count of reads.
 #[derive(Default)]
@@ -108,5 +142,26 @@ impl SecretStore for MemoryStore {
 
     fn name(&self) -> &'static str {
         "Memory (tests)"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::ErrorCode;
+
+    #[test]
+    fn no_store_holds_nothing_and_refuses_to_save() {
+        let store = NoStore;
+        assert!(!store.contains("github").unwrap());
+        let value = SecretBytes::new(b"token".to_vec());
+        let refused = store.set("github", &value).unwrap_err();
+        assert_eq!(refused.code, ErrorCode::DependencyUnavailable);
+        assert!(refused.message.contains("environment variable"));
+        assert_eq!(
+            store.get("github").unwrap_err().code,
+            ErrorCode::DependencyUnavailable
+        );
+        store.delete("github").unwrap();
     }
 }

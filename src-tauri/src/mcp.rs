@@ -26,8 +26,12 @@ use crate::workspaces::RepositoryService;
 pub const SOCKET_NAME: &str = "mcp.sock";
 /// Overrides the socket path, for tests and development.
 pub const SOCKET_ENV: &str = "BRAINIAC_MCP_SOCKET";
-/// macOS limits a Unix socket path to 104 bytes, including the final NUL.
+/// The longest Unix socket path: `sun_path` holds 104 bytes on macOS and
+/// 108 on Linux, including the final NUL.
+#[cfg(target_os = "macos")]
 pub(crate) const MAX_SOCKET_PATH: usize = 103;
+#[cfg(not(target_os = "macos"))]
+pub(crate) const MAX_SOCKET_PATH: usize = 107;
 
 /// The user ID this process runs as.
 pub fn current_uid() -> u32 {
@@ -36,18 +40,29 @@ pub fn current_uid() -> u32 {
 }
 
 /// Where the app with this identifier keeps its data, as Tauri's
-/// `app_data_dir` resolves it on macOS.
+/// `app_data_dir` resolves it: `~/Library/Application Support` on macOS, the
+/// XDG data folder elsewhere (docs/design/linux.md).
 pub fn data_dir(identifier: &str) -> Option<PathBuf> {
-    let home = std::env::var_os("HOME")?;
-    Some(
-        PathBuf::from(home)
-            .join("Library/Application Support")
-            .join(identifier),
-    )
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    #[cfg(target_os = "macos")]
+    let base = home.map(|h| h.join("Library/Application Support"));
+    #[cfg(not(target_os = "macos"))]
+    let base = xdg_data_home(home, std::env::var_os("XDG_DATA_HOME"));
+    Some(base?.join(identifier))
+}
+
+/// `$XDG_DATA_HOME` when it is an absolute path (the XDG specification
+/// ignores a relative one), else `~/.local/share`, as Tauri reads it.
+// Used only off macOS, but tested everywhere.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn xdg_data_home(home: Option<PathBuf>, xdg: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    xdg.map(PathBuf::from)
+        .filter(|d| d.is_absolute())
+        .or_else(|| home.map(|h| h.join(".local/share")))
 }
 
 /// The socket path: `mcp.sock` in the data folder, or, when that path is too
-/// long for a socket, one in `/tmp/brainiac-<uid>/`.
+/// long for a socket, one in `fallback_dir`.
 pub fn socket_path(data_dir: &Path, identifier: &str) -> PathBuf {
     let preferred = data_dir.join(SOCKET_NAME);
     if preferred.as_os_str().len() <= MAX_SOCKET_PATH {
@@ -57,12 +72,22 @@ pub fn socket_path(data_dir: &Path, identifier: &str) -> PathBuf {
     }
 }
 
+/// Where a socket goes when its own path is too long: on Linux the session's
+/// runtime folder, which only this user can open, when there is one; else
+/// `/tmp/brainiac-<uid>/`.
 pub(crate) fn fallback_dir() -> PathBuf {
+    #[cfg(target_os = "linux")]
+    if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .filter(|d| d.is_absolute())
+    {
+        return runtime.join("brainiac");
+    }
     PathBuf::from(format!("/tmp/brainiac-{}", current_uid()))
 }
 
-/// Create the socket's folder when it is the `/tmp` fallback, and refuse a
-/// folder another user owns or, in `/tmp`, one others can open.
+/// Create the socket's folder when it is the fallback, and refuse a folder
+/// another user owns or, for the fallback, one others can open.
 pub(crate) fn prepare_socket_dir(socket: &Path) -> AppResult<()> {
     let dir = socket
         .parent()
@@ -264,12 +289,25 @@ mod tests {
             "u".repeat(60)
         );
         let long = socket_path(Path::new(&long_dir), "dev.brainiac.desktop");
+        assert_eq!(long, fallback_dir().join("dev.brainiac.desktop.sock"));
+    }
+
+    #[test]
+    fn the_xdg_data_folder_is_read_as_tauri_reads_it() {
+        let home = Some(PathBuf::from("/home/a"));
         assert_eq!(
-            long,
-            PathBuf::from(format!(
-                "/tmp/brainiac-{}/dev.brainiac.desktop.sock",
-                current_uid()
-            ))
+            xdg_data_home(home.clone(), None),
+            Some(PathBuf::from("/home/a/.local/share"))
         );
+        assert_eq!(
+            xdg_data_home(home.clone(), Some("/data".into())),
+            Some(PathBuf::from("/data"))
+        );
+        // A relative value is ignored, as the specification says.
+        assert_eq!(
+            xdg_data_home(home, Some("data".into())),
+            Some(PathBuf::from("/home/a/.local/share"))
+        );
+        assert_eq!(xdg_data_home(None, None), None);
     }
 }

@@ -956,7 +956,7 @@ impl From<StartError> for AppError {
 }
 
 /// `runner.sock` in the controller's folder, or, when that path is too long
-/// for a socket, one in `/tmp/brainiac-<uid>/`.
+/// for a socket, one in the fallback folder (`mcp::fallback_dir`).
 pub fn socket_path(state: &Path, identifier: &str) -> PathBuf {
     let preferred = state.join("runner.sock");
     if preferred.as_os_str().len() <= MAX_SOCKET_PATH {

@@ -140,8 +140,13 @@ pub fn run() {
             // --- Secrets (v0.4.x) -------------------------------------------
             // One credentials layer for account tokens and database
             // passwords; the store is chosen here, by target.
+            #[cfg(target_os = "macos")]
+            let store: Arc<dyn credentials::SecretStore> = Arc::new(credentials::MacStore);
+            // No Secret Service store yet (docs/design/linux.md, phase 3).
+            #[cfg(not(target_os = "macos"))]
+            let store: Arc<dyn credentials::SecretStore> = Arc::new(credentials::NoStore);
             let credentials = Arc::new(credentials::CredentialService::new(
-                Arc::new(credentials::MacStore),
+                store,
                 credentials::CommandRunner::new(data_dir.join("secret-commands")),
             ));
 
