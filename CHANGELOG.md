@@ -11,6 +11,8 @@ into the release's section.
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-10-12
+
 - A run cancelled while its run controller was down no longer says "Cancel requested" forever once the controller is back and the run has ended.
 - A repository's header is quieter: the repository and its branch read as one breadcrumb, and the branch always shows ahead, behind, and how fresh the last fetch is, with the upstream and Fetch now in its popover.
 - Open in opens your editor in one click; its menu reveals the folder or copies its path. Fetch now and Refresh moved to the ⋯ menu.
@@ -205,7 +207,8 @@ First public build: a read-only Git viewer and multi-repository tracker for macO
 - The Branches tab is a placeholder.
 - Not signed with an Apple Developer certificate; the first launch needs right-click > Open (see the README).
 
-[Unreleased]: https://github.com/B87/brainiac/compare/v0.6.2...HEAD
+[Unreleased]: https://github.com/B87/brainiac/compare/v0.6.3...HEAD
+[0.6.3]: https://github.com/B87/brainiac/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/B87/brainiac/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/B87/brainiac/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/B87/brainiac/compare/v0.5.0...v0.6.0
