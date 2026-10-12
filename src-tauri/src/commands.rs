@@ -19,7 +19,7 @@ use crate::models::{
 use crate::models::{
     CommentRequest, Conversation, ListPullRequestsRequest, MergeOptions, MergeOutcome,
     MergeRequest, PullRequest, PullRequestChecks, PullRequestDiff, PullRequestDiffRequest,
-    PullRequestFiles, PullRequestList, ReplyRequest, ResolveThreadRequest, ReviewCount,
+    PullRequestFiles, PullRequestList, ReplyRequest, ResolveThreadRequest, ReviewCounts,
     ReviewDrafts, SaveReviewDraftRequest, SubmitReviewRequest, WriteOutcome,
 };
 use crate::models::{
@@ -1262,9 +1262,7 @@ pub async fn merge_pull_request(
 
 /// Each workspace's count of pull requests waiting on your review, for the sidebar.
 #[tauri::command]
-pub async fn get_review_counts(
-    pull_requests: State<'_, PullRequests>,
-) -> AppResult<Vec<ReviewCount>> {
+pub async fn get_review_counts(pull_requests: State<'_, PullRequests>) -> AppResult<ReviewCounts> {
     pull_requests.review_counts().await
 }
 

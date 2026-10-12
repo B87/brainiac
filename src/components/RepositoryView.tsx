@@ -1,42 +1,38 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { relativeTime, shortPath } from "../lib/format";
+import { shortPath } from "../lib/format";
 import {
   type AppSnapshot,
   type ChangesResult,
   errorMessage,
   ipc,
-  type RefEntry,
   type RefsResult,
   type RepositorySummary,
   type RepositoryTab,
   type Task,
 } from "../lib/ipc";
 import { useKeys } from "../lib/keys";
-import {
-  headLabel,
-  repoTone,
-  TONE_LABEL,
-  upstreamLabel,
-  upstreamTarget,
-} from "../lib/repo";
+import { headLabel, plural, repoTone, TONE_LABEL } from "../lib/repo";
+import { EDITOR_PRESETS, editorPreset } from "../lib/settings";
 import { useSidePanel } from "../lib/sidePanel";
 import { createLatest } from "../lib/stale";
+import BranchControl from "./BranchControl";
 import BranchesTab from "./BranchesTab";
 import ChangesTab from "./ChangesTab";
 import HistoryTab, { type HistoryScope } from "./HistoryTab";
-import {
-  BranchIcon,
-  ChevronDown,
-  ExternalIcon,
-  FetchIcon,
-  FolderIcon,
-  MoreIcon,
-  RefreshIcon,
-} from "./icons";
+import { ChevronDown, ExternalIcon, MoreIcon } from "./icons";
 import Popover from "./Popover";
 import PullRequestsTab from "./PullRequestsTab";
 import RepositoryNotesTab from "./RepositoryNotesTab";
 import SidePanelButton from "./SidePanelButton";
+
+/** The tabs: id, label, and the full name when the label shortens it. */
+const TABS: Array<[RepositoryTab, string, string?]> = [
+  ["changes", "Changes"],
+  ["history", "History"],
+  ["refs", "Branches", "Branches and tags"],
+  ["notes", "Notes"],
+  ["pull_requests", "PRs", "Pull requests"],
+];
 
 /** Where the viewer opens, for links from the activity feed. */
 export type RepoFocus = {
@@ -54,6 +50,8 @@ type Props = {
   focus?: RepoFocus;
   /** A fetch of this repository is running. */
   fetching: boolean;
+  /** Open pull requests waiting on your review, for the PRs tab. */
+  awaitingReview: number;
   onFetch: () => void;
   onTogglePin: () => void;
   onPalette: () => void;
@@ -83,6 +81,7 @@ export default function RepositoryView({
   pinned,
   focus,
   fetching,
+  awaitingReview,
   onFetch,
   onTogglePin,
   onPalette,
@@ -111,6 +110,7 @@ export default function RepositoryView({
   );
   const [refs, setRefs] = useState<RefsResult | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [tabMenuOpen, setTabMenuOpen] = useState(false);
   const { open: panelOpen, toggle: togglePanel } = useSidePanel();
 
   // One stale-guard per data source, so a slow response cannot clobber a newer one.
@@ -160,7 +160,7 @@ export default function RepositoryView({
     void ipc.setRepositoryTab(repository.id, next).catch(() => {});
   };
 
-  const showRefHistory = (ref: RefEntry | null) => {
+  const showRefHistory = (ref: HistoryScope | null) => {
     setHistoryRef(ref);
     changeTab("history");
   };
@@ -178,121 +178,134 @@ export default function RepositoryView({
   const openInEditor = (path?: string, line?: number) =>
     run(ipc.openInEditor(repository.id, path, line));
 
+  const preset = editorPreset(snapshot.settings.editor);
+  const editorName = EDITOR_PRESETS.find((p) => p.id === preset)?.label ?? null;
+
   const changeCount =
     changes?.counts.unique_paths ?? repository.counts?.unique_paths;
+
+  /** A tab's count: uncommitted changes, or pull requests waiting on your review. */
+  const tabCount = (id: RepositoryTab) =>
+    id === "changes" && changeCount ? (
+      <span
+        className="rounded-lg bg-dirty px-1.5 text-[11px] font-semibold text-app"
+        title={`${changeCount} changed`}
+      >
+        {changeCount}
+      </span>
+    ) : id === "pull_requests" && awaitingReview > 0 ? (
+      <span
+        className="badge"
+        title={`${plural(awaitingReview, "pull request")} waiting on your review`}
+      >
+        {awaitingReview}
+      </span>
+    ) : null;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <header
         data-tauri-drag-region
-        className="flex h-12 shrink-0 items-center gap-3 border-b bg-header pr-3 pl-4 pl-lead"
+        className="@container flex h-12 shrink-0 items-center gap-2 border-b bg-header pr-3 pl-3 pl-lead"
       >
-        <button
-          type="button"
-          className="btn bg-control pr-2 pl-2.5 text-fg"
-          aria-label="Switch repository"
-          title="Switch repository or workspace (⌘K)"
-          onClick={onPalette}
+        <nav
+          aria-label="Location"
+          className="flex min-w-0 shrink items-center gap-0.5"
         >
-          <span className="font-semibold">{repository.name}</span>
-          <ChevronDown size={11} className="text-muted" />
-          <span className="kbd">⌘K</span>
-        </button>
-        <div role="tablist" aria-label="Repository views" className="seg">
           <button
             type="button"
-            role="tab"
-            aria-selected={tab === "changes"}
-            onClick={() => changeTab("changes")}
+            className="btn btn-ghost shrink-0 px-2 text-fg"
+            aria-label={`Switch repository: ${repository.name}`}
+            title="Switch repository or workspace (⌘K)"
+            onClick={onPalette}
           >
-            Changes
-            {!!changeCount && (
-              <span className="rounded-lg bg-dirty px-1.5 text-[11px] font-semibold text-app">
-                {changeCount}
-              </span>
-            )}
+            <span className="font-semibold">{repository.name}</span>
+            <ChevronDown size={11} className="text-muted" />
           </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === "history"}
-            onClick={() => changeTab("history")}
-          >
-            History
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === "refs"}
-            onClick={() => changeTab("refs")}
-          >
-            Branches &amp; tags
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === "notes"}
-            onClick={() => changeTab("notes")}
-          >
-            Notes
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === "pull_requests"}
-            title="Pull requests (⌘5)"
-            onClick={() => changeTab("pull_requests")}
-          >
-            Pull requests
-          </button>
+          <span aria-hidden="true" className="text-faint">
+            ›
+          </span>
+          <BranchControl
+            repository={repository}
+            fetching={fetching}
+            disabled={unavailable}
+            onFetch={onFetch}
+            onShowUpstream={(ref) =>
+              showRefHistory({
+                full_name: `refs/remotes/${ref}`,
+                name: ref,
+                kind: "remote_branch",
+              })
+            }
+          />
+        </nav>
+        <div
+          role="tablist"
+          aria-label="Repository views"
+          className="seg ml-2 shrink-0 @max-[820px]:hidden"
+        >
+          {TABS.map(([id, label, full], i) => (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              aria-selected={tab === id}
+              title={`${full ?? label} (⌘${i + 1})`}
+              onClick={() => changeTab(id)}
+            >
+              {label}
+              {tabCount(id)}
+            </button>
+          ))}
         </div>
-        <div data-tauri-drag-region className="h-full flex-1" />
-        <BranchPill repository={repository} />
-        <button
-          type="button"
-          className="btn"
-          disabled={fetching || unavailable}
-          title={fetchTitle(repository)}
-          onClick={onFetch}
-        >
-          <FetchIcon size={13} className={fetching ? "animate-pulse" : ""} />
-          {fetching ? "Fetching…" : "Fetch"}
-          {repository.fetch_error && !fetching && (
-            <span className="text-conflict" title="Last fetch failed">
-              !
-            </span>
+        <div className="relative ml-1 hidden shrink-0 @max-[820px]:block">
+          <button
+            type="button"
+            className="btn"
+            aria-label={`Repository view: ${TABS.find((x) => x[0] === tab)?.[1]}`}
+            aria-haspopup="menu"
+            aria-expanded={tabMenuOpen}
+            onClick={() => setTabMenuOpen(!tabMenuOpen)}
+          >
+            {TABS.find((x) => x[0] === tab)?.[1]}
+            {TABS.filter(([id]) => id !== tab).map(([id]) => (
+              <span key={id} className="contents">
+                {tabCount(id)}
+              </span>
+            ))}
+            <ChevronDown size={10} className="text-muted" />
+          </button>
+          {tabMenuOpen && (
+            <Popover onClose={() => setTabMenuOpen(false)}>
+              {TABS.map(([id, label, full], i) => (
+                <MenuButton
+                  key={id}
+                  onClick={() => {
+                    setTabMenuOpen(false);
+                    changeTab(id);
+                  }}
+                >
+                  <span className="flex-1">{full ?? label}</span>
+                  {tabCount(id)}
+                  <span className="kbd">⌘{i + 1}</span>
+                </MenuButton>
+              ))}
+            </Popover>
           )}
-        </button>
-        <button
-          type="button"
-          className="btn icon-btn"
-          aria-label="Refresh"
-          title="Refresh (⌘R)"
-          onClick={onRefresh}
-        >
-          <RefreshIcon />
-        </button>
-        <button
-          type="button"
-          className="btn icon-btn"
-          aria-label="Reveal in Finder"
-          title="Reveal in Finder"
-          onClick={() => run(ipc.revealInFinder(repository.id))}
-        >
-          <FolderIcon />
-        </button>
-        <button
-          type="button"
-          className="btn btn-primary"
-          onClick={() => openInEditor()}
-        >
-          <ExternalIcon size={13} />
-          Open in editor
-        </button>
+        </div>
+        <div data-tauri-drag-region className="h-full min-w-2 flex-1" />
+        <OpenIn
+          editor={editorName}
+          onEditor={() => openInEditor()}
+          onFinder={() => run(ipc.revealInFinder(repository.id))}
+          onCopyPath={() =>
+            void navigator.clipboard?.writeText(repository.display_path)
+          }
+        />
         {(tab === "pull_requests" || tab === "refs") && (
           <SidePanelButton open={panelOpen} onToggle={togglePanel} />
         )}
-        <div className="relative">
+        <div className="relative shrink-0">
           <button
             type="button"
             className="btn btn-ghost icon-btn"
@@ -306,20 +319,32 @@ export default function RepositoryView({
           {menuOpen && (
             <Popover align="right" onClose={() => setMenuOpen(false)}>
               <MenuButton
+                disabled={fetching || unavailable}
+                onClick={() => {
+                  setMenuOpen(false);
+                  onFetch();
+                }}
+              >
+                <span className="flex-1">Fetch now</span>
+                <span className="kbd">⇧⌘F</span>
+              </MenuButton>
+              <MenuButton
+                onClick={() => {
+                  setMenuOpen(false);
+                  onRefresh();
+                }}
+              >
+                <span className="flex-1">Refresh</span>
+                <span className="kbd">⌘R</span>
+              </MenuButton>
+              <div className="menu-sep" />
+              <MenuButton
                 onClick={() => {
                   setMenuOpen(false);
                   onTogglePin();
                 }}
               >
                 {pinned ? "Unpin" : "Pin to sidebar"}
-              </MenuButton>
-              <MenuButton
-                onClick={() => {
-                  setMenuOpen(false);
-                  void navigator.clipboard?.writeText(repository.display_path);
-                }}
-              >
-                Copy path
               </MenuButton>
               <MenuButton
                 onClick={() => {
@@ -406,9 +431,11 @@ export default function RepositoryView({
 
 export function MenuButton({
   onClick,
+  disabled,
   children,
 }: {
   onClick: () => void;
+  disabled?: boolean;
   children: React.ReactNode;
 }) {
   return (
@@ -416,6 +443,7 @@ export function MenuButton({
       type="button"
       role="menuitem"
       className="menu-item"
+      disabled={disabled}
       onClick={onClick}
     >
       {children}
@@ -423,33 +451,75 @@ export function MenuButton({
   );
 }
 
-/** Current branch, its upstream, and the local ahead/behind comparison. */
-function BranchPill({ repository: r }: { repository: RepositorySummary }) {
-  const up = upstreamLabel(r);
-  const branch = headLabel(r);
-  const target = r.upstream ? upstreamTarget(r.upstream.ref, branch) : null;
+/**
+ * Open in: one click opens the editor; its menu reveals the folder or copies
+ * its path (SPEC.md, Main window v0.1). Narrow, it keeps only its icon.
+ */
+function OpenIn({
+  editor,
+  onEditor,
+  onFinder,
+  onCopyPath,
+}: {
+  /** The editor's name, such as "VS Code"; null for a custom one. */
+  editor: string | null;
+  onEditor: () => void;
+  onFinder: () => void;
+  onCopyPath: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const label = `Open in ${editor ?? "editor"}`;
   return (
-    <div
-      className="mono flex h-[30px] max-w-[min(560px,38vw)] min-w-0 items-center gap-2 rounded-[7px] border border-control-line px-2.5 text-[12px]"
-      title={
-        r.upstream
-          ? `${branch} → ${r.upstream.ref}${up ? ` · ${up}` : ""}\nAs of the last fetch, ${relativeTime(r.last_fetch_at)}.`
-          : `${branch}\nNo upstream configured`
-      }
-    >
-      <BranchIcon size={13} className="shrink-0 text-fg-2" />
-      <span className="min-w-0 truncate">{branch}</span>
-      {target && (
-        <span className="hidden max-w-[180px] shrink-0 truncate text-muted xl:inline">
-          → {target}
-        </span>
-      )}
-      {up && (
-        <span
-          className={`shrink-0 whitespace-nowrap ${up === "in sync" ? "text-clean" : "text-link"}`}
-        >
-          {up}
-        </span>
+    <div className="relative flex shrink-0">
+      <button
+        type="button"
+        className="btn rounded-r-none"
+        aria-label={label}
+        title={`${label} (⇧⌘O)`}
+        onClick={onEditor}
+      >
+        <ExternalIcon size={13} />
+        <span className="@max-[1100px]:hidden">{label}</span>
+      </button>
+      <button
+        type="button"
+        className="btn rounded-l-none border-l-0 px-1.5"
+        aria-label="Open in another app"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+      >
+        <ChevronDown size={10} />
+      </button>
+      {open && (
+        <Popover align="right" onClose={() => setOpen(false)}>
+          <MenuButton
+            onClick={() => {
+              setOpen(false);
+              onEditor();
+            }}
+          >
+            <span className="flex-1">{editor ?? "Editor"}</span>
+            <span className="kbd">⇧⌘O</span>
+          </MenuButton>
+          <MenuButton
+            onClick={() => {
+              setOpen(false);
+              onFinder();
+            }}
+          >
+            Reveal in Finder
+          </MenuButton>
+          <div className="menu-sep" />
+          <MenuButton
+            onClick={() => {
+              setOpen(false);
+              onCopyPath();
+            }}
+          >
+            Copy path
+          </MenuButton>
+        </Popover>
       )}
     </div>
   );
@@ -504,14 +574,4 @@ function Unavailable({
       </div>
     </div>
   );
-}
-
-function fetchTitle(r: RepositorySummary): string {
-  const when = r.last_fetch_at
-    ? `Last fetched ${relativeTime(r.last_fetch_at)}.`
-    : "Not fetched yet.";
-  const failed = r.fetch_error
-    ? `\nLast fetch failed: ${r.fetch_error.message}`
-    : "";
-  return `Fetch the remote: updates remote-tracking branches and tags only, never your files or branches. ${when}${failed}`;
 }

@@ -84,8 +84,8 @@ Use a quiet macOS layout: system font, light/dark appearance, native menu bar, s
 
 ```text
 ┌──────────────────┬───────────────────────────────────────────────────────────┐
-│ ● ● ●            │ [repo ▾ ⌘K] Changes · History · Branches & tags   main → │
-│                  │             origin/main  Fetch  ⟳  Finder  Open in editor   │
+│ ● ● ●          ◧ │ repo ▾ › ⎇ main ↑2 · 4m ▾  Changes 3 · History · Branches │
+│                  │ · Notes · PRs                       Open in VS Code ▾  ⋯  │
 │ All repositories ├───────────────────────────────────────────────────────────┤
 │ Workspaces       │ File / commit / ref list   │ Diff, commit details, or ref │
 │   Work    7 new  │                            │ history preview              │
@@ -100,7 +100,22 @@ Use a quiet macOS layout: system font, light/dark appearance, native menu bar, s
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-The sidebar switches scope and shares the window's title bar area with the traffic lights. The center shows either a dashboard (All repositories or one workspace) or a selected repository's viewer. A dashboard is a table of repositories with a side panel for the selected row: branch, upstream, last commit, a peek at its changed files, and Open repository, Open in editor, and Reveal in Finder. The repository viewer's header carries the repository switcher, the tabs, the current branch with its upstream comparison and when it was last fetched, Fetch now, Refresh, Reveal in Finder, and Open in editor; there is no separate inspector, so diffs keep the full width. A workspace dashboard has two tabs, Overview (the table) and Activity (section 4, Workspace activity); the sidebar shows a workspace's unread activity count next to its name. The status bar lists the keyboard shortcuts of the current view.
+The sidebar switches scope and shares the window's title bar area with the traffic lights. The center shows either a dashboard (All repositories or one workspace) or a selected repository's viewer. A dashboard is a table of repositories with a side panel for the selected row: branch, upstream, last commit, a peek at its changed files, and Open repository, Open in editor, and Reveal in Finder. Brainiac works in half and three-quarter windows (about 760 and 960 points wide beside an editor): each pane adapts to its own width, never the window's, and what folds stays one click or one key away.
+
+- A dashboard's header keeps its breadcrumb whole and gives up its totals first (shorter words, then none below 800 points), then the labels of Fetch all, Add, and Refresh all. A workspace's title and totals share one line below 1000 points.
+- The repositories table drops columns as it narrows: Checked and Commit below 1100 points, the path under the name below 860 (it stays in the row's tooltip), Workspace below 760, and Upstream below 680, whose ahead and behind then follow the branch. The state chips shorten their labels below 760 points and keep only a dot and the count below 640.
+- A patch's toolbar moves Unified/Split, Wrap, and Ignore whitespace into one **View** menu below 760 points, and shows Split only from 900 points of pane; narrower, a split choice shows unified until there is room.
+- A commit's header keeps its subject to two lines, and below 760 points drops the full date, shows the first ref and how many more, and makes a merge's parents one menu. Below 720 points the file tree gives the patch its width and a menu beside the stepper lists the files; `[` and `]` still step.
+- Below 760 points the commit list in History, the changed files in Changes, and a pull request's files fold to a strip; clicking it slides the list over the patch, picking an item or Escape folds it again, and J and K keep moving through it.
+- The status bar drops the path below 820 points and the Git version below 960.
+
+In a repository, the list on the left of History and Changes and the ref history beside Branches are resized by dragging the edge between them (or with the arrow keys when the edge has focus), the lists between 240 points and half the window, the ref history between 300 points and 55% of it; double-clicking the edge returns the default width, and each width is remembered. A dashboard's header is a breadcrumb like a repository's: the dashboard's name, which opens the switcher, then for All repositories a **Workspace** menu (`All repositories › All workspaces`) that shows every repository, one workspace's, or those in none, is remembered, names the workspace it shows, and opens the chosen workspace's own dashboard; then All repositories' totals (changed files, conflicts, ahead and behind). A Workspace column names each repository's workspace. The panel's close button hides the side panel, as `Option+Cmd+B` does. The repository viewer's header reads, left to right, where you are, what you are looking at, and where to go next: the repository and its current branch as one breadcrumb (`repo › branch`, the repository opening the switcher), the tabs, then **Open in** and a menu of more actions. There is no separate inspector, so diffs keep the full width.
+
+- The branch shows ahead and behind when not zero and how long ago it was last fetched, in amber once that is stale (section 4, Fetching). It shows the upstream only when the upstream's branch has another name than the local one. Its other states are words: fetching, a failed fetch ("needs sign-in", "fetch failed"), no upstream, and a detached HEAD with its commit. Clicking it opens the upstream, ahead and behind in a sentence each (with **Show in History** for the commits not pulled yet), when it was last fetched, and **Fetch now**.
+- **Open in** opens the repository in the editor with one click; its menu adds Reveal in Finder and Copy path. The more-actions menu holds Fetch now, Refresh, Pin, Locate Folder…, and Remove.
+- As the window narrows, the header gives up room in this order: Open in's label, then the middle of the branch name, then the tabs, which become one menu naming the current tab. The repository, the branch, ahead and behind, and a stale fetch age always stay.
+
+A workspace dashboard has two tabs, Overview (the table) and Activity (section 4, Workspace activity); the sidebar shows a workspace's unread activity count next to its name. The status bar lists the keyboard shortcuts of the current view.
 
 ### Main window — v0.2
 
@@ -142,7 +157,7 @@ The sidebar gains a section level above the repository tree: **Today**, **Tasks*
 - **Keep up with the team:** see what was merged or released on the watched branches of a workspace since the last look (section 4, Workspace activity).
 - **Accessible status:** state is never conveyed by color alone (a conflicted repository's dot carries "!", a missing one is a dashed ring, labels spell out counts), and text meets WCAG AA contrast (4.5:1) in both appearances.
 
-Repository name/path filtering and commit-message/hash filtering belong to the Git viewer. They do not depend on the future FTS5 knowledge index. History filtering searches Git history lazily; label the selected ref scope and do not imply results span other repositories.
+Repository name/path filtering and commit-message/hash filtering belong to the Git viewer. They do not depend on the future FTS5 knowledge index. History filtering searches Git history lazily; label the selected ref scope and do not imply results span other repositories. On HEAD the label is quiet (`HEAD · branch`); on another branch or tag it is highlighted (`Viewing origin/main`) with **Back to HEAD** beside it.
 
 ### Keyboard defaults
 
@@ -151,13 +166,15 @@ Repository name/path filtering and commit-message/hash filtering belong to the G
 | `Cmd+K` | Palette: repositories, workspaces, notes, and tasks (notes and tasks from v0.2) |
 | `Cmd+O` | Add/open a local repository |
 | `Cmd+R` | Refresh selected repository or workspace |
-| `Cmd+1` … `Cmd+5` | Repository tabs: Changes, History, Branches & tags, Notes (v0.2), Pull requests (v0.3) |
-| `Cmd+1` … `Cmd+3` | Workspace tabs: Overview, Activity, Pull requests (v0.3) |
+| `Shift+Cmd+F` | Fetch now: the selected repository or workspace |
+| `Shift+Cmd+O` | Open the selected repository in the editor |
+| `Cmd+1` … `Cmd+5` | Repository tabs: Changes, History, Branches (branches and tags), Notes (v0.2), PRs (pull requests, v0.3) |
+| `Cmd+1` … `Cmd+3` | Workspace tabs: Overview, Activity, PRs (pull requests, v0.3) |
 | `Cmd+N`, v0.2 | New note; in a repository's Notes tab, a new note linked to it |
 | `Cmd+Shift+N`, v0.2 | New task |
 | `Cmd+S`, v0.2 | Save the note now |
 | `Cmd+Shift+E`, v0.2 | Switch the note editor between Live Preview and Source |
-| `Cmd+B` | Show or hide the sidebar |
+| `Cmd+B` | Collapse the sidebar to its rail of icons, or expand it |
 | `Option+Cmd+B` | Show or hide the side panel |
 | `Shift+Cmd+B`, v0.6 | Show or hide the explanation panel beside a patch (section 14) |
 | `Option+Cmd+0`, v0.2 | Show or hide the context panel in Notes (the same panel as `Option+Cmd+B`) |
@@ -180,7 +197,7 @@ Repository name/path filtering and commit-message/hash filtering belong to the G
 | `Cmd+,` | Settings |
 | `Escape` | Dismiss the palette, a dialog, or a menu |
 
-`Cmd+B` shows or hides the sidebar; hidden, it takes no room at all, and View › Show or Hide Sidebar brings it back too. `Option+Cmd+B` shows or hides the side panel on the right. Brainiac remembers both. That panel is the selected repository's preview, a branch or tag's history, the repositories in today's work, activity and pull-request settings, a pull request's merge checklist, and a note's context panel.
+`Cmd+B` switches the sidebar between its full width and a narrow rail of icons (Today, Tasks, Notes, Databases, Runs with its badge, All repositories, and Add), each named in its tooltip, so every section stays one click away; collapsed, the title bar runs across the rail, so the traffic lights sit in one strip with the view's header; the button at the top of either expands or collapses it, and so does View › Collapse or Expand Sidebar. `Option+Cmd+B` shows or hides the side panel on the right. Brainiac remembers both. That panel is the selected repository's preview, a branch or tag's history, the repositories in today's work, activity and pull-request settings, a pull request's merge checklist, and a note's context panel.
 
 Avoid overriding standard text-editing shortcuts. Essential actions have a menu or visible control. Error messages describe the failed action and offer a concrete recovery action.
 
@@ -490,7 +507,7 @@ The third tab of a workspace (`Cmd+3`, after Overview and Activity).
 - Filters: all open, needs your review, yours, others, drafts. Sorted by what has waited longest.
 - A side panel like Activity's holds the workspace's switch, its accounts, and how much of the hour's request allowance each has used.
 - **States:** a first load shows skeleton rows; a workspace with pull requests off explains what turning them on does and offers it; a workspace without an account for one of its providers offers to add one; when a provider is unreachable or out of requests, the tab keeps showing what it had, says how old it is and when Brainiac retries; a repository that fails (removed, no access) shows its error in its group while the others keep working.
-- The sidebar shows each workspace's count of pull requests waiting on your review. Opening the workspace from the sidebar shows this tab while there are some, unless unread activity opens Activity first.
+- The sidebar shows each workspace's count of pull requests waiting on your review. Opening the workspace from the sidebar shows this tab while there are some, unless unread activity opens Activity first. A repository's PRs tab shows the same count for that repository's pull requests, read from the same cache, so counting never asks the provider.
 
 ### Repository → Pull requests
 
@@ -742,7 +759,7 @@ A coding agent run in a container, started from a repository, followed live, ste
 
 ### The run
 
-- **Runs** is a sidebar section after Databases (also View › Runs and `Cmd+K`), with a badge counting runs that need the user: a permission request, a session ready for the next prompt or stopped by the plan limit, or work waiting for a decision (uncollected, left-out files not yet added or accepted, a failed collection). Its list groups runs as Needs you, Ready to review, Active, and Ended, shows all of them or only those that need the user, are active, or ended, and is filtered by repository and host, and, once Explain has started one, by kind (runs, explanations, or both). Explain runs (section 14) are listed with an **Explain** tag, titled by their subject without the word Explain and with what was explained and the depth ("Commit a1b2c3d · Teach me"), never need the user, and open read only, as How it was written, with **Open explanation** (a branch's explanation is opened from Branches & tags). An ended one says how its explanation ended, since Brainiac and not the user stopped it: Finished, with **Explanation ready** as its result in green; Failed, in red, with **Explanation failed** (its reason on hover); or Cancelled when the user cancelled it. The filters stay while a run is open, and the kind is remembered; a remembered kind applies only while the kind filter is shown. Each row shows the run's title, repository and host, what it is doing, what it produced, and when (asked, idle or running for, the time it ends, or when it ended).
+- **Runs** is a sidebar section after Databases (also View › Runs and `Cmd+K`), with a badge counting runs that need the user: a permission request, a session ready for the next prompt or stopped by the plan limit, or work waiting for a decision (uncollected, left-out files not yet added or accepted, a failed collection). Its list groups runs as Needs you, Ready to review, Active, and Ended, shows all of them or only those that need the user, are active, or ended, and is filtered by repository and host, and, once Explain has started one, by kind (runs, explanations, or both). Explain runs (section 14) are listed with an **Explain** tag, titled by their subject without the word Explain and with what was explained and the depth ("Commit a1b2c3d · Teach me"), never need the user, and open read only, as How it was written, with **Open explanation** (a branch's explanation is opened from Branches). An ended one says how its explanation ended, since Brainiac and not the user stopped it: Finished, with **Explanation ready** as its result in green; Failed, in red, with **Explanation failed** (its reason on hover); or Cancelled when the user cancelled it. The filters stay while a run is open, and the kind is remembered; a remembered kind applies only while the kind filter is shown. Each row shows the run's title, repository and host, what it is doing, what it produced, and when (asked, idle or running for, the time it ends, or when it ended).
 - A run's header shows its title, repository, start commit, agent, model, and engine, and permissions, then separate badges for what the agent is doing and what the run produced, the time it ends and the time left, "Uses your Claude plan" (or the cost when the provider reports one, "Unavailable" when not), **Cancel run…**, and **Finish and collect**. A remote run names its host.
 - **Starting:** **Start run** opens the run at once. What can refuse a run (Settings, the repository, the host) still answers in New run; the rest goes on from the run's page, which shows it as steps with the time since Start run: copy the start commit and its history, send it to a remote host, hand the run to the run controller, then start the container and the agent. Leaving the page does not stop it. A failure on the way ends the run as Failed with the reason, with nothing left on the engine. **Cancel run…** works while it starts: before the controller has the run, nothing is started and it ends Cancelled; after, the cancel goes to the controller.
 - **Conversation:** the prompts, the agent's messages and plan, and its tool activity, with each finished turn folded to a summary ("14 steps · read 6 files, ran 3 commands"). The agent's messages are Markdown, drawn like pull request text: sanitized, with raw HTML shown as text, links only to the web and mail, and images as links. A side panel lists the start, where it runs, the provider and credential source, the network, the model (the one the agent reported once its session opened, with the one asked for when they differ; a plan or key that cannot use the asked-for model gets the agent's default), limits with workspace use, the image, and the files the agent says it changed, marked as reported by the agent. An edit shows the change the agent reports with it, its text before and after (or only the part it replaces) as removed and added lines, cut short past 16 KB a side; it is what the agent says it did, not its working tree. **Changes so far** is available while the run is live, and **Changes** once the work is collected.
@@ -803,7 +820,7 @@ Brainiac explains a change to the person reading it, so they learn the software 
 
 ### Boundaries
 
-- **Never automatic.** An explanation starts only from **Explain**, for one subject: a commit (History), a branch compared with the default branch (Branches & tags, where a selected branch now also shows **Changes against main**, named after the default branch: one patch from the merge base, the last commit the branch shares with the default branch, to its tip, so the default branch's later commits are left out), a collected run's result (a run's Changes), or a pull request (its Files Changed; Pull requests, below). A pull request and a branch with the same changes share one explanation. Working-tree changes follow in 0.6.x.
+- **Never automatic.** An explanation starts only from **Explain**, for one subject: a commit (History), a branch compared with the default branch (Branches, where a selected branch now also shows **Changes against main**, named after the default branch: one patch from the merge base, the last commit the branch shares with the default branch, to its tip, so the default branch's later commits are left out), a collected run's result (a run's Changes), or a pull request (its Files Changed; Pull requests, below). A pull request and a branch with the same changes share one explanation. Working-tree changes follow in 0.6.x.
 - **The repository is only read**, as for a run: the subject's commit and its history are copied into Brainiac's own repository and the container (section 13, Boundaries). A repository a run would refuse (a shallow or partial clone, missing objects, Git LFS pointers, or submodules in the subject's tree; section 13, New run) is refused for Explain too, with the same remedy, before any container starts. Whatever else the agent changes is discarded; only its explanation comes back. An explain run is listed in Runs, tagged **Explain**, read only and with no review (section 13, Runs). Its container and workspace are removed as soon as its explanation is checked, or when it fails; its conversation stays with the explanation (How it was written, below).
 - **Code goes to the provider of the chosen agent profile**, under the repository's answer for that provider (section 13, Code sharing): the same answer runs use, asked in Explain's dialog the first time and listed in Settings → Code Sharing.
 - **A repository answered No is never explained** with that provider. Explain stays on the subject's header; its dialog says the repository is answered No, by itself or by which workspace, with **Change in Settings**, and starts nothing.

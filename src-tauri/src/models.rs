@@ -2428,6 +2428,25 @@ pub struct ReviewCount {
     pub awaiting: u32,
 }
 
+/// A repository's count of open pull requests waiting on the account's user,
+/// for its PRs tab (SPEC.md, Workspace → Pull requests). Counted from the
+/// cache; only repositories whose pull requests are tracked are listed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RepositoryReviewCount {
+    pub repository_id: String,
+    pub awaiting: u32,
+}
+
+/// The pull requests waiting on the account's user, by workspace and by
+/// repository, counted in one pass over the cache.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ReviewCounts {
+    pub workspaces: Vec<ReviewCount>,
+    pub repositories: Vec<RepositoryReviewCount>,
+}
+
 /// Emitted as `pr_changed` when a pull request was read anew or written.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]

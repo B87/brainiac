@@ -64,8 +64,10 @@ import { plural, splitPath } from "../lib/repo";
 import { useSidePanel } from "../lib/sidePanel";
 import { createLatest } from "../lib/stale";
 import { useExplanation } from "../lib/useExplanation";
+import { useNarrowerThan } from "../lib/width";
 import Dialog from "./Dialog";
 import DiffView, { type LineTarget } from "./DiffView";
+import FoldStrip, { useOverlay } from "./FoldStrip";
 import { Avatar } from "./HistoryTab";
 import {
   BulbIcon,
@@ -1252,6 +1254,11 @@ function FilesTab({
   explainSlot: HTMLElement | null;
 }) {
   const [showFiles, setShowFiles] = usePref("brainiac.pr.files", true);
+  // In a narrow window (SPEC.md, Main window) the list folds to a strip
+  // that slides it over the patch.
+  const [measureRoot, narrow] = useNarrowerThan(760);
+  const [overlay, setOverlay] = useOverlay();
+  const listInRow = showFiles && !narrow;
   const [ignoreWhitespace, setIgnoreWhitespace] = usePref(
     "brainiac.diff.ignoreWhitespace",
     false,
@@ -1407,6 +1414,11 @@ function FilesTab({
   const select = (f: ChangedFile) => {
     setSelectedPath(f.path);
     if (!isViewed(marks, f)) mark(f, true);
+  };
+  /** A click on a row; over the patch, it also folds the list away. */
+  const pick = (f: ChangedFile) => {
+    select(f);
+    setOverlay(false);
   };
   selectRef.current = (path) => {
     const f = list?.files.find((x) => x.path === path);
@@ -1610,9 +1622,23 @@ function FilesTab({
   );
 
   return (
-    <div className="flex min-h-0 flex-1">
-      {showFiles && (
-        <div className="flex w-72 shrink-0 flex-col border-r bg-panel-2">
+    <div ref={measureRoot} className="relative flex min-h-0 flex-1">
+      {narrow && (
+        <FoldStrip
+          label="Files"
+          expanded={overlay}
+          title="Show the changed files"
+          onClick={() => setOverlay(!overlay)}
+        />
+      )}
+      {(narrow ? overlay : showFiles) && (
+        <div
+          className={
+            narrow
+              ? "absolute inset-y-0 left-11 z-20 flex w-72 flex-col border-r bg-panel-2 shadow-xl"
+              : "flex w-72 shrink-0 flex-col border-r bg-panel-2"
+          }
+        >
           <div className="flex h-9 shrink-0 items-center gap-2 border-b pr-1.5 pl-3 text-[12px]">
             {list ? (
               <>
@@ -1637,7 +1663,8 @@ function FilesTab({
               className="btn btn-sm btn-ghost w-6 px-0"
               aria-label="Hide file list"
               title="Hide file list, giving the diff the full width"
-              onClick={() => setShowFiles(false)}
+              // Over the patch, hiding the list folds it to its strip again.
+              onClick={() => (narrow ? setOverlay(false) : setShowFiles(false))}
             >
               <SidebarIcon size={13} />
             </button>
@@ -1684,7 +1711,7 @@ function FilesTab({
                 selectedPath={selectedPath}
                 marks={marks}
                 counts={counts}
-                onSelect={select}
+                onSelect={pick}
                 onMark={mark}
               />
             )}
@@ -1695,7 +1722,7 @@ function FilesTab({
                 marks={marks}
                 counts={counts}
                 fileNotes={explained.fileNotes}
-                onSelect={select}
+                onSelect={pick}
                 onMark={mark}
               />
             )}
@@ -1710,7 +1737,7 @@ function FilesTab({
                   marks={marks}
                   counts={counts}
                   fileNotes={explained.fileNotes}
-                  onSelect={select}
+                  onSelect={pick}
                   onMark={mark}
                 />
               </details>
@@ -1726,7 +1753,7 @@ function FilesTab({
                   marks={marks}
                   counts={counts}
                   fileNotes={explained.fileNotes}
-                  onSelect={select}
+                  onSelect={pick}
                   onMark={mark}
                 />
               </details>
@@ -1759,16 +1786,18 @@ function FilesTab({
           }
           extra={
             <>
-              {!showFiles && (
+              {!listInRow && (
                 <>
-                  <button
-                    type="button"
-                    className="btn btn-sm"
-                    onClick={() => setShowFiles(true)}
-                  >
-                    <SidebarIcon size={13} />
-                    Show files
-                  </button>
+                  {!narrow && (
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      onClick={() => setShowFiles(true)}
+                    >
+                      <SidebarIcon size={13} />
+                      Show files
+                    </button>
+                  )}
                   {scopeControl}
                 </>
               )}

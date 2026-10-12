@@ -922,7 +922,7 @@ function LiveStatus({
 /** An ended run's header: how it ended, what it produced, and how long it took. */
 /**
  * An explain run's way to the explanation it wrote: its subject, where the
- * explanation is shown. A branch's is opened from Branches & tags, as in
+ * explanation is shown. A branch's is opened from Branches, as in
  * Settings → Explanations.
  */
 function OpenExplanation({ link }: { link: RunExplanation }) {
@@ -930,7 +930,7 @@ function OpenExplanation({ link }: { link: RunExplanation }) {
     return (
       <span
         className="text-[12px] text-muted"
-        title="Open it from Branches & tags → Changes against the default branch"
+        title="Open it from Branches → Changes against the default branch"
       >
         Explanation of a branch
       </span>

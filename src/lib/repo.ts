@@ -1,4 +1,5 @@
 /** Presentation helpers shared by the sidebar, dashboard, and repository viewer. */
+import { shortAgo } from "./format";
 import type {
   ChangeEntry,
   CommitFile,
@@ -68,6 +69,65 @@ export function upstreamTarget(upstream: string, branch: string): string {
   if (cut > 0 && upstream.slice(cut + 1) === branch)
     return upstream.slice(0, cut);
   return upstream;
+}
+
+/** Fetched data older than this is shown as stale (SPEC.md, Fetching). */
+export const STALE_FETCH_MS = 2 * 24 * 3600 * 1000;
+
+/** What the header's branch control says (SPEC.md, Main window v0.1). */
+export type BranchStatus = {
+  /** The branch, or "detached at abc1234". */
+  name: string;
+  detached: boolean;
+  /** The upstream, shown only when its branch has another name than the local one. */
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  /** One short phrase after the counts: the fetch's age or another state. */
+  note: { text: string; tone: "muted" | "warn" | "error" } | null;
+};
+
+export function branchStatus(
+  r: RepositorySummary,
+  fetching: boolean,
+  now = Date.now(),
+): BranchStatus {
+  const head = r.head;
+  const detached = head?.kind === "detached";
+  const name = detached
+    ? `detached at ${head?.commit_id?.slice(0, 7) ?? "?"}`
+    : headLabel(r);
+  const u = r.upstream;
+  const branch = head?.kind === "branch" ? head.branch : null;
+  const upstream =
+    u && branch && upstreamTarget(u.ref, branch) === u.ref ? u.ref : null;
+  return {
+    name,
+    detached,
+    upstream,
+    ahead: u?.ahead ?? 0,
+    behind: u?.behind ?? 0,
+    note: branchNote(r, fetching, now),
+  };
+}
+
+function branchNote(
+  r: RepositorySummary,
+  fetching: boolean,
+  now: number,
+): BranchStatus["note"] {
+  if (fetching) return { text: "fetching…", tone: "muted" };
+  const code = r.fetch_error?.code;
+  if (code === "UNAUTHENTICATED" || code === "PERMISSION_DENIED")
+    return { text: "needs sign-in", tone: "error" };
+  if (code === "TIMEOUT") return { text: "fetch timed out", tone: "error" };
+  if (code) return { text: "fetch failed", tone: "error" };
+  if (r.head?.kind === "branch" && !r.upstream)
+    return { text: "no upstream", tone: "muted" };
+  if (!r.last_fetch_at) return null;
+  if (now - Date.parse(r.last_fetch_at) > STALE_FETCH_MS)
+    return { text: `fetched ${shortAgo(r.last_fetch_at, now)}`, tone: "warn" };
+  return { text: shortAgo(r.last_fetch_at, now), tone: "muted" };
 }
 
 export type KindTone = "mod" | "add" | "del" | "ren" | "other";

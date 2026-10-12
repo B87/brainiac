@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { CommitFile, CommitSummary } from "./ipc";
+import type { CommitFile, CommitSummary, RepositorySummary } from "./ipc";
 import {
   avatarTone,
   barWidths,
+  branchStatus,
   compareVersionsDesc,
   dayLabel,
   decorations,
@@ -175,5 +176,93 @@ describe("relocation", () => {
     expect(relocatedNotice("app", "/work/app-2", ["a", "b"])).toBe(
       "“app” now points to /work/app-2, with 2 repositories inside it",
     );
+  });
+});
+
+describe("branchStatus", () => {
+  const now = Date.parse("2026-10-12T12:00:00Z");
+  const repo = (over: Partial<RepositorySummary> = {}): RepositorySummary => ({
+    id: "r1",
+    name: "app",
+    canonical_root: "/work/app",
+    display_path: "/work/app",
+    state: "fresh",
+    last_checked_at: null,
+    last_commit_at: null,
+    head: { kind: "branch", branch: "feature/login", commit_id: "abc1234def" },
+    counts: null,
+    upstream: { ref: "origin/feature/login", ahead: 2, behind: 0 },
+    error: null,
+    last_tab: null,
+    last_fetch_at: "2026-10-12T11:56:00Z",
+    fetch_error: null,
+    remote_url: null,
+    forge: null,
+    ...over,
+  });
+
+  it("hides an upstream of the same name and shows the fetch's age", () => {
+    const s = branchStatus(repo(), false, now);
+    expect(s.name).toBe("feature/login");
+    expect(s.upstream).toBeNull();
+    expect(s.ahead).toBe(2);
+    expect(s.note).toEqual({ text: "4m", tone: "muted" });
+  });
+
+  it("names an upstream with another branch name", () => {
+    const s = branchStatus(
+      repo({ upstream: { ref: "origin/release/v1", ahead: 0, behind: 3 } }),
+      false,
+      now,
+    );
+    expect(s.upstream).toBe("origin/release/v1");
+    expect(s.behind).toBe(3);
+  });
+
+  it("warns when the last fetch is stale", () => {
+    const s = branchStatus(
+      repo({ last_fetch_at: "2026-10-09T12:00:00Z" }),
+      false,
+      now,
+    );
+    expect(s.note).toEqual({ text: "fetched 3d", tone: "warn" });
+  });
+
+  it("puts fetching and a failed fetch before the age", () => {
+    expect(branchStatus(repo(), true, now).note?.text).toBe("fetching…");
+    const failed = (code: "UNAUTHENTICATED" | "TIMEOUT" | "IO") =>
+      branchStatus(
+        repo({
+          fetch_error: { code, message: "x", retryable: true, details: null },
+        }),
+        false,
+        now,
+      ).note;
+    expect(failed("UNAUTHENTICATED")).toEqual({
+      text: "needs sign-in",
+      tone: "error",
+    });
+    expect(failed("TIMEOUT")?.text).toBe("fetch timed out");
+    expect(failed("IO")?.text).toBe("fetch failed");
+  });
+
+  it("says when there is no upstream, and names a detached HEAD by its commit", () => {
+    expect(branchStatus(repo({ upstream: null }), false, now).note).toEqual({
+      text: "no upstream",
+      tone: "muted",
+    });
+    const detached = branchStatus(
+      repo({
+        head: { kind: "detached", branch: null, commit_id: "abc1234def" },
+        upstream: null,
+      }),
+      false,
+      now,
+    );
+    expect(detached).toMatchObject({
+      name: "detached at abc1234",
+      detached: true,
+      upstream: null,
+    });
   });
 });

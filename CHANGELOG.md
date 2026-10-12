@@ -11,6 +11,22 @@ into the release's section.
 
 ## [Unreleased]
 
+- A run cancelled while its run controller was down no longer says "Cancel requested" forever once the controller is back and the run has ended.
+- A repository's header is quieter: the repository and its branch read as one breadcrumb, and the branch always shows ahead, behind, and how fresh the last fetch is, with the upstream and Fetch now in its popover.
+- Open in opens your editor in one click; its menu reveals the folder or copies its path. Fetch now and Refresh moved to the ⋯ menu.
+- ⇧⌘F fetches now and ⇧⌘O opens the repository in your editor.
+- ⌘B collapses the sidebar to a rail of icons instead of hiding it, so every section stays one click away.
+- The repository and workspace tabs are shorter (Branches, PRs) and become one menu in a narrow window; PRs counts the pull requests waiting on your review.
+- History marks when you are viewing another branch or tag, with Back to HEAD.
+- The status bar names the right shortcut for the repository tabs (⌘1–5).
+- All repositories has a Workspace menu in its header (All repositories › All workspaces) to show one workspace's repositories, or those in none, and a Workspace column; its totals moved into the header, so the list starts higher.
+- With the sidebar collapsed, the title bar runs across the rail, so the window's buttons no longer straddle two bars.
+- Drag the edge of the list in History and Changes, or of the ref history in Branches, to give it more or less room; Brainiac remembers each width.
+- Brainiac works in half and three-quarter windows: tables drop their least useful columns, headers and toolbars shorten instead of overlapping or wrapping, and History, Changes, and a pull request's files fold their lists to a strip that slides over the patch.
+- The patch toolbar fits a narrow pane with a View menu, and a commit's file tree becomes a menu beside the file stepper when there is no room for it.
+- The commit list no longer scrolls sideways when a commit has long ref names.
+- Databases' tabs no longer sit under the window's buttons when the sidebar is collapsed.
+- The close button of All repositories' side panel now hides the panel, as ⌥⌘B does.
 - In a long note, the cursor no longer ends up partly below the bottom edge after Page Up or Page Down, or out of view after switching to Live Preview.
 
 ## [0.6.2] - 2026-10-11

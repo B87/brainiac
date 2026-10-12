@@ -19,9 +19,11 @@ import {
 } from "../lib/repo";
 import { createLatest } from "../lib/stale";
 import { useDiff } from "../lib/useDiff";
+import { useNarrowerThan } from "../lib/width";
 import DiffView from "./DiffView";
 import { Avatar } from "./HistoryTab";
-import { CopyIcon, FolderIcon, SidebarIcon } from "./icons";
+import { ChevronDown, CopyIcon, FolderIcon, SidebarIcon } from "./icons";
+import Popover from "./Popover";
 import {
   type FileNoteCount,
   FileNotes,
@@ -63,6 +65,10 @@ export default function CommitDetails({
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [fullBody, setFullBody] = useState(false);
   const [showFiles, setShowFiles] = usePref("brainiac.history.files", true);
+  // Narrow (SPEC.md, Main window), the tree gives the patch its width and a
+  // picker beside the stepper lists the files instead.
+  const [measure, narrow] = useNarrowerThan(720);
+  const treeShown = showFiles && !narrow;
   const detailLatest = useRef(createLatest()).current;
 
   useEffect(() => {
@@ -148,10 +154,13 @@ export default function CommitDetails({
   };
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex max-h-[45%] shrink-0 flex-col gap-2.5 overflow-y-auto border-b px-[22px] pt-4 pb-3.5">
+    <div ref={measure} className="flex min-h-0 flex-1 flex-col">
+      <div className="@container flex max-h-[45%] shrink-0 flex-col gap-2.5 overflow-y-auto border-b px-[22px] pt-4 pb-3.5 @max-[760px]:gap-2 @max-[760px]:px-4 @max-[760px]:pt-3 @max-[760px]:pb-2.5">
         <div className="flex items-start gap-4">
-          <h1 className="selectable m-0 flex-1 text-[17px] leading-snug font-semibold">
+          <h1
+            className="selectable m-0 line-clamp-2 flex-1 text-[17px] leading-snug font-semibold @max-[760px]:text-[15px]"
+            title={commit.subject}
+          >
             {commit.subject}
           </h1>
           <button
@@ -171,7 +180,7 @@ export default function CommitDetails({
             {commit.author_name}
           </span>
           <span>committed {relativeTime(commit.committed_at)}</span>
-          <span className="text-muted">
+          <span className="text-muted @max-[760px]:hidden">
             {absoluteTime(commit.committed_at)}
           </span>
           {committerDiffers && (
@@ -198,7 +207,24 @@ export default function CommitDetails({
           {isMerge && (
             <span className="flex items-center gap-1.5">
               <span className="text-muted">Compare with</span>
-              <span className="seg" role="tablist" aria-label="Compared parent">
+              {/* Narrow, the parents are one menu. */}
+              <select
+                className="btn btn-sm mono hidden @max-[760px]:inline-flex"
+                aria-label="Compared parent"
+                value={parentIndex}
+                onChange={(e) => setParentIndex(Number(e.target.value))}
+              >
+                {commit.parent_ids.map((p, i) => (
+                  <option key={p} value={i}>
+                    Parent {i + 1} · {p.slice(0, 7)}
+                  </option>
+                ))}
+              </select>
+              <span
+                className="seg @max-[760px]:hidden"
+                role="tablist"
+                aria-label="Compared parent"
+              >
                 {commit.parent_ids.map((p, i) => (
                   <button
                     type="button"
@@ -216,11 +242,27 @@ export default function CommitDetails({
             </span>
           )}
           {commit.decorations.length > 0 && <Sep />}
-          {decorations(commit).map((d) => (
-            <span key={d.label} className="deco" data-tone={d.tone}>
+          {/* Narrow, the first ref and how many more. */}
+          {decorations(commit).map((d, i) => (
+            <span
+              key={d.label}
+              className={`deco ${i > 0 ? "@max-[760px]:hidden" : ""}`}
+              data-tone={d.tone}
+            >
               {d.label}
             </span>
           ))}
+          {commit.decorations.length > 1 && (
+            <span
+              className="mono hidden text-[11px] text-muted @max-[760px]:inline"
+              title={decorations(commit)
+                .map((d) => d.label)
+                .join("\n")}
+            >
+              +{commit.decorations.length - 1}{" "}
+              {commit.decorations.length === 2 ? "ref" : "refs"}
+            </span>
+          )}
         </div>
         {bodyLines.length > 0 && (
           <div className="selectable max-w-[760px] text-[12.5px] leading-normal whitespace-pre-wrap text-fg-3">
@@ -244,7 +286,7 @@ export default function CommitDetails({
       </div>
 
       <div className="flex min-h-0 flex-1">
-        {showFiles && (
+        {treeShown && (
           <FileTree
             detail={detail}
             parentIndex={parentIndex}
@@ -284,15 +326,23 @@ export default function CommitDetails({
             annotate={explained.annotate}
             extra={
               <>
-                {!showFiles && (
-                  <button
-                    type="button"
-                    className="btn btn-sm"
-                    onClick={() => setShowFiles(true)}
-                  >
-                    <SidebarIcon size={13} />
-                    Show files
-                  </button>
+                {narrow ? (
+                  <FilePicker
+                    files={files}
+                    selectedPath={selectedPath}
+                    onSelect={setSelectedPath}
+                  />
+                ) : (
+                  !showFiles && (
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      onClick={() => setShowFiles(true)}
+                    >
+                      <SidebarIcon size={13} />
+                      Show files
+                    </button>
+                  )
                 )}
                 {explained.toolbar}
               </>
@@ -315,6 +365,85 @@ export default function CommitDetails({
         {explained.panel}
       </div>
       {explained.dialog}
+    </div>
+  );
+}
+
+/** The files as a menu, where the tree has no room: [ and ] still step. */
+function FilePicker({
+  files,
+  selectedPath,
+  onSelect,
+}: {
+  files: CommitFile[];
+  selectedPath: string | null;
+  onSelect: (path: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  if (files.length === 0) return null;
+  const current = selectedPath ? splitPath(selectedPath).name : "";
+  return (
+    <div className="relative min-w-0">
+      <button
+        type="button"
+        className="btn btn-sm max-w-[280px] min-w-0"
+        aria-label={`Files: ${plural(files.length, "file")}, showing ${current}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+      >
+        <span className="shrink-0">{plural(files.length, "file")}</span>
+        {current && (
+          <span className="mono min-w-0 truncate text-[11.5px] font-semibold">
+            · {current}
+          </span>
+        )}
+        <ChevronDown size={10} className="shrink-0 text-muted" />
+      </button>
+      {open && (
+        <Popover
+          onClose={() => setOpen(false)}
+          className="w-[360px] max-w-[80vw]"
+        >
+          {files.map((f) => {
+            const { dir, name } = splitPath(f.path);
+            return (
+              <button
+                key={f.path}
+                type="button"
+                role="menuitemradio"
+                aria-checked={f.path === selectedPath}
+                className="menu-item"
+                title={f.path}
+                onClick={() => {
+                  setOpen(false);
+                  onSelect(f.path);
+                }}
+              >
+                <span
+                  className="kind w-3.5 shrink-0 text-center"
+                  data-tone={kindTone(f.kind)}
+                >
+                  {KIND_LETTER[f.kind]}
+                </span>
+                <span className="mono min-w-0 flex-1 truncate text-[12px]">
+                  <span className="text-muted">{dir}</span>
+                  {name}
+                </span>
+                {f.additions !== null && (
+                  <span className="shrink-0 text-[11.5px] text-add">
+                    +{f.additions}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+          <div className="menu-sep" />
+          <div className="px-2.5 py-1 text-[11.5px] text-muted">
+            [ and ] move between files
+          </div>
+        </Popover>
+      )}
     </div>
   );
 }

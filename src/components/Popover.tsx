@@ -8,11 +8,16 @@ export default function Popover({
   onClose,
   align = "left",
   className = "",
+  role = "menu",
+  label,
   children,
 }: {
   onClose: () => void;
   align?: "left" | "right";
   className?: string;
+  /** "dialog" for a panel of details rather than a list of actions. */
+  role?: "menu" | "dialog";
+  label?: string;
   children: ReactNode;
 }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -34,7 +39,9 @@ export default function Popover({
   return (
     <div
       ref={ref}
-      role="menu"
+      role={role}
+      {...(label ? { "aria-label": label } : {})}
+      data-popover
       className={`menu top-full mt-1 ${align === "right" ? "right-0" : "left-0"} ${className}`}
     >
       {children}

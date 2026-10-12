@@ -2184,19 +2184,19 @@ export class FakeBackend {
       case "update_workspace_pull_requests":
         workspace.pull_requests = !!args.enabled;
         return workspace;
-      case "get_review_counts":
-        return workspace.pull_requests
-          ? [
-              {
-                workspace_id: workspace.id,
-                awaiting: pullRequests.filter(
-                  (p) =>
-                    p.awaiting_my_review &&
-                    (p.state === "open" || p.state === "draft"),
-                ).length,
-              },
-            ]
-          : [];
+      case "get_review_counts": {
+        if (!workspace.pull_requests)
+          return { workspaces: [], repositories: [] };
+        // Every fake pull request is the one repository's.
+        const awaiting = pullRequests.filter(
+          (p) =>
+            p.awaiting_my_review && (p.state === "open" || p.state === "draft"),
+        ).length;
+        return {
+          workspaces: [{ workspace_id: workspace.id, awaiting }],
+          repositories: [{ repository_id: repository.id, awaiting }],
+        };
+      }
       case "set_repository_forge": {
         const forge = (
           args.request as {
@@ -2867,6 +2867,16 @@ export class FakeBackend {
         return this.nextAsk ? "Yes" : "No";
       }
       case "plugin:updater|check":
+        return null;
+      case "fetch_repository":
+        return {
+          repository_id: args.repositoryId,
+          remote: "origin",
+          fetched_at: NOW,
+          moved: [],
+        };
+      case "open_in_editor":
+      case "reveal_in_finder":
         return null;
       default:
         if (cmd.startsWith("plugin:")) return null;

@@ -770,7 +770,7 @@ export function StoredList({
                       ) : (
                         <span
                           className="text-[12px] text-muted"
-                          title="Open it from Branches & tags → Changes against the default branch"
+                          title="Open it from Branches → Changes against the default branch"
                         >
                           Branch
                         </span>

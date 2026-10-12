@@ -787,7 +787,14 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
         Some("CmdOrCtrl+O"),
     )?;
     let refresh = MenuItem::with_id(app, "refresh", "Refresh", true, Some("CmdOrCtrl+R"))?;
-    let fetch = MenuItem::with_id(app, "fetch", "Fetch Now", true, None::<&str>)?;
+    let fetch = MenuItem::with_id(app, "fetch", "Fetch Now", true, Some("Shift+CmdOrCtrl+F"))?;
+    let open_in_editor = MenuItem::with_id(
+        app,
+        "open_in_editor",
+        "Open in Editor",
+        true,
+        Some("Shift+CmdOrCtrl+O"),
+    )?;
     let palette = MenuItem::with_id(
         app,
         "palette",
@@ -812,7 +819,7 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
     let toggle_sidebar = MenuItem::with_id(
         app,
         "toggle_sidebar",
-        "Show or Hide Sidebar",
+        "Collapse or Expand Sidebar",
         true,
         Some("CmdOrCtrl+B"),
     )?;
@@ -907,6 +914,7 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
             &PredefinedMenuItem::separator(app)?,
             &refresh,
             &fetch,
+            &open_in_editor,
             &palette,
             &PredefinedMenuItem::separator(app)?,
             &toggle_sidebar,

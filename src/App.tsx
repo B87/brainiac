@@ -139,6 +139,10 @@ export default function App() {
   const [reviewCounts, setReviewCounts] = useState<ReadonlyMap<string, number>>(
     new Map(),
   );
+  /** The same count for each tracked repository, for its PRs tab. */
+  const [repoReviewCounts, setRepoReviewCounts] = useState<
+    ReadonlyMap<string, number>
+  >(() => new Map());
   /** Databases stays mounted once opened, so its tabs keep their results. */
   const [dbMounted, setDbMounted] = useState(view.kind === "databases");
   const [dbRequest, setDbRequest] = useState<DatabasesRequest | null>(null);
@@ -225,7 +229,12 @@ export default function App() {
   const reloadReviewCounts = useCallback(async () => {
     try {
       const counts = await ipc.getReviewCounts();
-      setReviewCounts(new Map(counts.map((c) => [c.workspace_id, c.awaiting])));
+      setReviewCounts(
+        new Map(counts.workspaces.map((c) => [c.workspace_id, c.awaiting])),
+      );
+      setRepoReviewCounts(
+        new Map(counts.repositories.map((c) => [c.repository_id, c.awaiting])),
+      );
     } catch {
       // The Pull requests tab reports the provider's problem itself.
     }
@@ -682,9 +691,15 @@ export default function App() {
     void fetchRepositories(
       scope.filter((r) => r.state !== "missing").map((r) => r.id),
     );
+  /** ⇧⌘O: the open repository in the editor; elsewhere, nothing. */
+  const openRepoInEditor = () => {
+    if (view.kind === "repository")
+      void ipc.openInEditor(view.id).catch((e) => setBanner(errorMessage(e)));
+  };
   const actions = useRef({
     refresh,
     fetchScope,
+    openRepoInEditor,
     newNote,
     newTask,
     exportNow,
@@ -694,6 +709,7 @@ export default function App() {
   actions.current = {
     refresh,
     fetchScope,
+    openRepoInEditor,
     newNote,
     newTask,
     exportNow,
@@ -752,6 +768,7 @@ export default function App() {
       if (e.id === "open_repository") setAddMode({ kind: "choose" });
       if (e.id === "refresh") void actions.current.refresh();
       if (e.id === "fetch") actions.current.fetchScope();
+      if (e.id === "open_in_editor") actions.current.openRepoInEditor();
       if (e.id === "palette") setPaletteOpen(true);
       if (e.id === "check_updates") setUpdateTick((t) => t + 1);
       if (e.id === "new_note") void actions.current.newNote();
@@ -854,7 +871,7 @@ export default function App() {
             />
             <main
               className="flex min-w-0 flex-1 flex-col bg-app"
-              data-sidebar={sidebarOpen ? undefined : "hidden"}
+              data-sidebar={sidebarOpen ? undefined : "rail"}
             >
               {banners}
               {!snapshot ? (
@@ -937,6 +954,7 @@ export default function App() {
                   pinned={isPinned("repository", selected.id)}
                   focus={view.kind === "repository" ? view.focus : undefined}
                   fetching={fetching.has(selected.id)}
+                  awaitingReview={repoReviewCounts.get(selected.id) ?? 0}
                   onFetch={() => void fetchRepositories([selected.id])}
                   onTogglePin={() => togglePin("repository", selected.id)}
                   onPalette={() => setPaletteOpen(true)}
@@ -970,6 +988,7 @@ export default function App() {
                   workspace={workspace}
                   pinned={!!workspace && isPinned("workspace", workspace.id)}
                   discovered={discovered}
+                  onOpenWorkspace={(id) => showView({ kind: "workspace", id })}
                   onOpen={(id) =>
                     showView({
                       kind: "repository",
