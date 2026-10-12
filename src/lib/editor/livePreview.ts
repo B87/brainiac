@@ -262,7 +262,8 @@ function previewPlugin(resolveImage: (src: string) => string | null) {
 
 /**
  * Keeps the caret on screen when content above it changes height after it was
- * shown: an image finishing loading, or lines measured for the first time.
+ * shown: an image finishing loading, Live Preview drawing a part of the note
+ * once it is parsed, or lines measured for the first time.
  * CodeMirror keeps the top of the view steady, which pushes a caret near the
  * bottom out of sight. A caret the user scrolled away from is left alone.
  */
@@ -272,15 +273,24 @@ const caretFollow = ViewPlugin.fromClass(
     /** The caret's place at the last measurement, to tell a scroll from
      * content changing height. */
     last: CaretPlace | null = null;
+    /** The next frame's look, once CodeMirror's own scrolling is done. */
+    later = -1;
 
     constructor(readonly view: EditorView) {}
 
     update(u: ViewUpdate) {
       if (u.transactions.some((tr) => tr.scrollIntoView)) {
         this.visible = true;
-        this.view.requestMeasure({ read: () => this.measure() });
+        this.view.requestMeasure({
+          read: () => this.measure(),
+          write: () => this.followLater(),
+        });
       } else if (u.selectionSet || u.docChanged) this.check();
       else if (u.heightChanged) this.follow();
+    }
+
+    destroy() {
+      cancelAnimationFrame(this.later);
     }
 
     measure() {
@@ -326,7 +336,19 @@ const caretFollow = ViewPlugin.fromClass(
       });
     }
 
-    follow() {
+    /**
+     * CodeMirror scrolls after this frame's measurements, which can leave the
+     * caret partly past an edge: Page Up and Page Down keep the caret's top
+     * where it was though the new line's caret can be taller, and switching
+     * modes keeps the top line, undoing `follow`. Look once more after that.
+     */
+    followLater() {
+      cancelAnimationFrame(this.later);
+      this.later = requestAnimationFrame(() => this.follow(false));
+    }
+
+    /** Bring the caret back on screen, and look again in the next frame. */
+    follow(again = true) {
       if (
         !this.visible ||
         this.view.root.activeElement !== this.view.contentDOM
@@ -337,6 +359,7 @@ const caretFollow = ViewPlugin.fromClass(
         write: (place) => {
           const over = place ? overflow(place) : 0;
           if (over) this.view.scrollDOM.scrollTop += over + Math.sign(over) * 4;
+          if (again) this.followLater();
         },
       });
     }
