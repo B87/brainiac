@@ -11,6 +11,8 @@ into the release's section.
 
 ## [Unreleased]
 
+- In a long note, the cursor no longer ends up partly below the bottom edge after Page Up or Page Down, or out of view after switching to Live Preview.
+
 ## [0.6.2] - 2026-10-11
 
 - A branch comparison marks binary files, as a run's result does.

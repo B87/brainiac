@@ -277,34 +277,71 @@ test("scrolling a long note with images never jumps against the scroll", async (
   expect(against).toBe(0);
 });
 
+/** Fails the test at `step` unless the caret is on screen. An image can
+ * finish loading just after a move and push the caret down for a frame or two
+ * before the editor scrolls it back. A busy CI runner decodes images slowly,
+ * so allow seconds; polling often keeps a passing run fast. */
+const caretOnScreen = (page: Page, step: string) =>
+  expect
+    .poll(() => page.evaluate(() => window.ed.caretOnScreen()), {
+      message: step,
+      timeout: 3000,
+      intervals: [50, 100, 250],
+    })
+    .toBe(true);
+
 test("the cursor stays on screen when jumping, paging, and passing images", async ({
   page,
 }) => {
   await load(page, long);
-  // An image can finish loading just after a move and push the caret down
-  // for a frame or two before the editor scrolls it back. A busy CI runner
-  // decodes images slowly, so allow seconds; polling often keeps a passing
-  // run fast.
-  const onScreen = (step: string) =>
-    expect
-      .poll(() => page.evaluate(() => window.ed.caretOnScreen()), {
-        message: step,
-        timeout: 3000,
-        intervals: [50, 100, 250],
-      })
-      .toBe(true);
   await page.keyboard.press("Meta+ArrowDown");
-  await onScreen("end of note");
+  await caretOnScreen(page, "end of note");
   for (let i = 0; i < 6; i++) {
     await page.keyboard.press("PageUp");
-    await onScreen(`PageUp ${i + 1}`);
+    await caretOnScreen(page, `PageUp ${i + 1}`);
   }
   for (let i = 0; i < 40; i++) {
     await page.keyboard.press("ArrowDown");
-    await onScreen(`ArrowDown ${i + 1}`);
+    await caretOnScreen(page, `ArrowDown ${i + 1}`);
   }
   await page.keyboard.type("typed");
-  await onScreen("typing");
+  await caretOnScreen(page, "typing");
+});
+
+test("the cursor stays on screen when Live Preview draws the note late", async ({
+  page,
+}) => {
+  // A slow machine parses a long note slowly, so Live Preview can draw its
+  // end only after the cursor got there. The caret is then brought back just
+  // above the bottom edge, and Page Up, which keeps the caret's top where it
+  // was, could leave a taller caret on a blank line partly below it.
+  const images = () =>
+    page.evaluate(() => document.querySelectorAll(".cm-md-image").length);
+  await page.evaluate(() => window.ed.holdParsing());
+  await load(page, long);
+  await page.keyboard.press("Meta+ArrowDown");
+  await caretOnScreen(page, "end of note");
+  expect(await images()).toBe(0);
+  await page.keyboard.press("PageUp");
+  await page.evaluate(() => window.ed.parse());
+  expect(await images()).toBeGreaterThan(0);
+  await caretOnScreen(page, "drawn");
+  for (let i = 0; i < 6; i++) {
+    await page.keyboard.press("PageUp");
+    await caretOnScreen(page, `PageUp ${i + 2}`);
+  }
+});
+
+test("the cursor stays on screen when switching to Live Preview", async ({
+  page,
+}) => {
+  // Switching keeps the top line, which used to undo bringing the caret back
+  // when lines above it grew.
+  await load(page, long, false);
+  await page.keyboard.press("Meta+ArrowDown");
+  await page.keyboard.press("PageUp");
+  await page.evaluate(() => window.ed.setLive(true));
+  await caretOnScreen(page, "Live Preview on");
 });
 
 test("switching modes keeps the selection and the top line", async ({
