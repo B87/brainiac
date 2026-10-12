@@ -49,7 +49,7 @@ function hints(view: View): Array<[string, string]> {
       ["J K", "rows"],
       ["[ ]", "files"],
       ["N P", "hunks"],
-      ["⌘1–4", "tabs"],
+      ["⌘1–5", "tabs"],
       ["/", "filter"],
     ];
   if (view.kind === "workspace")
@@ -191,7 +191,9 @@ export default function StatusBar({
         </span>
       )}
       {snapshot && selected && (
-        <span>Watching {snapshot.repositories.length} repositories</span>
+        <span title="Repositories Brainiac keeps up to date">
+          Watching {snapshot.repositories.length}
+        </span>
       )}
       {snapshot?.git.version && (
         <span title={snapshot.git.version}>

@@ -120,7 +120,7 @@ function dispatch(e: KeyboardEvent) {
   if (!binding) return;
   const ctx: KeyContext = {
     modalOpen: !!document.querySelector('[aria-modal="true"]'),
-    menuOpen: !!document.querySelector('[role="menu"]'),
+    menuOpen: !!document.querySelector('[role="menu"], [data-popover]'),
     arrowsOwned,
   };
   const target = e.target instanceof Element ? (e.target as HTMLElement) : null;

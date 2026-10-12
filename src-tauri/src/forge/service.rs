@@ -33,8 +33,9 @@ use crate::models::{
     FetchResult, ForgeKind, ListPullRequestsRequest, MergeOptions, MergeOutcome, MergeRequest,
     PullRequest, PullRequestChangeOrigin, PullRequestChangedEvent, PullRequestChecks,
     PullRequestDiff, PullRequestDiffRequest, PullRequestFiles, PullRequestGroup, PullRequestList,
-    PullRequestState, ReplyRequest, RepositorySummary, ResolveThreadRequest, ReviewCount,
-    ReviewDrafts, ReviewVerdict, SaveReviewDraftRequest, SubmitReviewRequest, Thread, WriteOutcome,
+    PullRequestState, ReplyRequest, RepositoryReviewCount, RepositorySummary, ResolveThreadRequest,
+    ReviewCount, ReviewCounts, ReviewDrafts, ReviewVerdict, SaveReviewDraftRequest,
+    SubmitReviewRequest, Thread, WriteOutcome,
 };
 use crate::workspaces::RepositoryService;
 
@@ -1524,48 +1525,70 @@ impl PullRequestService {
     }
 
     /// How many open pull requests wait on the account's user in each
-    /// workspace with pull requests on, for the sidebar. Counted from the
-    /// cache only, so it costs no request: the lists are kept fresh by
-    /// `sync_tick`, and `pr_changed` tells the UI when to count again.
-    pub async fn review_counts(&self) -> AppResult<Vec<ReviewCount>> {
-        let mut counts = Vec::new();
+    /// workspace with pull requests on, for the sidebar, and in each tracked
+    /// repository, for its PRs tab. Counted from the cache only, so it costs
+    /// no request: the lists are kept fresh by `sync_tick`, and `pr_changed`
+    /// tells the UI when to count again.
+    pub async fn review_counts(&self) -> AppResult<ReviewCounts> {
+        // The hosted repository of each tracked checkout, as (id, forge).
+        let checkouts: Vec<(String, String)> = self
+            .repositories
+            .tracked_forges()
+            .await?
+            .into_iter()
+            .filter_map(|(row, _)| tracked(&row).map(|t| (row.id, t.forge.to_string())))
+            .collect();
+        let mut forges: Vec<String> = checkouts.iter().map(|(_, f)| f.clone()).collect();
+        forges.sort();
+        forges.dedup();
+        // Each hosted repository is counted once, however many checkouts share it.
+        let by_forge: HashMap<String, u32> = self
+            .cache
+            .call(move |conn| {
+                let mut counts = HashMap::new();
+                for forge in forges {
+                    let n = cache::list(conn, &forge, false)?
+                        .iter()
+                        .filter(|pr| pr.awaiting_my_review)
+                        .count() as u32;
+                    counts.insert(forge, n);
+                }
+                Ok(counts)
+            })
+            .await?;
+        let awaiting = |forge: &str| by_forge.get(forge).copied().unwrap_or(0);
+
+        let repositories = checkouts
+            .iter()
+            .map(|(id, forge)| RepositoryReviewCount {
+                repository_id: id.clone(),
+                awaiting: awaiting(forge),
+            })
+            .collect();
+        let mut workspaces = Vec::new();
         for ws in self.repositories.workspaces().await? {
             if !ws.pull_requests {
                 continue;
             }
             // Two checkouts of one repository share its pull requests: count
             // each hosted repository once.
-            let mut forges: Vec<String> = Vec::new();
+            let mut seen: Vec<&str> = Vec::new();
             for id in ws.members.iter().filter_map(|m| m.repository_id.as_ref()) {
-                let Ok(row) = self.repositories.row(id).await else {
-                    continue;
-                };
-                if let Some(t) = tracked(&row) {
-                    let forge = t.forge.to_string();
-                    if !forges.contains(&forge) {
-                        forges.push(forge);
+                if let Some((_, forge)) = checkouts.iter().find(|(c, _)| c == id) {
+                    if !seen.contains(&forge.as_str()) {
+                        seen.push(forge);
                     }
                 }
             }
-            let awaiting = self
-                .cache
-                .call(move |conn| {
-                    let mut n = 0u32;
-                    for forge in &forges {
-                        n += cache::list(conn, forge, false)?
-                            .iter()
-                            .filter(|pr| pr.awaiting_my_review)
-                            .count() as u32;
-                    }
-                    Ok(n)
-                })
-                .await?;
-            counts.push(ReviewCount {
+            workspaces.push(ReviewCount {
                 workspace_id: ws.id,
-                awaiting,
+                awaiting: seen.iter().map(|f| awaiting(f)).sum(),
             });
         }
-        Ok(counts)
+        Ok(ReviewCounts {
+            workspaces,
+            repositories,
+        })
     }
 
     /// A fetch moved branches on the remote: the open pull requests whose

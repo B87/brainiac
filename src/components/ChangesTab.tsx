@@ -14,6 +14,7 @@ import {
 import { useDiff } from "../lib/useDiff";
 import DiffView from "./DiffView";
 import { ChevronDown, ChevronRight, SearchIcon } from "./icons";
+import ResizeEdge, { LIST_BOUNDS, usePaneWidth } from "./ResizeEdge";
 
 type Props = {
   repositoryId: string;
@@ -67,6 +68,7 @@ export default function ChangesTab({
   onError,
   onOpenInEditor,
 }: Props) {
+  const listPane = usePaneWidth("brainiac.width.changes", LIST_BOUNDS);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
   const [folded, setFolded] = usePref<string[]>("brainiac.changes.folded", []);
@@ -150,7 +152,8 @@ export default function ChangesTab({
     <div className="flex min-h-0 flex-1">
       <section
         aria-label="Changed files"
-        className="relative flex w-[360px] shrink-0 flex-col border-r bg-panel"
+        className="relative flex shrink-0 flex-col border-r bg-panel"
+        style={{ width: listPane.width }}
       >
         {refreshing && changes && <div className="progress-line" />}
         <div className="flex flex-col gap-2 border-b px-3 py-2.5">
@@ -261,6 +264,11 @@ export default function ChangesTab({
             );
           })}
         </div>
+        <ResizeEdge
+          pane={listPane}
+          side="right"
+          label="Resize the list of changed files"
+        />
       </section>
       <section aria-label="Diff" className="flex min-w-0 flex-1 flex-col">
         <DiffView

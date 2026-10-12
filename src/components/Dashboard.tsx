@@ -12,6 +12,7 @@ import {
   type WorkspaceMember,
 } from "../lib/ipc";
 import { useKeys } from "../lib/keys";
+import { usePref } from "../lib/prefs";
 import {
   headLabel,
   KIND_LETTER,
@@ -53,6 +54,8 @@ type Props = {
   /** New repositories found by the last rescan, keyed by workspace ID. */
   discovered: Discovered | null;
   onOpen: (repositoryId: string) => void;
+  /** All repositories: a workspace's own dashboard. */
+  onOpenWorkspace: (workspaceId: string) => void;
   onPalette: () => void;
   onRefreshAll: () => void;
   onAdd: () => void;
@@ -105,6 +108,12 @@ export default function Dashboard(props: Props) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  /** All repositories only: every workspace, one of them, or none ("none"). */
+  const [wsFilter, setWsFilter] = usePref<string>(
+    "brainiac.allRepositories.workspace",
+    "all",
+  );
+  const [wsMenuOpen, setWsMenuOpen] = useState(false);
   const queryRef = useRef<HTMLInputElement>(null);
   const tab: WorkspaceTab = workspace ? props.tab : "overview";
   const { open: panelOpen, toggle: togglePanel } = useSidePanel();
@@ -114,12 +123,37 @@ export default function Dashboard(props: Props) {
     [snapshot.repositories],
   );
 
+  /** The workspaces each repository belongs to, for All repositories. */
+  const memberOf = useMemo(() => {
+    const map = new Map<string, Workspace[]>();
+    for (const w of snapshot.workspaces)
+      for (const m of w.members)
+        if (m.repository_id)
+          map.set(m.repository_id, [...(map.get(m.repository_id) ?? []), w]);
+    return map;
+  }, [snapshot.workspaces]);
+  // A workspace that was deleted since it was chosen shows everything.
+  const shownWorkspace =
+    wsFilter === "all" || wsFilter === "none"
+      ? null
+      : (snapshot.workspaces.find((w) => w.id === wsFilter) ?? null);
+  const wsChoice = shownWorkspace
+    ? shownWorkspace.id
+    : wsFilter === "none"
+      ? "none"
+      : "all";
+
   // Every repository in scope, for the totals and filter counts.
   const scopeRepos = useMemo(() => {
-    if (!workspace) return snapshot.repositories;
-    const ids = new Set(workspace.members.map((m) => m.repository_id));
-    return snapshot.repositories.filter((r) => ids.has(r.id));
-  }, [snapshot.repositories, workspace]);
+    const scope = workspace ?? shownWorkspace;
+    if (scope) {
+      const ids = new Set(scope.members.map((m) => m.repository_id));
+      return snapshot.repositories.filter((r) => ids.has(r.id));
+    }
+    if (wsChoice === "none")
+      return snapshot.repositories.filter((r) => !memberOf.has(r.id));
+    return snapshot.repositories;
+  }, [snapshot.repositories, workspace, shownWorkspace, wsChoice, memberOf]);
 
   const t = totals(scopeRepos);
 
@@ -163,7 +197,7 @@ export default function Dashboard(props: Props) {
     };
 
     if (!workspace)
-      return snapshot.repositories
+      return scopeRepos
         .filter((r) => keep(r, r.name))
         .sort(order)
         .map((r) => ({ kind: "repo", repo: r, label: r.name, root: false }));
@@ -185,7 +219,7 @@ export default function Dashboard(props: Props) {
     }
     out.push(...toRows(layout.others));
     return out;
-  }, [snapshot.repositories, workspace, byId, query, filter, sort]);
+  }, [workspace, scopeRepos, byId, query, filter, sort]);
 
   const repoRows = rows.filter(
     (r): r is Row & { kind: "repo" } => r.kind === "repo",
@@ -240,20 +274,54 @@ export default function Dashboard(props: Props) {
         data-tauri-drag-region
         className="flex h-12 shrink-0 items-center gap-3 border-b bg-header pr-3 pl-4 pl-lead"
       >
-        <button
-          type="button"
-          className="btn bg-control pr-2 pl-2.5 text-fg"
-          aria-label="Switch workspace"
-          title="Switch repository or workspace (⌘K)"
-          onClick={props.onPalette}
+        <nav
+          aria-label="Location"
+          className="flex min-w-0 shrink items-center gap-0.5"
         >
-          <GridIcon className="text-fg-2" />
-          <span className="font-semibold">{title}</span>
-          <ChevronDown size={11} className="text-muted" />
-          <span className="kbd">⌘K</span>
-        </button>
+          <button
+            type="button"
+            className="btn btn-ghost shrink-0 px-2 text-fg"
+            aria-label={`Switch workspace: ${title}`}
+            title="Switch repository or workspace (⌘K)"
+            onClick={props.onPalette}
+          >
+            <span className="font-semibold">{title}</span>
+            <ChevronDown size={11} className="text-muted" />
+          </button>
+          {!workspace && (
+            <>
+              <span aria-hidden="true" className="text-faint">
+                ›
+              </span>
+              <WorkspaceMenu
+                workspaces={snapshot.workspaces}
+                choice={wsChoice}
+                counts={(id) =>
+                  id === "all"
+                    ? snapshot.repositories.length
+                    : id === "none"
+                      ? snapshot.repositories.filter((r) => !memberOf.has(r.id))
+                          .length
+                      : (snapshot.workspaces
+                          .find((w) => w.id === id)
+                          ?.members.filter((m) => m.repository_id).length ?? 0)
+                }
+                open={wsMenuOpen}
+                onOpen={setWsMenuOpen}
+                onChoose={(id) => {
+                  setWsMenuOpen(false);
+                  setWsFilter(id);
+                }}
+                onOpenDashboard={(id) => {
+                  setWsMenuOpen(false);
+                  props.onOpenWorkspace(id);
+                }}
+              />
+            </>
+          )}
+        </nav>
         {workspace ? (
-          <div role="tablist" aria-label="Workspace views" className="seg">
+          <div role="tablist" aria-label="Workspace views" className="seg ml-2">
             <button
               type="button"
               role="tab"
@@ -282,12 +350,12 @@ export default function Dashboard(props: Props) {
               title="Pull requests (⌘3)"
               onClick={() => props.onTab("pull_requests")}
             >
-              Pull requests
+              PRs
             </button>
           </div>
         ) : (
-          <span className="truncate text-[12px] text-muted">
-            Every registered repository, each listed once
+          <span className="ml-3 min-w-0">
+            <Totals t={t} />
           </span>
         )}
         <div data-tauri-drag-region className="h-full flex-1" />
@@ -421,40 +489,43 @@ export default function Dashboard(props: Props) {
         <div className="flex min-h-0 flex-1">
           <section
             aria-label="Repositories"
-            className="flex min-w-0 flex-1 flex-col gap-3.5 px-6 pt-5"
+            className={`flex min-w-0 flex-1 flex-col gap-3.5 px-6 ${workspace ? "pt-5" : "pt-3.5"}`}
           >
-            <div className="flex items-end gap-4">
-              <div className="flex min-w-0 flex-1 flex-col gap-1">
-                {renaming && workspace ? (
-                  <RenameField
-                    initial={workspace.name}
-                    onDone={(name) => {
-                      setRenaming(false);
-                      if (name && name !== workspace.name) props.onRename(name);
-                    }}
+            {workspace && (
+              <div className="flex items-end gap-4">
+                <div className="flex min-w-0 flex-1 flex-col gap-1">
+                  {renaming ? (
+                    <RenameField
+                      initial={workspace.name}
+                      onDone={(name) => {
+                        setRenaming(false);
+                        if (name && name !== workspace.name)
+                          props.onRename(name);
+                      }}
+                    />
+                  ) : (
+                    <h1 className="m-0 truncate text-[22px] font-semibold">
+                      {title}
+                    </h1>
+                  )}
+                  <span className="mono truncate text-[12px] text-muted">
+                    {describe(workspace, scopeRepos.length)}
+                  </span>
+                </div>
+                <div className="flex gap-[22px]">
+                  <Kpi value={t.changedFiles} label="changed files" />
+                  <Kpi
+                    value={t.conflicts}
+                    label="conflicts"
+                    tone={t.conflicts ? "text-conflict" : "text-muted"}
                   />
-                ) : (
-                  <h1 className="m-0 truncate text-[22px] font-semibold">
-                    {title}
-                  </h1>
-                )}
-                <span className="mono truncate text-[12px] text-muted">
-                  {describe(workspace, scopeRepos.length)}
-                </span>
+                  <Kpi
+                    value={`↑${t.ahead} ↓${t.behind}`}
+                    label="vs local upstreams"
+                  />
+                </div>
               </div>
-              <div className="flex gap-[22px]">
-                <Kpi value={t.changedFiles} label="changed files" />
-                <Kpi
-                  value={t.conflicts}
-                  label="conflicts"
-                  tone={t.conflicts ? "text-conflict" : "text-muted"}
-                />
-                <Kpi
-                  value={`↑${t.ahead} ↓${t.behind}`}
-                  label="vs local upstreams"
-                />
-              </div>
-            </div>
+            )}
 
             {discovered && discovered.moves.length > 0 && (
               <MovesBanner
@@ -538,9 +609,10 @@ export default function Dashboard(props: Props) {
 
             <div className="mb-4 flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border">
               <div
-                className={`${GRID} section-label border-b bg-panel px-3.5 py-2`}
+                className={`${workspace ? GRID : GRID_ALL} section-label border-b bg-panel px-3.5 py-2`}
               >
                 <span>Repository</span>
+                {!workspace && <span>Workspace</span>}
                 <span>Branch</span>
                 <span>Upstream</span>
                 <span>Changes</span>
@@ -587,6 +659,11 @@ export default function Dashboard(props: Props) {
                       row={row}
                       path={displayPath(workspace, row.repo.display_path)}
                       selected={row.repo === selected}
+                      workspaces={
+                        workspace
+                          ? undefined
+                          : (memberOf.get(row.repo.id) ?? []).map((w) => w.name)
+                      }
                       onSelect={() => setSelectedId(row.repo.id)}
                       onOpen={() => onOpen(row.repo.id)}
                     />
@@ -616,7 +693,7 @@ export default function Dashboard(props: Props) {
               onFetch={() => props.onFetch([selected.id])}
               onOpen={() => onOpen(selected.id)}
               onLocate={() => props.onLocate(selected.id)}
-              onClose={() => setSelectedId(null)}
+              onClose={togglePanel}
               onError={props.onError}
             />
           )}
@@ -628,6 +705,9 @@ export default function Dashboard(props: Props) {
 
 const GRID =
   "grid grid-cols-[minmax(0,1fr)_minmax(90px,150px)_74px_minmax(150px,206px)_64px_70px] gap-x-3.5";
+/** All repositories adds the Workspace column after the name. */
+const GRID_ALL =
+  "grid grid-cols-[minmax(0,1fr)_minmax(80px,130px)_minmax(90px,150px)_74px_minmax(150px,206px)_64px_70px] gap-x-3.5";
 
 /** Paths inside a discovered workspace's folder are shown relative to it. */
 function displayPath(workspace: Workspace | null, path: string): string {
@@ -647,6 +727,106 @@ function describe(workspace: Workspace | null, count: number): string {
   return workspace.root_repository_id
     ? `${root} · root repository + repositories in ${label}`
     : `${root} · repositories in ${label}`;
+}
+
+/** All repositories' totals, in the header where a workspace has its tabs. */
+function Totals({ t }: { t: ReturnType<typeof totals> }) {
+  return (
+    <span className="tabular flex min-w-0 items-center gap-3 truncate text-[12px] text-muted">
+      <span>
+        <span className="font-semibold text-fg">{t.changedFiles}</span> changed
+        files
+      </span>
+      <span>
+        <span
+          className={`font-semibold ${t.conflicts ? "text-conflict" : "text-fg"}`}
+        >
+          {t.conflicts}
+        </span>{" "}
+        {t.conflicts === 1 ? "conflict" : "conflicts"}
+      </span>
+      <span title="Ahead and behind their upstreams, as of the last fetch">
+        <span className="font-semibold text-fg">
+          ↑{t.ahead} ↓{t.behind}
+        </span>{" "}
+        vs upstreams
+      </span>
+    </span>
+  );
+}
+
+/** Shows every repository, one workspace's, or those in none. */
+function WorkspaceMenu({
+  workspaces,
+  choice,
+  counts,
+  open,
+  onOpen,
+  onChoose,
+  onOpenDashboard,
+}: {
+  workspaces: Workspace[];
+  /** "all", "none", or a workspace ID. */
+  choice: string;
+  counts: (id: string) => number;
+  open: boolean;
+  onOpen: (open: boolean) => void;
+  onChoose: (id: string) => void;
+  /** The chosen workspace's own dashboard: Activity and PRs live there. */
+  onOpenDashboard: (id: string) => void;
+}) {
+  const chosen = workspaces.find((w) => w.id === choice);
+  const label =
+    choice === "all"
+      ? "All workspaces"
+      : choice === "none"
+        ? "Not in a workspace"
+        : (workspaces.find((w) => w.id === choice)?.name ?? "All workspaces");
+  const item = (id: string, name: string) => (
+    <MenuButton key={id} onClick={() => onChoose(id)}>
+      <span className="w-3.5 shrink-0 text-accent">
+        {choice === id ? "✓" : ""}
+      </span>
+      <span className="flex-1 truncate">{name}</span>
+      <span className="tabular text-muted">{counts(id)}</span>
+    </MenuButton>
+  );
+  return (
+    <div className="relative shrink-0">
+      <button
+        type="button"
+        className={`btn px-2 ${choice === "all" ? "btn-ghost text-fg-2" : "border-accent bg-accent-soft text-fg"}`}
+        aria-label={`Workspace: ${label}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => onOpen(!open)}
+      >
+        <GridIcon size={12} className="text-fg-2" />
+        {label}
+        <ChevronDown size={10} className="text-muted" />
+      </button>
+      {open && (
+        <Popover onClose={() => onOpen(false)}>
+          {item("all", "All workspaces")}
+          <div className="menu-sep" />
+          {workspaces.map((w) => item(w.id, w.name))}
+          {workspaces.length > 0 && <div className="menu-sep" />}
+          {item("none", "Not in a workspace")}
+          {chosen && (
+            <>
+              <div className="menu-sep" />
+              <MenuButton onClick={() => onOpenDashboard(chosen.id)}>
+                <span className="w-3.5 shrink-0" />
+                <span className="flex-1 truncate">
+                  Open {chosen.name}'s dashboard
+                </span>
+              </MenuButton>
+            </>
+          )}
+        </Popover>
+      )}
+    </div>
+  );
 }
 
 function Kpi({
@@ -733,12 +913,15 @@ function RepoRow({
   row,
   path,
   selected,
+  workspaces,
   onSelect,
   onOpen,
 }: {
   row: Row & { kind: "repo" };
   path: string;
   selected: boolean;
+  /** All repositories: the workspaces it is in, for the Workspace column. */
+  workspaces?: string[];
   onSelect: () => void;
   onOpen: () => void;
 }) {
@@ -750,7 +933,7 @@ function RepoRow({
   return (
     <button
       type="button"
-      className={`list-row ${GRID} min-h-[52px] items-center border-t border-t-line-soft pr-3.5 pl-[11px]`}
+      className={`list-row ${workspaces ? GRID_ALL : GRID} min-h-[52px] items-center border-t border-t-line-soft pr-3.5 pl-[11px]`}
       aria-current={selected}
       onClick={onSelect}
       onDoubleClick={onOpen}
@@ -773,6 +956,23 @@ function RepoRow({
           )}
         </span>
       </span>
+      {workspaces && (
+        <span
+          className="truncate text-[12px] text-fg-2"
+          title={workspaces.join(", ") || "Not in a workspace"}
+        >
+          {workspaces.length === 0 ? (
+            <span className="text-faint">—</span>
+          ) : (
+            <>
+              {workspaces[0]}
+              {workspaces.length > 1 && (
+                <span className="text-muted"> +{workspaces.length - 1}</span>
+              )}
+            </>
+          )}
+        </span>
+      )}
       <span
         className={`mono truncate text-[12px] ${r.head?.kind === "branch" ? "" : "text-fg-3"}`}
       >
@@ -1066,7 +1266,8 @@ function Peek({
           <button
             type="button"
             className="btn btn-sm btn-ghost px-1.5"
-            aria-label="Close preview"
+            aria-label="Hide side panel"
+            title="Hide side panel (⌥⌘B)"
             onClick={onClose}
           >
             <CloseIcon />

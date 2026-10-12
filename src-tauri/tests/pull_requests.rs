@@ -1823,7 +1823,8 @@ async fn a_fetch_that_moves_a_branch_refreshes_its_pull_request_and_the_count() 
         .unwrap();
 
     // Nothing is counted while the workspace has pull requests off.
-    assert!(h.pull_requests.review_counts().await.unwrap().is_empty());
+    let counts = h.pull_requests.review_counts().await.unwrap();
+    assert!(counts.workspaces.is_empty() && counts.repositories.is_empty());
     h.repositories
         .set_pull_requests(&ws.id, true)
         .await
@@ -1833,9 +1834,17 @@ async fn a_fetch_that_moves_a_branch_refreshes_its_pull_request_and_the_count() 
     assert!(list.groups[0].pull_requests[0].awaiting_my_review);
     let counts = h.pull_requests.review_counts().await.unwrap();
     assert_eq!(
-        counts,
+        counts.workspaces,
         vec![ReviewCount {
             workspace_id: ws.id.clone(),
+            awaiting: 1
+        }]
+    );
+    // The repository's PRs tab counts the same pull request.
+    assert_eq!(
+        counts.repositories,
+        vec![RepositoryReviewCount {
+            repository_id: api_id.clone(),
             awaiting: 1
         }]
     );
@@ -1898,10 +1907,11 @@ async fn a_fetch_that_moves_a_branch_refreshes_its_pull_request_and_the_count() 
     }
     assert_eq!(requests.total(), before);
 
-    // Off again: the workspace drops out of the counts.
+    // Off again: the workspace and its repository drop out of the counts.
     h.repositories
         .set_pull_requests(&ws.id, false)
         .await
         .unwrap();
-    assert!(h.pull_requests.review_counts().await.unwrap().is_empty());
+    let counts = h.pull_requests.review_counts().await.unwrap();
+    assert!(counts.workspaces.is_empty() && counts.repositories.is_empty());
 }

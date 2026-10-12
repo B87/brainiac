@@ -5,10 +5,7 @@
  */
 import { relativeTime } from "../lib/format";
 import type { RepositorySummary } from "../lib/ipc";
-import { headLabel, repoTone } from "../lib/repo";
-
-/** Fetched data older than this is shown as stale (SPEC.md, Fetching). */
-const STALE_FETCH_MS = 2 * 24 * 3600 * 1000;
+import { headLabel, repoTone, STALE_FETCH_MS } from "../lib/repo";
 
 export function statusWords(repo: RepositorySummary): string {
   const tone = repoTone(repo);

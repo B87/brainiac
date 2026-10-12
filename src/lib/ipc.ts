@@ -130,7 +130,7 @@ import type { RestorePreview } from "./generated/RestorePreview";
 import type { RestoreRequest } from "./generated/RestoreRequest";
 import type { RestoreResult } from "./generated/RestoreResult";
 import type { ResultColumn } from "./generated/ResultColumn";
-import type { ReviewCount } from "./generated/ReviewCount";
+import type { ReviewCounts } from "./generated/ReviewCounts";
 import type { ReviewDrafts } from "./generated/ReviewDrafts";
 import type { RunBranchCommand } from "./generated/RunBranchCommand";
 import type { RunChanges } from "./generated/RunChanges";
@@ -421,7 +421,7 @@ export type {
   RestoreRequest,
   RestoreResult,
   ResultColumn,
-  ReviewCount,
+  ReviewCounts,
   ReviewDrafts,
   RunMode,
   RunStatementRequest,
@@ -831,7 +831,7 @@ export const ipc = {
   mergePullRequest: (request: MergeRequest) =>
     invoke<MergeOutcome>("merge_pull_request", { request }),
   /** Each workspace's count of pull requests waiting on your review, from the cache. */
-  getReviewCounts: () => invoke<ReviewCount[]>("get_review_counts"),
+  getReviewCounts: () => invoke<ReviewCounts>("get_review_counts"),
 
   // v0.2: vault and notes
   getVaultState: () => invoke<VaultState>("get_vault_state"),

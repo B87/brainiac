@@ -46,17 +46,23 @@ async function setUpVault(page: Page) {
   await expect(page.getByRole("navigation", { name: "Notes" })).toBeVisible();
 }
 
-test("⌘B hides the sidebar and ⌥⌘B hides the side panel", async ({ page }) => {
+test("⌘B collapses the sidebar to a rail and ⌥⌘B hides the side panel", async ({
+  page,
+}) => {
   const sidebar = page.getByRole("navigation", {
     name: "Repositories and workspaces",
   });
+  const rail = page.getByRole("navigation", { name: "Sections" });
   await expect(sidebar.getByRole("button", { name: "Today" })).toBeVisible();
   await page.keyboard.press("Meta+b");
   await expect(sidebar).toHaveCount(0);
+  // Every section stays one click away on the rail.
+  await expect(rail.getByRole("button", { name: "Databases" })).toBeVisible();
   // Two presses inside 80 ms count as one (a menu accelerator and the key listener).
   await page.waitForTimeout(100);
   await page.keyboard.press("Meta+b");
   await expect(sidebar.getByRole("button", { name: "Today" })).toBeVisible();
+  await expect(rail).toHaveCount(0);
 
   await page.getByRole("button", { name: "Today" }).click();
   const todayPanel = page.getByRole("complementary", {
@@ -68,10 +74,138 @@ test("⌘B hides the sidebar and ⌥⌘B hides the side panel", async ({ page })
   await page.getByRole("button", { name: "Show side panel" }).click();
   await expect(todayPanel).toBeVisible();
 
-  await page.getByRole("button", { name: "Hide sidebar" }).click();
+  await page.getByRole("button", { name: "Collapse sidebar" }).click();
   await expect(sidebar).toHaveCount(0);
-  await page.keyboard.press("Meta+b");
+  await rail.getByRole("button", { name: "Tasks" }).click();
+  await expect(rail.getByRole("button", { name: "Tasks" })).toHaveAttribute(
+    "aria-current",
+    "true",
+  );
+  await rail.getByRole("button", { name: "Expand sidebar" }).click();
   await expect(sidebar.getByRole("button", { name: "Notes" })).toBeVisible();
+});
+
+test("a repository's header: breadcrumb, branch popover, Open in, and narrow tabs", async ({
+  page,
+}) => {
+  await page
+    .getByRole("navigation", { name: "Repositories and workspaces" })
+    .getByRole("button", { name: "parser" })
+    .click();
+  const location = page.getByRole("navigation", { name: "Location" });
+  await expect(
+    location.getByRole("button", { name: "Switch repository: parser" }),
+  ).toBeVisible();
+  const branch = location.getByRole("button", { name: /main/ });
+  await expect(branch).toContainText("↑1");
+
+  await branch.click();
+  const details = page.getByRole("dialog", { name: "Branch" });
+  await expect(details.getByText("Tracks")).toContainText("origin/main");
+  await expect(
+    details.getByText("1 commit here that origin/main doesn't have yet."),
+  ).toBeVisible();
+  await details.getByRole("button", { name: "Fetch now" }).click();
+  expect((await calls(page, "fetch_repository")).at(-1)).toEqual({
+    repositoryId: "repo-1",
+  });
+  await expect(details).toBeHidden();
+
+  await page.getByRole("button", { name: "Open in another app" }).click();
+  await page.getByRole("menuitem", { name: "Reveal in Finder" }).click();
+  expect((await calls(page, "reveal_in_finder")).at(-1)).toMatchObject({
+    repositoryId: "repo-1",
+  });
+  await page.getByRole("button", { name: "Open in VS Code" }).click();
+  expect((await calls(page, "open_in_editor")).at(-1)).toMatchObject({
+    repositoryId: "repo-1",
+  });
+
+  await expect(page.getByRole("tab", { name: "Branches" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "PRs" })).toBeVisible();
+  // Narrow, the tabs become one menu naming the current tab.
+  await page.setViewportSize({ width: 900, height: 800 });
+  await expect(page.getByRole("tab", { name: "PRs" })).toBeHidden();
+  await page.getByRole("button", { name: "Repository view: Changes" }).click();
+  await page.getByRole("menuitem", { name: /Pull requests/ }).click();
+  await expect(
+    page.getByRole("button", { name: "Repository view: PRs" }),
+  ).toBeVisible();
+});
+
+test("All repositories filters by workspace, names each one, and hides its panel", async ({
+  page,
+}) => {
+  await page
+    .getByRole("navigation", { name: "Repositories and workspaces" })
+    .getByRole("button", { name: /^All repositories/ })
+    .click();
+  const list = page.getByRole("region", { name: "Repositories" });
+  // The totals sit in the header; there is no separate heading.
+  await expect(page.getByText("changed files")).toBeVisible();
+  await expect(list.getByRole("heading")).toHaveCount(0);
+  const parser = list.getByRole("button", { name: /parser/ });
+  await expect(parser).toContainText("Team");
+
+  await page.getByRole("button", { name: "Workspace: All workspaces" }).click();
+  await page.getByRole("menuitem", { name: /Not in a workspace/ }).click();
+  await expect(list.getByText("No repositories match.")).toBeVisible();
+  await page
+    .getByRole("button", { name: "Workspace: Not in a workspace" })
+    .click();
+  await page.getByRole("menuitem", { name: /^Team/ }).click();
+  await expect(parser).toBeVisible();
+  // The menu leads to the workspace's own dashboard too.
+  await page.getByRole("button", { name: "Workspace: Team" }).click();
+  await expect(
+    page.getByRole("menuitem", { name: "Open Team's dashboard" }),
+  ).toBeVisible();
+  await page.keyboard.press("Escape");
+
+  // The panel's close button hides the side panel, as ⌥⌘B does.
+  const panel = page.locator("aside");
+  await expect(panel).toBeVisible();
+  await panel.getByRole("button", { name: "Hide side panel" }).click();
+  await expect(panel).toHaveCount(0);
+  await page.keyboard.press("Alt+Meta+b");
+  await expect(panel).toBeVisible();
+});
+
+test("the list beside a patch is resized by dragging its edge, and remembered", async ({
+  page,
+}) => {
+  await page
+    .getByRole("navigation", { name: "Repositories and workspaces" })
+    .getByRole("button", { name: "parser" })
+    .click();
+  const list = page.getByRole("region", { name: "Changed files" });
+  const edge = page.getByRole("separator", {
+    name: "Resize the list of changed files",
+  });
+  const width = async () => (await list.boundingBox())?.width ?? 0;
+  expect(Math.round(await width())).toBe(360);
+
+  const box = await edge.boundingBox();
+  if (!box) throw new Error("no edge");
+  const x = box.x + box.width / 2;
+  const y = box.y + 100;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + 120, y, { steps: 4 });
+  await page.mouse.up();
+  expect(Math.round(await width())).toBe(480);
+
+  // The arrow keys work too; double-click returns the default.
+  await edge.focus();
+  await page.keyboard.press("ArrowLeft");
+  expect(Math.round(await width())).toBe(456);
+  await page.reload();
+  await expect(list).toBeVisible();
+  expect(Math.round(await width())).toBe(456);
+  await page
+    .getByRole("separator", { name: "Resize the list of changed files" })
+    .dblclick();
+  expect(Math.round(await width())).toBe(360);
 });
 
 test("Today and Tasks work without a vault, and Notes offers the setup", async ({
@@ -1237,7 +1371,7 @@ test("Pull requests: a workspace turns them on, lists them, and opens one", asyn
     .getByRole("navigation", { name: "Repositories and workspaces" })
     .getByRole("button", { name: /^Team\b/ })
     .click();
-  await page.getByRole("tab", { name: "Pull requests" }).click();
+  await page.getByRole("tab", { name: "PRs" }).click();
   await page.getByRole("button", { name: "Turn On Pull Requests" }).click();
   expect(
     (await calls(page, "update_workspace_pull_requests")).at(-1),
@@ -1251,7 +1385,7 @@ test("Pull requests: a workspace turns them on, lists them, and opens one", asyn
   await page.getByRole("tab", { name: "Overview" }).click();
   await sidebar.getByRole("button", { name: /^Team\b/ }).click();
   await expect(
-    page.getByRole("tab", { name: "Pull requests", selected: true }),
+    page.getByRole("tab", { name: "PRs", selected: true }),
   ).toBeVisible();
 
   const row = page.getByRole("row", { name: "Parse nested lists #12" });
@@ -1443,9 +1577,10 @@ test("Pull requests: a workspace turns them on, lists them, and opens one", asyn
   await page.getByRole("tab", { name: "Checks" }).click();
   await expect(page.getByRole("button", { name: "Log" })).toBeVisible();
   await page.getByRole("button", { name: "Back" }).click();
-  await expect(
-    page.getByRole("tab", { name: "Pull requests" }),
-  ).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tab", { name: "PRs" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
 });
 
 test("a repository's Pull requests tab names its forge and can point it elsewhere", async ({
@@ -1455,9 +1590,15 @@ test("a repository's Pull requests tab names its forge and can point it elsewher
     .getByRole("navigation", { name: "Repositories and workspaces" })
     .getByRole("button", { name: "parser" })
     .click();
-  await page.getByRole("tab", { name: "Pull requests" }).click();
+  await page.getByRole("tab", { name: "PRs" }).click();
   // Not tracked yet: the workspace it is in is offered.
   await page.getByRole("button", { name: "Turn On for Team" }).click();
+  // The tab counts the pull requests waiting on your review, as the sidebar does.
+  await expect(
+    page
+      .getByRole("tab", { name: "PRs" })
+      .getByTitle("1 pull request waiting on your review"),
+  ).toHaveText("1");
   await expect(
     page.getByRole("row", { name: "Parse nested lists #12" }),
   ).toBeVisible();

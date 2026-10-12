@@ -27,6 +27,7 @@ import {
   TagIcon,
 } from "./icons";
 import Popover from "./Popover";
+import ResizeEdge, { LIST_BOUNDS, usePaneWidth } from "./ResizeEdge";
 
 /** The branch or tag whose history is shown; a `RefEntry` fits. */
 export type HistoryScope = Pick<RefEntry, "full_name" | "name" | "kind">;
@@ -60,6 +61,7 @@ export default function HistoryTab({
   onError,
   onOpenInEditor,
 }: Props) {
+  const listPane = usePaneWidth("brainiac.width.history", LIST_BOUNDS);
   const [pages, setPages] = useState<CommitPage[]>([]);
   const [filter, setFilter] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(initialCommitId);
@@ -163,7 +165,10 @@ export default function HistoryTab({
   const anchor = pages[0]?.anchor_commit_id ?? null;
   const selected =
     commits.find((c) => c.id === selectedId) ?? commits[0] ?? null;
-  const scopeName = historyRef ? historyRef.name : `HEAD · ${headName}`;
+  // Quiet on HEAD; highlighted on another ref, which the header's branch does not name.
+  const scopeName = historyRef
+    ? `Viewing ${historyRef.name}`
+    : `HEAD · ${headName}`;
 
   const move = (delta: number) => {
     const next = step(commits, selected, delta);
@@ -211,8 +216,9 @@ export default function HistoryTab({
         className={
           folded
             ? "hidden"
-            : "flex w-[360px] shrink-0 flex-col border-r bg-panel"
+            : "relative flex shrink-0 flex-col border-r bg-panel"
         }
+        style={{ width: listPane.width }}
       >
         <div className="flex flex-col gap-2 border-b px-3 py-2.5">
           <div className="flex items-center gap-2">
@@ -230,7 +236,7 @@ export default function HistoryTab({
             <div className="relative min-w-0">
               <button
                 type="button"
-                className="btn btn-sm max-w-[220px] bg-control text-fg"
+                className={`btn btn-sm max-w-[220px] ${historyRef ? "border-accent bg-accent-soft text-fg" : "btn-ghost text-muted"}`}
                 aria-haspopup="menu"
                 aria-expanded={pickerOpen}
                 onClick={() => {
@@ -257,7 +263,16 @@ export default function HistoryTab({
                 </Popover>
               )}
             </div>
-            <span className="text-[12px] text-muted">
+            {historyRef ? (
+              <button
+                type="button"
+                className="shrink-0 text-[12px] text-link hover:underline"
+                onClick={() => pick(null)}
+              >
+                Back to HEAD
+              </button>
+            ) : null}
+            <span className="truncate text-[12px] text-muted">
               {anchor === ""
                 ? "no commits yet"
                 : `${commits.length}${nextCursor ? "+" : ""} commits`}
@@ -327,6 +342,11 @@ export default function HistoryTab({
             </div>
           )}
         </div>
+        <ResizeEdge
+          pane={listPane}
+          side="right"
+          label="Resize the commit list"
+        />
       </section>
       <section
         aria-label="Commit details"

@@ -216,6 +216,7 @@
   --color-muted: var(--muted);
   --color-faint: var(--faint);
   --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
   --color-link: var(--link);
   --color-sel: var(--sel);
   --color-sel-meta: var(--sel-meta);
@@ -229,13 +230,14 @@
   --color-info-fg: var(--info-fg);
 }
 
-/* With the sidebar hidden, the window's traffic lights (placed at x 18 by
-   `trafficLightPosition`, about 54px wide) sit over the main view's top-left
-   corner. Whatever is drawn there adds `pl-lead`, which keeps its own left
-   padding until then and starts its content at one common edge clear of them. */
+/* With the sidebar collapsed to its 52px rail, the window's traffic lights
+   (placed at x 18 by `trafficLightPosition`, about 54px wide) reach past the
+   rail over the main view's top-left corner. Whatever is drawn there adds
+   `pl-lead`, which keeps its own left padding until then and starts its
+   content at one common edge clear of them (88px from the window's edge). */
 @layer utilities {
-  main[data-sidebar="hidden"] .pl-lead {
-    padding-left: 88px;
+  main[data-sidebar="rail"] .pl-lead {
+    padding-left: 36px;
   }
 }
 
@@ -574,6 +576,28 @@
     font-weight: 500;
   }
 
+  /* The collapsed sidebar's icons: square, the same hover and selection. */
+  .rail-btn {
+    position: relative;
+    width: 36px;
+    height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--fg-2);
+  }
+  .rail-btn:hover:not([aria-current="true"]) {
+    background: color-mix(in srgb, var(--fg) 5%, transparent);
+    color: var(--fg);
+  }
+  .rail-btn[aria-current="true"] {
+    background: var(--side-sel);
+    color: var(--fg);
+  }
+
   /* Status dot: filled for a known state, ring for stale or missing. */
   .dot {
     width: 7px;
@@ -722,6 +746,13 @@
     font-weight: 600;
     line-height: 16px;
     white-space: nowrap;
+  }
+  .rail-btn .badge {
+    position: absolute;
+    top: -2px;
+    right: -4px;
+    padding: 0 4px;
+    font-size: 10px;
   }
 
   /* A run's state in words (SPEC.md, The run: States), tinted by tone. */

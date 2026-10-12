@@ -25,6 +25,7 @@ import {
   SearchIcon,
   TagIcon,
 } from "./icons";
+import ResizeEdge, { shareOfWindow, usePaneWidth } from "./ResizeEdge";
 
 type Props = {
   repositoryId: string;
@@ -404,6 +405,11 @@ function RefPreview({
   onCompare: () => void;
   onError: (message: string | null) => void;
 }) {
+  const pane = usePaneWidth("brainiac.width.refPreview", {
+    initial: 420,
+    min: 300,
+    max: shareOfWindow(0.55, 800, 300),
+  });
   const [recent, setRecent] = useState<CommitSummary[] | null>(null);
   const [unique, setUnique] = useState<CommitSummary[] | null>(null);
   const [moreUnique, setMoreUnique] = useState(false);
@@ -467,8 +473,10 @@ function RefPreview({
   return (
     <aside
       aria-label="Ref history preview"
-      className="flex w-[420px] shrink-0 flex-col bg-panel"
+      className="relative flex shrink-0 flex-col bg-panel"
+      style={{ width: pane.width }}
     >
+      <ResizeEdge pane={pane} side="left" label="Resize the ref history" />
       <div className="flex flex-col gap-2.5 border-b px-[18px] pt-4 pb-3.5">
         <div className="flex min-w-0 items-start gap-2">
           {r.kind === "tag" ? (

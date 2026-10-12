@@ -141,7 +141,16 @@ export default function Sidebar({
   const repoCurrent = (id: string) =>
     view.kind === "repository" && view.id === id;
 
-  if (!open) return null;
+  if (!open)
+    return (
+      <SidebarRail
+        view={view}
+        runsNeedingYou={runsNeedingYou}
+        onView={onView}
+        onAdd={onAdd}
+        onToggle={onToggle}
+      />
+    );
 
   return (
     <nav
@@ -154,8 +163,8 @@ export default function Sidebar({
         <button
           type="button"
           className="btn btn-ghost icon-btn"
-          aria-label="Hide sidebar"
-          title="Sidebar (⌘B)"
+          aria-label="Collapse sidebar"
+          title="Collapse sidebar (⌘B)"
           onClick={onToggle}
         >
           <PanelLeftIcon />
@@ -332,6 +341,115 @@ export default function Sidebar({
           <span className="flex-1 truncate">Add repository or workspace</span>
           <span className="text-[11px] text-muted">⌘O</span>
         </button>
+      </div>
+    </nav>
+  );
+}
+
+/**
+ * The collapsed sidebar (⌘B): one icon per section, each named in its
+ * tooltip, so no section is ever out of reach (SPEC.md, Keyboard defaults).
+ */
+function SidebarRail({
+  view,
+  runsNeedingYou,
+  onView,
+  onAdd,
+  onToggle,
+}: {
+  view: View;
+  runsNeedingYou: number;
+  onView: (view: View) => void;
+  onAdd: () => void;
+  onToggle?: () => void;
+}) {
+  const inRepositories =
+    view.kind === "all" ||
+    view.kind === "workspace" ||
+    view.kind === "repository" ||
+    view.kind === "pullRequest";
+  const item = (
+    label: string,
+    current: boolean,
+    icon: React.ReactNode,
+    next: View,
+    badge?: React.ReactNode,
+  ) => (
+    <button
+      type="button"
+      className="rail-btn"
+      aria-label={label}
+      title={label}
+      aria-current={current}
+      onClick={() => onView(next)}
+    >
+      {icon}
+      {badge}
+    </button>
+  );
+  return (
+    <nav aria-label="Sections" className="flex w-[52px] shrink-0 flex-col">
+      {/* Part of the title bar: one strip with the view's header under the
+          traffic lights, which are wider than the rail. Dragging here moves
+          the window. */}
+      <div
+        data-tauri-drag-region
+        className="h-12 w-full shrink-0 border-b bg-header"
+      />
+      <div className="flex min-h-0 flex-1 flex-col items-center border-r bg-sidebar">
+        <div className="flex min-h-0 w-full flex-1 flex-col items-center gap-1 overflow-y-auto py-1">
+          <button
+            type="button"
+            className="rail-btn"
+            aria-label="Expand sidebar"
+            title="Expand sidebar (⌘B)"
+            onClick={onToggle}
+          >
+            <PanelLeftIcon size={16} />
+          </button>
+          <div className="my-1 h-px w-6 shrink-0 bg-line" />
+          {item("Today", view.kind === "today", <TodayIcon size={16} />, {
+            kind: "today",
+          })}
+          {item("Tasks", view.kind === "tasks", <TaskIcon size={16} />, {
+            kind: "tasks",
+          })}
+          {item("Notes", view.kind === "notes", <NoteIcon size={16} />, {
+            kind: "notes",
+          })}
+          {item(
+            "Databases",
+            view.kind === "databases",
+            <DatabaseIcon size={16} />,
+            { kind: "databases" },
+          )}
+          {item(
+            runsNeedingYou > 0 ? `Runs, ${runsNeedingYou} need you` : "Runs",
+            view.kind === "runs",
+            <PlayIcon size={16} />,
+            { kind: "runs" },
+            runsNeedingYou > 0 && (
+              <span className="badge" aria-hidden="true">
+                {runsNeedingYou}
+              </span>
+            ),
+          )}
+          <div className="my-1 h-px w-6 shrink-0 bg-line" />
+          {item("All repositories", inRepositories, <GridIcon size={16} />, {
+            kind: "all",
+          })}
+        </div>
+        <div className="flex w-full justify-center border-t py-2">
+          <button
+            type="button"
+            className="rail-btn"
+            aria-label="Add repository or workspace"
+            title="Add repository or workspace (⌘O)"
+            onClick={onAdd}
+          >
+            <PlusIcon size={16} />
+          </button>
+        </div>
       </div>
     </nav>
   );
