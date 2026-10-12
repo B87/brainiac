@@ -832,7 +832,7 @@ function WorkspaceMenu({
     <div className="relative shrink-0">
       <button
         type="button"
-        className={`btn px-2 ${choice === "all" ? "btn-ghost text-fg-2" : "border-accent bg-accent-soft text-fg"}`}
+        className={`btn btn-ghost px-2 ${choice === "all" ? "text-fg-2" : "text-fg"}`}
         aria-label={`Workspace: ${label}`}
         aria-haspopup="menu"
         aria-expanded={open}
