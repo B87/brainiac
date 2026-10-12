@@ -11,6 +11,7 @@ into the release's section.
 
 ## [Unreleased]
 
+- A run cancelled while its run controller was down no longer says "Cancel requested" forever once the controller is back and the run has ended.
 - A repository's header is quieter: the repository and its branch read as one breadcrumb, and the branch always shows ahead, behind, and how fresh the last fetch is, with the upstream and Fetch now in its popover.
 - Open in opens your editor in one click; its menu reveals the folder or copies its path. Fetch now and Refresh moved to the ⋯ menu.
 - ⇧⌘F fetches now and ⇧⌘O opens the repository in your editor.

@@ -1106,6 +1106,22 @@ impl AgentRunService {
             if !row.needs_sync() {
                 return;
             }
+            // The run ended before a remembered Cancel reached it (a
+            // restarted controller interrupted it first): nothing is left to
+            // cancel, and a request left standing would keep this loop alive.
+            if row.cancel_requested && row.phase == RunPhase::Ended {
+                let id = run_id.to_string();
+                let cleared = self
+                    .history
+                    .call(move |conn| store::set_cancel_requested(conn, &id, false))
+                    .await;
+                if cleared.is_err() {
+                    tokio::time::sleep(RETRY_AFTER).await;
+                } else {
+                    self.emit(run_id, false);
+                }
+                continue;
+            }
             // A Cancel asked for while the controller could not be reached.
             let runtime = match self.runtime_for(&row.host_id).await {
                 Ok(runtime) => runtime,
