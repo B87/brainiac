@@ -381,7 +381,7 @@ A note is edited as its Markdown text, so a save contains exactly what the user 
 
 - **Live Preview**, the default, shows the note formatted. Headings show at their size; bold, italic, strikethrough, inline code, quotes, and fenced code are styled; Markdown markup (`#`, `**`, `` ` ``, link targets) is hidden except on the line being edited, where it reappears so it can be changed. Bullets, checkboxes, and horizontal rules are drawn as such, and links show only their text.
 - Images stored in the vault show below their line in Live Preview. A web image shows as its link, so opening a note makes no network request.
-- **Source** shows the same text with every mark visible, dimmed. `Cmd+Shift+E` or the toggle in the note header switches between them, keeping the cursor and scroll position; the choice applies to every note and is remembered.
+- **Source** shows the same text with every mark visible, dimmed. `Cmd+Shift+E` or the toggle in the note header switches between them, keeping the cursor, and the scroll position unless the cursor would then be off screen; the choice applies to every note and is remembered.
 - Links and wikilinks open with `Cmd`+click; a link to another note opens it in Brainiac, a web link opens in the browser.
 - Clicking a checkbox toggles `[ ]` and `[x]` in the text.
 - Enter continues a list, task list, or quote on the next line and never renumbers the items below; Up and Down move one line at a time, including past a line drawn as an image.

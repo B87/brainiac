@@ -27,6 +27,7 @@ into the release's section.
 - The commit list no longer scrolls sideways when a commit has long ref names.
 - Databases' tabs no longer sit under the window's buttons when the sidebar is collapsed.
 - The close button of All repositories' side panel now hides the panel, as ⌥⌘B does.
+- In a long note, the cursor no longer ends up partly below the bottom edge after Page Up or Page Down, or out of view after switching to Live Preview.
 
 ## [0.6.2] - 2026-10-11
 

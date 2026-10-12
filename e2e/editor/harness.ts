@@ -21,6 +21,24 @@ function current(): EditorView {
   return view;
 }
 
+// CodeMirror parses a note in the background, a slice at a time. WebKit has
+// no requestIdleCallback, so CodeMirror waits for each slice with a 500 ms
+// timeout; holding those timeouts holds the parse (`holdParsing`).
+const held: (() => void)[] = [];
+let holding = false;
+const realSetTimeout = window.setTimeout.bind(window);
+window.setTimeout = ((
+  handler: TimerHandler,
+  ms?: number,
+  ...args: unknown[]
+) => {
+  if (holding && ms === 500 && typeof handler === "function") {
+    held.push(() => handler(...args));
+    return -1;
+  }
+  return realSetTimeout(handler, ms, ...args);
+}) as typeof window.setTimeout;
+
 const frame = () =>
   new Promise<void>((resolve) =>
     requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
@@ -46,6 +64,19 @@ const harness = {
       }),
     });
     view.focus();
+    await frame();
+  },
+
+  /** Hold background parsing until `parse()`, as a slow machine does: Live
+   * Preview leaves the part of a note not yet parsed as plain text, then
+   * draws it all at once. Call before `load`. */
+  holdParsing() {
+    holding = true;
+  },
+
+  async parse() {
+    holding = false;
+    for (let run = held.shift(); run; run = held.shift()) run();
     await frame();
   },
 
