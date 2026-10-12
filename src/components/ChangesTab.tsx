@@ -12,7 +12,9 @@ import {
   splitPath,
 } from "../lib/repo";
 import { useDiff } from "../lib/useDiff";
+import { useNarrowerThan } from "../lib/width";
 import DiffView from "./DiffView";
+import FoldStrip, { listClass, useOverlay } from "./FoldStrip";
 import { ChevronDown, ChevronRight, SearchIcon } from "./icons";
 import ResizeEdge, { LIST_BOUNDS, usePaneWidth } from "./ResizeEdge";
 
@@ -69,6 +71,10 @@ export default function ChangesTab({
   onOpenInEditor,
 }: Props) {
   const listPane = usePaneWidth("brainiac.width.changes", LIST_BOUNDS);
+  // In a narrow window (SPEC.md, Main window) the list folds to a strip
+  // that slides it over the patch.
+  const [measureRoot, narrow] = useNarrowerThan(760);
+  const [overlay, setOverlay] = useOverlay();
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
   const [folded, setFolded] = usePref<string[]>("brainiac.changes.folded", []);
@@ -130,6 +136,11 @@ export default function ChangesTab({
   } = useDiff(repositoryId, selector, changes, onError);
 
   const select = (e: ChangeEntry | null) => e && setSelectedKey(entryKey(e));
+  /** A click picks the file and, over the patch, folds the list away. */
+  const pick = (e: ChangeEntry) => {
+    select(e);
+    setOverlay(false);
+  };
   const move = (delta: number) => select(step(ordered, selected, delta));
   useKeys({
     j: () => move(1),
@@ -149,10 +160,20 @@ export default function ChangesTab({
   const canBoth = changes?.head.kind !== "unborn";
 
   return (
-    <div className="flex min-h-0 flex-1">
+    <div ref={measureRoot} className="relative flex min-h-0 flex-1">
+      {narrow && (
+        <FoldStrip
+          label="Files"
+          expanded={overlay}
+          title="Show the changed files (J and K still move through them)"
+          onClick={() => setOverlay(!overlay)}
+        />
+      )}
       <section
         aria-label="Changed files"
-        className="relative flex shrink-0 flex-col border-r bg-panel"
+        className={listClass(
+          !narrow ? "shown" : overlay ? "floating" : "folded",
+        )}
         style={{ width: listPane.width }}
       >
         {refreshing && changes && <div className="progress-line" />}
@@ -246,7 +267,7 @@ export default function ChangesTab({
                         alsoIn={trackedGroups
                           .get(e.path)
                           ?.find((group) => group !== e.group)}
-                        onSelect={() => select(e)}
+                        onSelect={() => pick(e)}
                       />
                     ))}
                 {open && hidden > 0 && (

@@ -18,7 +18,9 @@ import {
   parseHistoryFilter,
 } from "../lib/repo";
 import { createLatest } from "../lib/stale";
+import { useNarrowerThan } from "../lib/width";
 import CommitDetails from "./CommitDetails";
+import FoldStrip, { listClass, useOverlay } from "./FoldStrip";
 import {
   BranchIcon,
   ChevronDown,
@@ -74,7 +76,17 @@ export default function HistoryTab({
     "brainiac.history.listWithPanel",
     false,
   );
-  const folded = panelShown && !listWithPanel;
+  const foldedByPanel = panelShown && !listWithPanel;
+  // In a narrow window (SPEC.md, Main window) the list folds to the same
+  // strip, and the strip slides it over the commit instead of beside it.
+  const [measureRoot, narrow] = useNarrowerThan(760);
+  const [overlay, setOverlay] = useOverlay();
+  const floating = narrow && overlay && !foldedByPanel;
+  const folded = foldedByPanel || (narrow && !floating);
+  const select = (id: string) => {
+    setSelectedId(id);
+    setOverlay(false);
+  };
   const latest = useRef(createLatest()).current;
   const filterRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -194,41 +206,50 @@ export default function HistoryTab({
   };
 
   return (
-    <div className="flex min-h-0 flex-1">
-      {folded && (
-        <div className="flex w-11 shrink-0 flex-col items-center border-r bg-panel pt-2.5">
-          <button
-            type="button"
-            className="btn btn-sm h-auto w-8 flex-col gap-1.5 px-0 py-2"
-            title="Show the commit list beside the explanation"
-            onClick={() => setListWithPanel(true)}
-          >
-            <SidebarIcon size={13} />
-            <span className="text-[11.5px] [writing-mode:vertical-rl]">
-              Commits
-            </span>
-          </button>
-        </div>
+    <div ref={measureRoot} className="relative flex min-h-0 flex-1">
+      {(folded || floating) && (
+        <FoldStrip
+          label="Commits"
+          expanded={floating}
+          title={
+            narrow
+              ? "Show the commit list (J and K still move through it)"
+              : "Show the commit list beside the explanation"
+          }
+          onClick={() =>
+            narrow && !foldedByPanel
+              ? setOverlay(!overlay)
+              : setListWithPanel(true)
+          }
+        />
       )}
       {/* Kept mounted while folded, so its scroll position stays. */}
       <section
         aria-label="Commits"
-        className={
-          folded
-            ? "hidden"
-            : "relative flex shrink-0 flex-col border-r bg-panel"
-        }
+        className={listClass(
+          folded ? "folded" : floating ? "floating" : "shown",
+        )}
         style={{ width: listPane.width }}
       >
         <div className="flex flex-col gap-2 border-b px-3 py-2.5">
           <div className="flex items-center gap-2">
-            {panelShown && (
+            {(panelShown || floating) && (
               <button
                 type="button"
                 className="btn btn-sm btn-ghost w-6 px-0"
-                aria-label="Fold the commit list while the explanation is open"
-                title="Fold the commit list while the explanation is open"
-                onClick={() => setListWithPanel(false)}
+                aria-label={
+                  floating
+                    ? "Fold the commit list"
+                    : "Fold the commit list while the explanation is open"
+                }
+                title={
+                  floating
+                    ? "Fold the commit list"
+                    : "Fold the commit list while the explanation is open"
+                }
+                onClick={() =>
+                  floating ? setOverlay(false) : setListWithPanel(false)
+                }
               >
                 <SidebarIcon size={13} />
               </button>
@@ -296,7 +317,10 @@ export default function HistoryTab({
             <span className="kbd">/</span>
           </label>
         </div>
-        <div ref={listRef} className="relative min-h-0 flex-1 overflow-y-auto">
+        <div
+          ref={listRef}
+          className="relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto"
+        >
           {loading && pages.length > 0 && <div className="progress-line" />}
           {groups.map((g) => (
             <div key={g.label}>
@@ -313,7 +337,7 @@ export default function HistoryTab({
                   key={c.id}
                   commit={c}
                   selected={c === selected}
-                  onSelect={() => setSelectedId(c.id)}
+                  onSelect={() => select(c.id)}
                 />
               ))}
             </div>
@@ -435,9 +459,15 @@ function CommitRow({
           <span className="truncate" title={c.author_email}>
             {c.author_name}
           </span>
-          <span className="flex min-w-0 shrink-0 gap-1 overflow-hidden">
+          {/* Ref chips shrink with the list instead of pushing it sideways. */}
+          <span className="flex min-w-0 shrink gap-1 overflow-hidden">
             {decorations(c).map((d) => (
-              <span key={d.label} className="deco" data-tone={d.tone}>
+              <span
+                key={d.label}
+                className="deco block min-w-0 truncate"
+                data-tone={d.tone}
+                title={d.label}
+              >
                 {d.label}
               </span>
             ))}

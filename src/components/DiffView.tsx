@@ -23,7 +23,9 @@ import { useKeys } from "../lib/keys";
 import { usePref } from "../lib/prefs";
 import { splitPath } from "../lib/repo";
 import { VIRTUALIZE_ABOVE, visibleRange } from "../lib/virtual";
-import { CopyIcon } from "./icons";
+import { useNarrowerThan } from "../lib/width";
+import { ChevronDown, CopyIcon, ExternalIcon } from "./icons";
+import Popover from "./Popover";
 
 /** Position in a file list, with moves; shown as "‹ 1 / 7 ›" and bound to [ and ]. */
 export type Stepper = {
@@ -116,6 +118,9 @@ export default function DiffView({
     "unified",
   );
   const [hunkIndex, setHunkIndex] = useState(0);
+  const [viewOpen, setViewOpen] = useState(false);
+  // Split needs two readable sides: below 900px of pane it shows unified.
+  const [measure, tooNarrowToSplit] = useNarrowerThan(900);
   const jumpRef = useRef<((i: number) => void) | null>(null);
   const hunks = diff?.content.kind === "text" ? diff.content.hunks : null;
   const rowCount = useMemo(
@@ -169,8 +174,17 @@ export default function DiffView({
       ? diff.content.old_path
       : null;
 
+  const shownLayout: Layout = tooNarrowToSplit ? "unified" : layout;
+  const splitTitle = tooNarrowToSplit
+    ? "Split needs a pane at least 900 pixels wide"
+    : undefined;
+  const openLabel = historical
+    ? "Open current file"
+    : line
+      ? `Open at line ${line}`
+      : "Open in editor";
   const header = (
-    <div className="flex shrink-0 flex-col border-b">
+    <div ref={measure} className="@container flex shrink-0 flex-col border-b">
       <div className="flex min-w-0 items-center gap-2.5 px-3 pt-2 pb-1.5">
         {stepper && <StepperView stepper={stepper} />}
         <span className="mono selectable min-w-0 truncate pl-1 text-[13px]">
@@ -201,14 +215,13 @@ export default function DiffView({
         <span className="flex-1" />
         <button
           type="button"
-          className="btn btn-sm"
+          className="btn btn-sm shrink-0"
+          aria-label={openLabel}
+          title={openLabel}
           onClick={() => onOpenInEditor(path, line)}
         >
-          {historical
-            ? "Open current file"
-            : line
-              ? `Open at line ${line}`
-              : "Open in editor"}
+          <ExternalIcon size={12} className="hidden @max-[700px]:inline" />
+          <span className="@max-[700px]:hidden">{openLabel}</span>
         </button>
       </div>
       <div className="flex min-h-[34px] min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 px-4 pb-2">
@@ -227,7 +240,12 @@ export default function DiffView({
         {hunkCount > 1 && (
           <span className="flex items-center gap-1.5 text-[12px] text-muted">
             <span className="tabular" aria-live="polite">
-              Hunk {hunkIndex + 1} of {hunkCount}
+              <span className="@max-[760px]:hidden">
+                Hunk {hunkIndex + 1} of {hunkCount}
+              </span>
+              <span className="hidden @max-[760px]:inline">
+                {hunkIndex + 1}/{hunkCount}
+              </span>
             </span>
             <button
               type="button"
@@ -251,55 +269,112 @@ export default function DiffView({
             </button>
           </span>
         )}
-        {hunks && (
-          <div role="tablist" aria-label="Diff layout" className="seg seg-sm">
+        {/* Below 760px these go into the View menu. */}
+        <span className="flex items-center gap-3 @max-[760px]:hidden">
+          {hunks && (
+            <div role="tablist" aria-label="Diff layout" className="seg seg-sm">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={shownLayout === "unified"}
+                onClick={() => setLayout("unified")}
+              >
+                Unified
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={shownLayout === "split"}
+                disabled={tooNarrowToSplit}
+                title={splitTitle}
+                onClick={() => setLayout("split")}
+              >
+                Split
+              </button>
+            </div>
+          )}
+          {hunks && (
             <button
               type="button"
-              role="tab"
-              aria-selected={layout === "unified"}
-              onClick={() => setLayout("unified")}
+              className="btn btn-sm"
+              aria-pressed={wrapped}
+              disabled={!canWrap}
+              title={
+                canWrap ? "Wrap long lines" : "This patch is too long to wrap"
+              }
+              onClick={() => setWrap(!wrap)}
             >
-              Unified
+              Wrap
             </button>
+          )}
+          {diff.selector.kind !== "untracked_preview" && (
             <button
               type="button"
-              role="tab"
-              aria-selected={layout === "split"}
-              onClick={() => setLayout("split")}
+              className="btn btn-sm"
+              aria-pressed={ignoreWhitespace && !ignoreWhitespaceNote}
+              disabled={!!ignoreWhitespaceNote}
+              title={
+                ignoreWhitespaceNote ??
+                "Compare lines ignoring whitespace (git diff -w)"
+              }
+              onClick={() => onIgnoreWhitespace(!ignoreWhitespace)}
             >
-              Split
+              Ignore whitespace
             </button>
-          </div>
-        )}
-        {hunks && (
+          )}
+        </span>
+        <div className="relative hidden @max-[760px]:block">
           <button
             type="button"
             className="btn btn-sm"
-            aria-pressed={wrapped}
-            disabled={!canWrap}
-            title={
-              canWrap ? "Wrap long lines" : "This patch is too long to wrap"
-            }
-            onClick={() => setWrap(!wrap)}
+            aria-haspopup="menu"
+            aria-expanded={viewOpen}
+            onClick={() => setViewOpen(!viewOpen)}
           >
-            Wrap
+            View
+            <ChevronDown size={10} className="text-muted" />
           </button>
-        )}
-        {diff.selector.kind !== "untracked_preview" && (
-          <button
-            type="button"
-            className="btn btn-sm"
-            aria-pressed={ignoreWhitespace && !ignoreWhitespaceNote}
-            disabled={!!ignoreWhitespaceNote}
-            title={
-              ignoreWhitespaceNote ??
-              "Compare lines ignoring whitespace (git diff -w)"
-            }
-            onClick={() => onIgnoreWhitespace(!ignoreWhitespace)}
-          >
-            Ignore whitespace
-          </button>
-        )}
+          {viewOpen && (
+            <Popover align="right" onClose={() => setViewOpen(false)}>
+              {hunks && (
+                <>
+                  <ViewItem
+                    checked={shownLayout === "unified"}
+                    onClick={() => setLayout("unified")}
+                  >
+                    Unified
+                  </ViewItem>
+                  <ViewItem
+                    checked={shownLayout === "split"}
+                    disabled={tooNarrowToSplit}
+                    title={splitTitle}
+                    onClick={() => setLayout("split")}
+                  >
+                    Split
+                  </ViewItem>
+                  <div className="menu-sep" />
+                  <ViewItem
+                    checked={wrapped}
+                    disabled={!canWrap}
+                    onClick={() => setWrap(!wrap)}
+                  >
+                    Wrap long lines
+                  </ViewItem>
+                </>
+              )}
+              {diff.selector.kind !== "untracked_preview" && (
+                <ViewItem
+                  checked={ignoreWhitespace && !ignoreWhitespaceNote}
+                  disabled={!!ignoreWhitespaceNote}
+                  title={ignoreWhitespaceNote ?? undefined}
+                  onClick={() => onIgnoreWhitespace(!ignoreWhitespace)}
+                >
+                  Ignore whitespace
+                </ViewItem>
+              )}
+            </Popover>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -333,9 +408,9 @@ export default function DiffView({
           </div>
         ) : (
           <PatchRows
-            key={`${JSON.stringify(diff.selector)}:${layout}`}
+            key={`${JSON.stringify(diff.selector)}:${shownLayout}`}
             hunks={diff.content.hunks}
-            layout={layout}
+            layout={shownLayout}
             wrap={wrapped}
             onHunk={setHunkIndex}
             jumpRef={jumpRef}
@@ -850,4 +925,34 @@ function reasonLabel(reason: string): string {
     default:
       return reason;
   }
+}
+
+/** A View menu item: a check while it is on. */
+function ViewItem({
+  checked,
+  disabled,
+  title,
+  onClick,
+  children,
+}: {
+  checked: boolean;
+  disabled?: boolean;
+  title?: string;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitemcheckbox"
+      aria-checked={checked}
+      className="menu-item"
+      disabled={disabled}
+      title={title}
+      onClick={onClick}
+    >
+      <span className="w-3.5 shrink-0 text-accent">{checked ? "✓" : ""}</span>
+      {children}
+    </button>
+  );
 }

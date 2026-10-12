@@ -21,6 +21,10 @@ into the release's section.
 - All repositories has a Workspace menu in its header (All repositories › All workspaces) to show one workspace's repositories, or those in none, and a Workspace column; its totals moved into the header, so the list starts higher.
 - With the sidebar collapsed, the title bar runs across the rail, so the window's buttons no longer straddle two bars.
 - Drag the edge of the list in History and Changes, or of the ref history in Branches, to give it more or less room; Brainiac remembers each width.
+- Brainiac works in half and three-quarter windows: tables drop their least useful columns, headers and toolbars shorten instead of overlapping or wrapping, and History, Changes, and a pull request's files fold their lists to a strip that slides over the patch.
+- The patch toolbar fits a narrow pane with a View menu, and a commit's file tree becomes a menu beside the file stepper when there is no room for it.
+- The commit list no longer scrolls sideways when a commit has long ref names.
+- Databases' tabs no longer sit under the window's buttons when the sidebar is collapsed.
 - The close button of All repositories' side panel now hides the panel, as ⌥⌘B does.
 
 ## [0.6.2] - 2026-10-11

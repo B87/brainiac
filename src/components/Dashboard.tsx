@@ -272,11 +272,12 @@ export default function Dashboard(props: Props) {
     <div className="flex min-h-0 flex-1 flex-col">
       <header
         data-tauri-drag-region
-        className="flex h-12 shrink-0 items-center gap-3 border-b bg-header pr-3 pl-4 pl-lead"
+        className="@container flex h-12 shrink-0 items-center gap-3 border-b bg-header pr-3 pl-4 pl-lead"
       >
+        {/* The breadcrumb never shrinks: the totals give way first. */}
         <nav
           aria-label="Location"
-          className="flex min-w-0 shrink items-center gap-0.5"
+          className="flex shrink-0 items-center gap-0.5"
         >
           <button
             type="button"
@@ -354,7 +355,7 @@ export default function Dashboard(props: Props) {
             </button>
           </div>
         ) : (
-          <span className="ml-3 min-w-0">
+          <span className="ml-1 min-w-0 overflow-hidden @max-[800px]:hidden">
             <Totals t={t} />
           </span>
         )}
@@ -366,6 +367,7 @@ export default function Dashboard(props: Props) {
             scopeRepos.length === 0 ||
             scopeRepos.every((r) => props.fetching.has(r.id))
           }
+          aria-label="Fetch all"
           title="Fetch every repository shown: updates remote-tracking branches and tags only"
           onClick={() => props.onFetch(scopeRepos.map((r) => r.id))}
         >
@@ -377,9 +379,11 @@ export default function Dashboard(props: Props) {
                 : ""
             }
           />
-          {scopeRepos.some((r) => props.fetching.has(r.id))
-            ? "Fetching…"
-            : "Fetch all"}
+          <span className="@max-[1000px]:hidden">
+            {scopeRepos.some((r) => props.fetching.has(r.id))
+              ? "Fetching…"
+              : "Fetch all"}
+          </span>
         </button>
         {tab === "overview" && workspace?.discovery_mode === "discovered" && (
           <button
@@ -405,19 +409,29 @@ export default function Dashboard(props: Props) {
             <span className="hidden xl:inline">Add repositories…</span>
           </button>
         ) : (
-          <button type="button" className="btn" onClick={props.onAdd}>
+          <button
+            type="button"
+            className="btn"
+            aria-label="Add…"
+            title="Add a repository or workspace (⌘O)"
+            onClick={props.onAdd}
+          >
             <PlusIcon size={13} />
-            Add…
+            <span className="@max-[1000px]:hidden">Add…</span>
           </button>
         )}
         <button
           type="button"
           className="btn btn-primary"
+          aria-label="Refresh all"
+          title="Refresh all (⌘R)"
           onClick={props.onRefreshAll}
         >
           <RefreshIcon size={13} />
-          Refresh all
-          <span className="text-[11px] opacity-80">⌘R</span>
+          <span className="@max-[800px]:hidden">Refresh all</span>
+          <span className="text-[11px] opacity-80 @max-[1000px]:hidden">
+            ⌘R
+          </span>
         </button>
         {workspace && (
           <div className="relative">
@@ -489,11 +503,12 @@ export default function Dashboard(props: Props) {
         <div className="flex min-h-0 flex-1">
           <section
             aria-label="Repositories"
-            className={`flex min-w-0 flex-1 flex-col gap-3.5 px-6 ${workspace ? "pt-5" : "pt-3.5"}`}
+            className={`@container flex min-w-0 flex-1 flex-col gap-3.5 px-6 @max-[760px]:px-4 ${workspace ? "pt-5 @max-[1000px]:pt-3" : "pt-3.5"}`}
           >
             {workspace && (
-              <div className="flex items-end gap-4">
-                <div className="flex min-w-0 flex-1 flex-col gap-1">
+              // Below 1000px the title and totals share one line.
+              <div className="flex items-end gap-4 @max-[1000px]:items-center">
+                <div className="flex min-w-0 flex-1 flex-col gap-1 @max-[1000px]:flex-row @max-[1000px]:items-baseline @max-[1000px]:gap-3">
                   {renaming ? (
                     <RenameField
                       initial={workspace.name}
@@ -504,15 +519,18 @@ export default function Dashboard(props: Props) {
                       }}
                     />
                   ) : (
-                    <h1 className="m-0 truncate text-[22px] font-semibold">
+                    <h1 className="m-0 truncate text-[22px] font-semibold @max-[1000px]:shrink-0 @max-[1000px]:text-[16px]">
                       {title}
                     </h1>
                   )}
-                  <span className="mono truncate text-[12px] text-muted">
+                  <span className="mono truncate text-[12px] text-muted @max-[1000px]:hidden">
                     {describe(workspace, scopeRepos.length)}
                   </span>
+                  <span className="hidden min-w-0 @max-[1000px]:flex">
+                    <Totals t={t} />
+                  </span>
                 </div>
-                <div className="flex gap-[22px]">
+                <div className="flex gap-[22px] @max-[1000px]:hidden">
                   <Kpi value={t.changedFiles} label="changed files" />
                   <Kpi
                     value={t.conflicts}
@@ -561,6 +579,7 @@ export default function Dashboard(props: Props) {
                 />
                 <FilterChip
                   label="With changes"
+                  short="Changes"
                   dot="dirty"
                   count={t.dirtyRepos}
                   active={filter === "dirty"}
@@ -575,6 +594,7 @@ export default function Dashboard(props: Props) {
                 />
                 <FilterChip
                   label="Stale or missing"
+                  short="Stale"
                   dot="missing"
                   count={
                     t.problemRepos +
@@ -586,7 +606,7 @@ export default function Dashboard(props: Props) {
                 />
               </fieldset>
               <span className="flex-1" />
-              <label className="search w-[220px]">
+              <label className="search w-[220px] @max-[1000px]:w-[160px] @max-[640px]:w-[110px]">
                 <SearchIcon />
                 <input
                   ref={queryRef}
@@ -602,7 +622,8 @@ export default function Dashboard(props: Props) {
                 onClick={() => setSort(sort === "name" ? "commit" : "name")}
                 title="Change sort order"
               >
-                Sort: {sort === "name" ? "Name" : "Latest commit"}
+                <span className="@max-[760px]:hidden">Sort: </span>
+                {sort === "name" ? "Name" : "Latest commit"}
                 <ChevronDown size={10} className="text-muted" />
               </button>
             </div>
@@ -612,12 +633,14 @@ export default function Dashboard(props: Props) {
                 className={`${workspace ? GRID : GRID_ALL} section-label border-b bg-panel px-3.5 py-2`}
               >
                 <span>Repository</span>
-                {!workspace && <span>Workspace</span>}
+                {!workspace && (
+                  <span className={WORKSPACE_CELL}>Workspace</span>
+                )}
                 <span>Branch</span>
-                <span>Upstream</span>
+                <span className={UPSTREAM_CELL}>Upstream</span>
                 <span>Changes</span>
-                <span>Commit</span>
-                <span className="text-right">Checked</span>
+                <span className={COMMIT_CELL}>Commit</span>
+                <span className={`text-right ${COMMIT_CELL}`}>Checked</span>
               </div>
               <div className="min-h-0 flex-1 overflow-y-auto">
                 {rows.length === 0 && (
@@ -703,11 +726,21 @@ export default function Dashboard(props: Props) {
   );
 }
 
+/**
+ * The table's columns, dropped by priority as the table narrows (SPEC.md,
+ * Main window): Checked and Commit, then the path line, then Workspace, then
+ * Upstream, whose ↑↓ joins the Branch cell. Repository, Branch, and Changes
+ * always stay. Measured on the Repositories section (`@container`).
+ */
 const GRID =
-  "grid grid-cols-[minmax(0,1fr)_minmax(90px,150px)_74px_minmax(150px,206px)_64px_70px] gap-x-3.5";
+  "grid grid-cols-[minmax(0,1fr)_minmax(90px,150px)_74px_minmax(150px,206px)_64px_70px] @max-[1100px]:grid-cols-[minmax(160px,1fr)_minmax(90px,150px)_74px_minmax(150px,206px)] @max-[680px]:grid-cols-[minmax(160px,1fr)_minmax(90px,150px)_minmax(110px,206px)] gap-x-3.5";
 /** All repositories adds the Workspace column after the name. */
 const GRID_ALL =
-  "grid grid-cols-[minmax(0,1fr)_minmax(80px,130px)_minmax(90px,150px)_74px_minmax(150px,206px)_64px_70px] gap-x-3.5";
+  "grid grid-cols-[minmax(0,1fr)_minmax(80px,130px)_minmax(90px,150px)_74px_minmax(150px,206px)_64px_70px] @max-[1100px]:grid-cols-[minmax(160px,1fr)_minmax(80px,130px)_minmax(90px,150px)_74px_minmax(150px,206px)] @max-[760px]:grid-cols-[minmax(160px,1fr)_minmax(90px,150px)_74px_minmax(110px,206px)] @max-[680px]:grid-cols-[minmax(160px,1fr)_minmax(90px,150px)_minmax(110px,206px)] gap-x-3.5";
+/** Cells that go, matching the columns above. */
+const COMMIT_CELL = "@max-[1100px]:hidden";
+const WORKSPACE_CELL = "@max-[760px]:hidden";
+const UPSTREAM_CELL = "@max-[680px]:hidden";
 
 /** Paths inside a discovered workspace's folder are shown relative to it. */
 function displayPath(workspace: Workspace | null, path: string): string {
@@ -729,15 +762,19 @@ function describe(workspace: Workspace | null, count: number): string {
     : `${root} · repositories in ${label}`;
 }
 
-/** All repositories' totals, in the header where a workspace has its tabs. */
+/**
+ * All repositories' totals, in the header where a workspace has its tabs.
+ * The header narrows them first: shorter words, then conflicts only when
+ * there are some, then (below 800px, the caller) none at all.
+ */
 function Totals({ t }: { t: ReturnType<typeof totals> }) {
   return (
     <span className="tabular flex min-w-0 items-center gap-3 truncate text-[12px] text-muted">
       <span>
         <span className="font-semibold text-fg">{t.changedFiles}</span> changed
-        files
+        <span className="@max-[1100px]:hidden"> files</span>
       </span>
-      <span>
+      <span className={t.conflicts ? "" : "@max-[1000px]:hidden"}>
         <span
           className={`font-semibold ${t.conflicts ? "text-conflict" : "text-fg"}`}
         >
@@ -748,8 +785,8 @@ function Totals({ t }: { t: ReturnType<typeof totals> }) {
       <span title="Ahead and behind their upstreams, as of the last fetch">
         <span className="font-semibold text-fg">
           ↑{t.ahead} ↓{t.behind}
-        </span>{" "}
-        vs upstreams
+        </span>
+        <span className="@max-[1100px]:hidden"> vs upstreams</span>
       </span>
     </span>
   );
@@ -846,14 +883,21 @@ function Kpi({
   );
 }
 
+/**
+ * A state filter. As the section narrows its label shortens to `short`, then
+ * (with a dot to stand for it) only the count shows; the name stays in the
+ * tooltip and the accessible name.
+ */
 function FilterChip({
   label,
+  short,
   count,
   dot,
   active,
   onClick,
 }: {
   label: string;
+  short?: string;
   count: number;
   dot?: string;
   active: boolean;
@@ -862,12 +906,19 @@ function FilterChip({
   return (
     <button
       type="button"
-      className="chip"
+      className="chip shrink-0"
       aria-pressed={active}
+      aria-label={`${label} ${count}`}
+      title={label}
       onClick={onClick}
     >
       {dot && <span className="dot" data-state={dot} />}
-      {label}
+      <span className="@max-[760px]:hidden">{label}</span>
+      <span
+        className={`hidden @max-[760px]:inline ${dot ? "@max-[640px]:hidden" : ""}`}
+      >
+        {short ?? label}
+      </span>
       <span className="count">{count}</span>
     </button>
   );
@@ -933,11 +984,11 @@ function RepoRow({
   return (
     <button
       type="button"
-      className={`list-row ${workspaces ? GRID_ALL : GRID} min-h-[52px] items-center border-t border-t-line-soft pr-3.5 pl-[11px]`}
+      className={`list-row ${workspaces ? GRID_ALL : GRID} min-h-[52px] items-center border-t border-t-line-soft pr-3.5 pl-[11px] @max-[860px]:min-h-9`}
       aria-current={selected}
       onClick={onSelect}
       onDoubleClick={onOpen}
-      title="Double-click or press Enter to open"
+      title={`${path}\nDouble-click or press Enter to open`}
     >
       <span className="flex min-w-0 items-center gap-2.5">
         <span className="dot" data-state={tone} title={TONE_LABEL[tone]} />
@@ -946,7 +997,7 @@ function RepoRow({
             <span className="truncate font-semibold">{row.label}</span>
             {row.root && <span className="tag-box">ROOT</span>}
           </span>
-          <span className="meta mono truncate text-[11px] text-muted">
+          <span className="meta mono truncate text-[11px] text-muted @max-[860px]:hidden">
             {path}
           </span>
           {r.error && r.state === "error" && (
@@ -958,7 +1009,7 @@ function RepoRow({
       </span>
       {workspaces && (
         <span
-          className="truncate text-[12px] text-fg-2"
+          className={`truncate text-[12px] text-fg-2 ${WORKSPACE_CELL}`}
           title={workspaces.join(", ") || "Not in a workspace"}
         >
           {workspaces.length === 0 ? (
@@ -977,9 +1028,18 @@ function RepoRow({
         className={`mono truncate text-[12px] ${r.head?.kind === "branch" ? "" : "text-fg-3"}`}
       >
         {headLabel(r)}
+        {/* Upstream's column is gone: its ↑↓ comes here. */}
+        {up && up !== "in sync" && (
+          <span
+            className={`hidden @max-[680px]:inline ${r.upstream?.behind ? "text-dirty" : "text-link"}`}
+          >
+            {" "}
+            {up}
+          </span>
+        )}
       </span>
       <span
-        className={`mono text-[12px] ${
+        className={`mono text-[12px] ${UPSTREAM_CELL} ${
           !up
             ? "text-faint"
             : up === "in sync"
@@ -1006,11 +1066,11 @@ function RepoRow({
           <CountChip letter="?" tone="other" n={c.untracked} />
         )}
       </span>
-      <span className="text-[12px] text-fg-2">
+      <span className={`text-[12px] text-fg-2 ${COMMIT_CELL}`}>
         {shortAgo(r.last_commit_at)}
       </span>
       <span
-        className={`text-right text-[12px] ${tone === "stale" ? "text-dirty" : "text-muted"}`}
+        className={`text-right text-[12px] ${COMMIT_CELL} ${tone === "stale" ? "text-dirty" : "text-muted"}`}
       >
         {shortAgo(r.last_checked_at) || "—"}
         {tone === "stale" && " · stale"}

@@ -372,7 +372,7 @@ export default function DatabasesView(props: Props) {
       <div
         role="tablist"
         aria-label="Query tabs"
-        className="flex h-12 shrink-0 items-end gap-0.5 border-b bg-header px-2.5"
+        className="flex h-12 shrink-0 items-end gap-0.5 border-b bg-header px-2.5 pl-lead"
         data-tauri-drag-region
       >
         <button

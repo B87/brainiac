@@ -136,7 +136,7 @@ export default function StatusBar({
   const t = totals(scope);
 
   return (
-    <footer className="flex h-[26px] shrink-0 items-center gap-3.5 border-t bg-sidebar px-3.5 text-[11.5px] text-muted">
+    <footer className="flex h-[26px] shrink-0 items-center gap-3.5 overflow-hidden border-t bg-sidebar px-3.5 text-[11.5px] whitespace-nowrap text-muted">
       <span
         className={`flex min-w-0 items-center gap-1.5 ${state === "clean" ? "text-fg-2" : state === "unknown" ? "" : "text-dirty"}`}
       >
@@ -158,7 +158,7 @@ export default function StatusBar({
         </span>
       )}
       {selected && !notice && (
-        <span className="mono selectable truncate">
+        <span className="mono selectable truncate max-[820px]:hidden">
           {shortPath(selected.display_path)}
         </span>
       )}
@@ -186,7 +186,7 @@ export default function StatusBar({
         ))}
       </span>
       {snapshot && !selected && scope.length > 0 && (
-        <span>
+        <span className="shrink-0">
           {t.upToDate} of {scope.length} up to date
         </span>
       )}
@@ -196,7 +196,7 @@ export default function StatusBar({
         </span>
       )}
       {snapshot?.git.version && (
-        <span title={snapshot.git.version}>
+        <span className="max-[960px]:hidden" title={snapshot.git.version}>
           Git{" "}
           {snapshot.git.version
             .replace(/^git version /, "")
