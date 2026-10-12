@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { usePref } from "../lib/prefs";
 
 /** A pane's width: where it starts, how narrow it may get, how wide. */
@@ -37,6 +37,14 @@ export type PaneWidth = {
 export function usePaneWidth(key: string, bounds: PaneBounds): PaneWidth {
   const [saved, setSaved] = usePref(key, bounds.initial);
   const [live, setLive] = useState<number | null>(null);
+  // The maximum follows the window: draw again when it is resized, so a
+  // width saved in a wider window shrinks with it.
+  const [, redraw] = useState(0);
+  useEffect(() => {
+    const onResize = () => redraw((n) => n + 1);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
   const clamp = (w: number) =>
     Math.round(Math.min(bounds.max(), Math.max(bounds.min, w)));
   return {
@@ -98,6 +106,13 @@ export default function ResizeEdge({
         drag.current = null;
         onLive(null);
         onDone(w);
+      }}
+      // The system took the pointer (a gesture, a window change): drop the
+      // drag without saving its width.
+      onPointerCancel={() => {
+        if (!drag.current) return;
+        drag.current = null;
+        onLive(null);
       }}
       onDoubleClick={() => onDone(bounds.initial)}
       onKeyDown={(e) => {

@@ -1663,7 +1663,8 @@ function FilesTab({
               className="btn btn-sm btn-ghost w-6 px-0"
               aria-label="Hide file list"
               title="Hide file list, giving the diff the full width"
-              onClick={() => setShowFiles(false)}
+              // Over the patch, hiding the list folds it to its strip again.
+              onClick={() => (narrow ? setOverlay(false) : setShowFiles(false))}
             >
               <SidebarIcon size={13} />
             </button>

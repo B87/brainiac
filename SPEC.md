@@ -174,7 +174,7 @@ Repository name/path filtering and commit-message/hash filtering belong to the G
 | `Cmd+Shift+N`, v0.2 | New task |
 | `Cmd+S`, v0.2 | Save the note now |
 | `Cmd+Shift+E`, v0.2 | Switch the note editor between Live Preview and Source |
-| `Cmd+B` | Show or hide the sidebar |
+| `Cmd+B` | Collapse the sidebar to its rail of icons, or expand it |
 | `Option+Cmd+B` | Show or hide the side panel |
 | `Shift+Cmd+B`, v0.6 | Show or hide the explanation panel beside a patch (section 14) |
 | `Option+Cmd+0`, v0.2 | Show or hide the context panel in Notes (the same panel as `Option+Cmd+B`) |

@@ -195,6 +195,15 @@ test("the list beside a patch is resized by dragging its edge, and remembered", 
   await page.mouse.up();
   expect(Math.round(await width())).toBe(480);
 
+  // A narrower window (the rail leaves 848pt) caps it at half the window,
+  // without forgetting the saved width.
+  await page.keyboard.press("Meta+b");
+  await page.setViewportSize({ width: 900, height: 900 });
+  await expect.poll(width).toBe(450);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await expect.poll(width).toBe(480);
+  await page.keyboard.press("Meta+b");
+
   // The arrow keys work too; double-click returns the default.
   await edge.focus();
   await page.keyboard.press("ArrowLeft");
