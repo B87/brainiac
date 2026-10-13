@@ -2,7 +2,7 @@
  * Typed wrappers around Tauri `invoke`. Types come from `generated/`, which
  * `cargo test` exports from the Rust DTOs; do not edit those files by hand.
  */
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { ActivitySettings } from "./generated/ActivitySettings";
 import type { AgentAccessStatus } from "./generated/AgentAccessStatus";
@@ -20,6 +20,7 @@ import type { AppError } from "./generated/AppError";
 import type { ApproveAgentHostRequest } from "./generated/ApproveAgentHostRequest";
 import type { AppSnapshot } from "./generated/AppSnapshot";
 import type { BranchComparison } from "./generated/BranchComparison";
+import type { BusyTerminal } from "./generated/BusyTerminal";
 import type { Cell } from "./generated/Cell";
 import type { CellValue } from "./generated/CellValue";
 import type { ChangesResult } from "./generated/ChangesResult";
@@ -101,6 +102,7 @@ import type { NoteLists } from "./generated/NoteLists";
 import type { NoteMissingEvent } from "./generated/NoteMissingEvent";
 import type { NoteRevision } from "./generated/NoteRevision";
 import type { NoteSummary } from "./generated/NoteSummary";
+import type { OpenTerminalRequest } from "./generated/OpenTerminalRequest";
 import type { ParamValue } from "./generated/ParamValue";
 import type { PinEntityType } from "./generated/PinEntityType";
 import type { PlanNode } from "./generated/PlanNode";
@@ -170,6 +172,10 @@ import type { TaskChangedEvent } from "./generated/TaskChangedEvent";
 import type { TaskFields } from "./generated/TaskFields";
 import type { TaskFilter } from "./generated/TaskFilter";
 import type { TeamPulse } from "./generated/TeamPulse";
+import type { TerminalExitedEvent } from "./generated/TerminalExitedEvent";
+import type { TerminalSettings } from "./generated/TerminalSettings";
+import type { TerminalSettingsView } from "./generated/TerminalSettingsView";
+import type { TerminalTab } from "./generated/TerminalTab";
 import type { TodayView } from "./generated/TodayView";
 import type { TransactionInfo } from "./generated/TransactionInfo";
 import type { TrashedNote } from "./generated/TrashedNote";
@@ -205,6 +211,7 @@ export type { AgentTestStep } from "./generated/AgentTestStep";
 export type { AnswerCodeSharingRequest } from "./generated/AnswerCodeSharingRequest";
 export type { Backlink } from "./generated/Backlink";
 export type { BranchComparison } from "./generated/BranchComparison";
+export type { BusyTerminal } from "./generated/BusyTerminal";
 export type { ChangedFile } from "./generated/ChangedFile";
 export type { ChangedFileStatus } from "./generated/ChangedFileStatus";
 export type { ChangeEntry } from "./generated/ChangeEntry";
@@ -313,6 +320,10 @@ export type { StartRunRequest } from "./generated/StartRunRequest";
 export type { SuggestedMove } from "./generated/SuggestedMove";
 export type { TaskNote } from "./generated/TaskNote";
 export type { TaskStatus } from "./generated/TaskStatus";
+export type { TerminalExitedEvent } from "./generated/TerminalExitedEvent";
+export type { TerminalSettings } from "./generated/TerminalSettings";
+export type { TerminalSettingsView } from "./generated/TerminalSettingsView";
+export type { TerminalTab } from "./generated/TerminalTab";
 export type { TextPart } from "./generated/TextPart";
 export type { Thread } from "./generated/Thread";
 export type { ThreadAnchor } from "./generated/ThreadAnchor";
@@ -1005,6 +1016,31 @@ export const ipc = {
     invoke<boolean>("signal_db_backend", { connectionId, pid, terminate }),
   listDockerContainers: (socket: string | null) =>
     invoke<DockerContainers>("list_docker_containers", { socket }),
+
+  // Terminal (SPEC.md, section 15). A tab's output arrives on `output` as
+  // raw bytes, in batches; its end is `onTerminalExited`.
+  openTerminal: (
+    request: OpenTerminalRequest,
+    output: (bytes: Uint8Array) => void,
+  ) => {
+    const channel = new Channel<ArrayBuffer>();
+    channel.onmessage = (data) => output(new Uint8Array(data));
+    return invoke<TerminalTab>("open_terminal", { request, output: channel });
+  },
+  writeTerminal: (id: string, data: string) =>
+    invoke<void>("write_terminal", { id, data }),
+  writeTerminalBytes: (id: string, bytes: number[]) =>
+    invoke<void>("write_terminal_bytes", { id, bytes }),
+  resizeTerminal: (id: string, cols: number, rows: number) =>
+    invoke<void>("resize_terminal", { id, cols, rows }),
+  terminalForeground: (id: string) =>
+    invoke<string | null>("terminal_foreground", { id }),
+  listBusyTerminals: () => invoke<BusyTerminal[]>("list_busy_terminals"),
+  closeTerminal: (id: string) => invoke<void>("close_terminal", { id }),
+  getTerminalSettings: () =>
+    invoke<TerminalSettingsView>("get_terminal_settings"),
+  saveTerminalSettings: (settings: TerminalSettings) =>
+    invoke<void>("save_terminal_settings", { settings }),
 };
 
 export function onDbHealthSample(
@@ -1082,6 +1118,14 @@ export function onIndexStatusChanged(
   handler: (e: IndexStatus) => void,
 ): Promise<UnlistenFn> {
   return listen<IndexStatus>("index_status_changed", (ev) =>
+    handler(ev.payload),
+  );
+}
+
+export function onTerminalExited(
+  handler: (e: TerminalExitedEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<TerminalExitedEvent>("terminal_exited", (ev) =>
     handler(ev.payload),
   );
 }

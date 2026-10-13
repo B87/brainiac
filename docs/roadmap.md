@@ -150,6 +150,16 @@ Brainiac explains a commit, a branch, a run's result, or a pull request to the p
 
 **Exit gate:** for a week, read every commit, agent result, and pull request you review in Brainiac with an explanation, with Claude Code and with OpenCode. Most notes are correct and point to the right lines; no claim without a verified source is shown; a change made after explaining marks only the affected notes; nothing reaches a provider from a repository whose answer was no; the repository is unchanged; and the time and cost of each explanation are known.
 
+### Terminal — after v0.6
+
+Tabs running the login shell or a program named in Settings, in a Terminal view and a dock beside any view (`SPEC.md`, section 15; `docs/architecture.md`, Terminal; `design/terminal-and-herdr.md`). Its release is chosen when it is merged.
+
+- [ ] Spike: xterm.js running a shell, and herdr with Claude Code in it, on macOS and WebKitGTK: colors, mouse, herdr's prefix, `Cmd+Esc`, bracketed and image paste, a flood of output, resize; written up in `design/terminal-and-herdr.md`.
+- [x] The terminal module: tabs in the app's process with `portable-pty`, output over a channel in batches, the login shell's environment, the program in front, closing and quitting with a busy tab.
+- [x] The Terminal view and the dock with one set of tabs, `Cmd+T`, `Cmd+J`, `Cmd+Esc`, New terminal on repositories and workspaces, Settings → Terminal; the query tab's shortcut moved to `Option+Cmd+T`.
+- [ ] The WebKit tests for the view and the dock over the fake backend (opening, hiding, moving a tab with its output kept, focus, keys).
+- [ ] Later, not planned: herdr in the terminal and herdr's agents on the rows (phases 3 and 4 of the design).
+
 ### v0.6.1 — Known concepts
 
 Refines v0.6's concepts after use: the labels, the Concepts You Know page, and how the ledger reaches an explain run. Branch `v0.6.1-concepts`, started 9 October 2026. Design and the panel rounds behind each item: [`design/code-explanations.md`](design/code-explanations.md), Concept classification and Editing the ledger, and scope. Proposed scope, in the panel's order; the maintainer decides what stays. `SPEC.md` section 14 changes before the code of each item.

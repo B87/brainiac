@@ -24,6 +24,7 @@ import {
   PlayIcon,
   PlusIcon,
   TaskIcon,
+  TerminalIcon,
   TodayIcon,
 } from "./icons";
 import type { RepoFocus } from "./RepositoryView";
@@ -44,6 +45,8 @@ export type View =
   | { kind: "databases" }
   /** Runs (v0.5): the list, or one run. */
   | { kind: "runs"; runId?: string }
+  /** The terminal's tabs, filling the main area (SPEC.md, section 15). */
+  | { kind: "terminal" }
   /** One pull request (v0.3), and the view to go back to. */
   | { kind: "pullRequest"; reference: string; back: View }
   /** Settings, in place of the sidebar and the view, and the view to go back to. */
@@ -235,6 +238,16 @@ export default function Sidebar({
               {runsNeedingYou}
             </span>
           )}
+        </button>
+        <button
+          type="button"
+          className="side-row"
+          aria-current={view.kind === "terminal"}
+          title="Terminal (⌘T)"
+          onClick={() => onView({ kind: "terminal" })}
+        >
+          <TerminalIcon className="shrink-0" />
+          <span className="flex-1">Terminal</span>
         </button>
 
         <div className="mx-2 my-2 h-px bg-line" />
@@ -433,6 +446,12 @@ function SidebarRail({
                 {runsNeedingYou}
               </span>
             ),
+          )}
+          {item(
+            "Terminal",
+            view.kind === "terminal",
+            <TerminalIcon size={16} />,
+            { kind: "terminal" },
           )}
           <div className="my-1 h-px w-6 shrink-0 bg-line" />
           {item("All repositories", inRepositories, <GridIcon size={16} />, {

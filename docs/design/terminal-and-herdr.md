@@ -6,9 +6,11 @@ It builds on workspaces and repositories (`SPEC.md` section 4), Needs you and th
 
 UX design canvas: https://claude.ai/artifact/2fRcZ9uiUUxFRxyNrMNtF7 (the Terminal view with herdr, a shell in the dock beside a diff, Needs you, Settings → Terminal and herdr, and the dock's states)
 
-## Status: idea, not planned (written 13 Oct 2026)
+## Status: phase 2 in progress (13 Oct 2026)
 
-Nothing is built. Written with the maintainer from a reading of the code on `main` at v0.6.3 and of herdr's public descriptions; nothing about herdr here has been tested against a build of it. The first draft was one herdr-only module; the client panel reviewed it the same day, and this version splits it into two modules and takes in that round (What the panel said). Every herdr behavior this design relies on is in Open questions, and the spike in Phases answers them first.
+**Update, 13 Oct 2026:** the terminal (phase 2) is being built on `design/terminal-and-herdr`, its behavior moved into `SPEC.md` section 15 and its design into `docs/architecture.md`, Terminal, with the decision at the end of Decisions. The spike of phase 1 is not done yet: xterm.js against the maintainer's terminal with herdr and Claude Code, on macOS and WebKitGTK, is the first test of the build. herdr (phases 3 and 4) is not started. What follows is the design as written before that.
+
+Nothing was built when this was written. Written with the maintainer from a reading of the code on `main` at v0.6.3 and of herdr's public descriptions; nothing about herdr here has been tested against a build of it. The first draft was one herdr-only module; the client panel reviewed it the same day, and this version splits it into two modules and takes in that round (What the panel said). Every herdr behavior this design relies on is in Open questions, and the spike in Phases answers them first.
 
 ## The decision in brief
 

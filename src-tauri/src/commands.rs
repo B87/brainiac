@@ -1778,3 +1778,91 @@ pub async fn list_code_sharing_answers(
 ) -> AppResult<Vec<crate::models::CodeAnswer>> {
     sharing.list().await
 }
+
+// ---------------------------------------------------------------------------
+// Terminal (SPEC.md, section 15)
+// ---------------------------------------------------------------------------
+
+pub type Terminals = Arc<crate::terminal::TerminalService>;
+
+/// Open a tab. Its output comes back on `output` as raw bytes, in batches.
+#[tauri::command]
+pub async fn open_terminal(
+    request: crate::models::OpenTerminalRequest,
+    output: tauri::ipc::Channel,
+    terminals: State<'_, Terminals>,
+) -> AppResult<crate::models::TerminalTab> {
+    let sink = Box::new(move |bytes: Vec<u8>| {
+        // A window that went away stops listening; the tab closes with it.
+        let _ = output.send(tauri::ipc::InvokeResponseBody::Raw(bytes));
+    });
+    terminals.open(request, sink).await
+}
+
+/// Keys and pasted text, as typed.
+#[tauri::command]
+pub async fn write_terminal(
+    id: String,
+    data: String,
+    terminals: State<'_, Terminals>,
+) -> AppResult<()> {
+    terminals.write(&id, data.into_bytes())
+}
+
+/// Bytes that are not text, such as some mouse reports.
+#[tauri::command]
+pub async fn write_terminal_bytes(
+    id: String,
+    bytes: Vec<u8>,
+    terminals: State<'_, Terminals>,
+) -> AppResult<()> {
+    terminals.write(&id, bytes)
+}
+
+#[tauri::command]
+pub async fn resize_terminal(
+    id: String,
+    cols: u16,
+    rows: u16,
+    terminals: State<'_, Terminals>,
+) -> AppResult<()> {
+    terminals.resize(&id, cols, rows)
+}
+
+/// The program closing the tab would end, if one runs in front of its own.
+#[tauri::command]
+pub async fn terminal_foreground(
+    id: String,
+    terminals: State<'_, Terminals>,
+) -> AppResult<Option<String>> {
+    terminals.foreground(&id).await
+}
+
+/// Tabs with a program in front, for the quit dialog.
+#[tauri::command]
+pub async fn list_busy_terminals(
+    terminals: State<'_, Terminals>,
+) -> AppResult<Vec<crate::models::BusyTerminal>> {
+    Ok(terminals.busy().await)
+}
+
+#[tauri::command]
+pub async fn close_terminal(id: String, terminals: State<'_, Terminals>) -> AppResult<()> {
+    terminals.close(&id);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_terminal_settings(
+    terminals: State<'_, Terminals>,
+) -> AppResult<crate::models::TerminalSettingsView> {
+    terminals.settings_view().await
+}
+
+#[tauri::command]
+pub async fn save_terminal_settings(
+    settings: crate::models::TerminalSettings,
+    terminals: State<'_, Terminals>,
+) -> AppResult<()> {
+    terminals.save_settings(settings).await
+}

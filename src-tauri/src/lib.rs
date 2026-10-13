@@ -22,6 +22,7 @@ pub mod notes;
 pub mod secrets;
 pub mod sharing;
 pub mod tasks;
+pub mod terminal;
 pub mod vault;
 pub mod watcher;
 pub mod workspaces;
@@ -46,6 +47,7 @@ use crate::tasks::TaskService;
 use crate::workspaces::RepositoryService;
 
 /// A native menu item was chosen; the window acts on its id.
+#[cfg(feature = "app")]
 impl events::FrontendEvent for MenuEvent {
     fn name(&self) -> &'static str {
         "menu"
@@ -326,6 +328,13 @@ pub fn run() {
             }));
             explanations.set_notifier(events::notifier(handle.clone(), events::Notify::WhenInactive));
             app.manage(Arc::clone(&explanations));
+
+            // --- Terminal ----------------------------------------------------
+            // Starts nothing until a tab opens (SPEC.md, section 15).
+            app.manage(terminal::TerminalService::new(
+                db.clone(),
+                events::to_window(handle.clone()),
+            ));
             tauri::async_runtime::spawn(async move {
                 explanations.reconnect().await;
             });
@@ -618,6 +627,15 @@ pub fn run() {
             commands::stop_db_health,
             commands::signal_db_backend,
             commands::list_docker_containers,
+            commands::open_terminal,
+            commands::write_terminal,
+            commands::write_terminal_bytes,
+            commands::resize_terminal,
+            commands::terminal_foreground,
+            commands::list_busy_terminals,
+            commands::close_terminal,
+            commands::get_terminal_settings,
+            commands::save_terminal_settings,
         ])
         .build(context)
         .expect("error while running Brainiac")
@@ -625,6 +643,11 @@ pub fn run() {
             if let tauri::RunEvent::Exit = event {
                 if let Some(agent) = app.try_state::<commands::Agent>() {
                     agent.close();
+                }
+                // Plain shells end with Brainiac, as a terminal app's tabs do;
+                // the quit dialog said how many were busy.
+                if let Some(terminals) = app.try_state::<commands::Terminals>() {
+                    terminals.close_all();
                 }
                 // End database sessions cleanly, so servers see Brainiac
                 // leave rather than a socket that went away.
@@ -806,6 +829,24 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
     let new_note = MenuItem::with_id(app, "new_note", "New Note", true, Some("CmdOrCtrl+N"))?;
     let new_task = MenuItem::with_id(app, "new_task", "New Task", true, Some("CmdOrCtrl+Shift+N"))?;
     let new_run = MenuItem::with_id(app, "new_run", "New Run…", true, Some("Alt+CmdOrCtrl+N"))?;
+    // On Linux, Ctrl+T and Ctrl+J are a shell's keys while a terminal tab has
+    // focus, so the menu does not take them (SPEC.md, section 15, Keys).
+    let mac_only = |accelerator: &'static str| cfg!(target_os = "macos").then_some(accelerator);
+    let new_terminal = MenuItem::with_id(
+        app,
+        "new_terminal",
+        "New Terminal Tab",
+        true,
+        mac_only("CmdOrCtrl+T"),
+    )?;
+    let show_terminal = MenuItem::with_id(app, "show_terminal", "Terminal", true, None::<&str>)?;
+    let toggle_dock = MenuItem::with_id(
+        app,
+        "toggle_dock",
+        "Show or Hide Terminal Dock",
+        true,
+        mac_only("CmdOrCtrl+J"),
+    )?;
     let save = MenuItem::with_id(app, "save", "Save", true, Some("CmdOrCtrl+S"))?;
     let export = MenuItem::with_id(app, "export", "Export…", true, None::<&str>)?;
     let restore = MenuItem::with_id(app, "restore", "Restore from Export…", true, None::<&str>)?;
@@ -877,6 +918,7 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
             &new_note,
             &new_task,
             &new_run,
+            &new_terminal,
             &open,
             &PredefinedMenuItem::separator(app)?,
             &save,
@@ -911,6 +953,7 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
             &show_notes,
             &show_databases,
             &show_runs,
+            &show_terminal,
             &PredefinedMenuItem::separator(app)?,
             &refresh,
             &fetch,
@@ -920,6 +963,7 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
             &toggle_sidebar,
             &toggle_context,
             &toggle_explanation,
+            &toggle_dock,
             &toggle_source,
             &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::fullscreen(app, None)?,

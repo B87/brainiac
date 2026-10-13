@@ -2878,6 +2878,19 @@ export class FakeBackend {
       case "open_in_editor":
       case "reveal_in_finder":
         return null;
+      // The terminal (SPEC.md, section 15): settings, and no tab busy.
+      case "get_terminal_settings":
+        return {
+          settings: {
+            enabled: true,
+            program: "",
+            args: [],
+            option_as_meta: false,
+          },
+          login_shell: "/bin/zsh",
+        };
+      case "list_busy_terminals":
+        return [];
       default:
         if (cmd.startsWith("plugin:")) return null;
         throw {
