@@ -909,8 +909,8 @@ Brainiac has a terminal, so the shells and agents changing a repository sit besi
 
 ### Where it shows
 
-- **The Terminal view.** **Terminal** in the sidebar, under Runs (and in the rail), opens the terminal's tabs filling the main area, with Brainiac's sidebar beside them. **Dock** in its tab bar goes back to the view before it, with the dock open.
-- **The dock** shows the same tabs at the bottom of any other view, or on the right (**Right** / **Bottom** in its bar; remembered, with its size, which its edge drags). **`Cmd+J`** shows or hides it; **Maximize** opens the Terminal view.
+- **The Terminal view.** **Terminal** in the sidebar, under Runs (and in the rail), opens the terminal's tabs filling the main area, with Brainiac's sidebar beside them; the sidebar's foot says `Cmd+B` collapses it to give the terminal more room. **Dock** in its tab bar goes back to the view before it, with the dock open. The focused tab is outlined, so it is clear where keys go.
+- **The dock** shows the same tabs at the bottom of any other view, or on the right (Settings → Terminal, **Dock**); its edge drags its size, which is remembered. **`Cmd+J`** or its **×** hides it, **`Cmd+J`** shows it again; **Maximize** opens the Terminal view.
 - **One set of tabs, two sizes.** Moving between the view and the dock moves the same tab: its program keeps running and only sees its window resized, so nothing restarts and no output is lost. Opening a repository from the sidebar while the Terminal view shows leaves every tab running.
 - With no tab open, the view and the dock offer **New terminal in** the repository last selected, or in the home folder.
 
@@ -934,7 +934,7 @@ Brainiac has a terminal, so the shells and agents changing a repository sit besi
 
 - While a tab has focus, keys go to its program, except **`Cmd+Esc`**, which moves focus back to the window with the tab still showing (and from the window, into the tab), and on macOS Brainiac's `Cmd` shortcuts (`Cmd+T`, `Cmd+J`, `Cmd+B`, `Cmd+K`, …). The first tab says so once: "⌘Esc moves between the terminal and the window. Closing a tab ends its shell.", with **Got it**.
 - On Linux, where Brainiac's shortcuts use `Ctrl` (`docs/design/linux.md`), every `Ctrl` key goes to a focused tab, `Ctrl+J` and `Ctrl+T` too, which shells use; `Ctrl+Esc` is the way out, and the menu takes neither `Ctrl+T` nor `Ctrl+J`.
-- **Use Option as Meta** (Settings → Terminal, off by default) sends Option and a key as Esc and the key, for shells' and editors' Alt keys; off, Option types the characters it types elsewhere. It applies to tabs opened after the change.
+- **Option sends Meta** (Settings → Terminal, off by default) sends Option and a key as Esc and the key, for shells' and editors' Alt keys; off, Option types the characters it types elsewhere. It applies to tabs opened after the change.
 - `Cmd`-click opens a link a tab shows, in the browser.
 
 ### Closing
@@ -945,7 +945,8 @@ Brainiac has a terminal, so the shells and agents changing a repository sit besi
 
 ### Settings → Terminal
 
-- **Terminal** (on by default), with what running a program there means for repositories.
-- **A new tab runs:** **Program**, empty for the login shell (named), else a name on the shell's PATH or a full path; **Arguments**, separated by spaces and passed as they are, shown once a program is named. Tabs already open keep their program.
-- **Keys:** Use Option as Meta.
+- **Terminal in Brainiac** (on by default), with what running a program there means for repositories.
+- **Run:** **Your login shell** (named) or **Another program…**, which shows **Program** (a name on the shell's PATH or a full path) and **Arguments** (separated by spaces and passed as they are). Tabs already open keep their program.
+- **Dock:** **Bottom** or **Right**.
+- **Keys:** Option sends Meta.
 

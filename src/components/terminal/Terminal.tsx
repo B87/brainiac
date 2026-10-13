@@ -21,12 +21,9 @@ type BarProps = {
   onMove: () => void;
   /** The dock only: hide it. */
   onHide?: () => void;
-  /** The dock only: bottom or right. */
-  side?: "bottom" | "right";
-  onSide?: (side: "bottom" | "right") => void;
 };
 
-function TerminalBar({ place, onNew, onMove, onHide, side, onSide }: BarProps) {
+function TerminalBar({ place, onNew, onMove, onHide }: BarProps) {
   const { tabs, active } = useTerminals();
   const dock = place === "dock";
   return (
@@ -99,16 +96,6 @@ function TerminalBar({ place, onNew, onMove, onHide, side, onSide }: BarProps) {
         {dock && `${MOD}J hide · `}
         {MOD}T new tab · {LEAVE} leave the terminal
       </span>
-      {dock && onSide && (
-        <button
-          type="button"
-          className="btn btn-ghost mb-1 ml-2 h-6 px-2 text-xs"
-          title={side === "right" ? "Dock at the bottom" : "Dock on the right"}
-          onClick={() => onSide(side === "right" ? "bottom" : "right")}
-        >
-          {side === "right" ? "Bottom" : "Right"}
-        </button>
-      )}
       <button
         type="button"
         className={`btn mb-1 ml-2 px-2 text-xs ${dock ? "h-6" : "mb-1.5 h-7"}`}
@@ -142,7 +129,7 @@ function TerminalPane({ tab }: { tab: TerminalTabState }) {
     return () => detach(tab.key, element);
   }, [tab.key]);
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-[#17171b]">
+    <div className="terminal-pane flex min-h-0 min-w-0 flex-1 flex-col bg-[#17171b]">
       {!hintSeen && (
         <div className="flex items-center gap-2.5 border-b border-[#c9d8f5] bg-[#eef3ff] px-3 py-2 text-[#2a3f6b] dark:border-[#2c3a5c] dark:bg-[#1c2438] dark:text-[#c9d8f5]">
           <span className="flex-1">
@@ -215,14 +202,13 @@ export function TerminalView({
 export function TerminalDock({
   where,
   side,
-  onSide,
   onNew,
   onMaximize,
   onHide,
 }: {
   where: string;
+  /** Chosen in Settings → Terminal. */
   side: "bottom" | "right";
-  onSide: (side: "bottom" | "right") => void;
   onNew: () => void;
   onMaximize: () => void;
   onHide: () => void;
@@ -231,7 +217,7 @@ export function TerminalDock({
   const tab = tabs.find((t) => t.key === active);
   const [size, setSize] = usePref(
     side === "right" ? "terminal.dockWidth" : "terminal.dockHeight",
-    side === "right" ? 520 : 300,
+    side === "right" ? 520 : 330,
   );
   const dragging = useRef<{ from: number; size: number } | null>(null);
   const along = (e: { clientX: number; clientY: number }) =>
@@ -269,8 +255,6 @@ export function TerminalDock({
         onNew={onNew}
         onMove={onMaximize}
         onHide={onHide}
-        side={side}
-        onSide={onSide}
       />
       {tab ? (
         <TerminalPane key={tab.key} tab={tab} />

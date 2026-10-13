@@ -38,10 +38,8 @@ import {
 } from "./actions";
 import ChooseFolderDialog from "./ChooseFolderDialog";
 import { focus, hasFocus, setLeaveHandler } from "./sessions";
-import { terminalStore } from "./store";
+import { type DockSide, terminalStore, useDockSide } from "./store";
 import { TerminalDock, TerminalView } from "./Terminal";
-
-type Side = "bottom" | "right";
 
 export function useTerminalHost({
   view,
@@ -54,7 +52,7 @@ export function useTerminalHost({
 }): {
   /** Beside the view, when the dock is open and the Terminal view is not shown. */
   dock: ReactNode;
-  dockSide: Side;
+  dockSide: DockSide;
   /** The Terminal view, for `view.kind === "terminal"`. */
   terminalView: ReactNode;
   /** The manual workspace's folder question. */
@@ -63,7 +61,7 @@ export function useTerminalHost({
   onMenu: (id: string) => boolean;
 } {
   const [dockOpen, setDockOpen] = usePref("terminal.dockOpen", false);
-  const [dockSide, setDockSide] = usePref<Side>("terminal.dockSide", "bottom");
+  const dockSide = useDockSide();
   const [folders, setFolders] = usePref<Record<string, string>>(
     "terminal.workspaceFolders",
     {},
@@ -219,7 +217,6 @@ export function useTerminalHost({
         <TerminalDock
           where={where}
           side={dockSide}
-          onSide={setDockSide}
           onNew={newHere}
           onMaximize={() => showView({ kind: "terminal" })}
           onHide={() => setDockOpen(false)}

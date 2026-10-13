@@ -1,6 +1,6 @@
 /**
- * Settings → Terminal (SPEC.md, section 15): the switch, the program a new
- * tab runs, and Option as Meta.
+ * Settings → Terminal (SPEC.md, section 15): the switch, what a new tab
+ * runs, where the dock sits, and Option as Meta.
  */
 import { useCallback, useEffect, useState } from "react";
 import {
@@ -11,11 +11,14 @@ import {
 } from "../../lib/ipc";
 import { argsText, parseArgs } from "../../lib/settings";
 import { CommitField, Group, Hint, Lede } from "../SettingsPanes";
-import { terminalStore } from "./store";
+import { terminalStore, useDockSide } from "./store";
 
 export default function TerminalSettingsPane() {
   const [view, setView] = useState<TerminalSettingsView | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Choosing Another program shows its fields before one is named.
+  const [anotherChosen, setAnotherChosen] = useState(false);
+  const dockSide = useDockSide();
   useEffect(() => {
     ipc
       .getTerminalSettings()
@@ -46,13 +49,9 @@ export default function TerminalSettingsPane() {
       <Lede>Loading…</Lede>
     );
   const s = view.settings;
+  const another = anotherChosen || s.program !== "";
   return (
     <>
-      <Lede>
-        Tabs in the Terminal view and the dock run your login shell, or the
-        program you name here. What runs in them is yours, as in any terminal:
-        commands and agents there can change your repositories and run Git.
-      </Lede>
       {error && (
         <p role="alert" className="m-0 text-red-700 dark:text-red-300">
           {error}
@@ -62,10 +61,12 @@ export default function TerminalSettingsPane() {
         <div className="settings-group">
           <label className="settings-row">
             <span className="flex min-w-55 flex-1 flex-col gap-0.5">
-              <span className="font-medium">Terminal</span>
+              <span className="font-medium">Terminal in Brainiac</span>
               <Hint>
-                Off, no tab opens and Brainiac starts no program. Tabs already
-                open stay until you close them.
+                Programs you run here, and the agents they start, can change
+                your repositories and run Git, as in any terminal. Brainiac
+                itself still writes nothing to them. Turned off, Brainiac starts
+                no programs.
               </Hint>
             </span>
             <input
@@ -79,44 +80,91 @@ export default function TerminalSettingsPane() {
           </label>
         </div>
       </Group>
-      <Group label="A new tab runs">
+      <Group label="Run">
         <div className="settings-group">
-          <CommitField
-            label="Program"
-            hint={
-              <>
-                Empty for your login shell (
-                <span className="mono">{view.login_shell}</span>). A name on
-                your shell’s PATH, such as <span className="mono">herdr</span>,
-                or a full path.
-              </>
-            }
-            value={s.program}
-            format={(v) => v}
-            parse={(t) => ({ value: t.trim() })}
-            onCommit={(program) => save({ program })}
-            placeholder="Login shell"
-            mono
-          />
-          {s.program && (
-            <CommitField
-              label="Arguments"
-              hint="Separated by spaces, passed as they are, never to a shell."
-              value={s.args}
-              format={argsText}
-              parse={(t) => ({ value: parseArgs(t) })}
-              onCommit={(args) => save({ args })}
-              mono
-              width={320}
-            />
+          <div className="settings-row flex-col items-stretch gap-2.5">
+            <fieldset
+              aria-label="What a new tab runs"
+              className="seg m-0 self-start border-0"
+            >
+              <button
+                type="button"
+                aria-pressed={!another}
+                onClick={() => {
+                  setAnotherChosen(false);
+                  if (s.program) void save({ program: "", args: [] });
+                }}
+              >
+                Your login shell{" "}
+                <span className="mono text-muted">{view.login_shell}</span>
+              </button>
+              <button
+                type="button"
+                aria-pressed={another}
+                onClick={() => setAnotherChosen(true)}
+              >
+                Another program…
+              </button>
+            </fieldset>
+            <Hint>
+              {another
+                ? "A name on your shell’s PATH, such as herdr, or a full path. Tabs already open keep their program."
+                : "Each tab is a login shell, which reads your profile as a terminal app’s tab does."}
+            </Hint>
+          </div>
+          {another && (
+            <>
+              <CommitField
+                label="Program"
+                value={s.program}
+                format={(v) => v}
+                parse={(t) =>
+                  t.trim() ? { value: t.trim() } : { error: "Name a program." }
+                }
+                onCommit={(program) => save({ program })}
+                placeholder="herdr"
+                mono
+              />
+              <CommitField
+                label="Arguments"
+                hint="Separated by spaces, passed as they are, never to a shell."
+                value={s.args}
+                format={argsText}
+                parse={(t) => ({ value: parseArgs(t) })}
+                onCommit={(args) => save({ args })}
+                mono
+                width={320}
+              />
+            </>
           )}
+        </div>
+      </Group>
+      <Group label="Dock">
+        <div className="settings-group">
+          <div className="settings-row">
+            <fieldset
+              aria-label="Where the dock sits"
+              className="seg m-0 self-start border-0"
+            >
+              {(["bottom", "right"] as const).map((side) => (
+                <button
+                  key={side}
+                  type="button"
+                  aria-pressed={dockSide === side}
+                  onClick={() => terminalStore.setDockSide(side)}
+                >
+                  {side === "bottom" ? "Bottom" : "Right"}
+                </button>
+              ))}
+            </fieldset>
+          </div>
         </div>
       </Group>
       <Group label="Keys">
         <div className="settings-group">
           <label className="settings-row">
             <span className="flex min-w-55 flex-1 flex-col gap-0.5">
-              <span className="font-medium">Use Option as Meta</span>
+              <span className="font-medium">Option sends Meta</span>
               <Hint>
                 Option and a key sends Esc and the key, for a shell’s and an
                 editor’s Alt keys. Off, Option types the characters it types

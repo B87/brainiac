@@ -1624,6 +1624,11 @@
   .terminal-host .xterm {
     height: 100%;
   }
+  /* The focused tab is outlined, so it is clear where keys go. */
+  .terminal-pane:focus-within {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
   .db-tabs {
     display: flex;
     min-width: 0;

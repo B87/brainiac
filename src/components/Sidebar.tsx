@@ -345,6 +345,11 @@ export default function Sidebar({
         ))}
       </div>
       <div className="border-t p-2.5">
+        {view.kind === "terminal" && (
+          <p className="m-0 px-2.5 pb-2 text-[11px] text-muted">
+            ⌘B collapses the sidebar to give the terminal more room
+          </p>
+        )}
         <button
           type="button"
           className="side-row h-[30px] text-fg-2"
