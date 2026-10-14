@@ -216,8 +216,13 @@ export const pullRequests: PullRequest[] = [
     number: 13,
     kind: "github",
     title: "Draft: faster tokenizer",
-    description: "",
-    description_html: "",
+    description: Array.from({ length: 20 }, (_, i) => `- step ${i + 1}`).join(
+      "\n",
+    ),
+    description_html: `<ul>${Array.from(
+      { length: 20 },
+      (_, i) => `<li>step ${i + 1}</li>`,
+    ).join("")}</ul>`,
     author: { id: "42", login: "octo", display_name: "Octo Cat" },
     state: "draft",
     source_repository: "team/parser",
@@ -228,7 +233,7 @@ export const pullRequests: PullRequest[] = [
     commits_since_review: null,
     target_branch: "main",
     reviewers: [],
-    checks: { state: null, total: 0, passed: 0, failed: 0, pending: 0 },
+    checks: { state: "failure", total: 4, passed: 1, failed: 2, pending: 1 },
     mergeability: "computing",
     counts: {
       comments: 0,
@@ -372,10 +377,41 @@ const changedFiles = [
     deletions: 80,
     binary: false,
   },
+  {
+    path: "static/logo.png",
+    old_path: null,
+    status: "added" as const,
+    additions: 0,
+    deletions: 0,
+    binary: true,
+  },
 ];
 
 function pullRequestDiff(req: PullRequestDiffRequest): PullRequestDiff {
   const local = req.path === "src/parse.ts";
+  if (req.path === "static/logo.png")
+    return {
+      reference: req.reference,
+      source: "provider",
+      base_sha: "b".repeat(40),
+      head_sha: "a".repeat(40),
+      diff: {
+        repository_id: "repo-1",
+        selector: {
+          kind: "range",
+          base: "b".repeat(40),
+          head: "a".repeat(40),
+          path: req.path,
+          old_path: req.old_path,
+        },
+        content: {
+          kind: "non_text",
+          reason: "binary",
+          summary: "Binary file added (2 KB)",
+          byte_size: 2048,
+        },
+      },
+    };
   return {
     reference: req.reference,
     source: local ? "local" : "provider",
@@ -423,6 +459,32 @@ function pullRequestDiff(req: PullRequestDiffRequest): PullRequestDiff {
               { kind: "add", old_no: null, new_no: 12, text: "    depth++;" },
             ],
           },
+          // A second change in the file under review, for stepping by change.
+          ...(local
+            ? [
+                {
+                  header: "function close()",
+                  old_start: 40,
+                  old_lines: 1,
+                  new_start: 41,
+                  new_lines: 2,
+                  lines: [
+                    {
+                      kind: "context" as const,
+                      old_no: 40,
+                      new_no: 41,
+                      text: "  return out;",
+                    },
+                    {
+                      kind: "add" as const,
+                      old_no: null,
+                      new_no: 42,
+                      text: "  out.depth = depth;",
+                    },
+                  ],
+                },
+              ]
+            : []),
         ],
         truncated: false,
         total_lines: 4,
@@ -2508,6 +2570,34 @@ export class FakeBackend {
       case "get_pull_request_diff":
         return pullRequestDiff(args.request as PullRequestDiffRequest);
       case "get_pull_request_checks":
+        // The draft pull request has a failing check, listed after passing ones.
+        if (String(args.reference).endsWith("#13"))
+          return {
+            reference: args.reference,
+            head_sha: "b".repeat(40),
+            checks: [
+              { name: "build", state: "success", description: null, url: null },
+              {
+                name: "deploy",
+                state: "pending",
+                description: null,
+                url: null,
+              },
+              {
+                name: "tests",
+                state: "failure",
+                description: "2 failed",
+                url: "https://ci.example.com/3",
+              },
+              {
+                name: "audit",
+                state: "failure",
+                description: null,
+                url: "https://ci.example.com/4",
+              },
+            ],
+            fetched_at: NOW,
+          };
         return {
           reference: args.reference,
           head_sha: "a".repeat(40),

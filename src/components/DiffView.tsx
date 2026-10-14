@@ -3,6 +3,7 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -22,6 +23,7 @@ import type { DiffLine, DiffResult, DiffSide, Hunk } from "../lib/ipc";
 import { useKeys } from "../lib/keys";
 import { usePref } from "../lib/prefs";
 import { splitPath } from "../lib/repo";
+import { type Landing, resolveLanding } from "../lib/reviewNav";
 import { VIRTUALIZE_ABOVE, visibleRange } from "../lib/virtual";
 import { useNarrowerThan } from "../lib/width";
 import { ChevronDown, CopyIcon, ExternalIcon } from "./icons";
@@ -33,6 +35,44 @@ export type Stepper = {
   total: number;
   onPrev: () => void;
   onNext: () => void;
+};
+
+/** Where a reviewer had scrolled to and what they had selected in one file's patch. */
+export type ViewState = {
+  scrollTop: number;
+  /** The change counted as current, which a short file cannot scroll to. */
+  hunk: number;
+  sel: Selection | null;
+};
+
+/**
+ * Review navigation over a patch (SPEC.md, Files Changed): files and changes
+ * together in one toolbar, bound to `J` / `K` and `Shift+J` / `Shift+K`.
+ * The patch moves between its own hunks; crossing into another file is the
+ * owner's, which knows the order.
+ */
+export type ReviewNav = {
+  file: {
+    index: number;
+    total: number;
+    onPrev: () => void;
+    onNext: () => void;
+  };
+  /** A change exists in the next or previous file when this one runs out. */
+  moreAfter: boolean;
+  moreBefore: boolean;
+  /** `J` past the last hunk or `K` before the first. */
+  onCross: (delta: 1 | -1) => void;
+  /** A move to a change in a file that was not shown; the patch scrolls to it once it is. */
+  land: { path: string; hunk: Landing; token: number } | null;
+  onLanded: (token: number) => void;
+  /** Where this file was left, for a return by the file list. */
+  restore: (ViewState & { path: string }) | null;
+  onViewState: (path: string, state: ViewState) => void;
+  /** The current change and how many there are, for the footer. */
+  onPosition: (hunk: number, count: number) => void;
+  /** Says where a move crossing files ended up. */
+  notice: string | null;
 };
 
 /** A line, or a range ending at it, a comment goes on. */
@@ -72,6 +112,8 @@ type Props = {
   /** Why whitespace cannot be ignored for this patch (a provider's diff); the button is then off. */
   ignoreWhitespaceNote?: string;
   annotate?: Annotate;
+  /** Pull request review: replaces `stepper` and the N P [ ] keys. */
+  review?: ReviewNav;
 };
 
 /** Must match `.diff-row` in index.css. */
@@ -111,6 +153,7 @@ export default function DiffView({
   onIgnoreWhitespace,
   ignoreWhitespaceNote,
   annotate,
+  review,
 }: Props) {
   const [wrap, setWrap] = usePref("brainiac.diff.wrap", false);
   const [layout, setLayout] = usePref<Layout>(
@@ -122,6 +165,8 @@ export default function DiffView({
   // Split needs two readable sides: below 900px of pane it shows unified.
   const [measure, tooNarrowToSplit] = useNarrowerThan(900);
   const jumpRef = useRef<((i: number) => void) | null>(null);
+  const reviewRef = useRef(review);
+  reviewRef.current = review;
   const hunks = diff?.content.kind === "text" ? diff.content.hunks : null;
   const rowCount = useMemo(
     () => (hunks ? hunks.reduce((n, h) => n + 1 + h.lines.length, 0) : 0),
@@ -137,19 +182,67 @@ export default function DiffView({
     },
     [hunkCount, hunkIndex],
   );
-  useKeys({
-    n: () => jump(1),
-    p: () => jump(-1),
-    "[": () => stepper?.onPrev(),
-    "]": () => stepper?.onNext(),
-  });
+  /** The next or previous change: in this file, else the first or last of the one beyond. */
+  const change = useCallback(
+    (delta: 1 | -1) => {
+      if (!review || loading) return;
+      const to = hunkIndex + delta;
+      if (to >= 0 && to < hunkCount) jumpRef.current?.(to);
+      else review.onCross(delta);
+    },
+    [review, loading, hunkIndex, hunkCount],
+  );
+  // In a pull request review, J and K move by change and Shift+J / Shift+K
+  // by file; elsewhere N and P move by hunk and [ and ] by file.
+  useKeys(
+    review
+      ? {
+          j: () => change(1),
+          k: () => change(-1),
+          "shift+j": () => review.file.onNext(),
+          "shift+k": () => review.file.onPrev(),
+        }
+      : {
+          n: () => jump(1),
+          p: () => jump(-1),
+          "[": () => stepper?.onPrev(),
+          "]": () => stepper?.onNext(),
+        },
+  );
+  const onPosition = review?.onPosition;
+  useEffect(() => {
+    onPosition?.(hunkIndex, hunkCount);
+  }, [onPosition, hunkIndex, hunkCount]);
+
+  // A move into this file from another: scroll to the change it asked for
+  // once the patch is here. A file with no changes to land on is the
+  // owner's to step past.
+  const land = review?.land;
+  const shownPath = diff?.selector.path;
+  useEffect(() => {
+    if (!land || loading || !shownPath || shownPath !== land.path || !hunkCount)
+      return;
+    const i = resolveLanding(land.hunk, hunkCount);
+    if (i === null) return;
+    jumpRef.current?.(i);
+    reviewRef.current?.onLanded(land.token);
+  }, [land, loading, shownPath, hunkCount]);
 
   if (!diff)
     return (
       <div className="flex min-h-0 flex-1 flex-col">
-        {(extra || stepper) && (
+        {(extra || stepper || review) && (
           <div className="flex items-center gap-3 border-b px-4 py-2.5">
-            {stepper && <StepperView stepper={stepper} />}
+            {review ? (
+              <ReviewToolbar
+                review={review}
+                hunkIndex={0}
+                hunkCount={0}
+                onChange={change}
+              />
+            ) : (
+              stepper && <StepperView stepper={stepper} />
+            )}
             {extra}
           </div>
         )}
@@ -186,7 +279,16 @@ export default function DiffView({
   const header = (
     <div ref={measure} className="@container flex shrink-0 flex-col border-b">
       <div className="flex min-w-0 items-center gap-2.5 px-3 pt-2 pb-1.5">
-        {stepper && <StepperView stepper={stepper} />}
+        {review ? (
+          <ReviewToolbar
+            review={review}
+            hunkIndex={hunkIndex}
+            hunkCount={hunkCount}
+            onChange={change}
+          />
+        ) : (
+          stepper && <StepperView stepper={stepper} />
+        )}
         <span className="mono selectable min-w-0 truncate pl-1 text-[13px]">
           {oldPath && <span className="text-muted">{oldPath} → </span>}
           <span className="text-muted">{dir}</span>
@@ -237,7 +339,7 @@ export default function DiffView({
           </span>
         )}
         <span className="flex-1" />
-        {hunkCount > 1 && (
+        {!review && hunkCount > 1 && (
           <span className="flex items-center gap-1.5 text-[12px] text-muted">
             <span className="tabular" aria-live="polite">
               <span className="@max-[760px]:hidden">
@@ -415,6 +517,14 @@ export default function DiffView({
             onHunk={setHunkIndex}
             jumpRef={jumpRef}
             annotate={annotate}
+            restore={
+              review?.restore && review.restore.path === path
+                ? review.restore
+                : null
+            }
+            onViewState={
+              review ? (state) => review.onViewState(path, state) : undefined
+            }
             footer={
               truncated && (
                 <div className="m-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 font-sans text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-100">
@@ -463,6 +573,96 @@ function StepperView({ stepper }: { stepper: Stepper }) {
   );
 }
 
+/** "‹ File 1 of 42 ›   ↑ Change 1 of 2 ↓": the review's two kinds of step, side by side. */
+function ReviewToolbar({
+  review,
+  hunkIndex,
+  hunkCount,
+  onChange,
+}: {
+  review: ReviewNav;
+  hunkIndex: number;
+  hunkCount: number;
+  onChange?: (delta: 1 | -1) => void;
+}) {
+  const { file } = review;
+  const canPrevChange = hunkIndex > 0 || review.moreBefore;
+  const canNextChange = hunkIndex < hunkCount - 1 || review.moreAfter;
+  const step =
+    "h-6 w-6 text-fg-2 hover:bg-control disabled:opacity-40 disabled:hover:bg-transparent";
+  return (
+    <span
+      role="toolbar"
+      aria-label="Files and changes"
+      className="flex shrink-0 items-center gap-2"
+    >
+      <span className="flex items-center rounded-md border border-control-line">
+        <button
+          type="button"
+          className={`${step} rounded-l-md`}
+          aria-label="Previous file (Shift+K)"
+          title="Previous file (Shift+K)"
+          disabled={file.index <= 0}
+          onClick={file.onPrev}
+        >
+          ‹
+        </button>
+        <span className="tabular px-1 text-[12px] text-fg-2">
+          File {file.index + 1} of {file.total}
+        </span>
+        <button
+          type="button"
+          className={`${step} rounded-r-md`}
+          aria-label="Next file (Shift+J)"
+          title="Next file (Shift+J)"
+          disabled={file.index >= file.total - 1}
+          onClick={file.onNext}
+        >
+          ›
+        </button>
+      </span>
+      <span
+        className="flex items-center rounded-md border border-control-line"
+        title="A change is one hunk of the diff: a run of changed lines with its context"
+      >
+        <button
+          type="button"
+          className={`${step} rounded-l-md`}
+          aria-label="Previous change (K)"
+          title="Previous change (K)"
+          disabled={!canPrevChange}
+          onClick={() => onChange?.(-1)}
+        >
+          ↑
+        </button>
+        <span className="tabular px-1 text-[12px] text-fg-2" aria-live="polite">
+          {hunkCount > 0
+            ? `Change ${hunkIndex + 1} of ${hunkCount}`
+            : "No changes to step"}
+        </span>
+        <button
+          type="button"
+          className={`${step} rounded-r-md`}
+          aria-label="Next change (J)"
+          title="Next change (J)"
+          disabled={!canNextChange}
+          onClick={() => onChange?.(1)}
+        >
+          ↓
+        </button>
+      </span>
+      {review.notice && (
+        <span
+          className="mono max-w-[260px] truncate text-[12px] text-accent"
+          role="status"
+        >
+          {review.notice}
+        </span>
+      )}
+    </span>
+  );
+}
+
 export function DiffSkeleton() {
   return (
     <div
@@ -478,7 +678,7 @@ export function DiffSkeleton() {
 }
 
 /** Lines of one side selected in the gutter, for a comment on them. */
-type Selection = { side: DiffSide; from: number; to: number };
+export type Selection = { side: DiffSide; from: number; to: number };
 
 function sideNo(l: DiffLine, side: DiffSide): number | null {
   return side === "old" ? l.old_no : l.new_no;
@@ -512,7 +712,11 @@ function PatchRows({
   jumpRef,
   annotate,
   footer,
+  restore,
+  onViewState,
 }: {
+  restore: ViewState | null;
+  onViewState?: (state: ViewState) => void;
   hunks: Hunk[];
   layout: Layout;
   wrap: boolean;
@@ -525,7 +729,13 @@ function PatchRows({
   const [scrollTop, setScrollTop] = useState(0);
   const [viewport, setViewport] = useState(800);
   const [pinned, setPinned] = useState<number | null>(null);
-  const [sel, setSel] = useState<Selection | null>(null);
+  const [sel, setSel] = useState<Selection | null>(restore?.sel ?? null);
+  // The change an explicit jump landed on, which stays the current one while
+  // the scroll position is where the jump put it: the last change of a short
+  // file cannot always reach the top of the view.
+  const forced = useRef<{ index: number; top: number } | null>(null);
+  const hunkNow = useRef(restore?.hunk ?? 0);
+  const [flash, setFlash] = useState<number | null>(null);
   const rows = useMemo<Array<UnifiedRow | SplitRow>>(
     () => (layout === "split" ? splitRows(hunks) : unifiedRows(hunks)),
     [hunks, layout],
@@ -572,6 +782,16 @@ function PatchRows({
       else
         for (let i = 0; i < hunkRows.length; i++)
           if (hunkTop(i) <= top + 1) current = i;
+      const held = forced.current;
+      if (held && Math.abs(top - held.top) <= 1) {
+        hunkNow.current = held.index;
+        onHunk(held.index);
+        setPinned(null);
+        return;
+      }
+      // The reviewer scrolled on their own: the position decides again.
+      forced.current = null;
+      hunkNow.current = current;
       onHunk(current);
       setPinned(top > hunkTop(current) + 1 ? current : null);
     },
@@ -590,12 +810,38 @@ function PatchRows({
       const el = scroller.current;
       if (!el) return;
       el.scrollTop = hunkTop(i);
+      forced.current = { index: i, top: el.scrollTop };
       track(el.scrollTop);
+      setFlash(i);
     };
     return () => {
       jumpRef.current = null;
     };
   }, [jumpRef, hunkTop, track]);
+  useEffect(() => {
+    if (flash === null) return;
+    const timer = setTimeout(() => setFlash(null), 1400);
+    return () => clearTimeout(timer);
+  }, [flash]);
+
+  // Where the reviewer was, kept by the owner for a return to this file. The
+  // first run restores it; the scroll then reports itself.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: only on mount, when the patch was opened.
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    if (!el || !restore) return;
+    if (restore.scrollTop > 0) el.scrollTop = restore.scrollTop;
+    // The change that was current stays so, even where the scroll cannot show it.
+    if (restore.hunk > 0)
+      forced.current = { index: restore.hunk, top: el.scrollTop };
+  }, []);
+  useEffect(() => {
+    onViewState?.({
+      scrollTop: scroller.current?.scrollTop ?? 0,
+      hunk: hunkNow.current,
+      sel,
+    });
+  }, [sel, onViewState]);
 
   /** A click in the gutter selects the line; with Shift, the range up to it. */
   const pick = useCallback((side: DiffSide, line: number, extend: boolean) => {
@@ -647,9 +893,14 @@ function PatchRows({
   return (
     <div
       ref={scroller}
+      tabIndex={-1}
       data-own-arrows
-      className={`diff selectable relative min-h-0 flex-1 overflow-auto ${wrap ? "diff-wrap" : ""} ${layout === "split" ? "diff-split" : ""}`}
-      onScroll={(e) => track(e.currentTarget.scrollTop)}
+      className={`diff outline-none selectable relative min-h-0 flex-1 overflow-auto ${wrap ? "diff-wrap" : ""} ${layout === "split" ? "diff-split" : ""}`}
+      onScroll={(e) => {
+        const top = e.currentTarget.scrollTop;
+        track(top);
+        onViewState?.({ scrollTop: top, hunk: hunkNow.current, sel });
+      }}
     >
       {pinnedHunk && (
         // Overlays the first visible row instead of pushing rows down.
@@ -676,6 +927,7 @@ function PatchRows({
                 key={start + i}
                 hunk={row.hunk}
                 index={row.index}
+                flash={flash === row.index}
               />
             ) : row.kind === "line" ? (
               // biome-ignore lint/suspicious/noArrayIndexKey: see above.
@@ -723,9 +975,21 @@ function halfWidth(view: number, chars: number): string {
 }
 
 /** `index` marks a header in the patch, which hunk navigation looks up. */
-function HunkRow({ hunk: h, index }: { hunk: Hunk; index?: number }) {
+function HunkRow({
+  hunk: h,
+  index,
+  flash = false,
+}: {
+  hunk: Hunk;
+  index?: number;
+  flash?: boolean;
+}) {
   return (
-    <div className="diff-row diff-hunk" data-hunk={index}>
+    <div
+      className="diff-row diff-hunk"
+      data-hunk={index}
+      data-flash={flash || undefined}
+    >
       <span className="diff-gutter" />
       <span className="diff-gutter" />
       <span className="diff-sign" />
