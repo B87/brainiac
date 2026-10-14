@@ -3,6 +3,7 @@ import type { RepositorySummary, Workspace, WorkspaceMember } from "./ipc";
 import {
   folderName,
   isChoice,
+  isEcho,
   nextActive,
   quitQuestion,
   repositoryTarget,
@@ -173,6 +174,19 @@ describe("switching tabs by number", () => {
     expect(tabNumber(key("1", { metaKey: false, ctrlKey: true }), false)).toBe(
       null,
     );
+  });
+});
+
+describe("one keypress seen by the menu and the window", () => {
+  it("drops the other source's copy of a press", () => {
+    expect(isEcho({ from: "menu", at: 100 }, "key", 120)).toBe(true);
+    expect(isEcho({ from: "key", at: 100 }, "menu", 120)).toBe(true);
+    expect(isEcho({ from: "key", at: 100 }, "menu", 300)).toBe(false);
+  });
+
+  it("keeps two quick presses from the same source", () => {
+    expect(isEcho({ from: "key", at: 100 }, "key", 110)).toBe(false);
+    expect(isEcho(undefined, "key", 0)).toBe(false);
   });
 });
 

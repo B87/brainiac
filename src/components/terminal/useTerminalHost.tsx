@@ -24,8 +24,11 @@ import { usePref } from "../../lib/prefs";
 import {
   type FolderChoice,
   isChoice,
+  isEcho,
   quitQuestion,
   repositoryTarget,
+  type ShortcutSeen,
+  type ShortcutSource,
   type TerminalTarget,
   workspaceTarget,
 } from "../../lib/terminal";
@@ -107,24 +110,24 @@ export function useTerminalHost({
 
   // ⌘T: the Terminal view, always; ⇧⌘T: a new tab, in the view when it is
   // shown, else in the dock. A menu accelerator and the key listener can
-  // both see one keypress.
-  const handledAt = useRef<Record<string, number>>({});
-  const once = (name: string, f: () => void) => {
+  // both see one keypress; the second to arrive is dropped.
+  const handled = useRef<Record<string, ShortcutSeen>>({});
+  const once = (name: string, from: ShortcutSource, f: () => void) => {
     const now = performance.now();
-    if (now - (handledAt.current[name] ?? -1000) < 80) return;
-    handledAt.current[name] = now;
+    if (isEcho(handled.current[name], from, now)) return;
+    handled.current[name] = { from, at: now };
     f();
   };
-  const showTerminal = () =>
-    once("t", () => {
+  const showTerminal = (from: ShortcutSource) =>
+    once("t", from, () => {
       showView({ kind: "terminal" });
       const { tabs, active } = terminalStore.get();
       if (tabs.length === 0) openTab(here());
       else if (active) focus(active);
     });
-  const newTab = () => once("shift+t", newHere);
-  const toggleDock = () =>
-    once("j", () => {
+  const newTab = (from: ShortcutSource) => once("shift+t", from, newHere);
+  const toggleDock = (from: ShortcutSource) =>
+    once("j", from, () => {
       if (showing) {
         // The view's tabs move to the dock, under the view before it.
         showView(before.current);
@@ -154,9 +157,9 @@ export function useTerminalHost({
     showing,
   );
   useKeys({
-    "mod+t": showTerminal,
-    "mod+shift+t": newTab,
-    "mod+j": toggleDock,
+    "mod+t": () => showTerminal("key"),
+    "mod+shift+t": () => newTab("key"),
+    "mod+j": () => toggleDock("key"),
     "mod+Escape": focusIn,
   });
 
@@ -218,9 +221,9 @@ export function useTerminalHost({
 
   const menu = useRef<(id: string) => boolean>(() => false);
   menu.current = (id: string) => {
-    if (id === "new_terminal") newTab();
-    else if (id === "toggle_dock") toggleDock();
-    else if (id === "show_terminal") showTerminal();
+    if (id === "new_terminal") newTab("menu");
+    else if (id === "toggle_dock") toggleDock("menu");
+    else if (id === "show_terminal") showTerminal("menu");
     else return false;
     return true;
   };

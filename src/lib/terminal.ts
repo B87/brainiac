@@ -110,6 +110,24 @@ export function tabKey(
   return null;
 }
 
+/** Where a terminal shortcut came from: the window's key listener or the native menu. */
+export type ShortcutSource = "key" | "menu";
+export type ShortcutSeen = { from: ShortcutSource; at: number };
+
+/**
+ * Whether a shortcut is the same keypress seen a second time: on macOS the
+ * menu's accelerator and the window's key listener both see one press. Two
+ * presses come from the same source, however fast, so only the other
+ * source within 80 ms is an echo.
+ */
+export function isEcho(
+  last: ShortcutSeen | undefined,
+  from: ShortcutSource,
+  now: number,
+): boolean {
+  return !!last && last.from !== from && now - last.at < 80;
+}
+
 /** `Cmd+1` … `Cmd+9` in a focused tab on macOS: the tab to show, from 1. */
 export function tabNumber(
   e: Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey">,
