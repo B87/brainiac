@@ -23,9 +23,18 @@ const MARKER: &str = "__brainiac_environment__";
 pub const TERMINAL_VARIABLES: &[(&str, &str)] =
     &[("TERM", "xterm-256color"), ("COLORTERM", "truecolor")];
 
-/// Left out of every tab's environment: they describe the terminal Brainiac
-/// was started from, if any, not Brainiac's.
-const NOT_INHERITED: &[&str] = &["TERM_PROGRAM", "TERM_PROGRAM_VERSION", "TERM_SESSION_ID"];
+/// Left out of every tab's environment: they describe the terminal or the
+/// multiplexer Brainiac was started from, if any, not Brainiac's. With them,
+/// tmux and herdr in a tab think they run inside themselves and refuse to
+/// start.
+const NOT_INHERITED: &[&str] = &[
+    "TERM_PROGRAM",
+    "TERM_PROGRAM_VERSION",
+    "TERM_SESSION_ID",
+    "TMUX",
+    "TMUX_PANE",
+];
+const NOT_INHERITED_PREFIXES: &[&str] = &["HERDR_"];
 
 /// The user's login shell: `$SHELL`, else the one in the user database, else
 /// the system's default.
@@ -112,6 +121,7 @@ pub fn for_tab(base: impl IntoIterator<Item = (String, String)>) -> Vec<(String,
         .into_iter()
         .filter(|(name, _)| {
             !NOT_INHERITED.contains(&name.as_str())
+                && !NOT_INHERITED_PREFIXES.iter().any(|p| name.starts_with(p))
                 && !TERMINAL_VARIABLES.iter().any(|(n, _)| n == name)
         })
         .collect();
@@ -235,15 +245,19 @@ mod tests {
     }
 
     #[test]
-    fn a_tab_says_which_terminal_it_is_and_drops_another_terminals() {
+    fn a_tab_says_which_terminal_it_is_and_drops_another_terminals_and_multiplexers() {
         let env = for_tab([
             ("TERM".to_string(), "dumb".to_string()),
             ("TERM_PROGRAM".to_string(), "OtherTerminal".to_string()),
+            ("HERDR_ENV".to_string(), "1".to_string()),
+            ("TMUX".to_string(), "/tmp/tmux-1/default,1,0".to_string()),
             ("HOME".to_string(), "/home/someone".to_string()),
         ]);
         assert_eq!(value(&env, "TERM"), Some("xterm-256color"));
         assert_eq!(value(&env, "COLORTERM"), Some("truecolor"));
         assert_eq!(value(&env, "TERM_PROGRAM"), None);
+        assert_eq!(value(&env, "HERDR_ENV"), None);
+        assert_eq!(value(&env, "TMUX"), None);
         assert_eq!(value(&env, "HOME"), Some("/home/someone"));
         assert_eq!(env.iter().filter(|(n, _)| n == "TERM").count(), 1);
     }

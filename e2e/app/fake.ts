@@ -1147,6 +1147,25 @@ export class FakeBackend {
   nextPick: string | null = "/tmp/Notes";
   /** What the next confirmation answers. */
   nextAsk = true;
+  /** The terminal's tabs: each echoes what is typed, as a shell's prompt does. */
+  terminals = new Map<string, { output: { id: number }; index: number }>();
+  /** What runs in front of a tab's shell, for the close question; none by default. */
+  terminalFront: string | null = null;
+
+  private toTerminal(id: string, text: string) {
+    const t = this.terminals.get(id);
+    if (!t) return;
+    // A Channel's messages, as Tauri delivers them: in order, by index.
+    const internals = (
+      window as unknown as {
+        __TAURI_INTERNALS__: {
+          runCallback: (id: number, data: unknown) => void;
+        };
+      }
+    ).__TAURI_INTERNALS__;
+    const message = new TextEncoder().encode(text).buffer;
+    internals.runCallback(t.output.id, { index: t.index++, message });
+  }
   /** Delivers backend events, as the real services emit them after a commit. */
   emit: (name: string, payload: unknown) => void = () => {};
 
@@ -2889,8 +2908,34 @@ export class FakeBackend {
           },
           login_shell: "/bin/zsh",
         };
+      case "save_terminal_settings":
+        return null;
       case "list_busy_terminals":
         return [];
+      case "open_terminal": {
+        const request = args.request as { cwd: string };
+        const id = `term-${this.terminals.size + 1}`;
+        this.terminals.set(id, {
+          output: args.output as { id: number },
+          index: 0,
+        });
+        const cwd = request.cwd || "/home/someone";
+        setTimeout(() => this.toTerminal(id, `fake shell in ${cwd}\r\n$ `), 0);
+        return { id, program: "zsh", cwd };
+      }
+      case "write_terminal": {
+        const data = String(args.data);
+        this.toTerminal(String(args.id), data.replaceAll("\r", "\r\n$ "));
+        return null;
+      }
+      case "write_terminal_bytes":
+      case "resize_terminal":
+        return null;
+      case "terminal_foreground":
+        return this.terminalFront;
+      case "close_terminal":
+        this.terminals.delete(String(args.id));
+        return null;
       default:
         if (cmd.startsWith("plugin:")) return null;
         throw {

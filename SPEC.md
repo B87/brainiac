@@ -929,7 +929,7 @@ Brainiac has a terminal, so the shells and agents changing a repository sit besi
   | A manual workspace | Asks which member, then remembers it for the workspace; with one member, that member |
 
   One tab opens, never one per member. A tab is titled with its repository's or workspace's name and its program's name ("widgets zsh"); a workspace's tabs sit together.
-- **The environment.** A plain shell tab is a login shell, so it reads the user's profile as a terminal app's tab does. A program named in Settings gets the login shell's environment, read once per launch (`$SHELL -l -c`, with a 5-second limit; Brainiac's own environment when it fails), so a program found on the shell's PATH, such as `claude` or `herdr`, starts even when Brainiac was opened from the Finder. Every tab gets `TERM=xterm-256color` and `COLORTERM=truecolor`.
+- **The environment.** A plain shell tab is a login shell, so it reads the user's profile as a terminal app's tab does. A program named in Settings gets the login shell's environment, read once per launch (`$SHELL -l -c`, with a 5-second limit; Brainiac's own environment when it fails), so a program found on the shell's PATH, such as `claude` or `herdr`, starts even when Brainiac was opened from the Finder. Every tab gets `TERM=xterm-256color` and `COLORTERM=truecolor`, and none gets the variables of a terminal or multiplexer Brainiac was started from (`TERM_PROGRAM`, tmux's, herdr's), so tmux or herdr started in a tab does not think it runs inside itself.
 - A program that cannot start, or a folder that is gone, leaves the tab open with the reason above it.
 
 ### Keys

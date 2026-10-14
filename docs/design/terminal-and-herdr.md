@@ -6,7 +6,9 @@ It builds on workspaces and repositories (`SPEC.md` section 4), Needs you and th
 
 UX design canvas: https://claude.ai/artifact/2fRcZ9uiUUxFRxyNrMNtF7 (the Terminal view with herdr, a shell in the dock beside a diff, Needs you, Settings → Terminal and herdr, and the dock's states)
 
-## Status: phase 2 in progress (13 Oct 2026)
+## Status: phase 2 built; herdr's half of the spike done (14 Oct 2026)
+
+**Update, 14 Oct 2026:** herdr's calls were tried against herdr 0.9.3 on Linux, in a session of their own (Spike: herdr 0.9.3, below), and the answers are in Open questions; xterm.js running herdr is being tried by the maintainer in the built terminal. Phases 3 and 4 can be designed on those answers.
 
 **Update, 13 Oct 2026:** the terminal (phase 2) is being built on `design/terminal-and-herdr`, its behavior moved into `SPEC.md` section 15 and its design into `docs/architecture.md`, Terminal, with the decision at the end of Decisions. The spike of phase 1 is not done yet: xterm.js against the maintainer's terminal with herdr and Claude Code, on macOS and WebKitGTK, is the first test of the build. herdr (phases 3 and 4) is not started. What follows is the design as written before that.
 
@@ -64,7 +66,7 @@ Nothing was built when this was written. Written with the maintainer from a read
 | Situation | Rows and Needs you | herdr's tab |
 | --- | --- | --- |
 | herdr not installed | Nothing; Settings → herdr says how to install it | A plain shell, as before the integration was on |
-| herdr's server not running (after a reboot, or killed) | States hidden; the workspace header says **herdr is not running** | **Start herdr**, which attaches and so starts the server; no agents come back, because herdr's own sessions did not survive the reboot |
+| herdr's server not running (after a reboot, or killed) | States hidden; the workspace header says **herdr is not running** | **Start herdr**, which attaches and so starts the server; herdr brings back the session's workspaces and panes, and its agents where herdr's integrations are installed (Spike) |
 | herdr's version outside the supported range | States hidden; Settings → herdr names the version found and the range | Still runs herdr; Open in herdr is unavailable, with the reason |
 | A CLI call times out (5 s) or fails | The last states kept for 30 seconds marked stale, then hidden | Unaffected |
 | A repository missing on disk | Its panes stay on its row, marked missing | Unaffected |
@@ -279,22 +281,55 @@ The client panel (three fictional personas: a skeptical CTO, a learner, a freela
 - **Guardrails, by turn, cost, and a key per client** were what each missed most from checkout runs. They stay there (Compared with checkout runs).
 - **Where this design says no:** the CTO asked for an off switch, now in Settings → Terminal, and for v0.6's provider question before Open in herdr, which Boundaries declines, with the reason.
 
+## Spike: herdr 0.9.3 (14 Oct 2026)
+
+Tried on Linux against herdr 0.9.3 (protocol 22), in a session made for it (`herdr session attach brainiac-spike`) and deleted after, so the user's own session was only read. A script drove a pseudo-terminal as Brainiac's tab does, with herdr's and tmux's variables removed. Agent states were reported with `herdr pane report-agent` rather than by running an agent, so herdr's detection of a real agent's screen was not tried here.
+
+- **One call lists everything.** `herdr api snapshot` prints JSON with every workspace, tab, and pane, and the version and protocol. A pane has `cwd`, `foreground_cwd`, `agent` (absent when none), and `agent_status`; a workspace and a tab carry the status of their agents, summed. It takes about 2 ms, process start included, so polling it every 3 seconds is cheap.
+- **A pane's folder is where it is now.** After `cd sub` in a pane, both `cwd` and `foreground_cwd` name `sub`; `herdr pane process-info` adds the foreground processes with their argv and folder.
+- **States.** `idle`, `working`, `blocked`, `done`, `unknown`. An agent that ends its turn goes to `done` and stays there until something focuses it explicitly (`herdr agent focus`); reads do not count. That is the ✓ finished of Agents on the rows, cleared by herdr itself: opening a pane from Brainiac should be `agent focus`. **A pane with no agent reports `unknown`, not `idle`**, so an agent is the `agent` field, never the status.
+- **Creating with a folder.** `workspace create`, `tab create`, and `pane split` take `--cwd` and `--label` and return the new IDs. `workspace focus` and `tab focus` work while a client is attached; the CLI focuses a pane only by direction, and the socket's `pane.focus` takes its ID. IDs are stable across a rename.
+- **Sessions.** `herdr session attach <name>` creates a missing session and starts its server; every other call against a session that is not running fails at once with `server_not_running` (JSON on stderr, exit 1), and none starts one. Two attached clients are sent the same screen. Closing the pseudo-terminal ends the client and leaves the server and its panes running.
+- **Stopping and restoring.** A stopped session keeps its layout on disk: attaching again brings back its workspaces, labels, IDs, panes, and folders. With herdr's official integrations installed, agents resume into their conversations (`resume_agents_on_restore`, on by default). A reboot was not tried; it stops the server as `session stop` does, so agents can come back after one (When something is wrong, corrected).
+- **Events.** The socket protocol is documented (`herdr api schema --json`) and has `events.subscribe` over newline-delimited JSON: pane created, updated (a folder change included), closed, agent detected, and workspace renamed come for every pane; state changes only per pane (`pane.agent_status_changed` needs a `pane_id`). Polling the snapshot is simpler and enough; events can follow.
+- **Isolation.** Each session has its own socket, `0600`, under the user's herdr folder. Any process of the user, an agent in any pane among them, can connect to any session's socket, read panes, and send keys. A session per workspace keeps herdr's sidebar apart and nothing more, and Settings → herdr has to say so.
+- **Nesting.** herdr refuses to start inside a herdr pane (`HERDR_ENV`) unless `allow_nested` is set, so a Brainiac started from a herdr pane (`pnpm tauri:dev` in one) passed that on to its tabs, and herdr refused to start in them. Tabs now drop every `HERDR_` variable and tmux's (`environment.rs`).
+- **Keys.** herdr's prefix is `Ctrl+B`, changeable in `config.toml` (`[keys] prefix`); nothing of herdr's uses `Cmd+Esc` or `Ctrl+Esc`.
+- **Notifications.** `[ui.toast] delivery` is `off` (the default), `herdr`, `terminal` (asks the outer terminal, which in Brainiac is xterm.js and shows nothing), or `system`, with sounds in `[ui.sound]`. Brainiac can read `config.toml` to tell whether herdr already notifies.
+- **Versions.** `herdr status` gives the client's and server's versions, the protocol, and whether they are compatible. Brainiac pins the protocol number rather than a version range.
+- **Remote.** herdr has saved machines (`herdr machine`, `--machine` forwards API calls) and `--remote` runs the user's own `ssh` with their SSH config, so its host keys are OpenSSH's, not Brainiac's approved ones. Not tried.
+
+What it changes for phases 3 and 4: poll `herdr api snapshot`; Open in herdr is `workspace create --cwd --label` (or `tab create` / `pane split --cwd` in a linked workspace) and `workspace focus`, with the pane focused through the socket; the links table stores herdr's workspace IDs, which survive a rename and a restart; **Start herdr** is `session attach`; opening a pane from a row is `agent focus`, which clears done; and the failure table's reboot row says agents come back with integrations.
+
+### Still to try: herdr in the built terminal
+
+By hand, in `pnpm tauri:dev` on macOS and then on Linux (WebKitGTK), each against the same in another terminal app; what differs goes here with the versions tried.
+
+- **Drawing.** herdr's sidebar and borders line up, with no gaps between box-drawing characters; true color (`printf '\e[38;2;255;100;0mX\e[0m'`); wide characters and emoji in a pane and in herdr's sidebar keep the columns.
+- **Mouse.** Clicking a herdr pane focuses it; dragging a split resizes it; the wheel scrolls a pane's history; ⌥-drag still selects text.
+- **Keys.** herdr's prefix (`Ctrl+B`) and its actions; `Cmd+Esc` leaves the tab and comes back; `Cmd+T`, `Cmd+Shift+T`, `Cmd+J`, and `Cmd+1` … do Brainiac's thing and never reach herdr; Option as Meta on and off in a shell (`Alt+B` moves back a word).
+- **Claude Code in a herdr pane.** Its prompt, a permission question, and its colors; herdr shows it as working, then blocked, then done.
+- **Paste.** Text into a shell and into Claude Code (bracketed paste, one prompt, not one line at a time); an image into Claude Code.
+- **A flood.** `yes | head -c 50000000` or `cat` of a large log: Brainiac stays responsive, `Ctrl+C` stops it at once, and the output ends where the program's did.
+- **Resize.** Dragging the dock's edge, Dock and Maximize, and the window's size: herdr redraws at the new size every time, with nothing left over.
+- **Closing.** Closing herdr's tab and quitting Brainiac leave the session and its agents running (`herdr session list`), and attaching again shows them.
+
 ## Open questions and spikes
 
-| Unknown | How to resolve | Needed before |
-| --- | --- | --- |
-| xterm.js fidelity | The spike: a shell, herdr's sidebar and borders, mouse drag to resize, true color, wide characters, Claude Code inside a herdr pane inside xterm.js, against the maintainer's terminal | Phase 2 |
-| Keys | herdr's prefix and other keys, whether its prefix can be changed in its config, `Cmd+Esc` / `Ctrl+Esc` free in shells and herdr | Phase 2 |
-| Machine-readable CLI | Whether one call lists every pane with its folder and agent state, in JSON; otherwise parsing text pinned to a version range | Phase 3 |
-| Creating panes with a folder | Whether `herdr workspace create` and `pane run` (or `split`) take a working folder, and whether a pane can be focused from the CLI while a client is attached | Phase 3 |
-| Session attach semantics | Whether `herdr session attach <name>` creates a missing session, and what two attached clients see | Phase 3 |
-| Isolation between sessions | What herdr's agent socket lets an agent in one pane or session do to others | Phase 3 |
-| Reboot | Whether herdr's sessions survive a reboot or a logout (assumed not) | Phase 3 |
-| A pane's current folder | Whether herdr reports where a pane's shell is now, or only where it started; else the foreground process's folder (`/proc/<pid>/cwd`, `proc_pidinfo` on macOS) | Phase 4 |
-| Events instead of polling | Whether the CLI or socket streams state changes (`herdr wait` suggests the server knows them) | Phase 4 |
-| Version compatibility | How often herdr's CLI changes and how actively it is maintained; the range Brainiac supports | Phase 3 |
-| Notifications | Whether Brainiac can tell that herdr's own notifications are on, to avoid two for one event | Phase 4 |
-| Remote and host keys | Whether `herdr --remote` accepts SSH options, or whether herdr over `ssh -t` works as well | Phase 5 |
+| Unknown | How to resolve | Needed before | Found (herdr 0.9.3) |
+| --- | --- | --- | --- |
+| xterm.js fidelity | The spike: a shell, herdr's sidebar and borders, mouse drag to resize, true color, wide characters, Claude Code inside a herdr pane inside xterm.js, against the maintainer's terminal | Phase 2 | Being tried by the maintainer in the built terminal, macOS first; WebKitGTK still to try |
+| Keys | herdr's prefix and other keys, whether its prefix can be changed in its config, `Cmd+Esc` / `Ctrl+Esc` free in shells and herdr | Phase 2 | `Ctrl+B`, changeable; `Cmd+Esc` / `Ctrl+Esc` are free (Spike) |
+| Machine-readable CLI | Whether one call lists every pane with its folder and agent state, in JSON; otherwise parsing text pinned to a version range | Phase 3 | Yes: `herdr api snapshot` (Spike) |
+| Creating panes with a folder | Whether `herdr workspace create` and `pane run` (or `split`) take a working folder, and whether a pane can be focused from the CLI while a client is attached | Phase 3 | Yes, with `--cwd`; a pane by ID is focused through the socket (Spike) |
+| Session attach semantics | Whether `herdr session attach <name>` creates a missing session, and what two attached clients see | Phase 3 | Creates a missing session; two clients see the same screen (Spike) |
+| Isolation between sessions | What herdr's agent socket lets an agent in one pane or session do to others | Phase 3 | None: any of the user's processes reaches any session's socket (Spike) |
+| Reboot | Whether herdr's sessions survive a reboot or a logout (assumed not) | Phase 3 | Layout comes back on attach, agents too with integrations; a real reboot not tried (Spike) |
+| A pane's current folder | Whether herdr reports where a pane's shell is now, or only where it started; else the foreground process's folder (`/proc/<pid>/cwd`, `proc_pidinfo` on macOS) | Phase 4 | Reported: `cwd` follows `cd` (Spike) |
+| Events instead of polling | Whether the CLI or socket streams state changes (`herdr wait` suggests the server knows them) | Phase 4 | `events.subscribe` on the socket; states only per pane (Spike) |
+| Version compatibility | How often herdr's CLI changes and how actively it is maintained; the range Brainiac supports | Phase 3 | A protocol number in `herdr status` and the snapshot; how often it changes not known |
+| Notifications | Whether Brainiac can tell that herdr's own notifications are on, to avoid two for one event | Phase 4 | `[ui.toast]` and `[ui.sound]` in `config.toml` (Spike) |
+| Remote and host keys | Whether `herdr --remote` accepts SSH options, or whether herdr over `ssh -t` works as well | Phase 5 | Runs the user's `ssh`; not tried |
 
 ## When this starts
 
