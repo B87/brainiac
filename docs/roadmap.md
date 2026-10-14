@@ -154,11 +154,12 @@ Brainiac explains a commit, a branch, a run's result, or a pull request to the p
 
 Tabs running the login shell or a program named in Settings, in a Terminal view and a dock beside any view (`SPEC.md`, section 15; `docs/architecture.md`, Terminal; `design/terminal-and-herdr.md`). Its release is chosen when it is merged.
 
-- [ ] Spike: xterm.js running a shell, and herdr with Claude Code in it, on macOS and WebKitGTK: colors, mouse, herdr's prefix, `Cmd+Esc`, bracketed and image paste, a flood of output, resize; written up in `design/terminal-and-herdr.md`.
+- [x] Spike, herdr's half: its CLI and socket against herdr 0.9.3, written up in `design/terminal-and-herdr.md` (Spike: herdr 0.9.3).
+- [ ] By hand on macOS and WebKitGTK: herdr and Claude Code in a tab (the design's checklist, Still to try).
 - [x] The terminal module: tabs in the app's process with `portable-pty`, output over a channel in batches, the login shell's environment, the program in front, closing and quitting with a busy tab.
-- [x] The Terminal view and the dock with one set of tabs, `Cmd+T`, `Cmd+J`, `Cmd+Esc`, New terminal on repositories and workspaces, Settings → Terminal; the query tab's shortcut moved to `Option+Cmd+T`.
-- [ ] The WebKit tests for the view and the dock over the fake backend (opening, hiding, moving a tab with its output kept, focus, keys).
-- [ ] Later, not planned: herdr in the terminal and herdr's agents on the rows (phases 3 and 4 of the design).
+- [x] The Terminal view and the dock with one set of tabs, `Cmd+T`, `Cmd+Shift+T`, `Cmd+1` … `Cmd+9`, `Cmd+J`, `Cmd+Esc`, New terminal on repositories and workspaces, Settings → Terminal; the query tab's shortcut moved to `Option+Cmd+T`.
+- [x] The WebKit tests for the view and the dock over the fake backend (opening, hiding, moving a tab with its output kept, focus, keys).
+- Not planned: herdr in the terminal and herdr's agents on the rows (phases 3 and 4 of the design). herdr already runs in a tab with its own sidebar of agents; the spike's answers are kept for if they are picked up.
 
 ### v0.6.1 — Known concepts
 

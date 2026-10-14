@@ -6,7 +6,9 @@ It builds on workspaces and repositories (`SPEC.md` section 4), Needs you and th
 
 UX design canvas: https://claude.ai/artifact/2fRcZ9uiUUxFRxyNrMNtF7 (the Terminal view with herdr, a shell in the dock beside a diff, Needs you, Settings → Terminal and herdr, and the dock's states)
 
-## Status: phase 2 built; herdr's half of the spike done (14 Oct 2026)
+## Status: the terminal built; herdr's phases not planned (14 Oct 2026)
+
+**Update, 14 Oct 2026 (later):** the terminal (phase 2) is built and merged, and phases 3 and 4 are not planned: herdr runs in a tab with its own sidebar of agents, and that is enough for now. The spike's answers below stay for if they are picked up; the hands-on checklist (Still to try) is still worth running for the terminal itself.
 
 **Update, 14 Oct 2026:** herdr's calls were tried against herdr 0.9.3 on Linux, in a session of their own (Spike: herdr 0.9.3, below), and the answers are in Open questions; xterm.js running herdr is being tried by the maintainer in the built terminal. Phases 3 and 4 can be designed on those answers.
 
