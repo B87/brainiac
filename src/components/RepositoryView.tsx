@@ -24,6 +24,7 @@ import Popover from "./Popover";
 import PullRequestsTab from "./PullRequestsTab";
 import RepositoryNotesTab from "./RepositoryNotesTab";
 import SidePanelButton from "./SidePanelButton";
+import { requestTerminal } from "./terminal/actions";
 
 /** The tabs: id, label, and the full name when the label shortens it. */
 const TABS: Array<[RepositoryTab, string, string?]> = [
@@ -297,6 +298,9 @@ export default function RepositoryView({
         <OpenIn
           editor={editorName}
           onEditor={() => openInEditor()}
+          onTerminal={() =>
+            requestTerminal({ kind: "repository", id: repository.id })
+          }
           onFinder={() => run(ipc.revealInFinder(repository.id))}
           onCopyPath={() =>
             void navigator.clipboard?.writeText(repository.display_path)
@@ -458,12 +462,15 @@ export function MenuButton({
 function OpenIn({
   editor,
   onEditor,
+  onTerminal,
   onFinder,
   onCopyPath,
 }: {
   /** The editor's name, such as "VS Code"; null for a custom one. */
   editor: string | null;
   onEditor: () => void;
+  /** A terminal tab in the repository's folder (SPEC.md, section 15). */
+  onTerminal: () => void;
   onFinder: () => void;
   onCopyPath: () => void;
 }) {
@@ -501,6 +508,14 @@ function OpenIn({
           >
             <span className="flex-1">{editor ?? "Editor"}</span>
             <span className="kbd">⇧⌘O</span>
+          </MenuButton>
+          <MenuButton
+            onClick={() => {
+              setOpen(false);
+              onTerminal();
+            }}
+          >
+            New terminal
           </MenuButton>
           <MenuButton
             onClick={() => {

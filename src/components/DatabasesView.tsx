@@ -330,15 +330,30 @@ export default function DatabasesView(props: Props) {
       setActive(rest[Math.min(index, rest.length - 1)]?.id ?? "home");
   };
 
-  // ⌘T opens a tab; ⌘1 is Home and ⌘2…⌘9 the tabs after it.
+  // ⌥⌘T opens a tab (⌘T is the terminal's); ⌘1 is Home and ⌘2…⌘9 the tabs after it.
+  const visible = props.visible;
+  useEffect(() => {
+    if (!visible) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
+      // `code`, because ⌥ changes the character `key` reports.
+      if (e.code !== "KeyT" || !e.metaKey || !e.altKey) return;
+      if (e.ctrlKey || e.shiftKey) return;
+      if (document.querySelector('[aria-modal="true"]')) return;
+      e.preventDefault();
+      newTab();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [visible, newTab]);
   const keys = useMemo(() => {
     if (!props.visible) return {};
-    const map: Record<string, () => void> = { "mod+t": () => newTab() };
+    const map: Record<string, () => void> = {};
     for (let n = 1; n <= 9; n += 1)
       map[`mod+${n}`] = () =>
         setActive(n === 1 ? "home" : (tabs[n - 2]?.id ?? active));
     return map;
-  }, [props.visible, newTab, tabs, active]);
+  }, [props.visible, tabs, active]);
   useKeys(keys);
 
   // ⌘S saves the active tab's query.
@@ -459,7 +474,7 @@ export default function DatabasesView(props: Props) {
           type="button"
           className="btn btn-ghost icon-btn mb-1"
           aria-label="New tab"
-          title="New tab (⌘T)"
+          title="New tab (⌥⌘T)"
           onClick={() => newTab()}
         >
           <PlusIcon size={13} />

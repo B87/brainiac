@@ -22,6 +22,7 @@ import StatusBar from "./components/StatusBar";
 import TaskEditor from "./components/TaskEditor";
 import TasksView from "./components/TasksView";
 import TodayView from "./components/TodayView";
+import { useTerminalHost } from "./components/terminal/useTerminalHost";
 import UpdateBanner from "./components/UpdateBanner";
 import { needsYou } from "./lib/agentRuns";
 import { listenForClose } from "./lib/closeGuard";
@@ -269,6 +270,7 @@ export default function App() {
     if (next.kind === "repository")
       void ipc.openRepository(next.id).catch(() => {});
   }, []);
+  const terminal = useTerminalHost({ view, snapshot, showView });
 
   // Remember the section, so Brainiac reopens it.
   useEffect(() => {
@@ -705,6 +707,7 @@ export default function App() {
     exportNow,
     openSettings,
     showView,
+    terminalMenu: terminal.onMenu,
   });
   actions.current = {
     refresh,
@@ -715,6 +718,7 @@ export default function App() {
     exportNow,
     openSettings,
     showView,
+    terminalMenu: terminal.onMenu,
   };
 
   useEffect(() => {
@@ -765,6 +769,7 @@ export default function App() {
       }
     }).then((u) => (disposed ? u() : unlisteners.push(u)));
     void onMenu((e) => {
+      if (actions.current.terminalMenu(e.id)) return;
       if (e.id === "open_repository") setAddMode({ kind: "choose" });
       if (e.id === "refresh") void actions.current.refresh();
       if (e.id === "fetch") actions.current.fetchScope();
@@ -869,217 +874,228 @@ export default function App() {
               onView={showView}
               onAdd={() => setAddMode({ kind: "choose" })}
             />
-            <main
-              className="flex min-w-0 flex-1 flex-col bg-app"
-              data-sidebar={sidebarOpen ? undefined : "rail"}
+            <div
+              className={`flex min-h-0 min-w-0 flex-1 ${
+                terminal.dockSide === "right" ? "flex-row" : "flex-col"
+              }`}
             >
-              {banners}
-              {!snapshot ? (
-                <div className="p-6 text-muted">Loading…</div>
-              ) : view.kind === "today" ? (
-                <TodayView
-                  snapshot={snapshot}
-                  fetching={fetching}
-                  onEdit={editTask}
-                  onNew={() => void newTask()}
-                  onOpenNote={openNote}
-                  onOpenRepo={openRepo}
-                  onFetch={(ids) => void fetchRepositories(ids)}
-                  onError={setBanner}
-                />
-              ) : view.kind === "tasks" ? (
-                <TasksView
-                  snapshot={snapshot}
-                  scope={view.scope ?? "open"}
-                  onScope={(scope) => setView({ kind: "tasks", scope })}
-                  onEdit={editTask}
-                  onNew={() => void newTask()}
-                  onOpenNote={openNote}
-                  onOpenRepo={openRepo}
-                  onError={setBanner}
-                />
-              ) : view.kind === "notes" ? (
-                <NotesView
-                  snapshot={snapshot}
-                  vault={vault}
-                  noteId={view.noteId ?? null}
-                  livePreview={livePreview}
-                  onLivePreview={setLivePreview}
-                  contextOpen={contextOpen}
-                  onToggleContext={() => setContextOpen(!contextOpen)}
-                  toggleContextRef={toggleContextRef}
-                  saveTick={saveTick}
-                  onOpenNote={openNote}
-                  onOpenRepo={openRepo}
-                  onNewNote={(folder) => void newNote(folder)}
-                  onEditTask={editTask}
-                  onNewTask={(note) => setEditingTask({ initialNote: note })}
-                  onVault={(state) => {
-                    setVault(state);
-                    setBanner(null);
-                  }}
-                  onNotice={setNotice}
-                  onError={setBanner}
-                  onPinsChanged={() => void reloadSnapshot()}
-                  onAddRepository={() => void openRepositoryPicker()}
-                  onLocate={(id) => void locate(id)}
-                />
-              ) : view.kind === "databases" ? null : view.kind === "runs" ? (
-                <RunsView
-                  snapshot={snapshot}
-                  runs={runs}
-                  selectedId={view.runId ?? null}
-                  onSelect={(runId) =>
-                    setView({ kind: "runs", runId: runId ?? undefined })
-                  }
-                  onNewRun={() => setNewRun({})}
-                  onOpenRepo={openRepo}
-                  onOpenSettings={() => openSettings("runs")}
-                  onError={setBanner}
-                  onNotice={setNotice}
-                />
-              ) : view.kind === "pullRequest" ? (
-                <PullRequestView
-                  key={view.reference}
-                  reference={view.reference}
-                  onBack={() => setView(view.back)}
-                  onOpenNote={openNote}
-                  onError={setBanner}
-                />
-              ) : selected ? (
-                <RepositoryView
-                  key={`${selected.id}:${JSON.stringify(view.kind === "repository" ? (view.focus ?? null) : null)}`}
-                  repository={selected}
-                  changeTick={changeTick}
-                  pinned={isPinned("repository", selected.id)}
-                  focus={view.kind === "repository" ? view.focus : undefined}
-                  fetching={fetching.has(selected.id)}
-                  awaitingReview={repoReviewCounts.get(selected.id) ?? 0}
-                  onFetch={() => void fetchRepositories([selected.id])}
-                  onTogglePin={() => togglePin("repository", selected.id)}
-                  onPalette={() => setPaletteOpen(true)}
-                  onRefresh={() => void refresh()}
-                  onRemove={() => void removeRepository(selected.id)}
-                  onLocate={() => void locate(selected.id)}
-                  onError={setBanner}
-                  snapshot={snapshot}
-                  hasVault={!!vault?.vault}
-                  onOpenNote={openNote}
-                  onNewNote={() => void newNote()}
-                  onEditTask={editTask}
-                  onOpenPullRequest={(reference) =>
-                    setView({ kind: "pullRequest", reference, back: view })
-                  }
-                  onOpenSettings={openAccounts}
-                  onChanged={() => void reloadSnapshot()}
-                  onNewQuery={(connectionId) => {
-                    setDbRequest({
-                      kind: "new_query",
-                      connectionId,
-                      tick: Date.now(),
-                    });
-                    showView({ kind: "databases" });
-                  }}
-                />
-              ) : (
-                <Dashboard
-                  key={workspace?.id ?? "all"}
-                  snapshot={snapshot}
-                  workspace={workspace}
-                  pinned={!!workspace && isPinned("workspace", workspace.id)}
-                  discovered={discovered}
-                  onOpenWorkspace={(id) => showView({ kind: "workspace", id })}
-                  onOpen={(id) =>
-                    showView({
-                      kind: "repository",
-                      id,
-                      workspaceId: workspace?.id,
-                    })
-                  }
-                  onPalette={() => setPaletteOpen(true)}
-                  onRefreshAll={() => void refresh()}
-                  onAdd={() => setAddMode({ kind: "choose" })}
-                  onAddToWorkspace={() =>
-                    workspace && setAddMode({ kind: "members", workspace })
-                  }
-                  onRescan={() => workspace && void rescan(workspace, true)}
-                  onTrack={(paths) => {
-                    if (!workspace) return;
-                    setDiscovered(null);
-                    void guard(() =>
-                      ipc.updateWorkspaceMembership({
-                        workspace_id: workspace.id,
-                        add: paths,
-                        remove: [],
-                      }),
-                    );
-                  }}
-                  onDismissDiscovered={() => setDiscovered(null)}
-                  onDismissMoves={() =>
-                    setDiscovered((d) => (d ? { ...d, moves: [] } : d))
-                  }
-                  onApplyMoves={(moves) =>
-                    workspace && void applyMoves(workspace, moves)
-                  }
-                  onLocate={(id) => void locate(id)}
-                  onRemoveMember={(path) =>
-                    workspace &&
-                    void guard(() =>
-                      ipc.updateWorkspaceMembership({
-                        workspace_id: workspace.id,
-                        add: [],
-                        remove: [path],
-                      }),
-                    )
-                  }
-                  onRename={(name) =>
-                    workspace &&
-                    void guard(() => ipc.renameWorkspace(workspace.id, name))
-                  }
-                  onDeleteWorkspace={() =>
-                    workspace && void deleteWorkspace(workspace)
-                  }
-                  onTogglePin={() =>
-                    workspace && togglePin("workspace", workspace.id)
-                  }
-                  tab={
-                    view.kind === "workspace"
-                      ? (view.tab ?? "overview")
-                      : "overview"
-                  }
-                  onTab={(tab) =>
-                    workspace &&
-                    setView({ kind: "workspace", id: workspace.id, tab })
-                  }
-                  fetching={fetching}
-                  onFetch={(ids) => void fetchRepositories(ids)}
-                  onOpenFocused={(id, focus) =>
-                    showView({
-                      kind: "repository",
-                      id,
-                      workspaceId: workspace?.id,
-                      focus,
-                    })
-                  }
-                  onChanged={() => void reloadSnapshot()}
-                  onError={setBanner}
-                  onOpenPullRequest={(reference) =>
-                    setView({ kind: "pullRequest", reference, back: view })
-                  }
-                  onOpenSettings={openAccounts}
-                />
-              )}
-              {snapshot && dbMounted && (
-                <DatabasesView
-                  visible={view.kind === "databases"}
-                  saveTick={saveTick}
-                  request={dbRequest}
-                  onNotice={setNotice}
-                  onError={setBanner}
-                  onLists={onDbLists}
-                />
-              )}
-            </main>
+              <main
+                className="flex min-h-0 min-w-0 flex-1 flex-col bg-app"
+                data-sidebar={sidebarOpen ? undefined : "rail"}
+              >
+                {banners}
+                {!snapshot ? (
+                  <div className="p-6 text-muted">Loading…</div>
+                ) : view.kind === "terminal" ? (
+                  terminal.terminalView
+                ) : view.kind === "today" ? (
+                  <TodayView
+                    snapshot={snapshot}
+                    fetching={fetching}
+                    onEdit={editTask}
+                    onNew={() => void newTask()}
+                    onOpenNote={openNote}
+                    onOpenRepo={openRepo}
+                    onFetch={(ids) => void fetchRepositories(ids)}
+                    onError={setBanner}
+                  />
+                ) : view.kind === "tasks" ? (
+                  <TasksView
+                    snapshot={snapshot}
+                    scope={view.scope ?? "open"}
+                    onScope={(scope) => setView({ kind: "tasks", scope })}
+                    onEdit={editTask}
+                    onNew={() => void newTask()}
+                    onOpenNote={openNote}
+                    onOpenRepo={openRepo}
+                    onError={setBanner}
+                  />
+                ) : view.kind === "notes" ? (
+                  <NotesView
+                    snapshot={snapshot}
+                    vault={vault}
+                    noteId={view.noteId ?? null}
+                    livePreview={livePreview}
+                    onLivePreview={setLivePreview}
+                    contextOpen={contextOpen}
+                    onToggleContext={() => setContextOpen(!contextOpen)}
+                    toggleContextRef={toggleContextRef}
+                    saveTick={saveTick}
+                    onOpenNote={openNote}
+                    onOpenRepo={openRepo}
+                    onNewNote={(folder) => void newNote(folder)}
+                    onEditTask={editTask}
+                    onNewTask={(note) => setEditingTask({ initialNote: note })}
+                    onVault={(state) => {
+                      setVault(state);
+                      setBanner(null);
+                    }}
+                    onNotice={setNotice}
+                    onError={setBanner}
+                    onPinsChanged={() => void reloadSnapshot()}
+                    onAddRepository={() => void openRepositoryPicker()}
+                    onLocate={(id) => void locate(id)}
+                  />
+                ) : view.kind === "databases" ? null : view.kind === "runs" ? (
+                  <RunsView
+                    snapshot={snapshot}
+                    runs={runs}
+                    selectedId={view.runId ?? null}
+                    onSelect={(runId) =>
+                      setView({ kind: "runs", runId: runId ?? undefined })
+                    }
+                    onNewRun={() => setNewRun({})}
+                    onOpenRepo={openRepo}
+                    onOpenSettings={() => openSettings("runs")}
+                    onError={setBanner}
+                    onNotice={setNotice}
+                  />
+                ) : view.kind === "pullRequest" ? (
+                  <PullRequestView
+                    key={view.reference}
+                    reference={view.reference}
+                    onBack={() => setView(view.back)}
+                    onOpenNote={openNote}
+                    onError={setBanner}
+                  />
+                ) : selected ? (
+                  <RepositoryView
+                    key={`${selected.id}:${JSON.stringify(view.kind === "repository" ? (view.focus ?? null) : null)}`}
+                    repository={selected}
+                    changeTick={changeTick}
+                    pinned={isPinned("repository", selected.id)}
+                    focus={view.kind === "repository" ? view.focus : undefined}
+                    fetching={fetching.has(selected.id)}
+                    awaitingReview={repoReviewCounts.get(selected.id) ?? 0}
+                    onFetch={() => void fetchRepositories([selected.id])}
+                    onTogglePin={() => togglePin("repository", selected.id)}
+                    onPalette={() => setPaletteOpen(true)}
+                    onRefresh={() => void refresh()}
+                    onRemove={() => void removeRepository(selected.id)}
+                    onLocate={() => void locate(selected.id)}
+                    onError={setBanner}
+                    snapshot={snapshot}
+                    hasVault={!!vault?.vault}
+                    onOpenNote={openNote}
+                    onNewNote={() => void newNote()}
+                    onEditTask={editTask}
+                    onOpenPullRequest={(reference) =>
+                      setView({ kind: "pullRequest", reference, back: view })
+                    }
+                    onOpenSettings={openAccounts}
+                    onChanged={() => void reloadSnapshot()}
+                    onNewQuery={(connectionId) => {
+                      setDbRequest({
+                        kind: "new_query",
+                        connectionId,
+                        tick: Date.now(),
+                      });
+                      showView({ kind: "databases" });
+                    }}
+                  />
+                ) : (
+                  <Dashboard
+                    key={workspace?.id ?? "all"}
+                    snapshot={snapshot}
+                    workspace={workspace}
+                    pinned={!!workspace && isPinned("workspace", workspace.id)}
+                    discovered={discovered}
+                    onOpenWorkspace={(id) =>
+                      showView({ kind: "workspace", id })
+                    }
+                    onOpen={(id) =>
+                      showView({
+                        kind: "repository",
+                        id,
+                        workspaceId: workspace?.id,
+                      })
+                    }
+                    onPalette={() => setPaletteOpen(true)}
+                    onRefreshAll={() => void refresh()}
+                    onAdd={() => setAddMode({ kind: "choose" })}
+                    onAddToWorkspace={() =>
+                      workspace && setAddMode({ kind: "members", workspace })
+                    }
+                    onRescan={() => workspace && void rescan(workspace, true)}
+                    onTrack={(paths) => {
+                      if (!workspace) return;
+                      setDiscovered(null);
+                      void guard(() =>
+                        ipc.updateWorkspaceMembership({
+                          workspace_id: workspace.id,
+                          add: paths,
+                          remove: [],
+                        }),
+                      );
+                    }}
+                    onDismissDiscovered={() => setDiscovered(null)}
+                    onDismissMoves={() =>
+                      setDiscovered((d) => (d ? { ...d, moves: [] } : d))
+                    }
+                    onApplyMoves={(moves) =>
+                      workspace && void applyMoves(workspace, moves)
+                    }
+                    onLocate={(id) => void locate(id)}
+                    onRemoveMember={(path) =>
+                      workspace &&
+                      void guard(() =>
+                        ipc.updateWorkspaceMembership({
+                          workspace_id: workspace.id,
+                          add: [],
+                          remove: [path],
+                        }),
+                      )
+                    }
+                    onRename={(name) =>
+                      workspace &&
+                      void guard(() => ipc.renameWorkspace(workspace.id, name))
+                    }
+                    onDeleteWorkspace={() =>
+                      workspace && void deleteWorkspace(workspace)
+                    }
+                    onTogglePin={() =>
+                      workspace && togglePin("workspace", workspace.id)
+                    }
+                    tab={
+                      view.kind === "workspace"
+                        ? (view.tab ?? "overview")
+                        : "overview"
+                    }
+                    onTab={(tab) =>
+                      workspace &&
+                      setView({ kind: "workspace", id: workspace.id, tab })
+                    }
+                    fetching={fetching}
+                    onFetch={(ids) => void fetchRepositories(ids)}
+                    onOpenFocused={(id, focus) =>
+                      showView({
+                        kind: "repository",
+                        id,
+                        workspaceId: workspace?.id,
+                        focus,
+                      })
+                    }
+                    onChanged={() => void reloadSnapshot()}
+                    onError={setBanner}
+                    onOpenPullRequest={(reference) =>
+                      setView({ kind: "pullRequest", reference, back: view })
+                    }
+                    onOpenSettings={openAccounts}
+                  />
+                )}
+                {snapshot && dbMounted && (
+                  <DatabasesView
+                    visible={view.kind === "databases"}
+                    saveTick={saveTick}
+                    request={dbRequest}
+                    onNotice={setNotice}
+                    onError={setBanner}
+                    onLists={onDbLists}
+                  />
+                )}
+              </main>
+              {terminal.dock}
+            </div>
           </div>
         )}
         <StatusBar
@@ -1155,6 +1171,7 @@ export default function App() {
             onSaved={() => setEditingTask(null)}
           />
         )}
+        {terminal.dialog}
         {dialog === "restore" && (
           <RestoreDialog onClose={() => setDialog(null)} />
         )}

@@ -65,6 +65,7 @@ The product can eventually include PR and CI status, calendar context, recurring
 | Agent run follow-ups | v0.5 | Pushing the reviewed result to a new branch, Codex and Gemini CLI, and runs from tasks (`docs/design/agent-runs.md`) |
 | Explaining changes | v0.6 | A commit, a branch, a run's result, or a pull request explained with a guided tour, notes beside the lines, concepts, and questions, each claim citing its source; written by an agent run in a container and checked by Brainiac (section 14) |
 | Explanation follow-ups | v0.6.x | Working-tree changes, a question about one note, and a direct model call for small changes and local models |
+| Terminal | After v0.6 | Tabs running the login shell or a program named in Settings, in a Terminal view and a dock beside any view (section 15); herdr's agents on the rows follow (`docs/design/terminal-and-herdr.md`) |
 | External content imports | v0.7 | Paste, bookmarks, Markdown copies, articles, `.eml`, provenance and duplicate handling |
 | Global capture window and Inbox | v0.7 | System shortcut, floating capture, Inbox triage of captured and imported items, shared backend state |
 | Authenticated import adapters | v0.7.x | Selected Jira issues/mail messages; provider choice and video transcript acquisition validated separately |
@@ -72,7 +73,7 @@ The product can eventually include PR and CI status, calendar context, recurring
 | Grounded AI answers | v0.9 | Citation-backed local RAG |
 | Other pull request providers, CI beyond pull request checks, other Git mutations, sync, plugins | Later | Separate features after the v0.3 providers are useful |
 
-v0.1 requires a usable local Git binary. Detect it on startup and provide a clear setup message when absent; do not silently install developer tools. Core Git viewing works offline and requires no Markdown vault, Ollama instance, remote-service account, or elevated macOS permissions. Ahead/behind information reflects existing local refs and may be stale relative to the remote server until someone fetches: the user, their editor, or Brainiac's Fetch now and opt-in auto-fetch (section 4, Fetching). Fetching is the only operation that writes to a repository, and it touches remote-tracking refs and objects only. From v0.3, pull requests are reviewed and merged on GitHub or Bitbucket, never in the local repository (section 10).
+v0.1 requires a usable local Git binary. Detect it on startup and provide a clear setup message when absent; do not silently install developer tools. Core Git viewing works offline and requires no Markdown vault, Ollama instance, remote-service account, or elevated macOS permissions. Ahead/behind information reflects existing local refs and may be stale relative to the remote server until someone fetches: the user, their editor, or Brainiac's Fetch now and opt-in auto-fetch (section 4, Fetching). Fetching is the only operation Brainiac performs that writes to a repository, and it touches remote-tracking refs and objects only. Programs the user runs in a terminal tab (section 15) are the user's, as in any terminal: they may change repositories and run Git, and Brainiac only starts them. From v0.3, pull requests are reviewed and merged on GitHub or Bitbucket, never in the local repository (section 10).
 
 Brainiac keeps its own data in a local database and snapshots it before each upgrade of its format and once a day, keeping seven. It refuses to open data saved by a newer version of Brainiac, or a file that is not Brainiac's, and says where the snapshots are; it never runs on data it cannot read correctly.
 
@@ -191,7 +192,12 @@ Repository name/path filtering and commit-message/hash filtering belong to the G
 | `Shift+Cmd+Enter`, v0.4 | Run every statement in the query tab |
 | `Cmd+.`, v0.4 | Cancel the running statement |
 | `Cmd+E`, v0.4 | Explain the statement under the cursor |
-| `Cmd+T`, v0.4 | New query tab |
+| `Option+Cmd+T`, v0.4 | New query tab, in Databases (`Cmd+T` until the terminal) |
+| `Cmd+T` | Open the Terminal view (section 15) |
+| `Cmd+Shift+T` | New terminal tab: in the Terminal view when it is shown, otherwise in the dock |
+| `Cmd+J` | Show or hide the terminal dock |
+| `Cmd+1` … `Cmd+9` | In the Terminal view, or with a dock tab focused: the terminal's tabs, in order |
+| `Cmd+Esc` | Move focus out of the terminal tab, or back into it |
 | `Cmd+1` … `Cmd+9`, v0.4 | In Databases: Home, then the query tabs |
 | `Cmd+S`, v0.4 | In a query tab: save the query |
 | `Cmd+,` | Settings |
@@ -579,7 +585,7 @@ A database client next to the repositories, notes, and tasks it relates to: save
 
 ### The query view
 
-- **Tabs.** Each tab is one editor with its own connection and its own database session, so a setting or a transaction in one tab never reaches another. A tab shows its saved query's name or "Untitled n", a dot in its connection's environment color, and a dot while its text differs from its saved query (or, untitled, is not empty). Tabs and their text are kept across restarts. `Cmd+T` opens a tab; `Cmd+1` is Home and `Cmd+2`…`Cmd+9` the tabs after it. Closing a tab with unsaved text that is not a saved query asks first.
+- **Tabs.** Each tab is one editor with its own connection and its own database session, so a setting or a transaction in one tab never reaches another. A tab shows its saved query's name or "Untitled n", a dot in its connection's environment color, and a dot while its text differs from its saved query (or, untitled, is not empty). Tabs and their text are kept across restarts. `Option+Cmd+T` opens a tab; `Cmd+1` is Home and `Cmd+2`…`Cmd+9` the tabs after it. Closing a tab with unsaved text that is not a saved query asks first.
 - **Connection.** The toolbar's connection button names the tab's connection, its environment, and "Read only" when the tab cannot write, and opens a filterable list to switch the tab to another connection, or add one. Switching keeps the text and closes the tab's session.
 - **Editor.** SQL in the connection's dialect, with completion of keywords, tables (qualified, and bare for the default schema), and columns from the schema.
 - **Running.** `Cmd+Enter` runs the statement under the cursor, or each statement in the selection; with the cursor after a statement's `;`, that statement. `Shift+Cmd+Enter` (**Run All**) runs every statement in turn and stops at the first failure; each statement that ran gets its own result. `Cmd+.` (**Cancel**) cancels the statement on the server and stops Run All. A statement that runs longer than the connection's time limit is stopped by the server.
@@ -890,3 +896,59 @@ Settings' sidebar lists these under an **Explanations** heading, one page each, 
 - **Agent and Depth.** **Agent:** the profile and host, at first those of the last run, or before any run the first profile whose test passed on this Mac. **Model by depth:** for Claude Code, sonnet for Brief and Teach me and opus for Deep at first; for OpenCode, the profile's model. **Time limit by depth:** at first 10 minutes for Brief and Teach me and 20 for Deep. Each can be changed. **Your level** for each language (new, comfortable, or expert), the default depth, and whether to add questions by default.
 - **Concepts You Know:** how many, in the page's title, with what the list is for beside it; the ledger with a filter (over names, descriptions, and repositories), a choice by kind (with how many of each), a **Sort** (newest first, by name, or by kind), and **Group by** All or Repository. By repository, a project pattern is under its repository and any other concept under the repository it was learned in (or "Not from a tracked repository"); groups are folded but the first (a filter opens those it matches), each with a **Select all** and **Forget** for its concepts, which asks first and says how many of them are known in every repository and so will be taught again everywhere. Each concept shows its kind, what the explanation said of it, and where it was learned ("from 287bdc9 · api-server · 28 Sep"); a concept merged into another is listed inside it. **Edit…** on a concept opens **Edit Concept**: its name, and its kind as a list with each kind explained in a few words with examples. It says what the change does before anything is saved, and saves it in place. What it was called stays with it as a name that stands for it, listed under "Also called" (with its kind when that differs), so an explanation that names it the old way is still left out and the old name can be learned again without making a second concept. A concept known in every repository may take any kind but project pattern, which would let other repositories teach it again; a project pattern may become any kind, and then belongs to no repository: the dialog says that explanations of every repository will leave it out, and its button reads **Save and Know Everywhere**. A name that another concept of that kind already has is refused in the dialog, with a pointer to **Merge into One…**; going back to one of the concept's own earlier names takes that name back. Select some to **Forget** them, which explains them again, or to **Merge into One…**, keeping one name, for one idea that explanations named in different ways (of one kind; project patterns of one repository). Each concept has one kind: a language feature, a library, a protocol or standard (HTTP, DKIM), a tool or service (git, PostgreSQL), a technique (a way of solving a problem that means the same in any codebase: idempotency, retry with backoff, optimistic locking), or a project pattern (true of one repository only: the table or helper it uses to apply a technique, or a domain word such as "invoice"; when unsure between the two, an explanation chooses project pattern, which stays in its repository). Language features, libraries, protocols and standards, tools and services, and techniques are what the reader knows, and are left out of any repository's explanations. A concept learned before 0.6.1 as a "system tool" is now a tool or service, since its kind cannot be told from its name; its kind can be corrected once concepts can be edited. A project pattern belongs to the repository it was learned in: it is listed under that repository, and only that repository's explanations are told it is known, so one client's names never reach a prompt about another's code.
 - **Stored Explanations:** how many and their size in the page's title, with **Delete All…** beside it; grouped by repository or by month, each group folded but the first, with how many, their size, and their cost in the month chosen in **Cost for** (or all time), and the total for that month above the list. Each explanation shows its subject (a short commit, a branch, a pull request's number, or a run), title, depth, model, cost, and date, whether a branch was deleted or merged, and **Open**, which shows a commit in History, a pull request, or a run. A filter by commit, branch, or title; select some to **Delete…** them, or delete a repository's at once; each goes with its run's conversation. Explanations are kept until deleted, unlike runs, each with its run's conversation, which holds the code the agent read.
+
+## 15. Terminal
+
+Brainiac has a terminal, so the shells and agents changing a repository sit beside its diff, branches, and pull requests instead of in another window. Each tab runs the user's login shell, or a program named in Settings → Terminal, such as `herdr`. The reasons, the options weighed, the UX canvas, and the herdr integration that follows are in `docs/design/terminal-and-herdr.md`.
+
+### Boundaries
+
+- **Brainiac starts the program the user chose and nothing else:** the login shell (`$SHELL -l`) or the program in Settings → Terminal, with an argument array, never through a shell of Brainiac's own. What runs in a tab is the user's, as in any terminal: commands and agents there may change repositories and run Git (section 2). Settings → Terminal says so beside its switch.
+- **No question before an agent runs in a tab.** The question of section 13, Code sharing, guards code Brainiac sends; in a terminal the user starts the agent, and Brainiac sends nothing.
+- **Nothing a tab shows is stored.** Scrollback lives in the tab while it is open.
+- **Agents (section 9) cannot open, type into, or read terminal tabs.**
+- **Off switch:** with Settings → Terminal off, no tab opens and Brainiac starts no program. Tabs already open stay until closed.
+
+### Where it shows
+
+- **The Terminal view.** **Terminal** in the sidebar, under Runs (and in the rail), opens the terminal's tabs filling the main area, with Brainiac's sidebar beside them; the sidebar's foot says `Cmd+B` collapses it to give the terminal more room. **Dock** in its tab bar goes back to the view before it, with the dock open.
+- **The dock** shows the same tabs at the bottom of any other view, or on the right (Settings → Terminal, **Dock**); its edge drags its size, which is remembered. **`Cmd+J`** or its **×** hides it, **`Cmd+J`** shows it again; **Maximize** opens the Terminal view.
+- **One set of tabs, two sizes.** Moving between the view and the dock moves the same tab: its program keeps running and only sees its window resized, so nothing restarts and no output is lost. Opening a repository from the sidebar while the Terminal view shows leaves every tab running.
+- With no tab open, the view and the dock offer **New terminal in** the repository last selected, or in the home folder.
+
+### Opening a tab
+
+- **`Cmd+T`** opens the Terminal view from anywhere, even from the dock, with a tab in the folder of the repository last selected (or the home folder) when none is open. **`Cmd+Shift+T`** opens a new tab in that folder: in the Terminal view when it is shown, otherwise in the dock, which it shows. The **+** in the tab bar opens one there too. **`Cmd+1`** … **`Cmd+9`** show the first nine tabs, in order: in the Terminal view from anywhere in it, and in the dock only while a tab has focus, because the view behind the dock keeps its own `Cmd+1` … for its tabs.
+- **New terminal** on a repository (its Open in menu, and its preview on the dashboard) or a workspace (its ⋯ menu) opens a tab in that folder, in the dock when another view shows and in the Terminal view when that does:
+
+  | Opened on | Folder |
+  | --- | --- |
+  | A repository or a linked worktree | Its working tree |
+  | A discovered workspace with a root | The root repository |
+  | A discovered workspace without one | The folder chosen for discovery |
+  | A manual workspace | Asks which member, then remembers it for the workspace; with one member, that member |
+
+  One tab opens, never one per member. A tab is titled with its repository's or workspace's name and its program's name ("widgets zsh"); a workspace's tabs sit together.
+- **The environment.** A plain shell tab is a login shell, so it reads the user's profile as a terminal app's tab does. A program named in Settings gets the login shell's environment, read once per launch (`$SHELL -l -c`, with a 5-second limit; Brainiac's own environment when it fails), so a program found on the shell's PATH, such as `claude` or `herdr`, starts even when Brainiac was opened from the Finder. Every tab gets `TERM=xterm-256color` and `COLORTERM=truecolor`, and none gets the variables of a terminal or multiplexer Brainiac was started from (`TERM_PROGRAM`, tmux's, herdr's), so tmux or herdr started in a tab does not think it runs inside itself.
+- A program that cannot start, or a folder that is gone, leaves the tab open with the reason above it.
+
+### Keys
+
+- While a tab has focus, keys go to its program, except **`Cmd+Esc`**, which moves focus back to the window with the tab still showing (and from the window, into the tab), and on macOS Brainiac's `Cmd` shortcuts (`Cmd+T`, `Cmd+Shift+T`, `Cmd+J`, `Cmd+B`, `Cmd+K`, …). The first tab says so once: "⌘Esc moves between the terminal and the window. Closing a tab ends its shell.", with **Got it**.
+- On Linux, where Brainiac's shortcuts use `Ctrl` (`docs/design/linux.md`), every `Ctrl` key goes to a focused tab, `Ctrl+J` and `Ctrl+T` too, which shells use; `Ctrl+Esc` is the way out, and the menu takes neither `Ctrl+T` nor `Ctrl+J`.
+- **Option sends Meta** (Settings → Terminal, off by default) sends Option and a key as Esc and the key, for shells' and editors' Alt keys; off, Option types the characters it types elsewhere. It applies to tabs opened after the change.
+- `Cmd`-click opens a link a tab shows, in the browser.
+
+### Closing
+
+- **Closing a tab ends its program**, as in a terminal app: Brainiac hangs it up, and ends it two seconds later if it ignored the hangup. When a program runs in front of the tab's own (`pnpm dev` in a shell), Brainiac asks first, naming it: "pnpm is still running in “web”. Closing the tab ends it." with **Close and end it**.
+- **A shell left with `exit`** closes its tab. A program that ends any other way leaves its tab open, with what it printed and how it ended.
+- **Quitting Brainiac ends every tab.** When a tab has a program running in front, the quit asks first, saying how many and which programs. A program that keeps its own sessions, such as herdr, only detaches its client.
+
+### Settings → Terminal
+
+- **Terminal in Brainiac** (on by default), with what running a program there means for repositories.
+- **Run:** **Your login shell** (named) or **Another program…**, which shows **Program** (a name on the shell's PATH or a full path) and **Arguments** (separated by spaces and passed as they are). Tabs already open keep their program.
+- **Dock:** **Bottom** or **Right**.
+- **Keys:** Option sends Meta.
+

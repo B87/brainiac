@@ -40,12 +40,14 @@ import {
   RepositoriesPane,
   SecretsPane,
 } from "./SettingsPanes";
+import TerminalSettingsPane from "./terminal/TerminalSettingsPane";
 
 const ICONS: Record<SettingsSection, ReactNode> = {
   general: <SlidersIcon size={16} />,
   notes: <NoteIcon size={16} />,
   repositories: <BranchIcon size={16} />,
   databases: <DatabaseIcon size={16} />,
+  terminal: <TerminalIcon size={16} />,
   accounts: <PersonIcon size={16} />,
   secrets: <KeyIcon size={16} />,
   agents: <TerminalIcon size={16} />,
@@ -258,6 +260,7 @@ export default function SettingsPage({
             {section === "databases" && (
               <DatabasesPane settings={shown} save={save} />
             )}
+            {section === "terminal" && <TerminalSettingsPane />}
             {section === "accounts" && <AccountsPane onChanged={onChanged} />}
             {section === "secrets" && <SecretsPane />}
             {section === "agents" && (

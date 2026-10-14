@@ -18,11 +18,13 @@ const key = (k: string, mods: Partial<KeyboardEvent> = {}) =>
   }) as KeyboardEvent;
 
 describe("bindingOf", () => {
-  it("names plain keys, ⌘ combinations, and refuses other modifiers", () => {
+  it("names plain keys, ⌘ and ⇧⌘ combinations, and refuses other modifiers", () => {
     expect(bindingOf(key("J", { shiftKey: true }))).toBe("j");
     expect(bindingOf(key("ArrowDown"))).toBe("ArrowDown");
     expect(bindingOf(key("1", { metaKey: true }))).toBe("mod+1");
-    expect(bindingOf(key("1", { metaKey: true, shiftKey: true }))).toBeNull();
+    expect(bindingOf(key("T", { metaKey: true, shiftKey: true }))).toBe(
+      "mod+shift+t",
+    );
     expect(bindingOf(key("j", { ctrlKey: true }))).toBeNull();
   });
 

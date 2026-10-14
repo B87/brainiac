@@ -5,6 +5,7 @@ export type SettingsSection =
   | "notes"
   | "repositories"
   | "databases"
+  | "terminal"
   | "accounts"
   | "secrets"
   | "agents"
@@ -27,6 +28,7 @@ export const SECTIONS: {
   { id: "notes", label: "Notes and Search" },
   { id: "repositories", label: "Repositories" },
   { id: "databases", label: "Databases" },
+  { id: "terminal", label: "Terminal" },
   { id: "accounts", label: "Accounts" },
   { id: "secrets", label: "Secrets" },
   { id: "agents", label: "Agent Access" },

@@ -76,6 +76,9 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 # Engine API on the chosen engine's socket, including the attach stream
 # (an upgraded connection) that carries the agent's protocol.
 bollard = { version = "0.19", default-features = false, features = ["pipe"] }
+# The terminal: a pseudo-terminal per tab, running the user's shell or the
+# program named in Settings → Terminal (docs/architecture.md, Terminal).
+portable-pty = "0.9"
 
 # The Keychain store (`credentials/macos.rs`); other systems have none yet
 # (docs/design/linux.md).

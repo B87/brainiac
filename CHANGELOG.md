@@ -11,6 +11,9 @@ into the release's section.
 
 ## [Unreleased]
 
+- A terminal: Terminal in the sidebar (⌘T) opens your shell in the repository you were looking at, and the same tabs show in a dock beside any view (⌘J); ⇧⌘T opens a new tab and ⌘1 … ⌘9 switch between them. New terminal is in a repository's Open in menu and a workspace's ⋯ menu; Settings → Terminal can run another program, such as herdr.
+- A new query tab in Databases is now ⌥⌘T; ⌘T opens the terminal.
+
 ## [0.6.3] - 2026-10-12
 
 - A run cancelled while its run controller was down no longer says "Cancel requested" forever once the controller is back and the run has ended.
