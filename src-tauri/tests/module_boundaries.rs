@@ -48,6 +48,7 @@ const FEATURES: &[(&str, &[&str])] = &[
     ("databases", &["databases"]),
     ("agent runs", &["agents"]),
     ("explanations", &["explain"]),
+    ("terminal", &["terminal"]),
 ];
 
 /// Imports outside the rules that exist today: (from, to, why).

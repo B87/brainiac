@@ -17,6 +17,8 @@ into the release's section.
 - Every tab of a pull request keeps a summary line with the branches, the checks (failed ones open Checks at the failing check), and your drafts; failed checks are listed first.
 - **Review Changes** is now **Finish review**, and its final button says **Post comments**, **Approve**, or **Request changes**.
 - A long pull request description folds behind **Show full description**, with a link to the conversation and its thread count.
+- A terminal: Terminal in the sidebar (⌘T) opens your shell in the repository you were looking at, and the same tabs show in a dock beside any view (⌘J); ⇧⌘T opens a new tab and ⌘1 … ⌘9 switch between them. New terminal is in a repository's Open in menu and a workspace's ⋯ menu; Settings → Terminal can run another program, such as herdr.
+- A new query tab in Databases is now ⌥⌘T; ⌘T opens the terminal.
 
 ## [0.6.3] - 2026-10-12
 

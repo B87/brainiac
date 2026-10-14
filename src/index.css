@@ -1637,6 +1637,15 @@
   /* Query tabs. */
   /* The query tabs scroll sideways without a scrollbar; the 1px of padding
      below holds the selected tab, which covers the header's border. */
+  /* A terminal tab's element, moved between the Terminal view and the dock
+     (SPEC.md, section 15); xterm.js fits itself to it. */
+  .terminal-host {
+    width: 100%;
+    height: 100%;
+  }
+  .terminal-host .xterm {
+    height: 100%;
+  }
   .db-tabs {
     display: flex;
     min-width: 0;

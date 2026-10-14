@@ -4772,3 +4772,81 @@ pub struct BranchComparison {
     pub tip: String,
     pub files: Vec<CommitFile>,
 }
+
+// ---------------------------------------------------------------------------
+// Terminal (SPEC.md, section 15)
+// ---------------------------------------------------------------------------
+
+/// Settings → Terminal, saved as one value in `brainiac.db`'s settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(default)]
+#[ts(export)]
+pub struct TerminalSettings {
+    /// Off: no tab opens and Brainiac starts nothing.
+    pub enabled: bool,
+    /// The program a new tab runs, a name on the login shell's PATH or a
+    /// path; empty for the login shell itself.
+    pub program: String,
+    pub args: Vec<String>,
+    /// Option sends Meta (Esc and the key), for shells' and editors' Alt
+    /// keys; off, Option types the characters it types elsewhere.
+    pub option_as_meta: bool,
+}
+
+impl Default for TerminalSettings {
+    fn default() -> Self {
+        TerminalSettings {
+            enabled: true,
+            program: String::new(),
+            args: Vec::new(),
+            option_as_meta: false,
+        }
+    }
+}
+
+/// Settings → Terminal, with what Brainiac found.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct TerminalSettingsView {
+    pub settings: TerminalSettings,
+    /// The login shell a tab runs when no program is named.
+    pub login_shell: String,
+}
+
+/// Open a tab in a folder, at the size its pane has.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct OpenTerminalRequest {
+    /// Empty for the home folder.
+    pub cwd: String,
+    pub cols: u16,
+    pub rows: u16,
+}
+
+/// A tab's program, as started.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct TerminalTab {
+    pub id: String,
+    /// The program's name, shown beside the tab's title: "zsh", "herdr".
+    pub program: String,
+    pub cwd: String,
+}
+
+/// A tab with a program running in front of its own, which closing ends.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct BusyTerminal {
+    pub id: String,
+    /// The program in front: "pnpm", "cargo".
+    pub program: String,
+}
+
+/// A tab's program ended.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct TerminalExitedEvent {
+    pub id: String,
+    /// Absent when it was ended by a signal.
+    pub code: Option<i32>,
+}

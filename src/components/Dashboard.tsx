@@ -42,6 +42,7 @@ import PullRequestsTab from "./PullRequestsTab";
 import { MenuButton, type RepoFocus } from "./RepositoryView";
 import type { WorkspaceTab } from "./Sidebar";
 import SidePanelButton from "./SidePanelButton";
+import { requestTerminal } from "./terminal/actions";
 
 type Filter = "all" | "dirty" | "conflicted" | "problems";
 type Sort = "name" | "commit";
@@ -447,6 +448,15 @@ export default function Dashboard(props: Props) {
             </button>
             {menuOpen && (
               <Popover align="right" onClose={() => setMenuOpen(false)}>
+                <MenuButton
+                  onClick={() => {
+                    setMenuOpen(false);
+                    requestTerminal({ kind: "workspace", id: workspace.id });
+                  }}
+                >
+                  New terminal
+                </MenuButton>
+                <div className="menu-sep" />
                 <MenuButton
                   onClick={() => {
                     setMenuOpen(false);
@@ -1475,6 +1485,15 @@ function Peek({
             Reveal in Finder
           </button>
         </div>
+        {r.state !== "missing" && (
+          <button
+            type="button"
+            className="btn"
+            onClick={() => requestTerminal({ kind: "repository", id: r.id })}
+          >
+            New terminal
+          </button>
+        )}
       </div>
     </aside>
   );

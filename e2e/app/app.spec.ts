@@ -1910,3 +1910,145 @@ test("a repository's Pull requests tab names its forge and can point it elsewher
     page.getByText("No pull requests match this filter."),
   ).toBeVisible();
 });
+
+// The terminal (SPEC.md, section 15), over the fake's echoing shell.
+const terminalTabs = (page: Page) =>
+  page.getByRole("tablist", { name: "Terminal tabs" }).getByRole("tab");
+const terminalInput = (page: Page) => page.locator(".xterm-helper-textarea");
+
+test("⌘T opens the Terminal view in the repository last selected, and ⌘J moves the tab to the dock without restarting it", async ({
+  page,
+}) => {
+  const sidebar = page.getByRole("navigation", {
+    name: "Repositories and workspaces",
+  });
+  await sidebar.getByRole("button", { name: "parser" }).click();
+  await page.keyboard.press("Meta+t");
+  await expect(terminalTabs(page)).toHaveCount(1);
+  await expect(terminalTabs(page).first()).toContainText("parser");
+  await expect(terminalTabs(page).first()).toContainText("zsh");
+  expect(await calls(page, "open_terminal")).toMatchObject([
+    { request: { cwd: "/code/parser" } },
+  ]);
+  await expect(
+    sidebar.getByRole("button", { name: "Terminal" }),
+  ).toHaveAttribute("aria-current", "true");
+  await expect(
+    page.getByText("⌘Esc moves between the terminal and the window."),
+  ).toBeVisible();
+
+  // Keys typed go to the tab's program.
+  await expect(terminalInput(page)).toBeFocused();
+  await page.keyboard.type("ls");
+  await expect
+    .poll(async () =>
+      (await calls(page, "write_terminal")).map((c) => c.data).join(""),
+    )
+    .toBe("ls");
+
+  // The same terminal moves to the dock, under the view before it.
+  await page.locator(".xterm").evaluate((e) => {
+    (e as HTMLElement).dataset.kept = "yes";
+  });
+  await page.keyboard.press("Meta+j");
+  const dock = page.getByRole("region", { name: "Terminal dock" });
+  await expect(dock).toBeVisible();
+  await expect(
+    page.getByRole("tablist", { name: "Repository views" }),
+  ).toBeVisible();
+  await expect(dock.locator('.xterm[data-kept="yes"]')).toHaveCount(1);
+  expect(await calls(page, "open_terminal")).toHaveLength(1);
+
+  // ⌘T opens the Terminal view from the dock; ⌘J hides the dock again.
+  await page.keyboard.press("Meta+t");
+  await expect(dock).toHaveCount(0);
+  await expect(page.locator('.xterm[data-kept="yes"]')).toHaveCount(1);
+  await page.keyboard.press("Meta+j");
+  await expect(dock).toBeVisible();
+  await page.keyboard.press("Meta+Escape");
+  await page.keyboard.press("Meta+j");
+  await expect(dock).toHaveCount(0);
+  expect(await calls(page, "open_terminal")).toHaveLength(1);
+});
+
+test("⇧⌘T opens another tab, ⌘1 and ⌘2 switch between them, and closing a busy tab asks first", async ({
+  page,
+}) => {
+  await page.keyboard.press("Meta+t");
+  await expect(terminalTabs(page)).toHaveCount(1);
+  await expect(terminalTabs(page).first()).toContainText("Home");
+  expect(await calls(page, "open_terminal")).toMatchObject([
+    { request: { cwd: "" } },
+  ]);
+  await page.keyboard.press("Meta+Shift+T");
+  await expect(terminalTabs(page)).toHaveCount(2);
+  await expect(terminalTabs(page).nth(1)).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect(terminalInput(page)).toBeFocused();
+
+  await page.keyboard.press("Meta+1");
+  await expect(terminalTabs(page).first()).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await page.keyboard.press("Meta+2");
+  await expect(terminalTabs(page).nth(1)).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  // Each tab started its own program, once.
+  expect(await calls(page, "open_terminal")).toHaveLength(2);
+
+  // A program running in front of the shell: Cancel keeps the tab.
+  await page.evaluate(() => {
+    window.fake.terminalFront = "pnpm";
+    window.fake.nextAsk = false;
+  });
+  const second = terminalTabs(page).nth(1);
+  await second.getByRole("button", { name: "Close Home" }).click();
+  await expect(terminalTabs(page)).toHaveCount(2);
+  expect(await calls(page, "close_terminal")).toHaveLength(0);
+
+  // Close and end it.
+  await page.evaluate(() => {
+    window.fake.nextAsk = true;
+  });
+  await second.getByRole("button", { name: "Close Home" }).click();
+  await expect(terminalTabs(page)).toHaveCount(1);
+  expect(await calls(page, "close_terminal")).toEqual([{ id: "term-2" }]);
+});
+
+test("in the dock, ⌘1 … go to the view behind it unless a tab has focus, and ⌘Esc moves focus out and back", async ({
+  page,
+}) => {
+  await page
+    .getByRole("navigation", { name: "Repositories and workspaces" })
+    .getByRole("button", { name: "parser" })
+    .click();
+  await page.keyboard.press("Meta+j");
+  const dock = page.getByRole("region", { name: "Terminal dock" });
+  await expect(dock).toBeVisible();
+  await dock.getByRole("button", { name: /New terminal in parser/ }).click();
+  await expect(terminalTabs(page)).toHaveCount(1);
+  await expect(terminalInput(page)).toBeFocused();
+
+  const history = page
+    .getByRole("tablist", { name: "Repository views" })
+    .getByRole("tab", { name: /History/ });
+  // With the tab focused, ⌘2 is the terminal's (there is no second tab).
+  await page.keyboard.press("Meta+2");
+  await expect(history).toHaveAttribute("aria-selected", "false");
+
+  // ⌘Esc leaves the tab; ⌘2 is the repository's again.
+  await page.keyboard.press("Meta+Escape");
+  await expect(terminalInput(page)).not.toBeFocused();
+  await page.keyboard.press("Meta+2");
+  await expect(history).toHaveAttribute("aria-selected", "true");
+
+  // ⌘Esc goes back into the tab, which kept its program.
+  await page.keyboard.press("Meta+Escape");
+  await expect(terminalInput(page)).toBeFocused();
+  expect(await calls(page, "open_terminal")).toHaveLength(1);
+});

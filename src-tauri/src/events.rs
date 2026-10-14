@@ -127,7 +127,7 @@ mod tests {
             .filter_map(|rest| rest.split_once(">(\"")?.1.split_once('"'))
             .map(|(name, _)| name.to_string())
             .collect();
-        assert_eq!(sent.len(), 12, "{sent:?}");
+        assert_eq!(sent.len(), 13, "{sent:?}");
         assert_eq!(sent, heard);
     }
 

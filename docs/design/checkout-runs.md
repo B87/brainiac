@@ -183,7 +183,7 @@ The **test** on that page starts the CLI in a temporary folder and shows what it
 - Checkout runs started by agents over MCP, by schedules, or from a remote request; checkout runs on a remote host.
 - Reading or managing the CLIs' logins.
 - A team policy enforced by Brainiac (Teams, above).
-- A general terminal in Brainiac. The pane runs the agent's CLI only.
+- A general terminal in Brainiac. The pane runs the agent's CLI only; the terminal is its own feature (`terminal-and-herdr.md`; `SPEC.md`, section 15), whose pseudo-terminal and pane a checkout run would share.
 
 ## What the panel said
 
