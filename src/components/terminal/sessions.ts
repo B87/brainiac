@@ -5,7 +5,7 @@
  * (SPEC.md, section 15). xterm.js is loaded the first time a tab opens.
  */
 import { errorMessage, ipc } from "../../lib/ipc";
-import { IS_MAC, tabKey } from "../../lib/terminal";
+import { IS_MAC, tabKey, tabNumber } from "../../lib/terminal";
 import { terminalStore } from "./store";
 
 type Xterm = typeof import("./xterm");
@@ -116,6 +116,16 @@ function create(key: string, xterm: Xterm): Session {
   sessions.set(key, session);
 
   term.attachCustomKeyEventHandler((e) => {
+    const n = tabNumber(e, IS_MAC);
+    if (n !== null) {
+      // The terminal's tabs, not the tabs of the view behind the dock.
+      if (e.type === "keydown") {
+        e.preventDefault();
+        const shown = terminalStore.showNumber(n);
+        if (shown) focus(shown);
+      }
+      return false;
+    }
     const meant = tabKey(e, IS_MAC);
     if (meant === null) return true;
     if (meant === "leave" && e.type === "keydown") {

@@ -80,6 +80,12 @@ export const terminalStore = {
   setActive(key: string) {
     if (state.active !== key) set({ ...state, active: key });
   },
+  /** `Cmd+1` … `Cmd+9`: the nth tab, when there is one; its key. */
+  showNumber(n: number): string | null {
+    const tab = state.tabs[n - 1];
+    if (tab) terminalStore.setActive(tab.key);
+    return tab?.key ?? null;
+  },
   dockSide: () => dockSide,
   /** Where the dock sits, remembered on this Mac (Settings → Terminal). */
   setDockSide(side: DockSide) {

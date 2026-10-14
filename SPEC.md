@@ -195,6 +195,7 @@ Repository name/path filtering and commit-message/hash filtering belong to the G
 | `Option+Cmd+T`, v0.4 | New query tab, in Databases (`Cmd+T` until the terminal) |
 | `Cmd+T` | Open the Terminal view; in it, or with a dock tab focused, a new terminal tab (section 15) |
 | `Cmd+J` | Show or hide the terminal dock |
+| `Cmd+1` … `Cmd+9` | In the Terminal view, or with a dock tab focused: the terminal's tabs, in order |
 | `Cmd+Esc` | Move focus out of the terminal tab, or back into it |
 | `Cmd+1` … `Cmd+9`, v0.4 | In Databases: Home, then the query tabs |
 | `Cmd+S`, v0.4 | In a query tab: save the query |
@@ -909,14 +910,14 @@ Brainiac has a terminal, so the shells and agents changing a repository sit besi
 
 ### Where it shows
 
-- **The Terminal view.** **Terminal** in the sidebar, under Runs (and in the rail), opens the terminal's tabs filling the main area, with Brainiac's sidebar beside them; the sidebar's foot says `Cmd+B` collapses it to give the terminal more room. **Dock** in its tab bar goes back to the view before it, with the dock open. The focused tab is outlined, so it is clear where keys go.
+- **The Terminal view.** **Terminal** in the sidebar, under Runs (and in the rail), opens the terminal's tabs filling the main area, with Brainiac's sidebar beside them; the sidebar's foot says `Cmd+B` collapses it to give the terminal more room. **Dock** in its tab bar goes back to the view before it, with the dock open.
 - **The dock** shows the same tabs at the bottom of any other view, or on the right (Settings → Terminal, **Dock**); its edge drags its size, which is remembered. **`Cmd+J`** or its **×** hides it, **`Cmd+J`** shows it again; **Maximize** opens the Terminal view.
 - **One set of tabs, two sizes.** Moving between the view and the dock moves the same tab: its program keeps running and only sees its window resized, so nothing restarts and no output is lost. Opening a repository from the sidebar while the Terminal view shows leaves every tab running.
 - With no tab open, the view and the dock offer **New terminal in** the repository last selected, or in the home folder.
 
 ### Opening a tab
 
-- **`Cmd+T`** opens the Terminal view from anywhere, with a tab in the folder of the repository last selected (or the home folder) when none is open; in the view, or with a dock tab focused, it opens a new tab there. The **+** in the tab bar does the same.
+- **`Cmd+T`** opens the Terminal view from anywhere, with a tab in the folder of the repository last selected (or the home folder) when none is open; in the view, or with a dock tab focused, it opens a new tab there. The **+** in the tab bar does the same. **`Cmd+1`** … **`Cmd+9`** show the first nine tabs, in order: in the Terminal view from anywhere in it, and in the dock only while a tab has focus, because the view behind the dock keeps its own `Cmd+1` … for its tabs.
 - **New terminal** on a repository (its Open in menu, and its preview on the dashboard) or a workspace (its ⋯ menu) opens a tab in that folder, in the dock when another view shows and in the Terminal view when that does:
 
   | Opened on | Folder |

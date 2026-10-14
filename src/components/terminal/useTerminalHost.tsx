@@ -139,6 +139,20 @@ export function useTerminalHost({
     if (!showing && !dockOpen) setDockOpen(true);
     focus(active);
   };
+  // ⌘1 … ⌘9 in the Terminal view; in the dock, only from a focused tab
+  // (sessions.ts), because the view behind it has tabs of its own.
+  useKeys(
+    Object.fromEntries(
+      [1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => [
+        `mod+${n}`,
+        () => {
+          const shown = terminalStore.showNumber(n);
+          if (shown) focus(shown);
+        },
+      ]),
+    ),
+    showing,
+  );
   useKeys({
     "mod+t": commandT,
     "mod+j": toggleDock,

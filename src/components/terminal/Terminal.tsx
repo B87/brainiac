@@ -129,7 +129,7 @@ function TerminalPane({ tab }: { tab: TerminalTabState }) {
     return () => detach(tab.key, element);
   }, [tab.key]);
   return (
-    <div className="terminal-pane flex min-h-0 min-w-0 flex-1 flex-col bg-[#17171b]">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-[#17171b]">
       {!hintSeen && (
         <div className="flex items-center gap-2.5 border-b border-[#c9d8f5] bg-[#eef3ff] px-3 py-2 text-[#2a3f6b] dark:border-[#2c3a5c] dark:bg-[#1c2438] dark:text-[#c9d8f5]">
           <span className="flex-1">

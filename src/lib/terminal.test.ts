@@ -8,6 +8,7 @@ import {
   repositoryTarget,
   type TerminalTabState,
   tabKey,
+  tabNumber,
   workspaceTarget,
 } from "./terminal";
 
@@ -148,6 +149,30 @@ describe("keys in a focused tab", () => {
     // On Linux, Ctrl+J and Ctrl+T are the shell's.
     expect(tabKey(key("j", { ctrlKey: true }), false)).toBe(null);
     expect(tabKey(key("t", { ctrlKey: true }), false)).toBe(null);
+  });
+});
+
+describe("switching tabs by number", () => {
+  const key = (k: string, mods: Partial<KeyboardEvent> = {}) => ({
+    key: k,
+    metaKey: true,
+    ctrlKey: false,
+    altKey: false,
+    shiftKey: false,
+    ...mods,
+  });
+
+  it("takes ⌘1 … ⌘9 in a focused tab on a Mac", () => {
+    expect(tabNumber(key("1"), true)).toBe(1);
+    expect(tabNumber(key("9"), true)).toBe(9);
+    expect(tabNumber(key("0"), true)).toBe(null);
+    expect(tabNumber(key("1", { altKey: true }), true)).toBe(null);
+  });
+
+  it("leaves Ctrl and the digits to the program on Linux", () => {
+    expect(tabNumber(key("1", { metaKey: false, ctrlKey: true }), false)).toBe(
+      null,
+    );
   });
 });
 

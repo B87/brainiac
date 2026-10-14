@@ -110,6 +110,15 @@ export function tabKey(
   return null;
 }
 
+/** `Cmd+1` … `Cmd+9` in a focused tab on macOS: the tab to show, from 1. */
+export function tabNumber(
+  e: Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey">,
+  mac: boolean,
+): number | null {
+  if (!mac || !e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return null;
+  return /^[1-9]$/.test(e.key) ? Number(e.key) : null;
+}
+
 /** The tab after `key` is closed: the next one, else the one before. */
 export function nextActive(
   tabs: readonly TerminalTabState[],
