@@ -13,6 +13,7 @@ import { terminalStore, useTerminals } from "./store";
 
 const MOD = IS_MAC ? "⌘" : "Ctrl+";
 const LEAVE = `${MOD}Esc`;
+const NEW_TAB = IS_MAC ? "⇧⌘T" : "Ctrl+Shift+T";
 
 type BarProps = {
   place: "view" | "dock";
@@ -83,7 +84,7 @@ function TerminalBar({ place, onNew, onMove, onHide }: BarProps) {
         type="button"
         className="btn btn-ghost icon-btn mb-1"
         aria-label="New terminal"
-        title={`New terminal (${MOD}T)`}
+        title={`New terminal (${NEW_TAB})`}
         onClick={onNew}
       >
         <PlusIcon size={13} />
@@ -94,7 +95,7 @@ function TerminalBar({ place, onNew, onMove, onHide }: BarProps) {
       />
       <span className="mb-2 hidden whitespace-nowrap text-[11px] text-muted lg:inline">
         {dock && `${MOD}J hide · `}
-        {MOD}T new tab · {LEAVE} leave the terminal
+        {NEW_TAB} new tab · {LEAVE} leave the terminal
       </span>
       <button
         type="button"

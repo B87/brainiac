@@ -46,7 +46,7 @@ function hints(view: View): Array<[string, string]> {
     ];
   if (view.kind === "terminal")
     return [
-      ["⌘T", "new tab"],
+      ["⇧⌘T", "new tab"],
       ["⌘J", "dock"],
       ["⌘Esc", "leave the terminal"],
     ];

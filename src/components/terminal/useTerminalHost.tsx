@@ -1,6 +1,6 @@
 /**
  * The terminal in the window (SPEC.md, section 15): the dock beside any view,
- * the Terminal view, ⌘T, ⌘J, and ⌘Esc, New terminal from anywhere, the quit
+ * the Terminal view, ⌘T, ⇧⌘T, ⌘J, and ⌘Esc, New terminal from anywhere, the quit
  * dialog's count of busy tabs, and the tabs whose program ended. App renders
  * what this returns; the tabs themselves live in `store.ts`.
  */
@@ -37,7 +37,7 @@ import {
   type TerminalRequest,
 } from "./actions";
 import ChooseFolderDialog from "./ChooseFolderDialog";
-import { focus, hasFocus, setLeaveHandler } from "./sessions";
+import { focus, setLeaveHandler } from "./sessions";
 import { type DockSide, terminalStore, useDockSide } from "./store";
 import { TerminalDock, TerminalView } from "./Terminal";
 
@@ -68,7 +68,7 @@ export function useTerminalHost({
   );
   const [choice, setChoice] = useState<FolderChoice | null>(null);
 
-  // The repository last selected, where ⌘T opens a tab, and the view to go
+  // The repository last selected, where ⇧⌘T opens a tab, and the view to go
   // back to from the Terminal view's Dock.
   const lastRepository = useRef<{ id: string; workspaceId?: string } | null>(
     null,
@@ -105,8 +105,9 @@ export function useTerminalHost({
   );
   const newHere = useCallback(() => open(here()), [open, here]);
 
-  // ⌘T: the Terminal view; in it, or from a focused dock tab, a new tab.
-  // A menu accelerator and the key listener can both see one keypress.
+  // ⌘T: the Terminal view, always; ⇧⌘T: a new tab, in the view when it is
+  // shown, else in the dock. A menu accelerator and the key listener can
+  // both see one keypress.
   const handledAt = useRef<Record<string, number>>({});
   const once = (name: string, f: () => void) => {
     const now = performance.now();
@@ -114,15 +115,14 @@ export function useTerminalHost({
     handledAt.current[name] = now;
     f();
   };
-  const commandT = () =>
+  const showTerminal = () =>
     once("t", () => {
-      if (showing || (dockOpen && hasFocus())) {
-        newHere();
-        return;
-      }
       showView({ kind: "terminal" });
-      if (terminalStore.get().tabs.length === 0) openTab(here());
+      const { tabs, active } = terminalStore.get();
+      if (tabs.length === 0) openTab(here());
+      else if (active) focus(active);
     });
+  const newTab = () => once("shift+t", newHere);
   const toggleDock = () =>
     once("j", () => {
       if (showing) {
@@ -154,7 +154,8 @@ export function useTerminalHost({
     showing,
   );
   useKeys({
-    "mod+t": commandT,
+    "mod+t": showTerminal,
+    "mod+shift+t": newTab,
     "mod+j": toggleDock,
     "mod+Escape": focusIn,
   });
@@ -217,9 +218,9 @@ export function useTerminalHost({
 
   const menu = useRef<(id: string) => boolean>(() => false);
   menu.current = (id: string) => {
-    if (id === "new_terminal") commandT();
+    if (id === "new_terminal") newTab();
     else if (id === "toggle_dock") toggleDock();
-    else if (id === "show_terminal") showView({ kind: "terminal" });
+    else if (id === "show_terminal") showTerminal();
     else return false;
     return true;
   };

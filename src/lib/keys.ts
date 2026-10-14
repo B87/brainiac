@@ -15,7 +15,8 @@
 import { useEffect, useRef } from "react";
 
 /**
- * A binding: `"j"`, `"ArrowDown"`, `"["`, `"/"`, with `mod+` for ⌘ (`"mod+1"`),
+ * A binding: `"j"`, `"ArrowDown"`, `"["`, `"/"`, with `mod+` for ⌘ (`"mod+1"`)
+ * and `mod+shift+` for ⇧⌘ (`"mod+shift+t"`),
  * or with `shift+` for a shifted letter (`"shift+e"`). A shifted letter that
  * nothing binds as `shift+` goes to its plain binding.
  */
@@ -73,7 +74,7 @@ export function bindingOf(
 ): string | null {
   if (e.altKey || e.ctrlKey) return null;
   const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
-  if (e.metaKey) return e.shiftKey ? null : `mod+${key}`;
+  if (e.metaKey) return e.shiftKey ? `mod+shift+${key}` : `mod+${key}`;
   return key;
 }
 

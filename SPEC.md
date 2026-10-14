@@ -193,7 +193,8 @@ Repository name/path filtering and commit-message/hash filtering belong to the G
 | `Cmd+.`, v0.4 | Cancel the running statement |
 | `Cmd+E`, v0.4 | Explain the statement under the cursor |
 | `Option+Cmd+T`, v0.4 | New query tab, in Databases (`Cmd+T` until the terminal) |
-| `Cmd+T` | Open the Terminal view; in it, or with a dock tab focused, a new terminal tab (section 15) |
+| `Cmd+T` | Open the Terminal view (section 15) |
+| `Cmd+Shift+T` | New terminal tab: in the Terminal view when it is shown, otherwise in the dock |
 | `Cmd+J` | Show or hide the terminal dock |
 | `Cmd+1` … `Cmd+9` | In the Terminal view, or with a dock tab focused: the terminal's tabs, in order |
 | `Cmd+Esc` | Move focus out of the terminal tab, or back into it |
@@ -584,7 +585,7 @@ A database client next to the repositories, notes, and tasks it relates to: save
 
 ### The query view
 
-- **Tabs.** Each tab is one editor with its own connection and its own database session, so a setting or a transaction in one tab never reaches another. A tab shows its saved query's name or "Untitled n", a dot in its connection's environment color, and a dot while its text differs from its saved query (or, untitled, is not empty). Tabs and their text are kept across restarts. `Cmd+T` opens a tab; `Cmd+1` is Home and `Cmd+2`…`Cmd+9` the tabs after it. Closing a tab with unsaved text that is not a saved query asks first.
+- **Tabs.** Each tab is one editor with its own connection and its own database session, so a setting or a transaction in one tab never reaches another. A tab shows its saved query's name or "Untitled n", a dot in its connection's environment color, and a dot while its text differs from its saved query (or, untitled, is not empty). Tabs and their text are kept across restarts. `Option+Cmd+T` opens a tab; `Cmd+1` is Home and `Cmd+2`…`Cmd+9` the tabs after it. Closing a tab with unsaved text that is not a saved query asks first.
 - **Connection.** The toolbar's connection button names the tab's connection, its environment, and "Read only" when the tab cannot write, and opens a filterable list to switch the tab to another connection, or add one. Switching keeps the text and closes the tab's session.
 - **Editor.** SQL in the connection's dialect, with completion of keywords, tables (qualified, and bare for the default schema), and columns from the schema.
 - **Running.** `Cmd+Enter` runs the statement under the cursor, or each statement in the selection; with the cursor after a statement's `;`, that statement. `Shift+Cmd+Enter` (**Run All**) runs every statement in turn and stops at the first failure; each statement that ran gets its own result. `Cmd+.` (**Cancel**) cancels the statement on the server and stops Run All. A statement that runs longer than the connection's time limit is stopped by the server.
@@ -917,7 +918,7 @@ Brainiac has a terminal, so the shells and agents changing a repository sit besi
 
 ### Opening a tab
 
-- **`Cmd+T`** opens the Terminal view from anywhere, with a tab in the folder of the repository last selected (or the home folder) when none is open; in the view, or with a dock tab focused, it opens a new tab there. The **+** in the tab bar does the same. **`Cmd+1`** … **`Cmd+9`** show the first nine tabs, in order: in the Terminal view from anywhere in it, and in the dock only while a tab has focus, because the view behind the dock keeps its own `Cmd+1` … for its tabs.
+- **`Cmd+T`** opens the Terminal view from anywhere, even from the dock, with a tab in the folder of the repository last selected (or the home folder) when none is open. **`Cmd+Shift+T`** opens a new tab in that folder: in the Terminal view when it is shown, otherwise in the dock, which it shows. The **+** in the tab bar opens one there too. **`Cmd+1`** … **`Cmd+9`** show the first nine tabs, in order: in the Terminal view from anywhere in it, and in the dock only while a tab has focus, because the view behind the dock keeps its own `Cmd+1` … for its tabs.
 - **New terminal** on a repository (its Open in menu, and its preview on the dashboard) or a workspace (its ⋯ menu) opens a tab in that folder, in the dock when another view shows and in the Terminal view when that does:
 
   | Opened on | Folder |
@@ -933,7 +934,7 @@ Brainiac has a terminal, so the shells and agents changing a repository sit besi
 
 ### Keys
 
-- While a tab has focus, keys go to its program, except **`Cmd+Esc`**, which moves focus back to the window with the tab still showing (and from the window, into the tab), and on macOS Brainiac's `Cmd` shortcuts (`Cmd+T`, `Cmd+J`, `Cmd+B`, `Cmd+K`, …). The first tab says so once: "⌘Esc moves between the terminal and the window. Closing a tab ends its shell.", with **Got it**.
+- While a tab has focus, keys go to its program, except **`Cmd+Esc`**, which moves focus back to the window with the tab still showing (and from the window, into the tab), and on macOS Brainiac's `Cmd` shortcuts (`Cmd+T`, `Cmd+Shift+T`, `Cmd+J`, `Cmd+B`, `Cmd+K`, …). The first tab says so once: "⌘Esc moves between the terminal and the window. Closing a tab ends its shell.", with **Got it**.
 - On Linux, where Brainiac's shortcuts use `Ctrl` (`docs/design/linux.md`), every `Ctrl` key goes to a focused tab, `Ctrl+J` and `Ctrl+T` too, which shells use; `Ctrl+Esc` is the way out, and the menu takes neither `Ctrl+T` nor `Ctrl+J`.
 - **Option sends Meta** (Settings → Terminal, off by default) sends Option and a key as Esc and the key, for shells' and editors' Alt keys; off, Option types the characters it types elsewhere. It applies to tabs opened after the change.
 - `Cmd`-click opens a link a tab shows, in the browser.

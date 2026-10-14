@@ -837,9 +837,15 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
         "new_terminal",
         "New Terminal Tab",
         true,
+        mac_only("CmdOrCtrl+Shift+T"),
+    )?;
+    let show_terminal = MenuItem::with_id(
+        app,
+        "show_terminal",
+        "Terminal",
+        true,
         mac_only("CmdOrCtrl+T"),
     )?;
-    let show_terminal = MenuItem::with_id(app, "show_terminal", "Terminal", true, None::<&str>)?;
     let toggle_dock = MenuItem::with_id(
         app,
         "toggle_dock",

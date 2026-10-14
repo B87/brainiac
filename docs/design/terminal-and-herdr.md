@@ -34,7 +34,7 @@ Nothing was built when this was written. Written with the maintainer from a read
 
 ### The terminal
 
-- **Terminal in the sidebar,** under Runs, opens the **Terminal view**: the terminal's tabs fill the main area, and Brainiac's sidebar stays beside them with its repositories and their agents. Collapsed to its rail (`Cmd+B`), the sidebar leaves the terminal almost the whole window. **`Cmd+T`** opens the view from anywhere; in the view, or with a dock tab focused, it opens a new tab, in the folder of the repository last selected, as Terminal and browsers do.
+- **Terminal in the sidebar,** under Runs, opens the **Terminal view**: the terminal's tabs fill the main area, and Brainiac's sidebar stays beside them with its repositories and their agents. Collapsed to its rail (`Cmd+B`), the sidebar leaves the terminal almost the whole window. **`Cmd+T`** opens the view from anywhere; **`Cmd+Shift+T`** opens a new tab, in the folder of the repository last selected: in the view when it is shown, otherwise in the dock.
 - **The dock** shows the same tabs at the bottom of any other view (or on the right; remembered), for a shell beside a diff. **`Cmd+J`** shows or hides it, as VS Code's panel does. **Maximize** in the dock opens the Terminal view; **Dock** in the view goes back to the view before it with the dock open.
 - **One set of tabs, two sizes.** Moving between them moves the same tab, and the program in it only sees its window resized: nothing restarts and no output is lost. Opening a repository from the sidebar while the Terminal view shows leaves every tab running, in the dock if it was open.
 - **New terminal** on a repository, a linked worktree, or a workspace (its More menu, the palette, the overview row's context menu) opens a tab in that folder (Workspaces and repositories, below), in the dock when another view is showing and in the Terminal view when that is.
@@ -208,12 +208,13 @@ Sidebar, Needs you ◀── herdr_agents ── HerdrService ── poll (visib
 
   | Shortcut | Today | With the terminal |
   | --- | --- | --- |
-  | `Cmd+T` | New query tab (v0.4) | Open the Terminal view; in it, or with a dock tab focused, a new terminal tab |
+  | `Cmd+T` | New query tab (v0.4) | Open the Terminal view |
+  | `Cmd+Shift+T` | — | New terminal tab, in the view when it is shown, otherwise in the dock |
   | `Option+Cmd+T` | — | New query tab, in Databases (moved from `Cmd+T`) |
   | `Cmd+J` | — | Show or hide the dock |
 
   `Cmd+T` follows Terminal and iTerm, where it is a new terminal tab, and the terminal is used all day while a query tab is opened now and then. The query tab's shortcut moves with an entry in the changelog, and Databases' File menu shows it; `Option+Cmd+T` follows `Option+Cmd+N` (New run) for a second "new" of a narrower kind.
-- **Keys.** While a tab has focus, every key goes to it except `Cmd+Esc` / `Ctrl+Esc` (focus out), the dock toggle (`Cmd+J`), `Cmd+T`, and on macOS Brainiac's `Cmd` shortcuts. On Linux, Brainiac's shortcuts use `Ctrl` (`linux.md`), which collides with shells' and herdr's keys (herdr's prefix is `Ctrl+B`, Brainiac's collapse-sidebar is `Ctrl+B`): with a tab focused, every `Ctrl` key goes to the tab (`Ctrl+J` and `Ctrl+T` too, which shells use), and `Ctrl+Esc` is the way out; `Ctrl+J` and `Ctrl+T` are Brainiac's only while focus is elsewhere. Option is sent as Meta, a setting.
+- **Keys.** While a tab has focus, every key goes to it except `Cmd+Esc` / `Ctrl+Esc` (focus out), the dock toggle (`Cmd+J`), `Cmd+T`, `Cmd+Shift+T`, and on macOS Brainiac's `Cmd` shortcuts. On Linux, Brainiac's shortcuts use `Ctrl` (`linux.md`), which collides with shells' and herdr's keys (herdr's prefix is `Ctrl+B`, Brainiac's collapse-sidebar is `Ctrl+B`): with a tab focused, every `Ctrl` key goes to the tab (`Ctrl+J` and `Ctrl+T` too, which shells use), and `Ctrl+Esc` is the way out; `Ctrl+J` and `Ctrl+T` are Brainiac's only while focus is elsewhere. Option is sent as Meta, a setting.
 
 ## Boundaries
 
