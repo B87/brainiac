@@ -34,17 +34,22 @@ const MAX_EXTRA = 8;
 const EXTRA_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
 const EXTRA_EXACT = new Set([
   "PATH", "HOME", "USER", "SHELL", "PWD", "TMPDIR", "IFS", "ENV", "BASH_ENV",
-  "CDPATH", "PROXY", "TERM",
+  "CDPATH", "PROXY", "TERM", "PROMPT_COMMAND", "SHELLOPTS", "BASHOPTS",
+  "GLOBIGNORE", "ZDOTDIR", "REQUESTS_CA_BUNDLE", "LOCPATH", "NLSPATH",
+  "HOSTALIASES",
 ]);
 const EXTRA_PREFIXES = [
   "LD_", "DYLD_", "NODE_", "NPM_", "GIT_", "PYTHON", "CLAUDE", "ANTHROPIC_",
   "OPENAI_", "OPENROUTER_", "OPENCODE_", "BRAINIAC_", "SSL_", "CURL_",
+  "SSH_", "DOCKER_", "CODEX_", "GEMINI_", "MALLOC_", "GCONV_",
 ];
 function extraNameOk(name) {
   return (
     EXTRA_NAME.test(name) &&
     !EXTRA_EXACT.has(name) &&
     !name.endsWith("_PROXY") &&
+    !name.endsWith("_OPTIONS") &&
+    !name.endsWith("OPT") &&
     !EXTRA_PREFIXES.some((prefix) => name.startsWith(prefix))
   );
 }

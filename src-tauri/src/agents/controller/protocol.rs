@@ -255,8 +255,27 @@ pub fn valid_secret_name(name: &str) -> bool {
         && chars.next().is_some_and(|c| c.is_ascii_uppercase())
         && chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
     const EXACT: &[&str] = &[
-        "PATH", "HOME", "USER", "SHELL", "PWD", "TMPDIR", "IFS", "ENV", "BASH_ENV", "CDPATH",
-        "PROXY", "TERM",
+        "PATH",
+        "HOME",
+        "USER",
+        "SHELL",
+        "PWD",
+        "TMPDIR",
+        "IFS",
+        "ENV",
+        "BASH_ENV",
+        "CDPATH",
+        "PROXY",
+        "TERM",
+        "PROMPT_COMMAND",
+        "SHELLOPTS",
+        "BASHOPTS",
+        "GLOBIGNORE",
+        "ZDOTDIR",
+        "REQUESTS_CA_BUNDLE",
+        "LOCPATH",
+        "NLSPATH",
+        "HOSTALIASES",
     ];
     const PREFIXES: &[&str] = &[
         "LD_",
@@ -273,11 +292,19 @@ pub fn valid_secret_name(name: &str) -> bool {
         "BRAINIAC_",
         "SSL_",
         "CURL_",
+        "SSH_",
+        "DOCKER_",
+        "CODEX_",
+        "GEMINI_",
+        "MALLOC_",
+        "GCONV_",
     ];
     shaped
         && !EXACT.contains(&name)
         && !PREFIXES.iter().any(|p| name.starts_with(p))
         && !name.ends_with("_PROXY")
+        && !name.ends_with("_OPTIONS")
+        && !name.ends_with("OPT")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

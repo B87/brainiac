@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { relativeTime } from "../lib/format";
 import {
   removable,
@@ -35,15 +35,26 @@ export default function HostSecretsGroup({ host }: { host: AgentHost }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    try {
-      setState(await ipc.getHostSecrets(host.id));
-      setError(null);
-    } catch (e) {
-      setError(errorMessage(e));
-    }
-  }, [host.id]);
+  // A response for a host the page has since left is dropped.
+  const current = useRef(host.id);
+  current.current = host.id;
+  const load = useCallback(
+    async (keepError = false) => {
+      const asked = host.id;
+      try {
+        const next = await ipc.getHostSecrets(asked);
+        if (current.current !== asked) return;
+        setState(next);
+        if (!keepError) setError(null);
+      } catch (e) {
+        if (current.current === asked) setError(errorMessage(e));
+      }
+    },
+    [host.id],
+  );
   useEffect(() => {
+    setState(null);
+    setError(null);
     void load();
   }, [load]);
 
@@ -54,11 +65,25 @@ export default function HostSecretsGroup({ host }: { host: AgentHost }) {
     setBusy(row.secret_id);
     setError(null);
     try {
-      setState(await action(row.secret_id, host.id));
+      const next = await action(row.secret_id, host.id);
+      if (current.current === host.id) setState(next);
     } catch (e) {
       setError(errorMessage(e));
-      // The failure is recorded on the share: show it.
-      await load();
+      // A failed Share is recorded on the row: show it, and keep the message.
+      await load(true);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const removeUnlisted = async (name: string) => {
+    setBusy(name);
+    setError(null);
+    try {
+      const next = await ipc.removeUnlistedHostSecret(name, host.id);
+      if (current.current === host.id) setState(next);
+    } catch (e) {
+      setError(errorMessage(e));
     } finally {
       setBusy(null);
     }
@@ -122,6 +147,14 @@ export default function HostSecretsGroup({ host }: { host: AgentHost }) {
             <Hint>
               Held by the host, but not a secret in Settings → Secrets.
             </Hint>
+            <button
+              type="button"
+              className="btn btn-sm"
+              disabled={busy !== null}
+              onClick={() => void removeUnlisted(s.name)}
+            >
+              Remove from Host
+            </button>
           </div>
         ))}
         {state?.problem && (

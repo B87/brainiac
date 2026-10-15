@@ -568,6 +568,7 @@ pub fn run() {
             commands::get_host_secrets,
             commands::share_secret_with_host,
             commands::remove_secret_from_host,
+            commands::remove_unlisted_host_secret,
             commands::get_agent_host_job_log,
             commands::remove_agent_host,
             commands::get_run_controller_status,

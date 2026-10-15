@@ -823,6 +823,18 @@ pub async fn remove_secret_from_host(
     named.unshare(&id, &host_id, &runtime).await
 }
 
+/// **Remove** a copy the host holds that no secret here names.
+#[tauri::command]
+pub async fn remove_unlisted_host_secret(
+    name: String,
+    host_id: String,
+    named: State<'_, NamedSecrets>,
+    hosts: State<'_, AgentHosts>,
+) -> AppResult<crate::models::HostSecrets> {
+    let runtime = hosts.runtime(&host_id).await?;
+    named.remove_unlisted(&name, &host_id, &runtime).await
+}
+
 // v0.5: agent runs (SPEC.md, section 13).
 
 pub type AgentSettingsState = Arc<crate::agents::AgentSettingsService>;

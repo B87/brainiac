@@ -280,6 +280,11 @@ impl NamedSecretService {
         let id = id.to_string();
         self.db
             .call(move |conn| {
+                // Shares that never reached a host would block the delete.
+                conn.execute(
+                    "DELETE FROM host_secret_shares WHERE secret_id = ?1",
+                    params![id],
+                )?;
                 conn.execute("DELETE FROM named_secrets WHERE id = ?1", params![id])?;
                 Ok(())
             })
@@ -387,7 +392,8 @@ impl NamedSecretService {
         self.db
             .call(move |conn| {
                 Ok(conn.query_row(
-                    "SELECT EXISTS (SELECT 1 FROM host_secret_shares WHERE secret_id = ?1)",
+                    // A share that never reached the host (revision 0) holds no copy.
+                    "SELECT EXISTS (SELECT 1 FROM host_secret_shares WHERE secret_id = ?1 AND shared_revision > 0)",
                     params![id],
                     |r| r.get::<_, bool>(0),
                 )?)
@@ -405,6 +411,9 @@ impl NamedSecretService {
         host_id: &str,
         runtime: &RunRuntime,
     ) -> AppResult<HostSecrets> {
+        // The same gate as Save and Delete, so a rename or delete cannot slip
+        // in between sending the value and recording that it was sent.
+        let _gate = self.credentials.gate(&credential_owner(id)).await;
         let secret = self.get(id).await?;
         if secret.credential_source == SecretSource::None {
             return Err(AppError::validation("This secret has no source yet."));
@@ -444,6 +453,7 @@ impl NamedSecretService {
         host_id: &str,
         runtime: &RunRuntime,
     ) -> AppResult<HostSecrets> {
+        let _gate = self.credentials.gate(&credential_owner(id)).await;
         let secret = self.get(id).await?;
         match runtime.delete_secret(&secret.env_name).await {
             Ok(_) => {
@@ -458,12 +468,28 @@ impl NamedSecretService {
                     })
                     .await?;
             }
-            Err(e) => {
-                self.record_share(host_id, id, None, Some(e.message.clone()))
-                    .await?;
-                return Err(e);
-            }
+            // A failed removal changes nothing recorded: the copy is still
+            // there, and a "failed" row would offer Retry, which sends it again.
+            Err(e) => return Err(e),
         }
+        self.host_secrets(host_id, Some(runtime)).await
+    }
+
+    /// **Remove** a copy the host holds under a name no secret here uses
+    /// (left by a restore, say). A name a secret does use goes through
+    /// `unshare`, which keeps the ledger right.
+    pub async fn remove_unlisted(
+        &self,
+        name: &str,
+        host_id: &str,
+        runtime: &RunRuntime,
+    ) -> AppResult<HostSecrets> {
+        if self.list().await?.iter().any(|s| s.env_name == name) {
+            return Err(AppError::validation(
+                "A secret in Settings → Secrets uses that name. Remove it from its own row.",
+            ));
+        }
+        runtime.delete_secret(name).await?;
         self.host_secrets(host_id, Some(runtime)).await
     }
 

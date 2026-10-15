@@ -697,6 +697,8 @@ export const ipc = {
     invoke<HostSecrets>("share_secret_with_host", { id, hostId }),
   removeSecretFromHost: (id: string, hostId: string) =>
     invoke<HostSecrets>("remove_secret_from_host", { id, hostId }),
+  removeUnlistedHostSecret: (name: string, hostId: string) =>
+    invoke<HostSecrets>("remove_unlisted_host_secret", { name, hostId }),
   /** Machines → a run host, Health: read now, nothing stored. */
   getAgentHostHealth: (id: string) =>
     invoke<HostHealth>("get_agent_host_health", { id }),

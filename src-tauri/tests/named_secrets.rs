@@ -205,6 +205,39 @@ async fn a_host_that_cannot_seal_shows_the_share_as_failed_and_never_as_shared()
 }
 
 #[tokio::test]
+async fn a_share_that_never_reached_the_host_does_not_block_deleting() {
+    let tmp_missing = std::env::temp_dir().join("brainiac-no-such-creds-program");
+    let h = Harness::with_creds(Some(tmp_missing)).await;
+    let secret = h.add().await;
+    assert!(h.named.share(&secret.id, HOST, &h.runtime).await.is_err());
+    h.named.delete(&secret.id, secret.version).await.unwrap();
+    assert!(h.named.list().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_copy_no_secret_names_can_be_removed_by_name() {
+    let h = Harness::new().await;
+    let secret = h.add().await;
+    h.runtime
+        .put_secret("OTHER_TOKEN", "12345678abcd".into())
+        .await
+        .unwrap();
+    // A name a secret uses goes through its own Remove.
+    h.named.share(&secret.id, HOST, &h.runtime).await.unwrap();
+    assert!(h
+        .named
+        .remove_unlisted("SENTRY_TOKEN", HOST, &h.runtime)
+        .await
+        .is_err());
+    let host = h
+        .named
+        .remove_unlisted("OTHER_TOKEN", HOST, &h.runtime)
+        .await
+        .unwrap();
+    assert!(host.only_on_host.is_empty());
+}
+
+#[tokio::test]
 async fn removing_from_the_host_comes_before_deleting_or_renaming() {
     let h = Harness::new().await;
     let secret = h.add().await;
@@ -236,7 +269,16 @@ async fn removing_from_the_host_comes_before_deleting_or_renaming() {
 #[tokio::test]
 async fn names_values_and_sources_are_checked() {
     let h = Harness::new().await;
-    for name in ["PATH", "NODE_OPTIONS", "sentry", "HTTPS_PROXY", ""] {
+    for name in [
+        "PATH",
+        "NODE_OPTIONS",
+        "sentry",
+        "HTTPS_PROXY",
+        "",
+        "SSH_AUTH_SOCK",
+        "RUBYOPT",
+        "DOCKER_HOST",
+    ] {
         let mut request = h.request(None, 0, Some(VALUE));
         request.env_name = name.into();
         assert!(h.named.save(request).await.is_err(), "{name:?}");

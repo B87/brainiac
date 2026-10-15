@@ -2834,6 +2834,11 @@ export class FakeBackend {
         this.hostCopies.get(hostId)?.delete(secret.env_name);
         return this.hostSecrets(hostId);
       }
+      case "remove_unlisted_host_secret": {
+        const hostId = String(args.hostId);
+        this.hostCopies.get(hostId)?.delete(String(args.name));
+        return this.hostSecrets(hostId);
+      }
       case "approve_secret_source": {
         const owner = args.owner as CredentialOwner;
         const credential = this.credentialOf(owner);
