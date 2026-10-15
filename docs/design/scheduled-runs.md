@@ -64,10 +64,10 @@ Decided (15 Oct 2026). The run image today is Node 22 on Debian with `git`, `rip
 
 So Brainiac builds an optional **tools layer** on top of the base image, from a Dockerfile compiled into Brainiac like the base one, with the same rules: pinned base digest, pinned packages, the build context is those files and nothing else, and a repository's own Dockerfile or `requirements.txt` is never read at build.
 
-- The layer adds `python3`, a short fixed list of Python packages Brainiac chooses and pins, and `gcloud` at a pinned version from Google's package source.
+- The layer adds `python3` (Debian's, with its standard library) and `gcloud` at a pinned version from Google's package source. It installs no Python packages: the first script this was designed for imports only the standard library (`argparse`, `json`, `os`, `re`, `sys`, `time`, `urllib`), so there is no `pip` step, no package index to reach at build, and nothing to pin there. A fixed list can be added later if a script needs one.
 - A profile ticks **Python and Google Cloud CLI** to use it. Other profiles keep the base image. The layer has its own recipe hash, tag and current/rebuild state, shown next to the base image on the host's page, and **Build image** builds both when the profile needs the layer.
 - The layer is part of what a schedule's approval records (image digest), so a rebuild asks for approval again.
-- The user's scripts live in the repository, which the run already has. Anything they import beyond the standard library and the fixed list is not available, which is the question below.
+- The user's scripts live in the repository, which the run already has. A script that imports a third-party package will not find it; that is a limit of the layer, shown in its description, until a list exists.
 
 ### The network allowlist comes first
 
@@ -129,4 +129,4 @@ Scheduled runs need a host to be more than an entry in Settings → Agents, so t
 | How long may a host be silent before a schedule is overdue? | The overdue window |
 | How are extra secrets (a Sentry token, a Google key) delivered? The bootstrap contract carries the model credential and "descriptor-approved keys" exported as environment variables, and phase 1 injects no registry tokens (`agent-runs.md`, Credentials and disclosure) | The descriptor and entrypoint change that phase 2 needs, including trace filtering of each new value |
 | The Google service account key is a JSON file. Deliver the JSON as one environment variable that the script passes to the client library or writes to tmpfs, or let the entrypoint write a file to tmpfs? | Whether the delivery contract stays environment-only |
-| Which third-party Python packages do the user's scripts import (`requests`, `google-cloud-*`, `pyyaml`, others)? The tools layer carries a fixed list and never reads the repository's requirements | The list in the layer, and whether the scripts run unchanged |
+| Which third-party Python packages might other scripts import? Resolved for the first script (standard library only); decide a fixed list only when a second script needs one | Whether the layer ever needs a `pip` step |
