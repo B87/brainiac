@@ -6,7 +6,8 @@
  * registration order, and the first one that binds the key handles it. A
  * registration is made when a component mounts or re-enables its bindings,
  * so two components shown together should not bind the same key; today none
- * do (each view binds its own keys, and the diff binds N, P, [ and ]).
+ * do (each view binds its own keys, and the diff binds N, P, [ and ], or in a
+ * pull request review J, K, Shift+J and Shift+K).
  *
  * A shortcut never fires while the user types in a field, while a modal
  * dialog or a menu is open, or for keys a focused control needs itself
@@ -70,8 +71,14 @@ export function isTyping(target: KeyTarget): boolean {
 
 /** The binding name of a key event, or null when an unbound modifier is held. */
 export function bindingOf(
-  e: Pick<KeyboardEvent, "key" | "altKey" | "ctrlKey" | "metaKey" | "shiftKey">,
+  e: Pick<
+    KeyboardEvent,
+    "key" | "altKey" | "ctrlKey" | "metaKey" | "shiftKey"
+  > &
+    Partial<Pick<KeyboardEvent, "isComposing">>,
 ): string | null {
+  // An input method composing text owns every key, even outside a field.
+  if (e.isComposing || e.key === "Process") return null;
   if (e.altKey || e.ctrlKey) return null;
   const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
   if (e.metaKey) return e.shiftKey ? `mod+shift+${key}` : `mod+${key}`;

@@ -8,12 +8,15 @@ import type {
 import {
   anchorLabel,
   byLongestWait,
+  checkBadge,
   checkedOutPullRequest,
   checksLabel,
   defaultMergeMessage,
   draftsBehind,
   fileKey,
+  finishActionLabel,
   isGenerated,
+  isLongDescription,
   isViewed,
   lineNotes,
   matchesFilter,
@@ -374,5 +377,68 @@ describe("pull request lists", () => {
     expect(defaultMergeMessage(bitbucket, "squash").message).toBe(
       "Parse nested lists (pull request #12)\n\nLists inside lists.",
     );
+  });
+});
+
+describe("checkBadge", () => {
+  const sum = (over: Partial<PullRequest["checks"]>) => ({
+    state: "success" as const,
+    total: 2,
+    passed: 2,
+    failed: 0,
+    pending: 0,
+    ...over,
+  });
+  it("puts failures first and says passed only when something ran and passed", () => {
+    expect(checkBadge(sum({ state: "failure", failed: 2, passed: 0 }))).toEqual(
+      {
+        tone: "failed",
+        label: "2 failed",
+      },
+    );
+    expect(
+      checkBadge(sum({ state: "pending", pending: 1, passed: 1 })),
+    ).toEqual({
+      tone: "pending",
+      label: "1 pending",
+    });
+    expect(checkBadge(sum({}))).toEqual({
+      tone: "passed",
+      label: "checks passed",
+    });
+  });
+  it("tells no checks and skipped checks apart from success", () => {
+    expect(
+      checkBadge({ state: null, total: 0, passed: 0, failed: 0, pending: 0 })
+        .tone,
+    ).toBe("none");
+    expect(checkBadge(sum({ state: "neutral", passed: 0 })).tone).toBe("none");
+  });
+});
+
+describe("isLongDescription", () => {
+  it("keeps short descriptions whole and folds long ones", () => {
+    expect(isLongDescription("Handles lists.")).toBe(false);
+    expect(isLongDescription("x".repeat(901))).toBe(true);
+    expect(isLongDescription(Array(15).fill("- a point").join("\n"))).toBe(
+      true,
+    );
+    expect(isLongDescription(Array(14).fill("- a point").join("\n"))).toBe(
+      false,
+    );
+  });
+});
+
+describe("finishActionLabel", () => {
+  it("names the action for the verdict, with the drafts a comment review posts", () => {
+    expect(finishActionLabel("comment", false, 0)).toBe("Post comments");
+    expect(finishActionLabel("comment", false, 3)).toBe("Post comments (3)");
+    expect(finishActionLabel("approve", false, 3)).toBe("Approve");
+    expect(finishActionLabel("request_changes", false, 0)).toBe(
+      "Request changes",
+    );
+  });
+  it("keeps Send the Rest for a review cut off midway", () => {
+    expect(finishActionLabel("approve", true, 1)).toBe("Send the Rest");
   });
 });

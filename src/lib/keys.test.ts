@@ -28,6 +28,18 @@ describe("bindingOf", () => {
     expect(bindingOf(key("j", { ctrlKey: true }))).toBeNull();
   });
 
+  it("leaves every key to an input method that is composing", () => {
+    expect(bindingOf({ ...key("j"), isComposing: true })).toBeNull();
+    expect(bindingOf(key("Process"))).toBeNull();
+    expect(bindingOf({ ...key("j"), isComposing: false })).toBe("j");
+  });
+
+  it("names the review's keys: ? and ⌘P", () => {
+    expect(bindingOf(key("?", { shiftKey: true }))).toBe("?");
+    expect(shiftedBindingOf(key("?", { shiftKey: true }))).toBeNull();
+    expect(bindingOf(key("p", { metaKey: true }))).toBe("mod+p");
+  });
+
   it("names a shifted letter for bindings that tell it apart", () => {
     expect(shiftedBindingOf(key("E", { shiftKey: true }))).toBe("shift+e");
     expect(shiftedBindingOf(key("E"))).toBeNull();

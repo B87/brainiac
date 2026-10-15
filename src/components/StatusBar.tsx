@@ -1,3 +1,4 @@
+import { type FooterHint, useFooterHints } from "../lib/footer";
 import { relativeTime, shortPath } from "../lib/format";
 import {
   jobElapsed,
@@ -13,6 +14,8 @@ import type { View } from "./Sidebar";
 
 /** Shortcuts that work in each view (SPEC.md, Keyboard defaults). */
 function hints(view: View): Array<[string, string]> {
+  // A pull request publishes its own, which follow the tab and the focus.
+  if (view.kind === "pullRequest") return [];
   if (view.kind === "today")
     return [
       ["J K", "rows"],
@@ -99,6 +102,8 @@ export default function StatusBar({
   /** Settings → Agents, at a run host's page. */
   onOpenHost: (hostId: string) => void;
 }) {
+  const published = useFooterHints();
+  const contextual = view.kind === "pullRequest";
   const jobs = Object.values(useHostJobsContext()).filter(
     (j) => j.state === "running",
   );
@@ -183,14 +188,18 @@ export default function StatusBar({
           </span>
         </button>
       ))}
-      <span className="hidden items-center gap-2.5 xl:flex">
-        {hints(view).map(([keys, label]) => (
-          <span key={label} className="flex items-center gap-1">
-            <span className="kbd">{keys}</span>
-            {label}
-          </span>
-        ))}
-      </span>
+      {contextual ? (
+        <ContextHints hints={published ?? []} />
+      ) : (
+        <span className="hidden items-center gap-2.5 xl:flex">
+          {hints(view).map(([keys, label]) => (
+            <span key={label} className="flex items-center gap-1">
+              <span className="kbd">{keys}</span>
+              {label}
+            </span>
+          ))}
+        </span>
+      )}
       {snapshot && !selected && scope.length > 0 && (
         <span className="shrink-0">
           {t.upToDate} of {scope.length} up to date
@@ -211,5 +220,54 @@ export default function StatusBar({
       )}
       <span>Checked {relativeTime(checked)}</span>
     </footer>
+  );
+}
+
+/**
+ * A view's own shortcuts, always on screen. A hint that cannot act now stays,
+ * dimmed, with the reason for a screen reader and a tooltip. In a narrow
+ * window only the essential ones remain, so the way to the full list is
+ * never lost.
+ */
+function ContextHints({ hints }: { hints: FooterHint[] }) {
+  return (
+    <fieldset className="m-0 flex min-w-0 shrink items-center gap-2.5 overflow-hidden border-0 p-0">
+      <legend className="sr-only">Keyboard shortcuts</legend>
+      {hints.map((h) => {
+        const body = (
+          <>
+            {h.keys && <span className="kbd">{h.keys}</span>}
+            {h.label}
+            {h.disabled && h.why && (
+              <span className="sr-only"> (unavailable: {h.why})</span>
+            )}
+          </>
+        );
+        const visibility = h.essential ? "" : "max-xl:hidden";
+        const dim = h.disabled ? "opacity-50" : "";
+        const cls = `flex shrink-0 items-center gap-1 ${visibility} ${dim}`;
+        return h.onActivate ? (
+          <button
+            key={`${h.keys}${h.label}`}
+            type="button"
+            className={`${cls} hover:text-fg`}
+            aria-disabled={h.disabled || undefined}
+            title={h.disabled ? h.why : undefined}
+            onClick={h.onActivate}
+          >
+            {body}
+          </button>
+        ) : (
+          <span
+            key={`${h.keys}${h.label}`}
+            className={cls}
+            aria-disabled={h.disabled || undefined}
+            title={h.disabled ? h.why : undefined}
+          >
+            {body}
+          </span>
+        );
+      })}
+    </fieldset>
   );
 }

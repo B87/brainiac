@@ -2,6 +2,12 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { depthLabel, sameSubject, subjectLabel } from "../lib/explain";
+import {
+  type FooterHint,
+  type ReviewZone,
+  reviewHints,
+  setFooterHints,
+} from "../lib/footer";
 import { absoluteTime, relativeTime } from "../lib/format";
 import {
   type ChangedFile,
@@ -34,11 +40,14 @@ import {
   anchorLabel,
   CHECK_LABEL,
   type ChecklistItem,
+  checkBadge,
   checksLabel,
   defaultMergeMessage,
   draftsBehind,
   fileKey,
+  finishActionLabel,
   isGenerated,
+  isLongDescription,
   isViewed,
   lineKey,
   lineNotes,
@@ -61,12 +70,22 @@ import {
   type ViewedMarks,
 } from "../lib/pullRequests";
 import { plural, splitPath } from "../lib/repo";
+import {
+  fileTarget,
+  findFiles,
+  type Landing,
+  nextUnreviewed,
+  orderChecks,
+  progressLabel,
+  resolveLanding,
+  stepPast,
+} from "../lib/reviewNav";
 import { useSidePanel } from "../lib/sidePanel";
 import { createLatest } from "../lib/stale";
 import { useExplanation } from "../lib/useExplanation";
 import { useNarrowerThan } from "../lib/width";
 import Dialog from "./Dialog";
-import DiffView, { type LineTarget } from "./DiffView";
+import DiffView, { type LineTarget, type ViewState } from "./DiffView";
 import FoldStrip, { useOverlay } from "./FoldStrip";
 import { Avatar } from "./HistoryTab";
 import {
@@ -120,6 +139,180 @@ function submitOnEnter(submit: () => void) {
   };
 }
 
+/** What Files Changed tells the bottom bar. */
+type FilesNav = {
+  finder: boolean;
+  hasNextChange: boolean;
+  hasPrevChange: boolean;
+  hasNextFile: boolean;
+  hasPrevFile: boolean;
+  canComment: boolean;
+  commentWhy: string;
+};
+
+const NO_NAV: FilesNav = {
+  finder: false,
+  hasNextChange: false,
+  hasPrevChange: false,
+  hasNextFile: false,
+  hasPrevFile: false,
+  canComment: false,
+  commentWhy: "Select a line first",
+};
+
+/** The shortcut zone an element is in: a marked region, a text field, or the diff. */
+function zoneOf(el: Element | null): ReviewZone {
+  const marked = el?.closest("[data-zone]")?.getAttribute("data-zone");
+  if (marked) return marked as ReviewZone;
+  const tag = el?.tagName;
+  if (
+    tag === "INPUT" ||
+    tag === "TEXTAREA" ||
+    tag === "SELECT" ||
+    (el as HTMLElement | null)?.isContentEditable
+  )
+    return "text";
+  return "diff";
+}
+
+/**
+ * The compact header under the tabs, on every tab (SPEC.md, Pull request):
+ * title, branches, checks, and the drafts waiting. The repository, number,
+ * and provider are in the header above; the commit under review is here.
+ */
+function SummaryBar({
+  pr,
+  drafts,
+  canFinish,
+  onChecks,
+  onFinish,
+}: {
+  pr: PullRequest;
+  drafts: number;
+  canFinish: boolean;
+  onChecks: () => void;
+  onFinish: () => void;
+}) {
+  const badge = checkBadge(pr.checks);
+  const tone = {
+    failed: "text-del",
+    pending: "text-dirty",
+    passed: "text-add",
+    none: "text-muted",
+  }[badge.tone];
+  return (
+    <section
+      aria-label="Pull request summary"
+      className="@container flex h-8 shrink-0 items-center gap-3 border-b bg-panel px-3 pl-lead text-[12px]"
+    >
+      <span className="min-w-0 flex-1 truncate font-medium" title={pr.title}>
+        {pr.title}
+      </span>
+      <span
+        className="mono flex min-w-0 shrink items-center gap-1 text-fg-2 @max-[640px]:hidden"
+        title={`${pr.source_branch} → ${pr.target_branch}`}
+      >
+        <span className="truncate">{pr.source_branch}</span>
+        <span className="text-muted">→</span>
+        <span className="truncate">{pr.target_branch}</span>
+      </span>
+      <button
+        type="button"
+        className={`shrink-0 hover:underline ${tone}`}
+        title={
+          badge.tone === "failed"
+            ? "Open Checks and show the failing check"
+            : `${checksLabel(pr.checks)}. Open Checks`
+        }
+        onClick={onChecks}
+      >
+        {badge.tone === "failed" ? "✕ " : badge.tone === "passed" ? "✓ " : ""}
+        {badge.label}
+      </button>
+      {drafts > 0 && (
+        <button
+          type="button"
+          className="shrink-0 text-fg-2 hover:underline disabled:no-underline"
+          disabled={!canFinish}
+          title="Local drafts: sent only when you finish the review"
+          onClick={onFinish}
+        >
+          {plural(drafts, "draft")}
+        </button>
+      )}
+      <span
+        className="mono shrink-0 text-muted @max-[480px]:hidden"
+        title={`${pr.reference} on ${PROVIDER_LABEL[pr.kind]}, at commit ${pr.head_sha}`}
+      >
+        {pr.head_sha.slice(0, 7)}
+      </span>
+    </section>
+  );
+}
+
+const SHORTCUT_GROUPS: Array<{ title: string; rows: Array<[string, string]> }> =
+  [
+    {
+      title: "Files Changed",
+      rows: [
+        ["J", "Next change (a hunk of the diff)"],
+        ["K", "Previous change"],
+        ["⇧J", "Next file"],
+        ["⇧K", "Previous file"],
+        ["⌘P", "Find a changed file in this pull request"],
+        [
+          "T",
+          "Focus the file tree (↑ ↓ move, ↵ opens, Esc returns); T again hides it",
+        ],
+        ["C", "Comment on the selected line or range"],
+        ["E", "Explain"],
+        ["⇧E", "Show or hide the explanation"],
+        ["⇧N / ⇧P", "Next or previous note"],
+      ],
+    },
+    {
+      title: "Anywhere in the pull request",
+      rows: [
+        ["⌘1 ⌘2 ⌘3", "Overview, Files Changed, Checks"],
+        ["?", "This list"],
+        ["Esc", "Close a dialog, or go back"],
+      ],
+    },
+    {
+      title: "While writing",
+      rows: [
+        ["⌘↩", "Save the draft, send the comment, or submit the review"],
+        ["Esc", "Cancel a comment box"],
+      ],
+    },
+  ];
+
+function ShortcutHelp({ onClose }: { onClose: () => void }) {
+  return (
+    <Dialog title="Keyboard shortcuts" width={560} onClose={onClose}>
+      <div className="flex flex-col gap-4 text-[13px]">
+        {SHORTCUT_GROUPS.map((g) => (
+          <section key={g.title} className="flex flex-col gap-1.5">
+            <h3 className="section-label m-0 text-fg-2">{g.title}</h3>
+            {g.rows.map(([keys, what]) => (
+              <div key={`${keys}${what}`} className="flex items-center gap-3">
+                <span className="kbd inline-block w-24 shrink-0 text-center">
+                  {keys}
+                </span>
+                <span>{what}</span>
+              </div>
+            ))}
+          </section>
+        ))}
+        <p className="m-0 text-[12px] text-muted">
+          Letter shortcuts pause while you type in a field or compose text with
+          an input method. A <em>change</em> is one hunk of the diff.
+        </p>
+      </div>
+    </Dialog>
+  );
+}
+
 /** One pull request: its overview, the files it changes, and its checks (SPEC.md, Pull request). */
 export default function PullRequestView({
   reference,
@@ -147,6 +340,13 @@ export default function PullRequestView({
   // Files Changed draws Explain and the panel toggle here, in the header,
   // since they act on the whole pull request (SPEC.md, section 14).
   const [explainSlot, setExplainSlot] = useState<HTMLSpanElement | null>(null);
+  // Where keyboard focus is, and what Files Changed reports, for the
+  // bottom bar's contextual shortcuts.
+  const [zone, setZone] = useState<ReviewZone>("diff");
+  const [nav, setNav] = useState<FilesNav>(NO_NAV);
+  const [helpOpen, setHelpOpen] = useState(false);
+  /** Bumped by the failure indicator: Checks opens and shows the failing check. */
+  const [revealFailure, setRevealFailure] = useState(0);
   const latest = useRef(createLatest()).current;
   const conversationLatest = useRef(createLatest()).current;
   const draftsLatest = useRef(createLatest()).current;
@@ -272,8 +472,49 @@ export default function PullRequestView({
     "mod+1": () => setTab("overview"),
     "mod+2": () => setTab("files"),
     "mod+3": () => setTab("checks"),
+    "?": () => setHelpOpen(true),
     Escape: onBack,
   });
+  const showFailure = () => {
+    setTab("checks");
+    setRevealFailure((n) => n + 1);
+  };
+
+  // The bottom bar follows the tab and what has focus (SPEC.md, Keyboard defaults).
+  const { finder, ...navState } = nav;
+  const barZone: ReviewZone = reviewOpen
+    ? "review"
+    : mergeOpen
+      ? "merge"
+      : helpOpen
+        ? "help"
+        : tab === "files" && finder
+          ? "finder"
+          : zone;
+  const hintState = {
+    tab,
+    zone: barZone,
+    ...navState,
+    onHelp: () => setHelpOpen(true),
+  };
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the hints are rebuilt from these values.
+  useEffect(() => {
+    const hints: FooterHint[] = reviewHints(hintState);
+    setFooterHints(hints);
+  }, [
+    tab,
+    barZone,
+    nav.hasNextChange,
+    nav.hasPrevChange,
+    nav.hasNextFile,
+    nav.hasPrevFile,
+    nav.canComment,
+    nav.commentWhy,
+  ]);
+  useEffect(() => () => setFooterHints(null), []);
+  /** Focus moves between the diff, the file list, and the text fields. */
+  const trackZone = () =>
+    setTimeout(() => setZone(zoneOf(document.activeElement)), 0);
 
   const [, repoAndNumber] = reference.match(/^[^/]+\/(.+)$/) ?? [
     null,
@@ -287,7 +528,11 @@ export default function PullRequestView({
   };
 
   return (
-    <div className="relative flex min-h-0 flex-1 flex-col">
+    <div
+      className="relative flex min-h-0 flex-1 flex-col"
+      onFocusCapture={trackZone}
+      onBlurCapture={trackZone}
+    >
       <header
         data-tauri-drag-region
         className="flex h-12 shrink-0 items-center gap-3 border-b bg-header px-3 pl-lead"
@@ -340,6 +585,14 @@ export default function PullRequestView({
             onClick={() => setTab("checks")}
           >
             Checks
+            {pr && pr.checks.failed > 0 && (
+              <span
+                className="tabular text-del"
+                title={`${plural(pr.checks.failed, "check")} failed`}
+              >
+                {pr.checks.failed}
+              </span>
+            )}
           </button>
         </div>
         <div data-tauri-drag-region className="h-full flex-1" />
@@ -378,7 +631,7 @@ export default function PullRequestView({
             }
             onClick={() => setReviewOpen(true)}
           >
-            Review Changes
+            Finish review
             {unsent > 0 && (
               <span className="rounded-full bg-white/25 px-1.5 text-[11px] tabular">
                 {unsent}
@@ -390,6 +643,15 @@ export default function PullRequestView({
           <SidePanelButton open={panelOpen} onToggle={togglePanel} />
         )}
       </header>
+      {pr && (
+        <SummaryBar
+          pr={pr}
+          drafts={unsent}
+          onChecks={showFailure}
+          onFinish={() => setReviewOpen(true)}
+          canFinish={pr.actions.review.allowed && !!drafts}
+        />
+      )}
 
       {!pr ? (
         <div className="p-6 text-muted">Loading…</div>
@@ -413,9 +675,10 @@ export default function PullRequestView({
           explainOnOpen={explainOnOpen}
           onExplainOpened={() => setExplainOnOpen(false)}
           explainSlot={explainSlot}
+          onNav={setNav}
         />
       ) : tab === "checks" ? (
-        <ChecksTab pr={pr} checks={checks} />
+        <ChecksTab pr={pr} checks={checks} reveal={revealFailure} />
       ) : (
         <Overview
           pr={pr}
@@ -454,6 +717,7 @@ export default function PullRequestView({
           onShowNewChanges={showNewSinceDrafts}
         />
       )}
+      {helpOpen && <ShortcutHelp onClose={() => setHelpOpen(false)} />}
       {mergeOpen && pr && (
         <MergeDialog
           pr={pr}
@@ -610,15 +874,17 @@ function Overview({
                 .
               </span>
               <button type="button" className="btn btn-sm" onClick={onReview}>
-                Finish Review
+                Finish review
               </button>
             </div>
           )}
         </div>
         {pr.description.trim() ? (
-          <div className="rounded-lg border bg-panel px-4 py-3">
-            <Markdown html={pr.description_html} />
-          </div>
+          <Description
+            markdown={pr.description}
+            html={pr.description_html}
+            threads={conversation?.threads.length ?? null}
+          />
         ) : (
           <span className="text-[12.5px] text-muted">No description.</span>
         )}
@@ -760,6 +1026,71 @@ type ThreadActions = {
   onError: (message: string | null) => void;
 };
 
+/**
+ * The author's description as written. A long one is folded to its first
+ * screenful behind "Show full description", with a way straight to the
+ * conversation so it does not bury it.
+ */
+function Description({
+  markdown,
+  html,
+  threads,
+}: {
+  markdown: string;
+  html: string;
+  threads: number | null;
+}) {
+  const long = isLongDescription(markdown);
+  const [expanded, setExpanded] = useState(false);
+  const folded = long && !expanded;
+  const toConversation = () => {
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)");
+    document.getElementById("pr-conversation")?.scrollIntoView({
+      behavior: reduce?.matches ? "auto" : "smooth",
+      block: "start",
+    });
+  };
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="relative rounded-lg border bg-panel px-4 py-3">
+        <div
+          id="pr-description"
+          className={folded ? "max-h-56 overflow-hidden" : ""}
+        >
+          <Markdown html={html} />
+        </div>
+        {folded && (
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-x-px bottom-px h-16 rounded-b-lg bg-gradient-to-t from-[var(--panel)] to-transparent"
+          />
+        )}
+      </div>
+      <div className="flex items-center gap-3 text-[12.5px]">
+        {long && (
+          <button
+            type="button"
+            className="text-link hover:underline"
+            aria-expanded={expanded}
+            aria-controls="pr-description"
+            onClick={() => setExpanded(!expanded)}
+          >
+            {expanded ? "Show less" : "Show full description"}
+          </button>
+        )}
+        <button
+          type="button"
+          className="text-link hover:underline"
+          onClick={toConversation}
+        >
+          Go to the conversation
+          {threads !== null && ` · ${plural(threads, "thread")}`}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function ConversationSection({
   conversation,
   pr,
@@ -782,7 +1113,11 @@ function ConversationSection({
   };
   const can = pr.actions.comment;
   return (
-    <section aria-label="Conversation" className="flex flex-col gap-2.5">
+    <section
+      id="pr-conversation"
+      aria-label="Conversation"
+      className="flex flex-col gap-2.5"
+    >
       <h3 className="section-label m-0 text-fg-2">
         Conversation
         {conversation && (
@@ -812,6 +1147,7 @@ function ConversationSection({
         <textarea
           className="text-area"
           aria-label="Comment on the pull request"
+          data-zone="reply"
           placeholder={
             can.allowed
               ? "Comment on the pull request… (Markdown; ⌘↩ to send)"
@@ -825,7 +1161,7 @@ function ConversationSection({
         <div className="flex items-center gap-2">
           <span className="flex-1 text-[11.5px] text-muted">
             {can.allowed
-              ? `Posted on ${PROVIDER_LABEL[pr.kind]} at once. Comments on lines wait for Finish Review.`
+              ? `Posted on ${PROVIDER_LABEL[pr.kind]} at once. Comments on lines stay local drafts until you finish the review.`
               : can.reason}
           </span>
           <button
@@ -938,6 +1274,7 @@ function ThreadCard({
         disabled={busy}
         value={text}
         onChange={(e) => setText(e.target.value)}
+        data-zone="reply"
         onKeyDown={submitOnEnter(reply)}
       />
       <div className="flex items-center gap-2">
@@ -1080,7 +1417,7 @@ function DraftCard({
         <span className="text-muted">
           {sent
             ? "Posted; the rest of the review is still to send."
-            : "Sent with Finish Review."}
+            : "Sent when you finish the review."}
         </span>
         <span className="flex-1" />
         {!sent && (
@@ -1125,10 +1462,13 @@ function Composer({
       ? `lines ${target.start_line}–${target.line}`
       : `line ${target.line}`;
   return (
-    <div className="flex flex-col gap-1.5 rounded-lg border border-accent/40 bg-panel px-4 py-2.5">
+    <div
+      data-zone="comment"
+      className="flex flex-col gap-1.5 rounded-lg border border-accent/40 bg-panel px-4 py-2.5"
+    >
       <span className="text-[11.5px] text-fg-2">
-        Comment on {where} ({target.side === "old" ? "old" : "new"} side). Kept
-        on this Mac until Finish Review.
+        Comment on {where} ({target.side === "old" ? "old" : "new"} side). A
+        local draft until you finish the review.
       </span>
       <textarea
         className="text-area"
@@ -1229,6 +1569,7 @@ function FilesTab({
   explainOnOpen,
   onExplainOpened,
   explainSlot,
+  onNav,
 }: {
   pr: PullRequest;
   files: PullRequestFiles | null;
@@ -1252,6 +1593,8 @@ function FilesTab({
   onExplainOpened: () => void;
   /** Where in the view's header Explain and the panel toggle go. */
   explainSlot: HTMLElement | null;
+  /** Tells the bottom bar what the shortcuts can do now. */
+  onNav: (nav: FilesNav) => void;
 }) {
   const [showFiles, setShowFiles] = usePref("brainiac.pr.files", true);
   // In a narrow window (SPEC.md, Main window) the list folds to a strip
@@ -1264,6 +1607,7 @@ function FilesTab({
     false,
   );
   const [filter, setFilter] = useState("");
+  const [unreviewedOnly, setUnreviewedOnly] = useState(false);
   const [marks, setMarks] = useState<ViewedMarks>(() =>
     loadViewed(pr.reference),
   );
@@ -1273,6 +1617,21 @@ function FilesTab({
   const [composer, setComposer] = useState<ComposerState | null>(null);
   const [draftBusy, setDraftBusy] = useState(false);
   const diffLatest = useRef(createLatest()).current;
+  // Review navigation: a move into another file waits here until its patch
+  // is shown; where each file was left is kept for a return by the list.
+  const [landing, setLanding] = useState<{
+    path: string;
+    hunk: Landing;
+    dir: 1 | -1;
+    token: number;
+  } | null>(null);
+  const landToken = useRef(0);
+  const viewStates = useRef(new Map<string, ViewState>());
+  const [position, setPosition] = useState({ hunk: 0, count: 0 });
+  const [hasSelection, setHasSelection] = useState(false);
+  const [crossNotice, setCrossNotice] = useState<string | null>(null);
+  const [finderOpen, setFinderOpen] = useState(false);
+  const treeRef = useRef<HTMLDivElement>(null);
 
   const since = sinceBase !== null;
   const canSinceReview = !!pr.reviewed_sha && pr.reviewed_sha !== pr.head_sha;
@@ -1284,33 +1643,33 @@ function FilesTab({
     [conversation],
   );
 
-  // Sections: files to look at, then viewed and generated ones folded. The
-  // selected file stays in sight wherever it belongs.
+  // Sections: files to look at, then generated ones folded. A reviewed file
+  // keeps its place, so marking one never moves the list under the reviewer;
+  // "Unreviewed only" hides them, except the file on screen.
   const sections = useMemo(() => {
     const all = list?.files ?? [];
     const needle = filter.trim().toLowerCase();
-    const shown = needle
-      ? all.filter((f) => f.path.toLowerCase().includes(needle))
-      : all;
+    const shown = all.filter(
+      (f) =>
+        (!needle || f.path.toLowerCase().includes(needle)) &&
+        (!unreviewedOnly || f.path === selectedPath || !isViewed(marks, f)),
+    );
     const main: ChangedFile[] = [];
-    const viewed: ChangedFile[] = [];
     const generated: ChangedFile[] = [];
     for (const f of shown) {
-      if (f.path === selectedPath) main.push(f);
-      else if (isViewed(marks, f)) viewed.push(f);
-      else if (isGenerated(f.path)) generated.push(f);
+      if (f.path !== selectedPath && isGenerated(f.path)) generated.push(f);
       else main.push(f);
     }
-    return { all, shown, main, viewed, generated };
-  }, [list, filter, marks, selectedPath]);
+    return { all, shown, main, generated };
+  }, [list, filter, unreviewedOnly, marks, selectedPath]);
   const byPath = useMemo(
     () => [
       ...groupByDir(sections.main).flatMap((g) => g.files),
-      ...groupByDir(sections.viewed).flatMap((g) => g.files),
       ...groupByDir(sections.generated).flatMap((g) => g.files),
     ],
     [sections],
   );
+  const reviewedCount = sections.all.filter((f) => isViewed(marks, f)).length;
 
   // The explanation (SPEC.md, section 14, Pull requests): the same panel,
   // notes, and reading order as a branch's, beside the review.
@@ -1333,7 +1692,7 @@ function FilesTab({
     version: pr.head_sha,
     review: true,
   });
-  // In reading order, viewed and generated files keep their place, so the
+  // In reading order, reviewed and generated files keep their place, so the
   // numbers hold; Path brings back the tree and its folds.
   const reading = explained.hasExplanation && explained.order === "reading";
   const ordered = reading ? explained.ordered : byPath;
@@ -1344,8 +1703,8 @@ function FilesTab({
   }, [explainOnOpen, subject, explained, onExplainOpened]);
 
   // The first file to look at, once the list is here or the scope changed:
-  // one not viewed or generated when there is one. The marks are read
-  // through a ref so a click's own mark does not move the selection.
+  // one not reviewed or generated when there is one. The marks are read
+  // through a ref so a mark does not move the selection.
   const marksRef = useRef(marks);
   marksRef.current = marks;
   useEffect(() => {
@@ -1403,32 +1762,175 @@ function FilesTab({
     diffLatest,
   ]);
 
-  const mark = (f: ChangedFile, viewed: boolean) => {
+  /** Completion is explicit: only the checkbox and "Mark reviewed and next" call this. */
+  const mark = (f: ChangedFile, reviewed: boolean) => {
     const next = { ...marks };
-    if (viewed) next[f.path] = fileKey(f);
+    if (reviewed) next[f.path] = fileKey(f);
     else delete next[f.path];
     setMarks(next);
     saveViewed(pr.reference, next);
   };
-  /** Clicking a file's row shows it and marks it viewed (SPEC.md, Files Changed). */
-  const select = (f: ChangedFile) => {
-    setSelectedPath(f.path);
-    if (!isViewed(marks, f)) mark(f, true);
+  /** Showing a file never marks it reviewed (SPEC.md, Files Changed). */
+  const go = (path: string) => {
+    setLanding(null);
+    setCrossNotice(null);
+    setSelectedPath(path);
   };
   /** A click on a row; over the patch, it also folds the list away. */
   const pick = (f: ChangedFile) => {
-    select(f);
+    go(f.path);
     setOverlay(false);
   };
   selectRef.current = (path) => {
-    const f = list?.files.find((x) => x.path === path);
-    if (f) select(f);
+    if (list?.files.some((x) => x.path === path)) go(path);
   };
   const index = ordered.findIndex((f) => f.path === selectedPath);
-  const step = (delta: number) => {
-    const next = ordered[index + delta];
-    if (next) select(next);
+  const stepFile = (delta: 1 | -1) => {
+    const path = fileTarget(ordered, selectedPath, delta);
+    if (path) go(path);
   };
+  const reviewedPaths = useMemo(
+    () => new Set(ordered.filter((f) => isViewed(marks, f)).map((f) => f.path)),
+    [ordered, marks],
+  );
+  // Generated files are not asked for; they are folded away on purpose.
+  const unreviewedTarget = nextUnreviewed(
+    ordered,
+    selectedPath,
+    (path) => reviewedPaths.has(path) || isGenerated(path),
+  );
+  /** Marks the file on screen reviewed and opens the one after it in the list. */
+  const reviewAndNext = () => {
+    if (!selected) return;
+    const after = ordered[index + 1];
+    mark(selected, true);
+    if (after) go(after.path);
+  };
+  const nextUnreviewedFile = () => {
+    if (unreviewedTarget) go(unreviewedTarget);
+  };
+
+  const flashNotice = (text: string) => {
+    setCrossNotice(text);
+  };
+  // A notice fades on its own; a file change clears it sooner.
+  useEffect(() => {
+    if (!crossNotice) return;
+    const timer = setTimeout(() => setCrossNotice(null), 2600);
+    return () => clearTimeout(timer);
+  }, [crossNotice]);
+
+  // Stepping by change passes files with nothing to read: binary ones, and
+  // generated ones unless the reviewer is in one already.
+  const changeFiles = useMemo(
+    () =>
+      ordered.map((f) => ({
+        path: f.path,
+        binary: f.binary || (isGenerated(f.path) && f.path !== selectedPath),
+      })),
+    [ordered, selectedPath],
+  );
+
+  /** `J` past the last change or `K` before the first: the next file that has one. */
+  const cross = (delta: 1 | -1) => {
+    if (!selectedPath) return;
+    const to = stepPast(changeFiles, selectedPath, delta);
+    if (!to) {
+      flashNotice(
+        delta > 0
+          ? "That was the last change in the pull request"
+          : "That was the first change in the pull request",
+      );
+      return;
+    }
+    landOn(to.path, to.hunk, delta);
+  };
+  function landOn(path: string, hunk: Landing, dir: 1 | -1) {
+    landToken.current += 1;
+    setLanding({ path, hunk, dir, token: landToken.current });
+    setSelectedPath(path);
+    flashNotice(`${dir > 0 ? "Next" : "Previous"} change: ${path}`);
+  }
+  // A file with no changes to stop on (renamed without edits, say) is only
+  // known once it is read: step on past it in the same direction.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reacts to the patch that arrived for the move.
+  useEffect(() => {
+    if (!landing || diffLoading || !diff) return;
+    if (diff.diff.selector.path !== landing.path) return;
+    const count =
+      diff.diff.content.kind === "text" ? diff.diff.content.hunks.length : 0;
+    if (resolveLanding(landing.hunk, count) !== null) return;
+    const to = stepPast(changeFiles, landing.path, landing.dir);
+    if (to) landOn(to.path, to.hunk, landing.dir);
+    else {
+      setLanding(null);
+      flashNotice(
+        landing.dir > 0
+          ? "That was the last change in the pull request"
+          : "That was the first change in the pull request",
+      );
+    }
+  }, [landing, diff, diffLoading]);
+
+  const vsKey = (path: string) => `${pr.head_sha}:${sinceBase ?? ""}:${path}`;
+  const restore =
+    selectedPath && viewStates.current.has(vsKey(selectedPath))
+      ? {
+          path: selectedPath,
+          ...(viewStates.current.get(vsKey(selectedPath)) as ViewState),
+        }
+      : null;
+
+  /** Moves focus into the file list, showing it first when it was hidden; from inside it, hides it. */
+  const focusTree = () => {
+    // Pressed again from inside the list, T hides it.
+    if (treeRef.current?.contains(document.activeElement)) {
+      if (narrow) setOverlay(false);
+      else setShowFiles(false);
+      document.querySelector<HTMLElement>(".diff")?.focus();
+      return;
+    }
+    if (narrow) setOverlay(true);
+    else if (!showFiles) setShowFiles(true);
+    requestAnimationFrame(() => {
+      const rows =
+        treeRef.current?.querySelectorAll<HTMLElement>("[data-file-row]");
+      const current = treeRef.current?.querySelector<HTMLElement>(
+        '[data-file-row][aria-current="true"]',
+      );
+      (current ?? rows?.[0])?.focus();
+    });
+  };
+  const leaveTree = () => {
+    if (narrow) setOverlay(false);
+    document.querySelector<HTMLElement>(".diff")?.focus();
+  };
+  /** Arrow keys move through the file rows; Escape returns to the patch. */
+  const onTreeKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      leaveTree();
+      return;
+    }
+    if (e.target instanceof HTMLInputElement) return;
+    const rows = Array.from(
+      treeRef.current?.querySelectorAll<HTMLElement>("[data-file-row]") ?? [],
+    );
+    const at = rows.indexOf(document.activeElement as HTMLElement);
+    let to = -1;
+    if (e.key === "ArrowDown") to = Math.min(rows.length - 1, at + 1);
+    else if (e.key === "ArrowUp") to = Math.max(0, at - 1);
+    else if (e.key === "Home") to = 0;
+    else if (e.key === "End") to = rows.length - 1;
+    if (to === -1) return;
+    e.preventDefault();
+    rows[to]?.focus();
+  };
+  useKeys({
+    "mod+p": () => setFinderOpen(true),
+    t: focusTree,
+  });
   const openInEditor = (path: string, line?: number) => {
     if (!diff) return;
     void ipc
@@ -1566,6 +2068,35 @@ function FilesTab({
       : undefined;
   const annotate = composeAnnotate(reviewAnnotate, explained.annotate);
 
+  // What the bottom bar needs to know of the shortcuts' reach.
+  const moreAfter = !!selectedPath && !!stepPast(changeFiles, selectedPath, 1);
+  const moreBefore =
+    !!selectedPath && !!stepPast(changeFiles, selectedPath, -1);
+  const navState: FilesNav = {
+    finder: finderOpen,
+    hasNextChange: position.hunk < position.count - 1 || moreAfter,
+    hasPrevChange: position.hunk > 0 || moreBefore,
+    hasNextFile: index >= 0 && index < ordered.length - 1,
+    hasPrevFile: index > 0,
+    canComment: !!reviewAnnotate?.onComment && hasSelection,
+    commentWhy: reviewAnnotate?.onComment
+      ? "Select a line first: click its number"
+      : (canReview.reason ?? "Commenting is off"),
+  };
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reported when one of its values changes.
+  useEffect(() => {
+    onNav(navState);
+  }, [
+    onNav,
+    navState.finder,
+    navState.hasNextChange,
+    navState.hasPrevChange,
+    navState.hasNextFile,
+    navState.hasPrevFile,
+    navState.canComment,
+    navState.commentWhy,
+  ]);
+
   const empty = !list
     ? since && sinceError
       ? sinceError
@@ -1671,20 +2202,20 @@ function FilesTab({
           </div>
           <div className="flex flex-col gap-2 border-b px-3 py-2">
             {scopeControl}
-            {explained.hasExplanation && (
-              <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2">
+              {explained.hasExplanation && (
                 <OrderSwitch
                   order={explained.order}
                   setOrder={explained.setOrder}
                 />
-                <span className="ml-auto text-[11.5px] tabular text-muted">
-                  {sections.all.filter((f) => isViewed(marks, f)).length} of{" "}
-                  {sections.all.length} viewed
-                </span>
-              </div>
-            )}
+              )}
+              <span className="ml-auto text-[11.5px] tabular text-muted">
+                {progressLabel(reviewedCount, sections.all.length)}
+              </span>
+            </div>
             <input
               type="search"
+              data-zone="text"
               className="text-input h-7 text-[12px]"
               placeholder="Filter files"
               aria-label="Filter files"
@@ -1692,10 +2223,16 @@ function FilesTab({
               onChange={(e) => setFilter(e.target.value)}
             />
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto py-1.5">
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: arrow keys move between the rows, which are buttons. */}
+          <div
+            ref={treeRef}
+            data-zone="tree"
+            className="min-h-0 flex-1 overflow-y-auto py-1.5"
+            onKeyDown={onTreeKeyDown}
+          >
             {list && sections.shown.length === 0 && (
               <div className="px-3 py-2 text-[12px] text-muted">
-                {filter ? "No file matches." : empty}
+                {filter || unreviewedOnly ? "No file matches." : empty}
               </div>
             )}
             {!list && since && sinceError && (
@@ -1725,22 +2262,6 @@ function FilesTab({
                 onSelect={pick}
                 onMark={mark}
               />
-            )}
-            {!reading && sections.viewed.length > 0 && (
-              <details className="pr-fold">
-                <summary>
-                  {plural(sections.viewed.length, "viewed file")}
-                </summary>
-                <FileGroups
-                  files={sections.viewed}
-                  selectedPath={selectedPath}
-                  marks={marks}
-                  counts={counts}
-                  fileNotes={explained.fileNotes}
-                  onSelect={pick}
-                  onMark={mark}
-                />
-              </details>
             )}
             {!reading && sections.generated.length > 0 && (
               <details className="pr-fold">
@@ -1774,18 +2295,72 @@ function FilesTab({
               : undefined
           }
           annotate={annotate}
-          stepper={
+          review={
             ordered.length > 0 && index >= 0
               ? {
-                  index,
-                  total: ordered.length,
-                  onPrev: () => step(-1),
-                  onNext: () => step(1),
+                  file: {
+                    index,
+                    total: ordered.length,
+                    onPrev: () => stepFile(-1),
+                    onNext: () => stepFile(1),
+                  },
+                  moreAfter,
+                  moreBefore,
+                  onCross: cross,
+                  land: landing,
+                  onLanded: (token) =>
+                    setLanding((l) => (l?.token === token ? null : l)),
+                  restore,
+                  onViewState: (path, state) => {
+                    viewStates.current.set(vsKey(path), state);
+                    setHasSelection(!!state.sel);
+                  },
+                  onPosition: (hunk, count) =>
+                    setPosition((p) =>
+                      p.hunk === hunk && p.count === count
+                        ? p
+                        : { hunk, count },
+                    ),
+                  notice: crossNotice,
                 }
               : undefined
           }
           extra={
             <>
+              <span className="tabular text-[12px] text-fg-2">
+                {progressLabel(reviewedCount, sections.all.length)}
+              </span>
+              <button
+                type="button"
+                className="btn btn-sm"
+                disabled={!selected}
+                title="Mark this file reviewed and open the next one in the list"
+                onClick={reviewAndNext}
+              >
+                Mark reviewed and next
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm"
+                disabled={!unreviewedTarget}
+                title={
+                  unreviewedTarget
+                    ? `Go to ${unreviewedTarget}`
+                    : "Every file in the list is reviewed"
+                }
+                onClick={nextUnreviewedFile}
+              >
+                Next unreviewed
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm"
+                aria-pressed={unreviewedOnly}
+                title="Show only the files not yet marked reviewed"
+                onClick={() => setUnreviewedOnly(!unreviewedOnly)}
+              >
+                Unreviewed only
+              </button>
               {!listInRow && (
                 <>
                   {!narrow && (
@@ -1811,6 +2386,17 @@ function FilesTab({
       </div>
       {explained.panel}
       {explained.dialog}
+      {finderOpen && (
+        <FileFinder
+          files={groupByDir(sections.all).flatMap((g) => g.files)}
+          marks={marks}
+          onOpen={(path) => {
+            setFinderOpen(false);
+            go(path);
+          }}
+          onClose={() => setFinderOpen(false)}
+        />
+      )}
       {explainSlot && explained.header
         ? createPortal(explained.header, explainSlot)
         : null}
@@ -1833,7 +2419,7 @@ function FileGroups({
   counts: Map<string, { total: number; open: number }>;
   fileNotes: Map<string, FileNoteCount>;
   onSelect: (f: ChangedFile) => void;
-  onMark: (f: ChangedFile, viewed: boolean) => void;
+  onMark: (f: ChangedFile, reviewed: boolean) => void;
 }) {
   return groupByDir(files).map((g) => (
     <div key={g.dir}>
@@ -1932,7 +2518,7 @@ function ExplanationLine({
 }
 
 /**
- * The files in the explanation's reading order, viewed ones in place. Each
+ * The files in the explanation's reading order, reviewed ones in place. Each
  * toured file has its tour step, so a filter or Since your review leaves
  * the numbers alone; a file the tour does not list has none.
  */
@@ -2007,6 +2593,7 @@ function FileRow({
     >
       <button
         type="button"
+        data-file-row
         className={`list-row h-[26px] min-w-0 flex-1 items-center gap-[7px] text-[12.5px] ${nested ? "pl-[25px]" : "pl-[9px]"}`}
         aria-current={selected}
         onClick={onSelect}
@@ -2048,11 +2635,11 @@ function FileRow({
       <input
         type="checkbox"
         className="ml-1 shrink-0"
-        aria-label={`Viewed ${file.path}`}
+        aria-label={`Reviewed ${file.path}`}
         title={
           viewed
-            ? "Viewed; the mark clears when the file changes"
-            : "Mark as viewed"
+            ? "Reviewed; the mark clears when the file changes"
+            : "Mark as reviewed"
         }
         checked={viewed}
         onChange={(e) => onMark(e.target.checked)}
@@ -2061,10 +2648,85 @@ function FileRow({
   );
 }
 
-// --- Finish Review -------------------------------------------------------------
+/** Find a changed file by part of its path (⌘P in Files Changed). */
+function FileFinder({
+  files,
+  marks,
+  onOpen,
+  onClose,
+}: {
+  files: ChangedFile[];
+  marks: ViewedMarks;
+  onOpen: (path: string) => void;
+  onClose: () => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [at, setAt] = useState(0);
+  const found = useMemo(() => findFiles(files, query), [files, query]);
+  const active = Math.min(at, Math.max(0, found.length - 1));
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const to = at + (e.key === "ArrowDown" ? 1 : -1);
+      setAt(Math.min(found.length - 1, Math.max(0, to)));
+    } else if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+      e.preventDefault();
+      const f = found[active];
+      if (f) onOpen(f.path);
+    }
+  };
+  return (
+    <Dialog title="Find a changed file" width={560} onClose={onClose}>
+      <div className="flex flex-col gap-2">
+        <input
+          type="search"
+          className="text-input"
+          aria-label="Find a changed file"
+          placeholder="Part of a path"
+          autoFocus
+          value={query}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setAt(0);
+          }}
+          onKeyDown={onKeyDown}
+        />
+        <div
+          role="listbox"
+          aria-label="Changed files"
+          className="flex max-h-72 flex-col overflow-y-auto"
+        >
+          {found.length === 0 && (
+            <span className="px-1 py-2 text-[12.5px] text-muted">
+              No changed file matches.
+            </span>
+          )}
+          {found.map((f, i) => (
+            <button
+              key={f.path}
+              type="button"
+              role="option"
+              aria-selected={i === active}
+              tabIndex={-1}
+              className={`flex items-center gap-2 rounded px-2 py-1 text-left text-[12.5px] ${i === active ? "bg-control" : ""}`}
+              onClick={() => onOpen(f.path)}
+            >
+              <span className="mono min-w-0 flex-1 truncate">{f.path}</span>
+              {isViewed(marks, f) && (
+                <span className="text-[11px] text-muted">Reviewed</span>
+              )}
+            </button>
+          ))}
+        </div>
+      </div>
+    </Dialog>
+  );
+}
+
+// --- Finish review -------------------------------------------------------------
 
 /**
- * **Finish Review** (SPEC.md, Reviewing): the summary, the verdict, the
+ * **Finish review** (SPEC.md, Reviewing): the summary, the verdict, the
  * drafts to send, and the commit being reviewed. New commits since the
  * review started turn approving off and offer the new changes; a
  * submission cut off midway offers to send what is left.
@@ -2146,18 +2808,15 @@ function ReviewDialog({
       .catch((e) => setError(errorMessage(e)))
       .finally(() => setBusy(false));
   };
-  const submitLabel =
-    pending && sent > 0
-      ? "Send the Rest"
-      : verdict === "approve"
-        ? "Approve"
-        : verdict === "request_changes"
-          ? "Request Changes"
-          : "Submit Review";
+  const submitLabel = finishActionLabel(
+    verdict,
+    !!pending && sent > 0,
+    unsent.length,
+  );
 
   return (
     <Dialog
-      title="Finish Review"
+      title="Finish review"
       width={600}
       onClose={onClose}
       footer={
@@ -2286,8 +2945,8 @@ function ReviewDialog({
         <div className="flex flex-col gap-1.5">
           <span className="text-[12px] text-fg-2">
             {drafts.drafts.length === 0
-              ? "No comments on lines. Add them from a line's + in Files Changed."
-              : `${plural(drafts.drafts.length, "comment on a line", "comments on lines")} to send`}
+              ? "No comments on lines. Add them from a line's + in Files Changed; they stay local drafts until you finish."
+              : `${plural(drafts.drafts.length, "comment on a line", "comments on lines")} to send: local drafts, posted with this review`}
           </span>
           {drafts.drafts.map((d) => (
             <div
@@ -2576,10 +3235,23 @@ function MergeDialog({
 function ChecksTab({
   pr,
   checks,
+  reveal,
 }: {
   pr: PullRequest;
   checks: PullRequestChecks | null;
+  /** Bumped by the header's failure indicator: scroll to the first failing check. */
+  reveal: number;
 }) {
+  const ordered = useMemo(() => orderChecks(checks?.checks ?? []), [checks]);
+  const firstFailed = ordered.find((c) => c.state === "failure");
+  const failedRef = useRef<HTMLDivElement>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: runs when asked (`reveal`) and when the checks arrive.
+  useEffect(() => {
+    if (reveal === 0 || !firstFailed) return;
+    const el = failedRef.current;
+    el?.scrollIntoView({ block: "nearest" });
+    el?.focus({ preventScroll: true });
+  }, [reveal, firstFailed?.name, checks]);
   if (!checks) return <div className="p-6 text-muted">Reading the checks…</div>;
   return (
     <section
@@ -2592,14 +3264,19 @@ function ChecksTab({
           : `${checksLabel(pr.checks)} at ${checks.head_sha.slice(0, 10)}, read ${relativeTime(checks.fetched_at)}.`}
       </span>
       <div className="flex flex-col gap-2">
-        {checks.checks.map((c) => (
+        {ordered.map((c) => (
           <div
             key={`${c.name}:${c.url ?? ""}`}
-            className="flex items-center gap-2.5 rounded-lg border bg-panel px-3.5 py-2.5 text-[12.5px]"
+            ref={c === firstFailed ? failedRef : undefined}
+            tabIndex={c === firstFailed ? -1 : undefined}
+            data-check-state={c.state}
+            className="flex items-center gap-2.5 rounded-lg border bg-panel px-3.5 py-2.5 text-[12.5px] outline-none focus-visible:ring-2 focus-visible:ring-accent"
           >
             <StateIcon state={c.state} label={CHECK_LABEL[c.state]} />
             <span className="font-medium">{c.name}</span>
-            <span className="text-[11.5px] text-muted">
+            <span
+              className={`text-[11.5px] ${c.state === "failure" ? "text-del" : c.state === "pending" ? "text-dirty" : "text-muted"}`}
+            >
               {CHECK_LABEL[c.state]}
             </span>
             {c.description && (

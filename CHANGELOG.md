@@ -11,6 +11,12 @@ into the release's section.
 
 ## [Unreleased]
 
+- In a pull request, opening a file or stepping with the keyboard no longer marks it reviewed: tick the file or use **Mark reviewed and next**. The toolbar shows how many files are reviewed, **Next unreviewed**, and **Unreviewed only**, and reviewed files stay where they are in the list.
+- Files Changed steps by change with `J` / `K` (into the next or previous file at a file's end) and by file with `Shift+J` / `Shift+K`; `⌘P` finds a changed file, `T` focuses the file tree (and hides it when pressed again), and `?` lists the shortcuts. A file reopens where you left it.
+- The bottom bar shows the shortcuts for what you are doing in a pull request (the diff, the file tree, a comment box, a dialog), dimming ones that cannot act yet.
+- Every tab of a pull request keeps a summary line with the branches, the checks (failed ones open Checks at the failing check), and your drafts; failed checks are listed first.
+- **Review Changes** is now **Finish review**, and its final button says **Post comments**, **Approve**, or **Request changes**.
+- A long pull request description folds behind **Show full description**, with a link to the conversation and its thread count.
 - A terminal: Terminal in the sidebar (⌘T) opens your shell in the repository you were looking at, and the same tabs show in a dock beside any view (⌘J); ⇧⌘T opens a new tab and ⌘1 … ⌘9 switch between them. New terminal is in a repository's Open in menu and a workspace's ⋯ menu; Settings → Terminal can run another program, such as herdr.
 - A new query tab in Databases is now ⌥⌘T; ⌘T opens the terminal.
 

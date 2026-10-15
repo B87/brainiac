@@ -1464,8 +1464,8 @@ test("Pull requests: a workspace turns them on, lists them, and opens one", asyn
   await expect(page.getByText("No unresolved threads")).toBeVisible();
 
   // Files Changed: the first file (not the lock file, which is folded as
-  // generated) with the provider's diff, then one from local Git; a click
-  // marks a file viewed.
+  // generated) with the provider's diff, then one from local Git. Opening a
+  // file never marks it reviewed; the checkbox does.
   await page.getByRole("tab", { name: /Files Changed/ }).click();
   await expect(page.getByText("from GitHub", { exact: false })).toBeVisible();
   await expect(
@@ -1475,11 +1475,14 @@ test("Pull requests: a workspace turns them on, lists them, and opens one", asyn
     request: { path: "docs/lists.md", old_path: "docs/list.md" },
   });
   await expect(page.getByText("1 generated file")).toBeVisible();
-  const docs = page.getByRole("checkbox", { name: "Viewed docs/lists.md" });
+  const docs = page.getByRole("checkbox", { name: "Reviewed docs/lists.md" });
   await expect(docs).not.toBeChecked();
-  const parse = page.getByRole("checkbox", { name: "Viewed src/parse.ts" });
+  const parse = page.getByRole("checkbox", { name: "Reviewed src/parse.ts" });
   await expect(parse).not.toBeChecked();
   await page.getByRole("button", { name: /parse\.ts/ }).click();
+  await expect(docs).not.toBeChecked();
+  await expect(parse).not.toBeChecked();
+  await parse.check();
   await expect(parse).toBeChecked();
   await expect(
     page.getByText("from local Git", { exact: false }),
@@ -1489,7 +1492,7 @@ test("Pull requests: a workspace turns them on, lists them, and opens one", asyn
     page.getByRole("button", { name: "Ignore whitespace" }),
   ).toBeEnabled();
   // A comment on a line is a draft: written from the line's +, kept on the
-  // Mac, counted on Review Changes, and sent by Finish Review.
+  // Mac, counted on Finish review, and sent by it.
   await page.getByRole("button", { name: "Comment on line 11" }).click();
   await page
     .getByRole("textbox", { name: "Comment on line 11" })
@@ -1510,7 +1513,7 @@ test("Pull requests: a workspace turns them on, lists them, and opens one", asyn
   });
   await expect(page.locator("[data-draft]")).toContainText("Recursion depth?");
   await expect(
-    page.getByRole("button", { name: "Review Changes 1" }),
+    page.getByRole("button", { name: "Finish review 1" }),
   ).toBeVisible();
   await page.getByRole("tab", { name: "Since your review" }).click();
   expect((await calls(page, "list_pull_request_files")).at(-1)).toMatchObject({
@@ -1518,11 +1521,19 @@ test("Pull requests: a workspace turns them on, lists them, and opens one", asyn
   });
   await expect(page.getByText("1 file", { exact: true })).toBeVisible();
 
-  // Finish Review: the draft, a summary, and the verdict, for the head on screen.
-  await page.getByRole("button", { name: "Review Changes 1" }).click();
-  const dialog = page.getByRole("dialog", { name: "Finish Review" });
+  // Finish review: the draft, a summary, and the verdict, for the head on screen.
+  await page.getByRole("button", { name: "Finish review 1" }).click();
+  const dialog = page.getByRole("dialog", { name: "Finish review" });
   await expect(dialog.getByText("1 comment on a line to send")).toBeVisible();
   await expect(dialog.getByText("src/parse.ts:11")).toBeVisible();
+  // The final action is named for the verdict, with the drafts it posts.
+  await expect(
+    dialog.getByRole("button", { name: "Post comments (1)" }),
+  ).toBeVisible();
+  await dialog.getByRole("radio", { name: "Request changes" }).check();
+  await expect(
+    dialog.getByRole("button", { name: "Request changes" }),
+  ).toBeVisible();
   await dialog.getByRole("radio", { name: "Approve" }).check();
   await dialog.getByRole("textbox").fill("Ship it");
   await dialog.getByRole("button", { name: "Approve" }).click();
@@ -1536,7 +1547,7 @@ test("Pull requests: a workspace turns them on, lists them, and opens one", asyn
   });
   await expect(dialog).toBeHidden();
   await expect(
-    page.getByRole("button", { name: "Review Changes", exact: true }),
+    page.getByRole("button", { name: "Finish review", exact: true }),
   ).toBeVisible();
   await page.getByRole("tab", { name: "Overview" }).click();
   await expect(conversation.getByText("Ship it")).toBeVisible();
@@ -1590,6 +1601,266 @@ test("Pull requests: a workspace turns them on, lists them, and opens one", asyn
     "aria-selected",
     "true",
   );
+});
+
+/** Opens a pull request of the fake's Team workspace in Files Changed. */
+async function openPullRequestFiles(page: Page, title: string) {
+  await page
+    .getByRole("navigation", { name: "Repositories and workspaces" })
+    .getByRole("button", { name: /^Team\b/ })
+    .click();
+  await page.getByRole("tab", { name: "PRs" }).click();
+  await page.getByRole("button", { name: "Turn On Pull Requests" }).click();
+  await page.getByRole("button", { name: "All open" }).click();
+  await page.getByRole("row", { name: title }).click();
+  await page.getByRole("tab", { name: /Files Changed/ }).click();
+  await expect(
+    page.getByRole("toolbar", { name: "Files and changes" }),
+  ).toBeVisible();
+}
+
+test("Pull request review: J and K step by change across files, and stop at the ends", async ({
+  page,
+}) => {
+  await openPullRequestFiles(page, "Parse nested lists #12");
+  const toolbar = page.getByRole("toolbar", { name: "Files and changes" });
+  // The list is on by default in a wide window; opening a file marks nothing.
+  await expect(
+    page.getByRole("searchbox", { name: "Filter files" }),
+  ).toBeVisible();
+  await expect(toolbar.getByText("File 1 of 4")).toBeVisible();
+  await expect(
+    toolbar
+      .getByText("No changes to step")
+      .or(toolbar.getByText("Change 1 of 1")),
+  ).toBeVisible();
+  await expect(page.getByText("0 of 4 reviewed").first()).toBeVisible();
+
+  // docs/lists.md has one change: J goes on to src/parse.ts's first.
+  await page.keyboard.press("j");
+  await expect(toolbar.getByText("File 2 of 4")).toBeVisible();
+  await expect(toolbar.getByText("Change 1 of 2")).toBeVisible();
+  await expect(toolbar.getByRole("status")).toContainText("src/parse.ts");
+  await page.keyboard.press("j");
+  await expect(toolbar.getByText("Change 2 of 2")).toBeVisible();
+  // Past the last change, the binary file has none to stop on, and the
+  // lock file is folded away after it: the end of the pull request stays put.
+  await page.keyboard.press("j");
+  await expect(toolbar.getByText("Change 2 of 2")).toBeVisible();
+  await expect(toolbar.getByRole("status")).toContainText("last change");
+  await expect(
+    toolbar.getByRole("button", { name: "Next change (J)" }),
+  ).toBeDisabled();
+
+  // K at the first change goes to the previous file's last one.
+  await page.keyboard.press("k");
+  await expect(toolbar.getByText("Change 1 of 2")).toBeVisible();
+  await page.keyboard.press("k");
+  await expect(toolbar.getByText("File 1 of 4")).toBeVisible();
+  await expect(
+    toolbar.getByRole("button", { name: "Previous change (K)" }),
+  ).toBeDisabled();
+  await page.keyboard.press("k");
+  await expect(toolbar.getByText("File 1 of 4")).toBeVisible();
+
+  // Shift+J moves by file and opens it where it was left.
+  await page.keyboard.press("Shift+J");
+  await expect(toolbar.getByText("File 2 of 4")).toBeVisible();
+  await page.keyboard.press("j");
+  await expect(toolbar.getByText("Change 2 of 2")).toBeVisible();
+  await page.keyboard.press("Shift+K");
+  await page.keyboard.press("Shift+J");
+  await expect(toolbar.getByText("Change 2 of 2")).toBeVisible();
+
+  // None of that marked a file reviewed.
+  await expect(page.getByText("0 of 4 reviewed").first()).toBeVisible();
+});
+
+test("Pull request review: completion is explicit, keeps the list in place, and filters", async ({
+  page,
+}) => {
+  await openPullRequestFiles(page, "Parse nested lists #12");
+  const toolbar = page.getByRole("toolbar", { name: "Files and changes" });
+  const docs = page.getByRole("checkbox", { name: "Reviewed docs/lists.md" });
+  const parse = page.getByRole("checkbox", { name: "Reviewed src/parse.ts" });
+
+  await page.getByRole("button", { name: "Mark reviewed and next" }).click();
+  await expect(docs).toBeChecked();
+  await expect(toolbar.getByText("File 2 of 4")).toBeVisible();
+  await expect(page.getByText("1 of 4 reviewed").first()).toBeVisible();
+  // The reviewed file keeps its row, above the one now open.
+  const rows = page.locator("[data-file-row]");
+  await expect(rows.nth(0)).toContainText("lists.md");
+  await expect(rows.nth(1)).toContainText("parse.ts");
+
+  // Next unreviewed skips the reviewed file and the folded lock file.
+  await page.getByRole("button", { name: "Next unreviewed" }).click();
+  await expect(toolbar.getByText("File 3 of 4")).toBeVisible();
+  await page.getByRole("button", { name: "Next unreviewed" }).click();
+  await expect(toolbar.getByText("File 2 of 4")).toBeVisible();
+
+  // Unreviewed only hides the reviewed file but never the open one.
+  const visibleRows = page.locator("[data-file-row]:visible");
+  await page.getByRole("button", { name: "Unreviewed only" }).click();
+  await expect(visibleRows).toHaveCount(2);
+  await parse.check();
+  await expect(visibleRows).toHaveCount(2);
+  await expect(toolbar.getByText("File 1 of 3")).toBeVisible();
+  // The last unreviewed file opens, and the one just reviewed leaves the list.
+  await page.getByRole("button", { name: "Next unreviewed" }).click();
+  await expect(toolbar.getByText("File 1 of 2")).toBeVisible();
+  await expect(visibleRows).toHaveCount(1);
+  await expect(
+    page.getByRole("button", { name: "Next unreviewed" }),
+  ).toBeDisabled();
+});
+
+test("Pull request review: the bottom bar follows focus and keeps unavailable keys visible", async ({
+  page,
+}) => {
+  await openPullRequestFiles(page, "Parse nested lists #12");
+  const keys = page.getByRole("group", { name: "Keyboard shortcuts" });
+  await expect(keys).toContainText("J");
+  await expect(keys).toContainText("Next change");
+  await expect(keys).toContainText("⌘P");
+  await expect(keys).toContainText("All shortcuts");
+  // The repository list's keys are not offered here.
+  await expect(keys).not.toContainText("rows");
+  // Comment needs a selected line: shown, dimmed, with the reason.
+  const comment = keys.getByText("Comment");
+  await expect(comment).toHaveAttribute("title", /Select a line/);
+
+  // Focus in the file tree changes it.
+  await page.keyboard.press("t");
+  await expect(keys).toContainText("Open file");
+  // T again hides the tree; T once more shows it and focuses it.
+  await page.keyboard.press("t");
+  await expect(
+    page.getByRole("searchbox", { name: "Filter files" }),
+  ).toBeHidden();
+  await page.keyboard.press("t");
+  await expect(keys).toContainText("Open file");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Escape");
+  await expect(keys).toContainText("Next change");
+  await expect(page.getByRole("tab", { name: /Files Changed/ })).toBeVisible();
+
+  // A comment box shows its own keys, and letters type instead of navigating.
+  await page.keyboard.press("Shift+J");
+  await page.getByRole("button", { name: "11", exact: true }).first().click();
+  await expect(comment).not.toHaveAttribute("aria-disabled", "true");
+  await page.keyboard.press("c");
+  const box = page.getByRole("textbox", { name: /Comment on line/ });
+  await expect(box).toBeFocused();
+  await expect(keys).toContainText("Save draft");
+  await box.fill("jjkk");
+  await expect(box).toHaveValue("jjkk");
+  await page.keyboard.press("Escape");
+  await expect(box).toBeHidden();
+
+  // ? opens the full list; ⌘P finds a file.
+  await page.keyboard.press("?");
+  const help = page.getByRole("dialog", { name: "Keyboard shortcuts" });
+  await expect(help).toContainText("Find a changed file");
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Meta+p");
+  const finder = page.getByRole("dialog", { name: "Find a changed file" });
+  await finder.getByRole("searchbox").fill("lists");
+  await page.keyboard.press("Enter");
+  await expect(
+    page
+      .getByRole("toolbar", { name: "Files and changes" })
+      .getByText("File 1 of 4"),
+  ).toBeVisible();
+});
+
+test("Pull request review: a file is shown where it was left", async ({
+  page,
+}) => {
+  await openPullRequestFiles(page, "Parse nested lists #12");
+  const toolbar = page.getByRole("toolbar", { name: "Files and changes" });
+  await page.keyboard.press("Shift+J");
+  await page.getByRole("button", { name: "42", exact: true }).first().click();
+  await page.keyboard.press("Shift+K");
+  await page.keyboard.press("Shift+J");
+  await expect(toolbar.getByText("File 2 of 4")).toBeVisible();
+  // The selected line comes back with the file.
+  await expect(page.locator(".diff-row[data-selected]")).toHaveCount(1);
+});
+
+test("Pull request review: a long description folds, and the conversation is one click away", async ({
+  page,
+}) => {
+  await page
+    .getByRole("navigation", { name: "Repositories and workspaces" })
+    .getByRole("button", { name: /^Team\b/ })
+    .click();
+  await page.getByRole("tab", { name: "PRs" }).click();
+  await page.getByRole("button", { name: "Turn On Pull Requests" }).click();
+  await page.getByRole("button", { name: "All open" }).click();
+  await page.getByRole("row", { name: /faster tokenizer/ }).click();
+  const body = page.locator("#pr-description");
+  await expect(body).toHaveClass(/max-h-56/);
+  await page.getByRole("button", { name: "Show full description" }).click();
+  await expect(body).not.toHaveClass(/max-h-56/);
+  await expect(body.getByText("step 20")).toBeVisible();
+  await page.getByRole("button", { name: "Show less" }).click();
+  await expect(body).toHaveClass(/max-h-56/);
+  await expect(
+    page.getByRole("button", { name: /Go to the conversation/ }),
+  ).toBeVisible();
+  // A short description has no fold.
+  await page.getByRole("button", { name: "Back" }).click();
+  await page.getByRole("row", { name: "Parse nested lists #12" }).click();
+  await expect(
+    page.getByRole("button", { name: "Show full description" }),
+  ).toBeHidden();
+});
+
+test("Pull request review: a narrow window keeps the way to all shortcuts", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1000, height: 800 });
+  await openPullRequestFiles(page, "Parse nested lists #12");
+  const keys = page.getByRole("group", { name: "Keyboard shortcuts" });
+  await expect(
+    keys.getByRole("button", { name: "? All shortcuts" }),
+  ).toBeVisible();
+  await expect(keys.getByText("Next change")).toBeHidden();
+  await keys.getByRole("button", { name: "? All shortcuts" }).click();
+  await expect(
+    page.getByRole("dialog", { name: "Keyboard shortcuts" }),
+  ).toBeVisible();
+});
+
+test("Pull request review: failed checks come first and the header opens them", async ({
+  page,
+}) => {
+  await page
+    .getByRole("navigation", { name: "Repositories and workspaces" })
+    .getByRole("button", { name: /^Team\b/ })
+    .click();
+  await page.getByRole("tab", { name: "PRs" }).click();
+  await page.getByRole("button", { name: "Turn On Pull Requests" }).click();
+  await page.getByRole("button", { name: "All open" }).click();
+  await page.getByRole("row", { name: /faster tokenizer/ }).click();
+  const summary = page.getByLabel("Pull request summary");
+  await expect(summary.getByText("2 failed")).toBeVisible();
+  await expect(page.getByRole("tab", { name: /^Checks/ })).toContainText("2");
+  await summary.getByText("2 failed").click();
+  await expect(page.getByRole("tab", { name: /^Checks/ })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  const rows = page.locator("[data-check-state]");
+  await expect(rows).toHaveCount(4);
+  const states = await rows.evaluateAll((els) =>
+    els.map((el) => el.getAttribute("data-check-state")),
+  );
+  expect(states).toEqual(["failure", "failure", "pending", "success"]);
+  await expect(rows.nth(0)).toContainText("audit");
+  await expect(rows.nth(1)).toContainText("tests");
+  await expect(rows.nth(0)).toBeFocused();
 });
 
 test("a repository's Pull requests tab names its forge and can point it elsewhere", async ({

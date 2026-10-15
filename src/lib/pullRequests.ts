@@ -129,6 +129,59 @@ export function checksLabel(checks: ChecksSummary): string {
   return `${checks.passed} of ${checks.total} passed`;
 }
 
+export type CheckBadge = {
+  tone: "failed" | "pending" | "passed" | "none";
+  label: string;
+};
+
+/**
+ * The checks in a word or two for the header: failures first, then what is
+ * still running; "passed" only when something ran and all of it passed, and
+ * "no checks" apart from both.
+ */
+export function checkBadge(checks: ChecksSummary): CheckBadge {
+  if (checks.failed > 0)
+    return { tone: "failed", label: `${checks.failed} failed` };
+  if (checks.pending > 0 || checks.state === "pending")
+    return {
+      tone: "pending",
+      label: checks.pending > 0 ? `${checks.pending} pending` : "pending",
+    };
+  if (checks.state === null || checks.total === 0)
+    return { tone: "none", label: "no checks" };
+  if (checks.state === "success")
+    return { tone: "passed", label: "checks passed" };
+  return { tone: "none", label: "checks skipped" };
+}
+
+/** A description longer than this is folded behind "Show full description". */
+const LONG_DESCRIPTION_CHARS = 900;
+const LONG_DESCRIPTION_LINES = 14;
+
+export function isLongDescription(markdown: string): boolean {
+  const text = markdown.trim();
+  return (
+    text.length > LONG_DESCRIPTION_CHARS ||
+    text.split("\n").length > LONG_DESCRIPTION_LINES
+  );
+}
+
+/**
+ * The review dialog's final action, named for what it does: the verdict's
+ * own words, "Send the Rest" for a review cut off midway, and the number of
+ * comments on lines that go with a plain comment review.
+ */
+export function finishActionLabel(
+  verdict: ReviewVerdict,
+  resuming: boolean,
+  unsent: number,
+): string {
+  if (resuming) return "Send the Rest";
+  if (verdict === "approve") return "Approve";
+  if (verdict === "request_changes") return "Request changes";
+  return unsent > 0 ? `Post comments (${unsent})` : "Post comments";
+}
+
 /** "+120 −8 in 4 files", or an em dash while unknown. */
 export function sizeLabel(pr: PullRequest): string {
   const { additions, deletions, changed_files } = pr.counts;
