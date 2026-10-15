@@ -82,7 +82,7 @@ function TerminalBar({ place, onNew, onMove, onHide }: BarProps) {
       </div>
       <button
         type="button"
-        className="btn btn-ghost icon-btn mb-1"
+        className={`btn btn-ghost icon-btn ${dock ? "!h-7" : ""}`}
         aria-label="New terminal"
         title={`New terminal (${NEW_TAB})`}
         onClick={onNew}
@@ -99,7 +99,7 @@ function TerminalBar({ place, onNew, onMove, onHide }: BarProps) {
       </span>
       <button
         type="button"
-        className={`btn mb-1 ml-2 px-2 text-xs ${dock ? "h-6" : "mb-1.5 h-7"}`}
+        className={`btn ml-2 h-7 px-2 text-xs ${dock ? "" : "mb-0.5"}`}
         onClick={onMove}
       >
         {dock ? "Maximize" : "Dock"}
@@ -107,7 +107,7 @@ function TerminalBar({ place, onNew, onMove, onHide }: BarProps) {
       {dock && onHide && (
         <button
           type="button"
-          className="btn btn-ghost icon-btn mb-1 ml-1"
+          className="btn btn-ghost icon-btn ml-1 !h-7"
           aria-label="Hide the dock"
           title={`Hide the dock (${MOD}J)`}
           onClick={onHide}
