@@ -873,6 +873,11 @@ export default function App() {
               onToggle={flipSidebar}
               onView={showView}
               onAdd={() => setAddMode({ kind: "choose" })}
+              repoActions={{
+                fetch: (id) => void fetchRepositories([id]),
+                remove: (id) => void removeRepository(id),
+                onError: (e) => setBanner(errorMessage(e)),
+              }}
             />
             <div
               className={`flex min-h-0 min-w-0 flex-1 ${

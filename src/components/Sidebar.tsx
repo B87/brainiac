@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { createContext, useContext, useState } from "react";
 import { shortPath } from "../lib/format";
 import type {
   AppSnapshot,
@@ -7,6 +7,7 @@ import type {
   Workspace,
   WorkspaceMember,
 } from "../lib/ipc";
+import { ipc } from "../lib/ipc";
 import { plural, repoTone, TONE_LABEL } from "../lib/repo";
 import type { SettingsSection } from "../lib/settings";
 import {
@@ -14,6 +15,7 @@ import {
   workspaceLayout,
   workspaceRepositories,
 } from "../lib/workspace";
+import { useContextMenu } from "./ContextMenu";
 import {
   ChevronDown,
   ChevronRight,
@@ -29,6 +31,7 @@ import {
 } from "./icons";
 import type { RepoFocus } from "./RepositoryView";
 import type { TaskScope } from "./TasksView";
+import { requestTerminal } from "./terminal/actions";
 
 /** A workspace dashboard's tabs. */
 export type WorkspaceTab = "overview" | "activity" | "pull_requests";
@@ -70,6 +73,8 @@ type Props = {
   view: View;
   onView: (view: View) => void;
   onAdd: () => void;
+  /** What a repository's right-click menu runs in the app (`App.tsx`). */
+  repoActions?: RepoActions;
   /** Whether the sidebar is expanded. ⌘B toggles it. */
   open?: boolean;
   onToggle?: () => void;
@@ -78,6 +83,15 @@ type Props = {
 type PinItem =
   | { kind: "workspace"; workspace: Workspace }
   | { kind: "repository"; repo: RepositorySummary };
+
+export type RepoActions = {
+  fetch: (id: string) => void;
+  remove: (id: string) => void;
+  onError: (error: unknown) => void;
+};
+
+// One provider in `Sidebar` reaches every `RepoRow`, however deep the tree.
+const RepoActionsContext = createContext<RepoActions | null>(null);
 
 const COLLAPSED_KEY = "brainiac.sidebar.collapsed";
 
@@ -97,6 +111,7 @@ export default function Sidebar({
   view,
   onView,
   onAdd,
+  repoActions,
   open = true,
   onToggle,
 }: Props) {
@@ -156,211 +171,219 @@ export default function Sidebar({
     );
 
   return (
-    <nav
-      aria-label="Repositories and workspaces"
-      className="flex w-[232px] shrink-0 flex-col border-r bg-sidebar"
-    >
-      {/* Room for the window's traffic lights; dragging here moves the window. */}
-      <div className="flex h-12 shrink-0 items-center pr-1.5">
-        <div data-tauri-drag-region className="h-full flex-1" />
-        <button
-          type="button"
-          className="btn btn-ghost icon-btn"
-          aria-label="Collapse sidebar"
-          title="Collapse sidebar (⌘B)"
-          onClick={onToggle}
-        >
-          <PanelLeftIcon />
-        </button>
-      </div>
-      <div className="flex min-h-0 flex-1 flex-col gap-px overflow-y-auto px-2.5 py-1">
-        <button
-          type="button"
-          className="side-row"
-          aria-current={view.kind === "today"}
-          onClick={() => onView({ kind: "today" })}
-        >
-          <TodayIcon className="shrink-0" />
-          <span className="flex-1">Today</span>
-        </button>
-        <button
-          type="button"
-          className="side-row"
-          aria-current={view.kind === "tasks"}
-          onClick={() => onView({ kind: "tasks" })}
-        >
-          <TaskIcon className="shrink-0" />
-          <span className="flex-1">Tasks</span>
-        </button>
-        <button
-          type="button"
-          className="side-row"
-          aria-current={view.kind === "notes"}
-          onClick={() => onView({ kind: "notes" })}
-        >
-          <NoteIcon className="shrink-0" />
-          <span className="flex-1">Notes</span>
-          {vault?.index.state === "indexing" && (
-            <span className="text-[11px] text-muted" title="Indexing notes">
-              {vault.index.done}/{vault.index.total}
-            </span>
-          )}
-        </button>
-        {vault && !vault.vault && (
+    <RepoActionsContext.Provider value={repoActions ?? null}>
+      <nav
+        aria-label="Repositories and workspaces"
+        className="flex w-[232px] shrink-0 flex-col border-r bg-sidebar"
+      >
+        {/* Room for the window's traffic lights; dragging here moves the window. */}
+        <div className="flex h-12 shrink-0 items-center pr-1.5">
+          <div data-tauri-drag-region className="h-full flex-1" />
           <button
             type="button"
-            className="side-row text-link"
+            className="btn btn-ghost icon-btn"
+            aria-label="Collapse sidebar"
+            title="Collapse sidebar (⌘B)"
+            onClick={onToggle}
+          >
+            <PanelLeftIcon />
+          </button>
+        </div>
+        <div className="flex min-h-0 flex-1 flex-col gap-px overflow-y-auto px-2.5 py-1">
+          <button
+            type="button"
+            className="side-row"
+            aria-current={view.kind === "today"}
+            onClick={() => onView({ kind: "today" })}
+          >
+            <TodayIcon className="shrink-0" />
+            <span className="flex-1">Today</span>
+          </button>
+          <button
+            type="button"
+            className="side-row"
+            aria-current={view.kind === "tasks"}
+            onClick={() => onView({ kind: "tasks" })}
+          >
+            <TaskIcon className="shrink-0" />
+            <span className="flex-1">Tasks</span>
+          </button>
+          <button
+            type="button"
+            className="side-row"
+            aria-current={view.kind === "notes"}
             onClick={() => onView({ kind: "notes" })}
           >
-            <PlusIcon size={12} className="shrink-0" />
-            <span className="flex-1">Set up your vault</span>
+            <NoteIcon className="shrink-0" />
+            <span className="flex-1">Notes</span>
+            {vault?.index.state === "indexing" && (
+              <span className="text-[11px] text-muted" title="Indexing notes">
+                {vault.index.done}/{vault.index.total}
+              </span>
+            )}
           </button>
-        )}
-        <button
-          type="button"
-          className="side-row"
-          aria-current={view.kind === "databases"}
-          onClick={() => onView({ kind: "databases" })}
-        >
-          <DatabaseIcon className="shrink-0" />
-          <span className="flex-1">Databases</span>
-        </button>
-        <button
-          type="button"
-          className="side-row"
-          aria-current={view.kind === "runs"}
-          onClick={() => onView({ kind: "runs" })}
-        >
-          <PlayIcon className="shrink-0" />
-          <span className="flex-1">Runs</span>
-          {runsNeedingYou > 0 && (
-            <span className="badge" title="Runs that need you">
-              {runsNeedingYou}
-            </span>
-          )}
-        </button>
-        <button
-          type="button"
-          className="side-row"
-          aria-current={view.kind === "terminal"}
-          title="Terminal (⌘T)"
-          onClick={() => onView({ kind: "terminal" })}
-        >
-          <TerminalIcon className="shrink-0" />
-          <span className="flex-1">Terminal</span>
-        </button>
-
-        <div className="mx-2 my-2 h-px bg-line" />
-        <button
-          type="button"
-          className="side-row"
-          aria-current={view.kind === "all"}
-          onClick={() => onView({ kind: "all" })}
-        >
-          <GridIcon className="shrink-0" />
-          <span className="flex-1">All repositories</span>
-          <span className="text-[12px] text-muted">{repos.length}</span>
-        </button>
-
-        <SectionLabel
-          title="Workspaces"
-          action={
+          {vault && !vault.vault && (
             <button
               type="button"
-              className="rounded p-0.5 text-muted hover:text-fg"
-              aria-label="New workspace"
-              title="New workspace"
+              className="side-row text-link"
+              onClick={() => onView({ kind: "notes" })}
+            >
+              <PlusIcon size={12} className="shrink-0" />
+              <span className="flex-1">Set up your vault</span>
+            </button>
+          )}
+          <button
+            type="button"
+            className="side-row"
+            aria-current={view.kind === "databases"}
+            onClick={() => onView({ kind: "databases" })}
+          >
+            <DatabaseIcon className="shrink-0" />
+            <span className="flex-1">Databases</span>
+          </button>
+          <button
+            type="button"
+            className="side-row"
+            aria-current={view.kind === "runs"}
+            onClick={() => onView({ kind: "runs" })}
+          >
+            <PlayIcon className="shrink-0" />
+            <span className="flex-1">Runs</span>
+            {runsNeedingYou > 0 && (
+              <span className="badge" title="Runs that need you">
+                {runsNeedingYou}
+              </span>
+            )}
+          </button>
+          <button
+            type="button"
+            className="side-row"
+            aria-current={view.kind === "terminal"}
+            title="Terminal (⌘T)"
+            onClick={() => onView({ kind: "terminal" })}
+          >
+            <TerminalIcon className="shrink-0" />
+            <span className="flex-1">Terminal</span>
+          </button>
+
+          <div className="mx-2 my-2 h-px bg-line" />
+          <button
+            type="button"
+            className="side-row"
+            aria-current={view.kind === "all"}
+            onClick={() => onView({ kind: "all" })}
+          >
+            <GridIcon className="shrink-0" />
+            <span className="flex-1">All repositories</span>
+            <span className="text-[12px] text-muted">{repos.length}</span>
+          </button>
+
+          <SectionLabel
+            title="Workspaces"
+            action={
+              <button
+                type="button"
+                className="rounded p-0.5 text-muted hover:text-fg"
+                aria-label="New workspace"
+                title="New workspace"
+                onClick={onAdd}
+              >
+                <PlusIcon size={12} />
+              </button>
+            }
+          />
+          {workspaces.length === 0 && (
+            <button
+              type="button"
+              className="side-row text-muted"
               onClick={onAdd}
             >
-              <PlusIcon size={12} />
+              <span className="text-[12px]">
+                Group repositories into a workspace…
+              </span>
             </button>
-          }
-        />
-        {workspaces.length === 0 && (
-          <button type="button" className="side-row text-muted" onClick={onAdd}>
-            <span className="text-[12px]">
-              Group repositories into a workspace…
-            </span>
-          </button>
-        )}
-        {workspaces.map((w) => (
-          <WorkspaceTree
-            key={w.id}
-            workspace={w}
-            byId={byId}
-            awaiting={reviewCounts.get(w.id) ?? 0}
-            open={!collapsed.has(w.id)}
-            view={view}
-            onToggle={() => toggle(w.id)}
-            onView={onView}
-          />
-        ))}
-
-        {pins.length > 0 && <SectionLabel title="Pinned" />}
-        {pins.map((p) =>
-          p.kind === "workspace" ? (
-            <WorkspaceRow
-              key={`w:${p.workspace.id}`}
-              workspace={p.workspace}
+          )}
+          {workspaces.map((w) => (
+            <WorkspaceTree
+              key={w.id}
+              workspace={w}
               byId={byId}
-              awaiting={reviewCounts.get(p.workspace.id) ?? 0}
-              current={view.kind === "workspace" && view.id === p.workspace.id}
-              onClick={() =>
-                onView(
-                  openWorkspace(
-                    p.workspace,
-                    reviewCounts.get(p.workspace.id) ?? 0,
-                  ),
-                )
-              }
+              awaiting={reviewCounts.get(w.id) ?? 0}
+              open={!collapsed.has(w.id)}
+              view={view}
+              onToggle={() => toggle(w.id)}
+              onView={onView}
             />
-          ) : (
+          ))}
+
+          {pins.length > 0 && <SectionLabel title="Pinned" />}
+          {pins.map((p) =>
+            p.kind === "workspace" ? (
+              <WorkspaceRow
+                key={`w:${p.workspace.id}`}
+                workspace={p.workspace}
+                byId={byId}
+                awaiting={reviewCounts.get(p.workspace.id) ?? 0}
+                current={
+                  view.kind === "workspace" && view.id === p.workspace.id
+                }
+                onClick={() =>
+                  onView(
+                    openWorkspace(
+                      p.workspace,
+                      reviewCounts.get(p.workspace.id) ?? 0,
+                    ),
+                  )
+                }
+              />
+            ) : (
+              <RepoRow
+                key={`r:${p.repo.id}`}
+                repo={p.repo}
+                current={repoCurrent(p.repo.id)}
+                onClick={() => onView({ kind: "repository", id: p.repo.id })}
+              />
+            ),
+          )}
+
+          {recent.length > 0 && <SectionLabel title="Recent" />}
+          {recent.map((r) => (
             <RepoRow
-              key={`r:${p.repo.id}`}
-              repo={p.repo}
-              current={repoCurrent(p.repo.id)}
-              onClick={() => onView({ kind: "repository", id: p.repo.id })}
+              key={r.id}
+              repo={r}
+              current={repoCurrent(r.id)}
+              onClick={() => onView({ kind: "repository", id: r.id })}
             />
-          ),
-        )}
+          ))}
 
-        {recent.length > 0 && <SectionLabel title="Recent" />}
-        {recent.map((r) => (
-          <RepoRow
-            key={r.id}
-            repo={r}
-            current={repoCurrent(r.id)}
-            onClick={() => onView({ kind: "repository", id: r.id })}
-          />
-        ))}
-
-        {standalone.length > 0 && <SectionLabel title="Not in a workspace" />}
-        {standalone.map((r) => (
-          <RepoRow
-            key={r.id}
-            repo={r}
-            current={repoCurrent(r.id)}
-            onClick={() => onView({ kind: "repository", id: r.id })}
-          />
-        ))}
-      </div>
-      <div className="border-t p-2.5">
-        {view.kind === "terminal" && (
-          <p className="m-0 px-2.5 pb-2 text-[11px] text-muted">
-            ⌘B collapses the sidebar to give the terminal more room
-          </p>
-        )}
-        <button
-          type="button"
-          className="side-row h-[30px] text-fg-2"
-          onClick={onAdd}
-        >
-          <PlusIcon className="shrink-0" />
-          <span className="flex-1 truncate">Add repository or workspace</span>
-          <span className="text-[11px] text-muted">⌘O</span>
-        </button>
-      </div>
-    </nav>
+          {standalone.length > 0 && <SectionLabel title="Not in a workspace" />}
+          {standalone.map((r) => (
+            <RepoRow
+              key={r.id}
+              repo={r}
+              current={repoCurrent(r.id)}
+              onClick={() => onView({ kind: "repository", id: r.id })}
+            />
+          ))}
+        </div>
+        <div className="border-t p-2.5">
+          {view.kind === "terminal" && (
+            <p className="m-0 px-2.5 pb-2 text-[11px] text-muted">
+              ⌘B collapses the sidebar to give the terminal more room
+            </p>
+          )}
+          <button
+            type="button"
+            className="side-row h-[30px] text-fg-2"
+            onClick={onAdd}
+          >
+            <PlusIcon className="shrink-0" />
+            <span className="flex-1 truncate">Add repository or workspace</span>
+            <span className="text-[11px] text-muted">⌘O</span>
+          </button>
+        </div>
+      </nav>
+    </RepoActionsContext.Provider>
   );
 }
 
@@ -709,29 +732,72 @@ function RepoRow({
 }) {
   const tone = repoTone(repo);
   const count = repo.counts?.unique_paths ?? 0;
+  const actions = useContext(RepoActionsContext);
+  const run = (task: Promise<unknown>) =>
+    task.catch((e) => actions?.onError(e));
+  const missing = tone === "missing";
+  const { onContextMenu, menu } = useContextMenu([
+    {
+      label: "Open in editor",
+      disabled: missing,
+      onSelect: () => void run(ipc.openInEditor(repo.id)),
+    },
+    {
+      label: "Reveal in Finder",
+      disabled: missing,
+      onSelect: () => void run(ipc.revealInFinder(repo.id)),
+    },
+    {
+      label: "Open terminal here",
+      disabled: missing,
+      onSelect: () => requestTerminal({ kind: "repository", id: repo.id }),
+    },
+    { separator: true },
+    {
+      label: "Fetch now",
+      disabled: missing || !actions,
+      onSelect: () => actions?.fetch(repo.id),
+    },
+    {
+      label: "Copy path",
+      onSelect: () =>
+        void run(navigator.clipboard.writeText(repo.display_path)),
+    },
+    { separator: true },
+    {
+      label: "Remove from Brainiac…",
+      danger: true,
+      disabled: !actions,
+      onSelect: () => actions?.remove(repo.id),
+    },
+  ]);
   return (
-    <button
-      type="button"
-      className={`side-row ${tone === "missing" ? "text-muted" : ""}`}
-      style={indent ? { paddingLeft: indent } : undefined}
-      aria-current={current}
-      onClick={onClick}
-      title={`${shortPath(repo.display_path)} — ${TONE_LABEL[tone]}`}
-    >
-      <span className="dot" data-state={tone} />
-      <span className="flex-1 truncate">{label ?? repo.name}</span>
-      {root && <span className="tag-box">ROOT</span>}
-      {tone === "missing" ? (
-        <span className="text-[12px] italic">missing</span>
-      ) : repo.counts?.conflicted ? (
-        <span className="text-[12px] font-semibold text-conflict">
-          ! {repo.counts.conflicted}
-        </span>
-      ) : count > 0 ? (
-        <span className="text-[12px] text-dirty">{count}</span>
-      ) : tone === "stale" ? (
-        <span className="text-[12px] text-muted">stale</span>
-      ) : null}
-    </button>
+    <>
+      <button
+        type="button"
+        className={`side-row ${tone === "missing" ? "text-muted" : ""}`}
+        onContextMenu={onContextMenu}
+        style={indent ? { paddingLeft: indent } : undefined}
+        aria-current={current}
+        onClick={onClick}
+        title={`${shortPath(repo.display_path)} — ${TONE_LABEL[tone]}`}
+      >
+        <span className="dot" data-state={tone} />
+        <span className="flex-1 truncate">{label ?? repo.name}</span>
+        {root && <span className="tag-box">ROOT</span>}
+        {tone === "missing" ? (
+          <span className="text-[12px] italic">missing</span>
+        ) : repo.counts?.conflicted ? (
+          <span className="text-[12px] font-semibold text-conflict">
+            ! {repo.counts.conflicted}
+          </span>
+        ) : count > 0 ? (
+          <span className="text-[12px] text-dirty">{count}</span>
+        ) : tone === "stale" ? (
+          <span className="text-[12px] text-muted">stale</span>
+        ) : null}
+      </button>
+      {menu}
+    </>
   );
 }

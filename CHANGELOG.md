@@ -11,6 +11,10 @@ into the release's section.
 
 ## [Unreleased]
 
+- Right-click a repository in the sidebar to open it in your editor or a terminal, reveal it in Finder, fetch, copy its path, or remove it.
+
+- Right-clicking no longer shows the browser's menu (Reload, Cut, Spelling and so on); it still appears in text fields and the note editor.
+
 ## [0.6.4] - 2026-10-15
 
 - In a pull request, opening a file or stepping with the keyboard no longer marks it reviewed: tick the file or use **Mark reviewed and next**. The toolbar shows how many files are reviewed, **Next unreviewed**, and **Unreviewed only**, and reviewed files stay where they are in the list.
