@@ -4,7 +4,7 @@ Design notes for a run that starts on a schedule on an always-on run host and le
 
 ## Status: proposal (15 Oct 2026)
 
-Nothing here is built, and none of it is in scope for v0.6. It reverses three lines in [`agent-runs.md`](agent-runs.md) and [`secrets.md`](secrets.md) (below), so it needs its own decision in `architecture.md` before any code.
+Phase 1 is started (15 Oct 2026): the controller's `Health` request and a Health section on a run host's page (`SPEC.md`, Remote hosts; `architecture.md`, Decisions). The Machines pane of its own, the last hour kept in memory, and everything else here are not built, and none of it is in scope for v0.6. It reverses three lines in [`agent-runs.md`](agent-runs.md) and [`secrets.md`](secrets.md) (below), so it needs its own decision in `architecture.md` before any code.
 
 ## Why
 
@@ -57,6 +57,17 @@ Scope rules that follow, because anyone with access to the host can read what it
 - **Read-only, narrow tokens.** Sentry: read scope on the project. Google Cloud: a dedicated service account with viewer roles only, not the user's own login. The agent can copy a delivered key into its output (`agent-runs.md`), so a credential that could do harm is not delivered.
 - **No Jira write token in the run** (below).
 - The profile shows each credential's scope at approval, and warns from the same age as the subscription token.
+
+### The tools layer
+
+Decided (15 Oct 2026). The run image today is Node 22 on Debian with `git`, `ripgrep` and the two agents (`src-tauri/src/agents/image/Dockerfile`), and it is one image for every run. The morning check needs Python and the Google Cloud CLI (`gcloud`). Adding them to that image would make every run's image and build larger for a tool most runs never use, and installing at run time is not possible once the allowlist limits a run to its provider and the hosts the user named.
+
+So Brainiac builds an optional **tools layer** on top of the base image, from a Dockerfile compiled into Brainiac like the base one, with the same rules: pinned base digest, pinned packages, the build context is those files and nothing else, and a repository's own Dockerfile or `requirements.txt` is never read at build.
+
+- The layer adds `python3`, a short fixed list of Python packages Brainiac chooses and pins, and `gcloud` at a pinned version from Google's package source.
+- A profile ticks **Python and Google Cloud CLI** to use it. Other profiles keep the base image. The layer has its own recipe hash, tag and current/rebuild state, shown next to the base image on the host's page, and **Build image** builds both when the profile needs the layer.
+- The layer is part of what a schedule's approval records (image digest), so a rebuild asks for approval again.
+- The user's scripts live in the repository, which the run already has. Anything they import beyond the standard library and the fixed list is not available, which is the question below.
 
 ### The network allowlist comes first
 
@@ -118,4 +129,4 @@ Scheduled runs need a host to be more than an entry in Settings → Agents, so t
 | How long may a host be silent before a schedule is overdue? | The overdue window |
 | How are extra secrets (a Sentry token, a Google key) delivered? The bootstrap contract carries the model credential and "descriptor-approved keys" exported as environment variables, and phase 1 injects no registry tokens (`agent-runs.md`, Credentials and disclosure) | The descriptor and entrypoint change that phase 2 needs, including trace filtering of each new value |
 | The Google service account key is a JSON file. Deliver the JSON as one environment variable that the script passes to the client library or writes to tmpfs, or let the entrypoint write a file to tmpfs? | Whether the delivery contract stays environment-only |
-| Does the run image have what the scripts need (Python and its packages, `gcloud`)? Setup builds the image from app-controlled content and never from a repository's Dockerfile, so tooling may need a custom image Brainiac builds and pins by digest | Whether the user's existing scripts run unchanged |
+| Which third-party Python packages do the user's scripts import (`requests`, `google-cloud-*`, `pyyaml`, others)? The tools layer carries a fixed list and never reads the repository's requirements | The list in the layer, and whether the scripts run unchanged |

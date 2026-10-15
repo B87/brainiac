@@ -843,6 +843,14 @@ impl RunRuntime {
         Ok(())
     }
 
+    /// The controller's own numbers and its host's.
+    pub async fn health(&self) -> AppResult<super::controller::health::HealthReport> {
+        match self.call(Request::Health, self.call_timeout).await? {
+            Response::Health { report } => Ok(report),
+            _ => Err(unexpected()),
+        }
+    }
+
     pub async fn probe_engine(
         &self,
         socket: &str,

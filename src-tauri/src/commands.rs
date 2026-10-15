@@ -876,6 +876,15 @@ pub async fn approve_agent_host(
     hosts.approve(request).await
 }
 
+/// Machines → a run host, **Health**: its numbers now (docs/design/scheduled-runs.md).
+#[tauri::command]
+pub async fn get_agent_host_health(
+    id: String,
+    hosts: State<'_, AgentHosts>,
+) -> AppResult<crate::models::HostHealth> {
+    hosts.health(&id).await
+}
+
 pub type HostJobs = Arc<crate::agents::host_jobs::HostJobService>;
 
 /// Install, Upgrade, Build image, Test, or Add host's setup on a remote

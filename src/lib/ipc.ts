@@ -84,6 +84,7 @@ import type { HealthSnapshot } from "./generated/HealthSnapshot";
 import type { HealthStatement } from "./generated/HealthStatement";
 import type { HealthTable } from "./generated/HealthTable";
 import type { HistoryEntry } from "./generated/HistoryEntry";
+import type { HostHealth } from "./generated/HostHealth";
 import type { HostJob } from "./generated/HostJob";
 import type { HostJobKind } from "./generated/HostJobKind";
 import type { IndexStatus } from "./generated/IndexStatus";
@@ -260,6 +261,7 @@ export type { ForgeSource } from "./generated/ForgeSource";
 export type { ForgeTarget } from "./generated/ForgeTarget";
 export type { ForgeTokenKind } from "./generated/ForgeTokenKind";
 export type { ForgeUser } from "./generated/ForgeUser";
+export type { HostHealth } from "./generated/HostHealth";
 export type { HostJob } from "./generated/HostJob";
 export type { HostJobKind } from "./generated/HostJobKind";
 export type { HostJobState } from "./generated/HostJobState";
@@ -674,6 +676,9 @@ export const ipc = {
   /** This Mac's Test of one profile: a short run, a prompt, a cancel, a collection. */
   testAgentSetup: (profileId: string) =>
     invoke<AgentTestResult>("test_agent_setup", { profileId }),
+  /** Machines → a run host, Health: read now, nothing stored. */
+  getAgentHostHealth: (id: string) =>
+    invoke<HostHealth>("get_agent_host_health", { id }),
   getRunControllerStatus: () =>
     invoke<RunControllerStatus>("get_run_controller_status"),
 

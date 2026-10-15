@@ -635,6 +635,25 @@ impl AgentHostService {
         self.host(&row.id).await
     }
 
+    /// Read the host's health now. A controller that does not answer is an
+    /// answer (`reachable: false`), not an error; a host that was never
+    /// deployed is an error.
+    pub async fn health(&self, id: &str) -> AppResult<crate::models::HostHealth> {
+        let runtime = self.runtime(id).await?;
+        let checked_at = now_rfc3339();
+        let report = match runtime.health().await {
+            Ok(report) => report,
+            Err(e) if super::host_health::not_understood(&e) => {
+                return Ok(super::host_health::needs_upgrade(checked_at))
+            }
+            Err(e) => return Ok(super::host_health::unreachable(checked_at, e.message)),
+        };
+        // The engine's answer is separate: a stopped engine is a warning on a
+        // host whose controller is up.
+        let engine = runtime.probe_engine(DOCKER_SOCKET, None).await.ok();
+        Ok(super::host_health::from_report(report, engine, checked_at))
+    }
+
     pub async fn runtime(&self, id: &str) -> AppResult<Arc<RunRuntime>> {
         if id.is_empty() || id == LOCAL_ID {
             return Err(AppError::validation(

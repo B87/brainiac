@@ -24,6 +24,7 @@ import {
   ipc,
   type RunControllerStatus,
 } from "../lib/ipc";
+import HostHealthGroup from "./HostHealthGroup";
 import HostJobView, { HostPill } from "./HostJobView";
 import { Group, Hint } from "./SettingsPanes";
 
@@ -660,6 +661,10 @@ export function RemoteHostPage({
           is the first time that token or key goes to {host.name}.
         </Hint>
       </Group>
+
+      {host.installed && host.approved && !running && (
+        <HostHealthGroup key={host.id} host={host} />
+      )}
 
       {live.length > 0 && (
         <Group label={`Runs on ${host.name}`}>

@@ -11,6 +11,8 @@ into the release's section.
 
 ## [Unreleased]
 
+- A run host's page has a Health section: whether it answers, its uptime, load, memory, disk, Docker engine and runs, with what to fix when something is wrong. Upgrade the host's controller to see it.
+
 - Right-click a repository in the sidebar to open it in your editor or a terminal, reveal it in Finder, fetch, copy its path, or remove it.
 
 - Right-clicking no longer shows the browser's menu (Reload, Cut, Spelling and so on); it still appears in text fields and the note editor.

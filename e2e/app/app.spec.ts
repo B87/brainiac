@@ -832,6 +832,52 @@ test("An upgrade can be cancelled before it installs, and a failed one says wher
   });
 });
 
+test("A run host's page shows its Health, names what needs attention, and says when it cannot be reached", async ({
+  page,
+}) => {
+  await openSettings(page, "Agents");
+  const dialog = await addHost(page);
+  await dialog
+    .getByRole("button", { name: "Trust This Key and Install" })
+    .click();
+  await page.evaluate(() => window.fake.endJob("host-1", "succeeded"));
+
+  const health = page.locator("section").filter({
+    has: page.getByRole("heading", { name: "Health", exact: true }),
+  });
+  await expect(health).toContainText("nothing needs attention");
+  await expect(health).toContainText("Docker Engine");
+  await expect(health).toContainText("300.0 GiB free of 500.0 GiB (60%)");
+  await expect(health).toContainText("up 2 h");
+  expect(await calls(page, "get_agent_host_health")).not.toHaveLength(0);
+
+  await page.evaluate(() => {
+    window.fake.hostHealth = {
+      ...window.fake.hostHealth,
+      disk_free_kib: 2 * 1024 * 1024,
+      warnings: [
+        "The disk is almost full (2.0 GiB free). Free space before the next run.",
+      ],
+    };
+  });
+  await health.getByRole("button", { name: "Check Now" }).click();
+  await expect(health.getByRole("alert")).toContainText("disk is almost full");
+  await expect(health).toContainText("1 thing needs attention");
+
+  await page.evaluate(() => {
+    window.fake.hostHealth = {
+      ...window.fake.hostHealth,
+      reachable: false,
+      problem: "The host did not answer.",
+      warnings: [],
+    };
+  });
+  await health.getByRole("button", { name: "Check Now" }).click();
+  await expect(health).toContainText("The host did not answer.");
+  await expect(health).toContainText("Not reachable");
+  await expect(health.getByText("Docker Engine")).toBeHidden();
+});
+
 test("Add host can trust a host key that changed", async ({ page }) => {
   await openSettings(page, "Agents");
   let dialog = await addHost(page);

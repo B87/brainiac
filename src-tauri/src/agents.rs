@@ -33,6 +33,7 @@
 
 pub mod controller;
 pub mod engine;
+pub mod host_health;
 pub mod host_jobs;
 pub mod hosts;
 pub mod image;

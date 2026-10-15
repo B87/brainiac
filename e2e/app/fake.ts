@@ -24,6 +24,7 @@ import type {
   FolderEntry,
   ForgeAccountSlot,
   HealthSample,
+  HostHealth,
   HostJob,
   ListPullRequestsRequest,
   MergeRequest,
@@ -1035,6 +1036,25 @@ export class FakeBackend {
     );
     return inWorkspaces.find((a) => !a.allowed) ?? inWorkspaces[0];
   }
+  /** Run host Health: what the controller reports; a test changes it. */
+  hostHealth: HostHealth = {
+    reachable: true,
+    problem: null,
+    checked_at: new Date().toISOString(),
+    controller_version: "0.6.4",
+    controller_uptime_secs: 7200,
+    live_runs: 0,
+    host_uptime_secs: 3 * 86400,
+    load: [0.1, 0.2, 0.3],
+    memory_total_kib: 16 * 1024 * 1024,
+    memory_available_kib: 8 * 1024 * 1024,
+    disk_total_kib: 500 * 1024 * 1024,
+    disk_free_kib: 300 * 1024 * 1024,
+    engine_name: "Docker Engine",
+    engine_supported: true,
+    engine_problem: null,
+    warnings: [],
+  };
   agentSettings: AgentSettings = {
     profiles: [
       agentProfile("claude-code", "claude_code", "anthropic"),
@@ -2234,6 +2254,8 @@ export class FakeBackend {
           command:
             "git fetch --no-tags '/data/agent-runs/repos/repo.git' 'refs/brainiac/runs/run-done/result:refs/heads/agent/add-pagination-run-done'",
         };
+      case "get_agent_host_health":
+        return { ...this.hostHealth, checked_at: new Date().toISOString() };
       case "get_run_controller_status":
         return { running: false, pid: null, live_runs: 0 };
       case "test_agent_setup": {

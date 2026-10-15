@@ -14,6 +14,7 @@ pub mod acp;
 pub mod archive;
 pub mod docker;
 pub mod guard;
+pub mod health;
 pub mod journal;
 pub mod protocol;
 pub mod state;
@@ -610,6 +611,12 @@ impl<W: Workloads> Controller<W> {
                     Err(e) => Err(AppError::io("The collection folder could not be created.")
                         .with_details(e.to_string())),
                 }
+            }
+            Request::Health => {
+                let live = live_in(&self.runs());
+                Ok(Response::Health {
+                    report: health::collect(self.state.root(), live as u32).await,
+                })
             }
             Request::ProbeEngine { socket, image } => self
                 .workloads
@@ -1805,6 +1812,7 @@ fn bind(socket: &std::path::Path, service: bool) -> AppResult<UnixListener> {
 
 /// Run the controller until it is idle, asked to shut down, or stopped.
 pub async fn serve<W: Workloads>(config: Config, workloads: W) -> AppResult<()> {
+    health::mark_started();
     config.state.ensure()?;
     if config.service {
         use std::os::unix::fs::PermissionsExt;

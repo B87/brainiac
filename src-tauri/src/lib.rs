@@ -555,6 +555,7 @@ pub fn run() {
             commands::start_agent_host_job,
             commands::cancel_agent_host_job,
             commands::list_agent_host_jobs,
+            commands::get_agent_host_health,
             commands::get_agent_host_job_log,
             commands::remove_agent_host,
             commands::get_run_controller_status,

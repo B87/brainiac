@@ -140,6 +140,9 @@ pub enum Request {
         #[serde(default)]
         image: Option<String>,
     },
+    /// The host's numbers and the controller's own (docs/design/scheduled-runs.md,
+    /// Machines). An older controller answers it as not understood.
+    Health,
     /// What the engine on this host is, and whether it can attach loop devices.
     ProbeEngine {
         socket: String,
@@ -292,6 +295,9 @@ pub enum Response {
     },
     Engine {
         report: EngineReport,
+    },
+    Health {
+        report: super::health::HealthReport,
     },
     Image {
         id: String,

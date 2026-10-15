@@ -4160,6 +4160,41 @@ pub struct RunControllerStatus {
     pub live_runs: u32,
 }
 
+/// A run host's health, read now (docs/design/scheduled-runs.md, Machines).
+/// A live view, not monitoring: nothing is stored or alerted on.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct HostHealth {
+    /// The controller answered. When it did not, only `problem` and
+    /// `checked_at` are set.
+    pub reachable: bool,
+    /// A safe sentence for what failed, with no raw output.
+    pub problem: Option<String>,
+    pub checked_at: String,
+    pub controller_version: Option<String>,
+    #[ts(type = "number | null")]
+    pub controller_uptime_secs: Option<u64>,
+    pub live_runs: u32,
+    #[ts(type = "number | null")]
+    pub host_uptime_secs: Option<u64>,
+    /// The 1, 5, and 15 minute load averages.
+    pub load: Option<Vec<f64>>,
+    #[ts(type = "number | null")]
+    pub memory_total_kib: Option<u64>,
+    #[ts(type = "number | null")]
+    pub memory_available_kib: Option<u64>,
+    #[ts(type = "number | null")]
+    pub disk_total_kib: Option<u64>,
+    #[ts(type = "number | null")]
+    pub disk_free_kib: Option<u64>,
+    /// The engine's name when it answered, and whether the host can take a run.
+    pub engine_name: Option<String>,
+    pub engine_supported: Option<bool>,
+    pub engine_problem: Option<String>,
+    /// What to do about each thing that is wrong, in the order to do it.
+    pub warnings: Vec<String>,
+}
+
 /// An event telling the window that a run changed: its state, its
 /// conversation, or its collection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
