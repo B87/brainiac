@@ -575,6 +575,8 @@ impl AgentRunService {
             provider: profile.provider,
             model,
             known_concepts: None,
+            secrets: Vec::new(),
+            host_secrets: Vec::new(),
         };
         self.begin(row, start, host_id, request.repository_id.clone(), root)
             .await?;
@@ -708,6 +710,8 @@ impl AgentRunService {
             provider: profile.provider,
             model,
             known_concepts: request.known_concepts,
+            secrets: Vec::new(),
+            host_secrets: Vec::new(),
         };
         self.begin(row, start, host_id, request.repository_id, root)
             .await?;
@@ -2316,6 +2320,8 @@ impl AgentRunService {
             // The profile's model, so a name the plan or key cannot use fails here.
             model: profile.model.clone(),
             known_concepts: None,
+            secrets: Vec::new(),
+            host_secrets: Vec::new(),
         };
         self.rt(run_id).await?.start(start).await?;
         Ok(())

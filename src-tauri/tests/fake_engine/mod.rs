@@ -294,7 +294,7 @@ pub async fn fake_agent(
     opencode: bool,
 ) {
     let mut buffer = Vec::new();
-    // The frame: BRB1, a length, the JSON.
+    // The frame: BRB1 or BRB2 (with extra secrets), a length, the JSON.
     while buffer.len() < 8
         || buffer.len() < 8 + u32::from_be_bytes(buffer[4..8].try_into().unwrap()) as usize
     {
@@ -303,11 +303,24 @@ pub async fn fake_agent(
         };
         buffer.extend_from_slice(&chunk);
     }
-    assert_eq!(&buffer[..4], b"BRB1");
+    assert!(buffer[..4] == *b"BRB1" || buffer[..4] == *b"BRB2");
+    let with_extra = buffer[..4] == *b"BRB2";
     let len = u32::from_be_bytes(buffer[4..8].try_into().unwrap()) as usize;
     let frame: Value = serde_json::from_slice(&buffer[8..8 + len]).unwrap();
-    // Exactly one key, whichever the agent reads.
-    let object = frame.as_object().unwrap();
+    // Exactly one key, whichever the agent reads; a BRB2 frame has it under
+    // "credential", beside the "extra" secrets.
+    let credential = if with_extra {
+        assert_eq!(frame.as_object().unwrap().len(), 2);
+        &frame["credential"]
+    } else {
+        &frame
+    };
+    let extras = if with_extra {
+        frame["extra"].as_object().cloned().unwrap_or_default()
+    } else {
+        Default::default()
+    };
+    let object = credential.as_object().unwrap();
     assert_eq!(object.len(), 1, "one credential per frame");
     let key = object
         .values()
@@ -474,6 +487,16 @@ pub async fn fake_agent(
                         std::fs::write(work.join("debug.log"), "noise\n").unwrap();
                         say(update("made odd files")).await;
                         say(json!({ "jsonrpc": "2.0", "id": id, "result": { "stopReason": "end_turn" } })).await;
+                    } else if text.contains("echo-extra") {
+                        // Each extra secret, whole, as an agent that printed it would.
+                        for (name, value) in &extras {
+                            say(update(&format!(
+                                "{name} is {}",
+                                value.as_str().unwrap_or("")
+                            )))
+                            .await;
+                        }
+                        say(json!({ "jsonrpc": "2.0", "id": id, "result": { "stopReason": "end_turn" } })).await;
                     } else if text.contains("echo-secret") {
                         let (a, b) = key.split_at(10);
                         say(update(&format!("the key is {a}"))).await;
@@ -537,4 +560,19 @@ pub fn git(dir: &std::path::Path, args: &[&str]) -> String {
         String::from_utf8_lossy(&out.stderr)
     );
     String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// A stand-in for `systemd-creds` in `dir`: `encrypt` and `decrypt` rotate
+/// letters, so a sealed file is not the value but opens again. Not secure;
+/// it only lets tests run where systemd does not.
+pub fn fake_creds(dir: &std::path::Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join("fake-systemd-creds");
+    std::fs::write(
+        &path,
+        "#!/bin/sh\ncase \"$1\" in encrypt|decrypt) tr 'A-Za-z' 'N-ZA-Mn-za-m' ;; *) exit 2 ;; esac\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
 }

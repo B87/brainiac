@@ -188,6 +188,21 @@ impl Redactor {
         }
     }
 
+    /// An extra secret: the whole value, and for one that spans lines (a
+    /// service account key) each long line too, since an agent that prints
+    /// part of it still shows the part. Exact matching is a mitigation, not
+    /// a guarantee against a transformed copy.
+    pub fn register_secret(&mut self, value: &str, name: &str) {
+        self.register(value, name);
+        if value.contains('\n') {
+            for line in value.lines().map(str::trim) {
+                if line.len() >= 24 {
+                    self.register(line, name);
+                }
+            }
+        }
+    }
+
     pub fn redact(&self, text: &mut String) {
         for (value, name) in &self.values {
             if text.contains(value.as_str()) {

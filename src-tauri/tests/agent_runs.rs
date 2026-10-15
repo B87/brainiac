@@ -230,6 +230,7 @@ impl Harness {
             socket: self.tmp.path().join("c").join("runner.sock"),
             idle_exit: None,
             spawn_guard: false,
+            creds_program: None,
             service: false,
         };
         let engine = self.engine.clone();
@@ -821,6 +822,8 @@ async fn a_start_the_controller_answers_with_an_error_is_a_refusal() {
         provider: AgentProvider::Anthropic,
         model: String::new(),
         known_concepts: None,
+        secrets: Vec::new(),
+        host_secrets: Vec::new(),
     };
     // A bundle that is not there: the controller answers, and made nothing.
     let missing = h.tmp.path().join("missing.bundle");

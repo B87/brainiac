@@ -17,6 +17,7 @@ pub mod guard;
 pub mod health;
 pub mod journal;
 pub mod protocol;
+pub mod secret_store;
 pub mod state;
 
 use std::collections::HashMap;
@@ -34,10 +35,10 @@ use self::acp::{Command, RunSink, Session};
 use self::docker::{CollectSpec, LaunchSpec, Running, Workloads};
 use self::journal::{journal_path, Append, Redactor, TraceJournal};
 use self::protocol::{
-    decode_hex, valid_id, Activity, CollectManifest, Credential, Delivery, EventBody, EventPage,
-    Outcome, PendingPermission, Phase, Request, Response, RunStatus, StartRun, StopReason,
-    MAX_KNOWN_CONCEPTS_BYTES, MAX_LINE_BYTES, MAX_PROMPT_BYTES, MAX_TRANSFER, PROTOCOL,
-    TRANSFER_CHUNK,
+    decode_hex, valid_id, valid_secret_name, Activity, CollectManifest, Credential, Delivery,
+    EventBody, EventPage, ExtraSecret, Outcome, PendingPermission, Phase, Request, Response,
+    RunStatus, StartRun, StopReason, MAX_EXTRA_SECRETS, MAX_EXTRA_VALUE, MAX_KNOWN_CONCEPTS_BYTES,
+    MAX_LINE_BYTES, MAX_PROMPT_BYTES, MAX_TRANSFER, MIN_EXTRA_VALUE, PROTOCOL, TRANSFER_CHUNK,
 };
 use self::state::{Ledger, RunRecord, StateDir};
 use crate::models::{AppError, AppResult, ErrorCode};
@@ -87,6 +88,9 @@ pub struct Config {
     pub idle_exit: Option<Duration>,
     /// Start the guard beside the controller.
     pub spawn_guard: bool,
+    /// The `systemd-creds` that seals a host's secrets (`secret_store`);
+    /// `None` is the one on `PATH`. A test passes a stand-in script.
+    pub creds_program: Option<PathBuf>,
     /// Installed on a remote host: no idle exit, a group-readable socket,
     /// and a bundle path only inside this state directory.
     pub service: bool,
@@ -350,6 +354,8 @@ pub struct Controller<W: Workloads> {
     /// A service on a remote host (SPEC.md, Remote hosts).
     service: bool,
     workloads: W,
+    /// Secrets kept on this host for runs that name them.
+    secrets: secret_store::SecretStore,
     runs: Mutex<HashMap<String, Arc<Run>>>,
     signals: mpsc::UnboundedSender<Signal>,
     connections: Arc<AtomicUsize>,
@@ -389,6 +395,7 @@ impl<W: Workloads> Controller<W> {
         installation: String,
         service: bool,
         workloads: W,
+        secrets: secret_store::SecretStore,
     ) -> AppResult<(Arc<Self>, mpsc::UnboundedReceiver<Signal>)> {
         let (signals, receiver) = mpsc::unbounded_channel();
         let mut runs = HashMap::new();
@@ -462,6 +469,7 @@ impl<W: Workloads> Controller<W> {
             installation,
             service,
             workloads,
+            secrets,
             runs: Mutex::new(runs),
             signals,
             connections: Arc::new(AtomicUsize::new(0)),
@@ -503,7 +511,7 @@ impl<W: Workloads> Controller<W> {
         *self.last_request.lock().unwrap_or_else(|p| p.into_inner()) = Instant::now();
         let result = match request {
             Request::Hello { .. } => Err(AppError::validation("Already connected.")),
-            Request::Start(start) => self.start(start).map(|run| Response::Run { run }),
+            Request::Start(start) => self.start(*start).map(|run| Response::Run { run }),
             Request::Status => {
                 let mut runs: Vec<RunStatus> = self.runs().values().map(|r| r.status()).collect();
                 runs.sort_by(|a, b| a.accepted_at.cmp(&b.accepted_at));
@@ -618,6 +626,22 @@ impl<W: Workloads> Controller<W> {
                     report: health::collect(self.state.root(), live as u32).await,
                 })
             }
+            Request::PutSecret(secret) => {
+                self.secrets
+                    .put(&secret.name, &secret.value)
+                    .await
+                    .map(|()| Response::Secrets {
+                        secrets: self.secrets.list(),
+                    })
+            }
+            Request::DeleteSecret { name } => {
+                self.secrets.delete(&name).map(|()| Response::Secrets {
+                    secrets: self.secrets.list(),
+                })
+            }
+            Request::ListSecrets => Ok(Response::Secrets {
+                secrets: self.secrets.list(),
+            }),
             Request::ProbeEngine { socket, image } => self
                 .workloads
                 .probe(&socket, image.as_deref())
@@ -758,11 +782,33 @@ impl<W: Workloads> Controller<W> {
             permissions,
             ..
         } = start.clone();
+        // Secrets this host keeps are opened here, so a run needs no Mac.
+        // One that is missing or cannot be opened fails the run before a
+        // container exists, naming the secret and never its value.
+        let mut secrets = start.secrets.clone();
+        for name in &start.host_secrets {
+            match self.secrets.get(name).await {
+                Ok(value) => secrets.push(ExtraSecret {
+                    name: name.clone(),
+                    value,
+                }),
+                Err(error) => {
+                    let _ = run.settle(&prompt_id, None);
+                    self.stop_run(&run, Outcome::Failed, Some(error.message), false)
+                        .await;
+                    self.finish_stop(&run).await;
+                    return;
+                }
+            }
+        }
         let mut redactor = Redactor::new();
         redactor.register(&credential.value, credential.key.as_str());
+        for secret in &secrets {
+            redactor.register_secret(&secret.value, &secret.name);
+        }
         let redactor = Arc::new(redactor);
         run.lock().redactor = Some(Arc::clone(&redactor));
-        let frame = frame(credential);
+        let frame = frame_with(credential, secrets);
         let (cancel_launch, cancelled) = watch::channel(false);
         run.lock().cancel_launch = Some(cancel_launch);
         let spec = LaunchSpec {
@@ -1591,7 +1637,55 @@ fn check_start(start: &StartRun) -> AppResult<()> {
             "The token or key is not one line of printable characters.",
         ));
     }
+    check_secrets(&start.secrets)?;
+    check_host_secret_names(&start.secrets, &start.host_secrets)?;
     check_prompt(&start.prompt)
+}
+
+/// Names of host secrets: valid, not repeated, not also sent with a value,
+/// and few enough together with the values sent.
+fn check_host_secret_names(sent: &[ExtraSecret], host: &[String]) -> AppResult<()> {
+    if sent.len() + host.len() > MAX_EXTRA_SECRETS {
+        return Err(AppError::validation("A run takes at most 8 extra secrets."));
+    }
+    let mut seen: HashSet<&str> = sent.iter().map(|s| s.name.as_str()).collect();
+    for name in host {
+        if !valid_secret_name(name) {
+            return Err(AppError::validation("That is not a secret's name."));
+        }
+        if !seen.insert(name.as_str()) {
+            return Err(AppError::validation("Two secrets have the same name."));
+        }
+    }
+    Ok(())
+}
+
+/// A run's extra secrets: few, each under a name that is safe to export,
+/// once, with a value of a sensible size and no NUL. Whitespace is allowed
+/// (a service account key is JSON). Messages never include a value.
+fn check_secrets(secrets: &[ExtraSecret]) -> AppResult<()> {
+    if secrets.len() > MAX_EXTRA_SECRETS {
+        return Err(AppError::validation("A run takes at most 8 extra secrets."));
+    }
+    let mut seen = HashSet::new();
+    for secret in secrets {
+        if !valid_secret_name(&secret.name) {
+            return Err(AppError::validation(
+                "A secret's name must be capitals, digits and underscores, and not one the agent or the container uses.",
+            ));
+        }
+        if !seen.insert(secret.name.as_str()) {
+            return Err(AppError::validation("Two secrets have the same name."));
+        }
+        if !(MIN_EXTRA_VALUE..=MAX_EXTRA_VALUE).contains(&secret.value.len())
+            || secret.value.contains('\0')
+        {
+            return Err(AppError::validation(
+                "A secret's value is the wrong size, or holds a NUL character.",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn check_prompt(text: &str) -> AppResult<()> {
@@ -1620,11 +1714,38 @@ fn safe_relative(path: &str) -> bool {
 }
 
 pub fn frame(credential: Credential) -> Vec<u8> {
+    frame_with(credential, Vec::new())
+}
+
+/// The same frame, with a run's extra secrets. Without any it is `BRB1`
+/// exactly as before. With some it is `BRB2`: JSON with `credential` (one
+/// key, as in `BRB1`) and `extra` (name to value). An image whose entrypoint
+/// knows only `BRB1` refuses it, so a run never starts without the secrets
+/// it was asked to have.
+pub fn frame_with(credential: Credential, extra: Vec<ExtraSecret>) -> Vec<u8> {
     let Credential { key, value } = credential;
-    let mut payload =
-        serde_json::to_vec(&serde_json::json!({ key.as_str(): value })).expect("JSON serializes");
+    let (magic, mut payload) = if extra.is_empty() {
+        (
+            b"BRB1",
+            serde_json::to_vec(&serde_json::json!({ key.as_str(): value }))
+                .expect("JSON serializes"),
+        )
+    } else {
+        let extra: serde_json::Map<String, serde_json::Value> = extra
+            .into_iter()
+            .map(|s| (s.name, serde_json::Value::String(s.value)))
+            .collect();
+        (
+            b"BRB2",
+            serde_json::to_vec(&serde_json::json!({
+                "credential": { key.as_str(): value },
+                "extra": extra,
+            }))
+            .expect("JSON serializes"),
+        )
+    };
     let mut frame = Vec::with_capacity(8 + payload.len());
-    frame.extend_from_slice(b"BRB1");
+    frame.extend_from_slice(magic);
     frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
     frame.extend_from_slice(&payload);
     payload.fill(0);
@@ -1841,6 +1962,13 @@ pub async fn serve<W: Workloads>(config: Config, workloads: W) -> AppResult<()> 
         installation,
         config.service,
         workloads,
+        secret_store::SecretStore::new(
+            config.state.root(),
+            config
+                .creds_program
+                .clone()
+                .unwrap_or_else(|| PathBuf::from("systemd-creds")),
+        ),
     )?;
     let _owned = Owned(Arc::clone(&controller));
 
@@ -1949,6 +2077,7 @@ pub fn main(args: &[String]) -> i32 {
                 Some(Duration::from_secs(10 * 60))
             },
             spawn_guard: true,
+            creds_program: None,
             service,
         };
         runtime.block_on(serve(config, docker::DockerEngine::new()))
@@ -2020,6 +2149,75 @@ mod tests {
             object["CLAUDE_CODE_OAUTH_TOKEN"],
             "sk-ant-oat01-example-token-value"
         );
+    }
+
+    #[test]
+    fn extra_secrets_make_a_second_kind_of_frame() {
+        let credential = || Credential {
+            key: protocol::CredentialKey::AnthropicApiKey,
+            value: "sk-ant-api03-example-key-value".into(),
+        };
+        // Without extras the frame is the one an older image knows.
+        assert_eq!(&frame_with(credential(), Vec::new())[..4], b"BRB1");
+        let frame = frame_with(
+            credential(),
+            vec![ExtraSecret {
+                name: "SENTRY_TOKEN".into(),
+                value: "sntrys_example_token".into(),
+            }],
+        );
+        assert_eq!(&frame[..4], b"BRB2");
+        let len = u32::from_be_bytes(frame[4..8].try_into().unwrap()) as usize;
+        assert_eq!(frame.len(), 8 + len);
+        let value: serde_json::Value = serde_json::from_slice(&frame[8..]).unwrap();
+        assert_eq!(value["credential"].as_object().unwrap().len(), 1);
+        assert_eq!(
+            value["credential"]["ANTHROPIC_API_KEY"],
+            "sk-ant-api03-example-key-value"
+        );
+        assert_eq!(value["extra"]["SENTRY_TOKEN"], "sntrys_example_token");
+    }
+
+    #[test]
+    fn extra_secrets_are_checked_before_a_run_starts() {
+        let secret = |name: &str, value: &str| ExtraSecret {
+            name: name.into(),
+            value: value.into(),
+        };
+        assert!(check_secrets(&[secret("SENTRY_TOKEN", "12345678")]).is_ok());
+        assert!(check_secrets(&[]).is_ok());
+        // A key file has newlines; that is fine.
+        assert!(check_secrets(&[secret(
+            "GCP_KEY_JSON",
+            "{\n \"type\": \"service_account\"\n}"
+        )])
+        .is_ok());
+        for bad in [
+            secret("sentry", "12345678"),
+            secret("PATH", "12345678"),
+            secret("NODE_OPTIONS", "12345678"),
+            secret("LD_PRELOAD", "12345678"),
+            secret("HTTPS_PROXY", "12345678"),
+            secret("ANTHROPIC_API_KEY", "12345678"),
+            secret("BRAINIAC_X", "12345678"),
+            secret("", "12345678"),
+            secret("SENTRY_TOKEN", "short"),
+            secret("SENTRY_TOKEN", "has\0nul-in-it"),
+        ] {
+            assert!(
+                check_secrets(std::slice::from_ref(&bad)).is_err(),
+                "{bad:?}"
+            );
+        }
+        assert!(check_secrets(&[
+            secret("SENTRY_TOKEN", "12345678"),
+            secret("SENTRY_TOKEN", "87654321"),
+        ])
+        .is_err());
+        let many: Vec<_> = (0..9)
+            .map(|i| secret(&format!("TOKEN_{i}"), "12345678"))
+            .collect();
+        assert!(check_secrets(&many).is_err());
     }
 
     #[test]

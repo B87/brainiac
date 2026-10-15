@@ -23,8 +23,9 @@ use crate::models::{AgentKind, AgentProvider, AppError, RunPermissions};
 /// probe (docs/architecture.md, Remote hosts); `Preview` and edits' diffs
 /// came later without a bump. 3 adds the run's agent and provider, and the
 /// OpenAI and OpenRouter keys: an older controller would start Claude Code
-/// with them.
-pub const PROTOCOL: u32 = 3;
+/// with them. 4 adds a run's extra secrets: an older controller would
+/// ignore the field and start the run without them.
+pub const PROTOCOL: u32 = 4;
 
 /// One piece of a bundle copied to or from the controller. Hex doubles it,
 /// and the line must stay under [`MAX_LINE_BYTES`].
@@ -51,7 +52,8 @@ pub enum Request {
     Hello { token: String, protocol: u32 },
     /// Accept a run and prepare it in the background. Repeating the same run
     /// ID and attempt returns the run as it is; it never starts another.
-    Start(StartRun),
+    // Boxed: the run's start is much larger than the other requests.
+    Start(Box<StartRun>),
     /// Every run this controller knows.
     Status,
     /// Events after `after`, waiting up to `wait_ms` for the first one.
@@ -143,6 +145,13 @@ pub enum Request {
     /// The host's numbers and the controller's own (docs/design/scheduled-runs.md,
     /// Machines). An older controller answers it as not understood.
     Health,
+    /// Keep a secret on this host, sealed, under its name (docs/design/
+    /// scheduled-runs.md). The answer lists the names, never a value.
+    PutSecret(ExtraSecret),
+    /// Forget a secret kept on this host.
+    DeleteSecret { name: String },
+    /// The names of the secrets kept on this host and when each was set.
+    ListSecrets,
     /// What the engine on this host is, and whether it can attach loop devices.
     ProbeEngine {
         socket: String,
@@ -209,6 +218,68 @@ impl fmt::Debug for Credential {
     }
 }
 
+/// The most extra secrets a run takes, and the size of each value. A Google
+/// service account key is about 2.5 KiB.
+pub const MAX_EXTRA_SECRETS: usize = 8;
+pub const MIN_EXTRA_VALUE: usize = 8;
+pub const MAX_EXTRA_VALUE: usize = 16 * 1024;
+
+/// A named secret a run's agent gets in its environment beside the model's
+/// credential (docs/design/scheduled-runs.md, Credentials on the host): a
+/// Sentry token, a Google service account key. It crosses the controller's
+/// socket once, at the start, like the credential.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ExtraSecret {
+    pub name: String,
+    pub value: String,
+}
+
+// A hand-written `Debug` so a logged request never shows the value.
+impl fmt::Debug for ExtraSecret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ExtraSecret")
+            .field("name", &self.name)
+            .field("value", &"[redacted]")
+            .finish()
+    }
+}
+
+/// A name a run may give a secret: an environment variable of capitals,
+/// digits and underscores that cannot change what the container runs or
+/// where its traffic goes. Anything that loads code (`LD_`, `NODE_`,
+/// `PYTHON`, `PATH`, `BASH_ENV`), a Git or proxy setting, or a variable a
+/// provider's agent reads is refused rather than overridden.
+pub fn valid_secret_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    let shaped = name.len() <= 64
+        && chars.next().is_some_and(|c| c.is_ascii_uppercase())
+        && chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+    const EXACT: &[&str] = &[
+        "PATH", "HOME", "USER", "SHELL", "PWD", "TMPDIR", "IFS", "ENV", "BASH_ENV", "CDPATH",
+        "PROXY", "TERM",
+    ];
+    const PREFIXES: &[&str] = &[
+        "LD_",
+        "DYLD_",
+        "NODE_",
+        "NPM_",
+        "GIT_",
+        "PYTHON",
+        "CLAUDE",
+        "ANTHROPIC_",
+        "OPENAI_",
+        "OPENROUTER_",
+        "OPENCODE_",
+        "BRAINIAC_",
+        "SSL_",
+        "CURL_",
+    ];
+    shaped
+        && !EXACT.contains(&name)
+        && !PREFIXES.iter().any(|p| name.starts_with(p))
+        && !name.ends_with("_PROXY")
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StartRun {
     /// Brainiac's ID for the run: letters, digits, and dashes.
@@ -247,6 +318,14 @@ pub struct StartRun {
     /// the run then has no list.
     #[serde(default)]
     pub known_concepts: Option<String>,
+    /// Extra secrets for the agent's environment (protocol 4), with their
+    /// values: a run started from the Mac.
+    #[serde(default)]
+    pub secrets: Vec<ExtraSecret>,
+    /// Names of secrets kept on this host, which the controller opens itself
+    /// when the run starts: a run that has no Mac to send values.
+    #[serde(default)]
+    pub host_secrets: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -298,6 +377,9 @@ pub enum Response {
     },
     Health {
         report: super::health::HealthReport,
+    },
+    Secrets {
+        secrets: Vec<super::secret_store::SecretInfo>,
     },
     Image {
         id: String,

@@ -170,6 +170,7 @@ impl Harness {
             socket: tmp.path().join("c").join("runner.sock"),
             idle_exit: None,
             spawn_guard: false,
+            creds_program: None,
             service: false,
         };
         let serving = engine.clone();

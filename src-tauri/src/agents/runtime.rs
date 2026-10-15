@@ -407,7 +407,7 @@ impl RunRuntime {
             return Err(StartError::Refused(cancelled_start()));
         }
         match self
-            .exchange(Request::Start(start), self.call_timeout)
+            .exchange(Request::Start(Box::new(start)), self.call_timeout)
             .await
         {
             Ok(Ok(Response::Run { run })) => Ok(run),
@@ -721,7 +721,7 @@ impl RunRuntime {
             return Err(StartError::Refused(cancelled_start()));
         }
         match connection
-            .call(&Request::Start(start), self.call_timeout)
+            .call(&Request::Start(Box::new(start)), self.call_timeout)
             .await
         {
             Ok(Response::Run { run }) => Ok(run),
@@ -841,6 +841,45 @@ impl RunRuntime {
             }
         }
         Ok(())
+    }
+
+    /// Keep a secret on the host, sealed; the names kept after it.
+    pub async fn put_secret(
+        &self,
+        name: &str,
+        value: String,
+    ) -> AppResult<Vec<super::controller::secret_store::SecretInfo>> {
+        let secret = super::controller::protocol::ExtraSecret {
+            name: name.to_string(),
+            value,
+        };
+        self.secrets_reply(Request::PutSecret(secret)).await
+    }
+
+    pub async fn delete_secret(
+        &self,
+        name: &str,
+    ) -> AppResult<Vec<super::controller::secret_store::SecretInfo>> {
+        self.secrets_reply(Request::DeleteSecret {
+            name: name.to_string(),
+        })
+        .await
+    }
+
+    pub async fn list_secrets(
+        &self,
+    ) -> AppResult<Vec<super::controller::secret_store::SecretInfo>> {
+        self.secrets_reply(Request::ListSecrets).await
+    }
+
+    async fn secrets_reply(
+        &self,
+        request: Request,
+    ) -> AppResult<Vec<super::controller::secret_store::SecretInfo>> {
+        match self.call(request, self.call_timeout).await? {
+            Response::Secrets { secrets } => Ok(secrets),
+            _ => Err(unexpected()),
+        }
     }
 
     /// The controller's own numbers and its host's.

@@ -4,6 +4,11 @@
 // in its environment: Claude Code's ACP adapter, or OpenCode when the
 // container's BRAINIAC_AGENT says so.
 //
+// A run with extra secrets (docs/design/scheduled-runs.md) sends "BRB2"
+// instead: JSON with "credential" (exactly the one key below) and "extra"
+// (a few NAME: value secrets, exported to the agent's environment under the
+// names EXTRA_NAME allows). A run without any sends "BRB1" as before.
+//
 // The frame is "BRB1", a 4-byte big-endian length, then JSON with exactly
 // one key, one the agent reads: for Claude Code CLAUDE_CODE_OAUTH_TOKEN (a
 // Claude plan token) or ANTHROPIC_API_KEY; for OpenCode the provider's
@@ -19,6 +24,30 @@ const ADAPTER =
   "/opt/claude/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js";
 const OPENCODE = "/opt/claude/node_modules/.bin/opencode";
 const MAX_FRAME = 8192;
+// A frame with extra secrets: up to 8 values of 16 KiB, JSON-escaped.
+const MAX_FRAME_EXTRA = 256 * 1024;
+const MAX_EXTRA = 8;
+// The same rule as valid_secret_name in the run controller: capitals,
+// digits and underscores, and nothing that loads code, changes Git or a
+// proxy, or is read by an agent. Checked again here because this is the
+// last place before the names reach an environment.
+const EXTRA_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
+const EXTRA_EXACT = new Set([
+  "PATH", "HOME", "USER", "SHELL", "PWD", "TMPDIR", "IFS", "ENV", "BASH_ENV",
+  "CDPATH", "PROXY", "TERM",
+]);
+const EXTRA_PREFIXES = [
+  "LD_", "DYLD_", "NODE_", "NPM_", "GIT_", "PYTHON", "CLAUDE", "ANTHROPIC_",
+  "OPENAI_", "OPENROUTER_", "OPENCODE_", "BRAINIAC_", "SSL_", "CURL_",
+];
+function extraNameOk(name) {
+  return (
+    EXTRA_NAME.test(name) &&
+    !EXTRA_EXACT.has(name) &&
+    !name.endsWith("_PROXY") &&
+    !EXTRA_PREFIXES.some((prefix) => name.startsWith(prefix))
+  );
+}
 // The run's start, copied in by the run controller before this container
 // started: one commit and its history, advertising refs/heads/start.
 const INPUT = "/opt/brainiac/input/input.bundle";
@@ -74,15 +103,17 @@ function fail(reason) {
 
 let key;
 let value;
+let extra = {};
 try {
   const magic = readExact(0, 4);
-  if (!magic.equals(Buffer.from("BRB1"))) {
+  const withExtra = magic.equals(Buffer.from("BRB2"));
+  if (!withExtra && !magic.equals(Buffer.from("BRB1"))) {
     fail("magic");
   }
   const lenBuf = readExact(0, 4);
   const length = lenBuf.readUInt32BE(0);
   lenBuf.fill(0);
-  if (length < 2 || length > MAX_FRAME) {
+  if (length < 2 || length > (withExtra ? MAX_FRAME_EXTRA : MAX_FRAME)) {
     fail("length");
   }
   const payload = readExact(0, length);
@@ -92,13 +123,42 @@ try {
   } finally {
     payload.fill(0);
   }
-  const keys = parsed && typeof parsed === "object" ? Object.keys(parsed) : [];
+  let credential = parsed;
+  if (withExtra) {
+    const top = parsed && typeof parsed === "object" ? Object.keys(parsed) : [];
+    if (top.length !== 2 || !top.includes("credential") || !top.includes("extra")) {
+      fail("keys");
+    }
+    extra = parsed.extra;
+    credential = parsed.credential;
+    const names =
+      extra && typeof extra === "object" && !Array.isArray(extra)
+        ? Object.keys(extra)
+        : null;
+    if (!names || names.length === 0 || names.length > MAX_EXTRA) {
+      fail("extra");
+    }
+    for (const name of names) {
+      const v = extra[name];
+      if (
+        !extraNameOk(name) ||
+        typeof v !== "string" ||
+        v.length < 8 ||
+        v.length > 16 * 1024 ||
+        v.includes("\u0000")
+      ) {
+        fail("extra");
+      }
+    }
+  }
+  const keys =
+    credential && typeof credential === "object" ? Object.keys(credential) : [];
   if (keys.length !== 1 || !KEYS.includes(keys[0])) {
     fail("keys");
   }
   key = keys[0];
-  value = parsed[key];
-  parsed[key] = "";
+  value = credential[key];
+  credential[key] = "";
   if (typeof value !== "string" || value.length < 16 || /[\s\u0000]/.test(value)) {
     fail("value");
   }
@@ -148,6 +208,10 @@ for (const name of CLEARED) {
 }
 env[key] = value;
 value = "";
+for (const [name, secret] of Object.entries(extra)) {
+  env[name] = secret;
+  extra[name] = "";
+}
 
 const child = spawn(AGENT.command, AGENT.args, {
   env,
