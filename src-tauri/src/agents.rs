@@ -37,6 +37,7 @@ pub mod host_health;
 pub mod host_jobs;
 pub mod hosts;
 pub mod image;
+pub mod named_secrets;
 pub mod repository;
 pub mod runner_binary;
 pub mod runs;

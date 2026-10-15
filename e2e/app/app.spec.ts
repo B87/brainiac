@@ -878,6 +878,85 @@ test("A run host's page shows its Health, names what needs attention, and says w
   await expect(health.getByText("Docker Engine")).toBeHidden();
 });
 
+test("A named secret is added in Settings → Secrets, shared with a run host, goes out of date when changed, and must leave the host before it is deleted", async ({
+  page,
+}) => {
+  // A host to share with.
+  await openSettings(page, "Agents");
+  const dialog = await addHost(page);
+  await dialog
+    .getByRole("button", { name: "Trust This Key and Install" })
+    .click();
+  await page.evaluate(() => window.fake.endJob("host-1", "succeeded"));
+
+  // Settings → Secrets: add a secret, pasted into the Keychain.
+  await openSettings(page, "Secrets");
+  await page.getByRole("button", { name: "Add Secret…" }).click();
+  const form = page.getByRole("form", { name: "Add secret" });
+  await form.getByLabel("Name", { exact: true }).fill("Sentry token");
+  await form.getByLabel("Variable a run sees it as").fill("SENTRY_TOKEN");
+  await form.getByLabel("Value", { exact: true }).fill("sntrys_example_token");
+  await form.getByRole("button", { name: "Save" }).click();
+  const entry = page.getByRole("region", { name: "Sentry token" });
+  await expect(entry).toContainText("run hosts, as SENTRY_TOKEN");
+
+  // The host's page: not on it yet; Share sends it.
+  await openSettings(page, "Agents");
+  await page.getByRole("button", { name: /^runner\.example,/ }).click();
+  const secrets = page.getByRole("group", { name: "Sentry token" });
+  await expect(secrets).toContainText("Not on this host");
+  await secrets.getByRole("button", { name: "Share", exact: true }).click();
+  await expect(secrets).toContainText("On the host");
+  await expect(secrets).toContainText("SENTRY_TOKEN");
+  expect((await calls(page, "share_secret_with_host")).at(-1)).toMatchObject({
+    hostId: "host-1",
+  });
+  await expect(
+    secrets.getByRole("button", { name: "Share Again" }),
+  ).toBeVisible();
+
+  // A new value here leaves the host's copy behind until it is shared again.
+  await openSettings(page, "Secrets");
+  await page.getByRole("button", { name: "Edit…" }).click();
+  await page
+    .getByRole("form", { name: "Edit Sentry token" })
+    .getByLabel("Value", { exact: true })
+    .fill("a-rotated-sentry-token");
+  await page
+    .getByRole("form", { name: "Edit Sentry token" })
+    .getByRole("button", { name: "Save" })
+    .click();
+  await openSettings(page, "Agents");
+  await page.getByRole("button", { name: /^runner\.example,/ }).click();
+  await expect(secrets).toContainText("Out of date");
+  await secrets.getByRole("button", { name: "Share Again" }).click();
+  await expect(secrets).toContainText("On the host");
+
+  // A failed share says why and is never shown as shared.
+  await page.evaluate(() => {
+    window.fake.shareFailure = "The host did not answer.";
+  });
+  await secrets.getByRole("button", { name: "Share Again" }).click();
+  await expect(secrets).toContainText("Did not finish");
+  await expect(secrets).toContainText("The host did not answer.");
+  await secrets.getByRole("button", { name: "Retry" }).click();
+  await expect(secrets).toContainText("On the host");
+
+  // It cannot be deleted while a host holds a copy.
+  await openSettings(page, "Secrets");
+  await page.getByRole("button", { name: "Delete", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText(
+    "Remove it from the host",
+  );
+  await openSettings(page, "Agents");
+  await page.getByRole("button", { name: /^runner\.example,/ }).click();
+  await secrets.getByRole("button", { name: "Remove from Host" }).click();
+  await expect(secrets).toContainText("Not on this host");
+  await openSettings(page, "Secrets");
+  await page.getByRole("button", { name: "Delete", exact: true }).click();
+  await expect(page.getByRole("region", { name: "Sentry token" })).toBeHidden();
+});
+
 test("Add host can trust a host key that changed", async ({ page }) => {
   await openSettings(page, "Agents");
   let dialog = await addHost(page);
@@ -1261,14 +1340,17 @@ test("Settings → Secrets reads nothing, allows a restored source, and retries 
   ).toBeVisible();
   const billing = settings.getByRole("region", { name: "billing" });
   await expect(billing.getByText(/not read until you allow it/)).toBeVisible();
-  // Opening the page asked for nothing but the list.
+  // Opening the page asked for nothing but the lists: the overview and the
+  // named secrets' labels, neither of which reads a value.
   const asked = await page.evaluate(() =>
     window.fake.calls
       .map((c) => c.cmd)
       .filter((c) => /secret|credential|test_/.test(c)),
   );
   expect(asked.length).toBeGreaterThan(0);
-  expect(asked.every((c) => c === "list_secrets")).toBe(true);
+  expect(
+    asked.every((c) => c === "list_secrets" || c === "list_named_secrets"),
+  ).toBe(true);
 
   await billing.getByRole("button", { name: "Allow…" }).click();
   await expect(

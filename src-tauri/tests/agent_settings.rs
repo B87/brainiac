@@ -423,6 +423,12 @@ async fn moving_to_a_command_deletes_the_old_item_and_a_failed_delete_is_retried
             Arc::clone(&h.credentials),
         )),
         Arc::clone(&h.agents),
+        Arc::new(
+            brainiac_lib::agents::named_secrets::NamedSecretService::new(
+                h.core.clone(),
+                Arc::clone(&h.credentials),
+            ),
+        ),
     );
     let owner = CredentialOwner::AgentProfile {
         id: "claude-code".into(),

@@ -3,17 +3,21 @@ import {
   type CredentialOwner,
   errorMessage,
   ipc,
+  type NamedSecret,
   type SecretEntry,
   type SecretsOverview,
 } from "../lib/ipc";
 import { commandPreview, sourceLabel, stateLabel } from "../lib/secrets";
+import NamedSecretForm from "./NamedSecretForm";
 
 const ownerKey = (o: CredentialOwner) =>
   o.kind === "forge_account"
     ? `forge:${o.provider}`
     : o.kind === "db_connection"
       ? `db:${o.id}`
-      : `agent:${o.id}`;
+      : o.kind === "named_secret"
+        ? `named:${o.id}`
+        : `agent:${o.id}`;
 
 /**
  * Settings → Secrets (SPEC.md, Secrets): the store in use, and where each
@@ -22,18 +26,24 @@ const ownerKey = (o: CredentialOwner) =>
  */
 export default function SecretsSection() {
   const [overview, setOverview] = useState<SecretsOverview | null>(null);
+  const [named, setNamed] = useState<NamedSecret[]>([]);
+  // A form is open to add a secret (null) or to change one.
+  const [editing, setEditing] = useState<NamedSecret | null | undefined>(
+    undefined,
+  );
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let alive = true;
+  const load = () => {
     ipc
       .listSecrets()
-      .then((o) => alive && setOverview(o))
-      .catch((e) => alive && setError(errorMessage(e)));
-    return () => {
-      alive = false;
-    };
-  }, []);
+      .then(setOverview)
+      .catch((e) => setError(errorMessage(e)));
+    ipc
+      .listNamedSecrets()
+      .then(setNamed)
+      .catch((e) => setError(errorMessage(e)));
+  };
+  useEffect(load, []);
 
   return (
     <div className="flex flex-col gap-2">
@@ -54,13 +64,60 @@ export default function SecretsSection() {
           No account or connection has a secret yet.
         </p>
       )}
-      {overview?.entries.map((entry) => (
-        <SecretRow
-          key={ownerKey(entry.owner)}
-          entry={entry}
-          onOverview={setOverview}
+      {overview?.entries.map((entry) => {
+        const secret =
+          entry.owner.kind === "named_secret"
+            ? named.find(
+                (n) =>
+                  entry.owner.kind === "named_secret" &&
+                  n.id === entry.owner.id,
+              )
+            : undefined;
+        return (
+          <SecretRow
+            key={ownerKey(entry.owner)}
+            entry={entry}
+            onOverview={setOverview}
+            onEdit={secret ? () => setEditing(secret) : undefined}
+            onDelete={
+              secret
+                ? async () => {
+                    await ipc.deleteNamedSecret(secret.id, secret.version);
+                    load();
+                  }
+                : undefined
+            }
+          />
+        );
+      })}
+      {editing !== undefined ? (
+        <NamedSecretForm
+          key={editing?.id ?? "new"}
+          secret={editing}
+          onCancel={() => setEditing(undefined)}
+          onSaved={() => {
+            setEditing(undefined);
+            load();
+          }}
         />
-      ))}
+      ) : (
+        overview && (
+          <div className="flex flex-col gap-1">
+            <button
+              type="button"
+              className="btn btn-sm self-start"
+              onClick={() => setEditing(null)}
+            >
+              Add Secret…
+            </button>
+            <span className="text-[11.5px] text-muted">
+              A token or key of your own, such as a Sentry token, that a run
+              host can keep for runs it starts without this Mac. Share it from
+              the host's page.
+            </span>
+          </div>
+        )
+      )}
       {!overview && !error && (
         <div className="text-[12px] text-muted">Loading…</div>
       )}
@@ -71,9 +128,14 @@ export default function SecretsSection() {
 function SecretRow({
   entry,
   onOverview,
+  onEdit,
+  onDelete,
 }: {
   entry: SecretEntry;
   onOverview: (o: SecretsOverview) => void;
+  /** A named secret can be changed here. */
+  onEdit?: () => void;
+  onDelete?: () => Promise<void>;
 }) {
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -138,6 +200,31 @@ function SecretRow({
               }
             >
               {busy ? "Retrying…" : "Retry"}
+            </button>
+          )}
+          {onEdit && (
+            <button
+              type="button"
+              className="btn btn-sm"
+              disabled={busy}
+              onClick={onEdit}
+            >
+              Edit…
+            </button>
+          )}
+          {onDelete && (
+            <button
+              type="button"
+              className="btn btn-sm"
+              disabled={busy}
+              onClick={() =>
+                void act(async () => {
+                  await onDelete();
+                  return null;
+                })
+              }
+            >
+              Delete
             </button>
           )}
           {refreshable && (

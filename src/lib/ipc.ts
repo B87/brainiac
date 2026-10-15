@@ -87,6 +87,7 @@ import type { HistoryEntry } from "./generated/HistoryEntry";
 import type { HostHealth } from "./generated/HostHealth";
 import type { HostJob } from "./generated/HostJob";
 import type { HostJobKind } from "./generated/HostJobKind";
+import type { HostSecrets } from "./generated/HostSecrets";
 import type { IndexStatus } from "./generated/IndexStatus";
 import type { ListCommitsRequest } from "./generated/ListCommitsRequest";
 import type { ListPullRequestsRequest } from "./generated/ListPullRequestsRequest";
@@ -96,6 +97,7 @@ import type { MergeMethod } from "./generated/MergeMethod";
 import type { MergeOptions } from "./generated/MergeOptions";
 import type { MergeOutcome } from "./generated/MergeOutcome";
 import type { MergeRequest } from "./generated/MergeRequest";
+import type { NamedSecret } from "./generated/NamedSecret";
 import type { NoteChangedEvent } from "./generated/NoteChangedEvent";
 import type { NoteContent } from "./generated/NoteContent";
 import type { NoteContext } from "./generated/NoteContext";
@@ -152,6 +154,7 @@ import type { SaveDbConnectionRequest } from "./generated/SaveDbConnectionReques
 import type { SavedQuery } from "./generated/SavedQuery";
 import type { SaveForgeAccountOutcome } from "./generated/SaveForgeAccountOutcome";
 import type { SaveForgeAccountRequest } from "./generated/SaveForgeAccountRequest";
+import type { SaveNamedSecretRequest } from "./generated/SaveNamedSecretRequest";
 import type { SaveNoteRequest } from "./generated/SaveNoteRequest";
 import type { SaveNoteResult } from "./generated/SaveNoteResult";
 import type { SaveQueryRequest } from "./generated/SaveQueryRequest";
@@ -267,6 +270,9 @@ export type { HostJobKind } from "./generated/HostJobKind";
 export type { HostJobState } from "./generated/HostJobState";
 export type { HostJobStep } from "./generated/HostJobStep";
 export type { HostJobStepState } from "./generated/HostJobStepState";
+export type { HostSecretRow } from "./generated/HostSecretRow";
+export type { HostSecretState } from "./generated/HostSecretState";
+export type { HostSecrets } from "./generated/HostSecrets";
 export type { Hunk } from "./generated/Hunk";
 export type { IndexState } from "./generated/IndexState";
 export type { KnownConcept } from "./generated/KnownConcept";
@@ -276,6 +282,7 @@ export type { LeftOutFile } from "./generated/LeftOutFile";
 export type { LinkedRepository } from "./generated/LinkedRepository";
 export type { MemberOrigin } from "./generated/MemberOrigin";
 export type { MemberStatus } from "./generated/MemberStatus";
+export type { NamedSecret } from "./generated/NamedSecret";
 export type { NoteDraft } from "./generated/NoteDraft";
 export type { NotePlacement } from "./generated/NotePlacement";
 export type { NoteTextState } from "./generated/NoteTextState";
@@ -314,6 +321,7 @@ export type { RunPlanEntry } from "./generated/RunPlanEntry";
 export type { RunPreview } from "./generated/RunPreview";
 export type { RunStartPreview } from "./generated/RunStartPreview";
 export type { RunStartStep } from "./generated/RunStartStep";
+export type { SaveNamedSecretRequest } from "./generated/SaveNamedSecretRequest";
 export type { SearchGroup } from "./generated/SearchGroup";
 export type { SearchHit } from "./generated/SearchHit";
 export type { SearchKind } from "./generated/SearchKind";
@@ -676,6 +684,19 @@ export const ipc = {
   /** This Mac's Test of one profile: a short run, a prompt, a cancel, a collection. */
   testAgentSetup: (profileId: string) =>
     invoke<AgentTestResult>("test_agent_setup", { profileId }),
+  /** Settings → Secrets, named secrets that can be shared with a run host. */
+  listNamedSecrets: () => invoke<NamedSecret[]>("list_named_secrets"),
+  saveNamedSecret: (request: SaveNamedSecretRequest) =>
+    invoke<NamedSecret>("save_named_secret", { request }),
+  deleteNamedSecret: (id: string, expectedVersion: number) =>
+    invoke<void>("delete_named_secret", { id, expectedVersion }),
+  /** A run host's page, Secrets on this host: asks the host what it holds. */
+  getHostSecrets: (hostId: string) =>
+    invoke<HostSecrets>("get_host_secrets", { hostId }),
+  shareSecretWithHost: (id: string, hostId: string) =>
+    invoke<HostSecrets>("share_secret_with_host", { id, hostId }),
+  removeSecretFromHost: (id: string, hostId: string) =>
+    invoke<HostSecrets>("remove_secret_from_host", { id, hostId }),
   /** Machines → a run host, Health: read now, nothing stored. */
   getAgentHostHealth: (id: string) =>
     invoke<HostHealth>("get_agent_host_health", { id }),

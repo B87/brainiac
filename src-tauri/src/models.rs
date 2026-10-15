@@ -3287,6 +3287,11 @@ pub enum CredentialOwner {
     AgentProfile {
         id: String,
     },
+    /// Settings → Secrets: a secret of its own, such as a Sentry token, that
+    /// can be shared with a run host.
+    NamedSecret {
+        id: String,
+    },
 }
 
 /// The outcome of the last Test of a saved source, in this run.
@@ -4193,6 +4198,105 @@ pub struct HostHealth {
     pub engine_problem: Option<String>,
     /// What to do about each thing that is wrong, in the order to do it.
     pub warnings: Vec<String>,
+}
+
+/// A secret that is neither an account's token nor a connection's password,
+/// which a run host can keep for its runs (docs/design/scheduled-runs.md).
+/// The value is never here; `credential_source` says where it is read from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct NamedSecret {
+    pub id: String,
+    pub label: String,
+    /// The environment variable a run sees it as, and its name on a host.
+    pub env_name: String,
+    pub note: String,
+    pub credential_source: SecretSource,
+    pub credential: CredentialState,
+    #[ts(type = "number")]
+    pub version: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Settings → Secrets, **Add secret…** and **Edit**.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SaveNamedSecretRequest {
+    /// `None` adds a secret.
+    pub id: Option<String>,
+    #[ts(type = "number")]
+    pub expected_version: i64,
+    pub label: String,
+    pub env_name: String,
+    pub note: String,
+    /// The Keychain, an environment variable, or a command.
+    pub source: SecretSource,
+    /// The Keychain: the pasted value; `None` keeps the one saved.
+    pub secret: Option<String>,
+}
+
+// Written by hand instead of derived so a pasted value never reaches a log.
+impl std::fmt::Debug for SaveNamedSecretRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SaveNamedSecretRequest")
+            .field("id", &self.id)
+            .field("env_name", &self.env_name)
+            .field("source", &self.source)
+            .field("secret", &self.secret.as_ref().map(|_| "[redacted]"))
+            .finish()
+    }
+}
+
+/// Where a named secret stands on one host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum HostSecretState {
+    /// Sent, and the host lists it.
+    Shared,
+    /// Sent, but the source or the saved value changed since.
+    OutOfDate,
+    /// Brainiac sent it, and the host no longer lists it.
+    MissingOnHost,
+    /// The last Share or Remove did not finish.
+    Failed,
+    /// Never sent to this host.
+    NotShared,
+}
+
+/// One named secret as the host's page shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct HostSecretRow {
+    pub secret_id: String,
+    pub label: String,
+    pub env_name: String,
+    pub state: HostSecretState,
+    pub shared_at: Option<String>,
+    /// A safe sentence for a failed Share or Remove.
+    pub failure: Option<String>,
+}
+
+/// A secret the host holds that no named secret here names.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct HostSecretOnly {
+    pub name: String,
+    #[ts(type = "number")]
+    pub set_at: u64,
+}
+
+/// Machines → a run host, **Secrets on this host**.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct HostSecrets {
+    pub host_id: String,
+    pub rows: Vec<HostSecretRow>,
+    pub only_on_host: Vec<HostSecretOnly>,
+    /// Why the host could not be asked, when it could not. The rows then say
+    /// only what Brainiac sent.
+    pub problem: Option<String>,
 }
 
 /// An event telling the window that a run changed: its state, its

@@ -761,6 +761,68 @@ pub async fn find_secret_program(name: String) -> AppResult<String> {
     crate::credentials::find_program(&name).map(|p| p.display().to_string())
 }
 
+pub type NamedSecrets = Arc<crate::agents::named_secrets::NamedSecretService>;
+
+/// Settings → Secrets, named secrets (docs/design/scheduled-runs.md).
+#[tauri::command]
+pub async fn list_named_secrets(
+    named: State<'_, NamedSecrets>,
+) -> AppResult<Vec<crate::models::NamedSecret>> {
+    named.list().await
+}
+
+#[tauri::command]
+pub async fn save_named_secret(
+    request: crate::models::SaveNamedSecretRequest,
+    named: State<'_, NamedSecrets>,
+) -> AppResult<crate::models::NamedSecret> {
+    named.save(request).await
+}
+
+#[tauri::command]
+pub async fn delete_named_secret(
+    id: String,
+    expected_version: i64,
+    named: State<'_, NamedSecrets>,
+) -> AppResult<()> {
+    named.delete(&id, expected_version).await
+}
+
+/// A run host's page, **Secrets on this host**: asks the host what it holds.
+#[tauri::command]
+pub async fn get_host_secrets(
+    host_id: String,
+    named: State<'_, NamedSecrets>,
+    hosts: State<'_, AgentHosts>,
+) -> AppResult<crate::models::HostSecrets> {
+    let runtime = hosts.runtime(&host_id).await?;
+    named.host_secrets(&host_id, Some(&runtime)).await
+}
+
+/// **Share**: send the secret to the host, which keeps a sealed copy.
+#[tauri::command]
+pub async fn share_secret_with_host(
+    id: String,
+    host_id: String,
+    named: State<'_, NamedSecrets>,
+    hosts: State<'_, AgentHosts>,
+) -> AppResult<crate::models::HostSecrets> {
+    let runtime = hosts.runtime(&host_id).await?;
+    named.share(&id, &host_id, &runtime).await
+}
+
+/// **Remove from host**: the host forgets its copy.
+#[tauri::command]
+pub async fn remove_secret_from_host(
+    id: String,
+    host_id: String,
+    named: State<'_, NamedSecrets>,
+    hosts: State<'_, AgentHosts>,
+) -> AppResult<crate::models::HostSecrets> {
+    let runtime = hosts.runtime(&host_id).await?;
+    named.unshare(&id, &host_id, &runtime).await
+}
+
 // v0.5: agent runs (SPEC.md, section 13).
 
 pub type AgentSettingsState = Arc<crate::agents::AgentSettingsService>;

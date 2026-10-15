@@ -209,6 +209,11 @@ pub fn run() {
                 Arc::clone(&credentials),
             ));
             app.manage(Arc::clone(&agent_settings));
+            let named_secrets = Arc::new(agents::named_secrets::NamedSecretService::new(
+                stores.core.clone(),
+                Arc::clone(&credentials),
+            ));
+            app.manage(Arc::clone(&named_secrets));
             let artifacts = Arc::new(agents::RunArtifacts::new(
                 service.git_service().cloned(),
                 &data_dir,
@@ -282,6 +287,7 @@ pub fn run() {
                 accounts,
                 Arc::clone(&connections),
                 agent_settings,
+                named_secrets,
             )));
             app.manage(Arc::new(databases::health::HealthService::new(
                 Arc::clone(&connections),
@@ -556,6 +562,12 @@ pub fn run() {
             commands::cancel_agent_host_job,
             commands::list_agent_host_jobs,
             commands::get_agent_host_health,
+            commands::list_named_secrets,
+            commands::save_named_secret,
+            commands::delete_named_secret,
+            commands::get_host_secrets,
+            commands::share_secret_with_host,
+            commands::remove_secret_from_host,
             commands::get_agent_host_job_log,
             commands::remove_agent_host,
             commands::get_run_controller_status,

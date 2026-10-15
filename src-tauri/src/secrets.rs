@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use crate::agents::named_secrets::NamedSecretService;
 use crate::agents::AgentSettingsService;
 use crate::credentials::CredentialService;
 use crate::databases::ConnectionService;
@@ -16,6 +17,7 @@ pub struct SecretsService {
     accounts: Arc<AccountService>,
     connections: Arc<ConnectionService>,
     agents: Arc<AgentSettingsService>,
+    named: Arc<NamedSecretService>,
 }
 
 impl SecretsService {
@@ -24,12 +26,14 @@ impl SecretsService {
         accounts: Arc<AccountService>,
         connections: Arc<ConnectionService>,
         agents: Arc<AgentSettingsService>,
+        named: Arc<NamedSecretService>,
     ) -> Self {
         SecretsService {
             credentials,
             accounts,
             connections,
             agents,
+            named,
         }
     }
 
@@ -37,6 +41,7 @@ impl SecretsService {
         let mut entries = self.accounts.secret_entries().await?;
         entries.extend(self.connections.secret_entries().await?);
         entries.extend(self.agents.secret_entries().await?);
+        entries.extend(self.named.secret_entries().await?);
         Ok(SecretsOverview {
             store: self.credentials.store_name().to_string(),
             entries,
@@ -55,6 +60,7 @@ impl SecretsService {
             CredentialOwner::AgentProfile { id } => {
                 self.agents.approve(id, revision).await.map(|_| ())
             }
+            CredentialOwner::NamedSecret { id } => self.named.approve(id, revision).await,
         }
     }
 
@@ -64,6 +70,7 @@ impl SecretsService {
             CredentialOwner::ForgeAccount { provider } => self.accounts.refresh(*provider),
             CredentialOwner::DbConnection { id } => self.connections.refresh(id),
             CredentialOwner::AgentProfile { id } => self.agents.refresh(id),
+            CredentialOwner::NamedSecret { id } => self.named.refresh(id),
         }
     }
 
@@ -75,6 +82,7 @@ impl SecretsService {
             }
             CredentialOwner::DbConnection { id } => self.connections.retry_cleanup(id).await,
             CredentialOwner::AgentProfile { id } => self.agents.retry_cleanup(id).await,
+            CredentialOwner::NamedSecret { id } => self.named.retry_cleanup(id).await,
         }
     }
 }

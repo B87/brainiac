@@ -26,8 +26,11 @@ import type {
   HealthSample,
   HostHealth,
   HostJob,
+  HostSecretRow,
+  HostSecrets,
   ListPullRequestsRequest,
   MergeRequest,
+  NamedSecret,
   NoteContent,
   NoteSummary,
   PullRequest,
@@ -45,6 +48,7 @@ import type {
   SaveDbConnectionRequest,
   SavedQuery,
   SaveForgeAccountRequest,
+  SaveNamedSecretRequest,
   SaveQueryRequest,
   SaveReviewDraftRequest,
   SearchHit,
@@ -1149,9 +1153,64 @@ export class FakeBackend {
         input_required: c.password.kind === "ask" && !c.password_ready,
         last_test: null,
       }));
+    const named = this.namedSecrets.map((n) => ({
+      owner: { kind: "named_secret", id: n.id } as const,
+      label: n.label,
+      destination: `run hosts, as ${n.env_name}`,
+      source: n.credential_source,
+      state: n.credential,
+      input_required: false,
+      last_test: null,
+    }));
     return {
       store: "macOS login keychain",
-      entries: [...accounts, ...connections],
+      entries: [...accounts, ...connections, ...named],
+    };
+  }
+
+  /** Settings → Secrets, named secrets; and what was shared with hosts. */
+  namedSecrets: NamedSecret[] = [];
+  /** What each host holds, by variable name; and what Brainiac sent. */
+  hostCopies = new Map<string, Set<string>>();
+  hostShares = new Map<
+    string,
+    { revision: number; at: string; failure: string | null }
+  >();
+  /** A test makes the next Share fail with this sentence. */
+  shareFailure: string | null = null;
+
+  hostSecrets(hostId: string): HostSecrets {
+    const copies = this.hostCopies.get(hostId) ?? new Set<string>();
+    const rows: HostSecretRow[] = this.namedSecrets.map((n) => {
+      const share = this.hostShares.get(`${hostId}:${n.id}`);
+      const state: HostSecretRow["state"] = !share
+        ? copies.has(n.env_name)
+          ? "out_of_date"
+          : "not_shared"
+        : share.failure
+          ? "failed"
+          : share.revision !== n.credential.revision
+            ? "out_of_date"
+            : copies.has(n.env_name)
+              ? "shared"
+              : "missing_on_host";
+      return {
+        secret_id: n.id,
+        label: n.label,
+        env_name: n.env_name,
+        state,
+        shared_at: share?.at ?? null,
+        failure: share?.failure ?? null,
+      };
+    });
+    const known = new Set(this.namedSecrets.map((n) => n.env_name));
+    return {
+      host_id: hostId,
+      rows,
+      only_on_host: [...copies]
+        .filter((name) => !known.has(name))
+        .map((name) => ({ name, set_at: 1_760_000_000 })),
+      problem: null,
     };
   }
 
@@ -1159,6 +1218,8 @@ export class FakeBackend {
     if (owner.kind === "forge_account")
       return this.accounts.find((s) => s.kind === owner.provider)?.account
         ?.credential;
+    if (owner.kind === "named_secret")
+      return this.namedSecrets.find((n) => n.id === owner.id)?.credential;
     return this.dbConnections.find((c) => c.id === owner.id)?.credential;
   }
 
@@ -2690,6 +2751,89 @@ export class FakeBackend {
       }
       case "list_secrets":
         return this.secrets();
+      case "list_named_secrets":
+        return this.namedSecrets;
+      case "save_named_secret": {
+        const r = args.request as SaveNamedSecretRequest;
+        const found = this.namedSecrets.find((n) => n.id === r.id);
+        const changed =
+          !found ||
+          r.secret !== null ||
+          JSON.stringify(r.source) !== JSON.stringify(found.credential_source);
+        const next: NamedSecret = {
+          id: found?.id ?? `named-${this.namedSecrets.length + 1}`,
+          label: r.label,
+          env_name: r.env_name,
+          note: r.note,
+          credential_source: r.source,
+          credential: {
+            needs_approval: false,
+            pending: null,
+            revision: (found?.credential.revision ?? 0) + (changed ? 1 : 0),
+          },
+          version: (found?.version ?? 0) + 1,
+          created_at: "2026-10-15T08:00:00Z",
+          updated_at: "2026-10-15T08:00:00Z",
+        };
+        this.namedSecrets = found
+          ? this.namedSecrets.map((n) => (n.id === found.id ? next : n))
+          : [...this.namedSecrets, next];
+        return next;
+      }
+      case "delete_named_secret": {
+        const id = String(args.id);
+        if ([...this.hostShares.keys()].some((k) => k.endsWith(`:${id}`)))
+          throw {
+            code: "validation",
+            message:
+              "This secret is on a run host. Remove it from the host first, so no copy is left behind.",
+            retryable: false,
+            details: null,
+          };
+        this.namedSecrets = this.namedSecrets.filter((n) => n.id !== id);
+        return null;
+      }
+      case "get_host_secrets":
+        return this.hostSecrets(String(args.hostId));
+      case "share_secret_with_host": {
+        const hostId = String(args.hostId);
+        const secret = this.namedSecrets.find((n) => n.id === args.id);
+        if (!secret) throw new Error("no such secret");
+        const key = `${hostId}:${secret.id}`;
+        if (this.shareFailure) {
+          const failure = this.shareFailure;
+          this.shareFailure = null;
+          const earlier = this.hostShares.get(key);
+          this.hostShares.set(key, {
+            revision: earlier?.revision ?? 0,
+            at: earlier?.at ?? "2026-10-15T08:00:00Z",
+            failure,
+          });
+          throw {
+            code: "dependency_unavailable",
+            message: failure,
+            retryable: true,
+            details: null,
+          };
+        }
+        this.hostShares.set(key, {
+          revision: secret.credential.revision,
+          at: new Date().toISOString(),
+          failure: null,
+        });
+        const copies = this.hostCopies.get(hostId) ?? new Set<string>();
+        copies.add(secret.env_name);
+        this.hostCopies.set(hostId, copies);
+        return this.hostSecrets(hostId);
+      }
+      case "remove_secret_from_host": {
+        const hostId = String(args.hostId);
+        const secret = this.namedSecrets.find((n) => n.id === args.id);
+        if (!secret) throw new Error("no such secret");
+        this.hostShares.delete(`${hostId}:${secret.id}`);
+        this.hostCopies.get(hostId)?.delete(secret.env_name);
+        return this.hostSecrets(hostId);
+      }
       case "approve_secret_source": {
         const owner = args.owner as CredentialOwner;
         const credential = this.credentialOf(owner);

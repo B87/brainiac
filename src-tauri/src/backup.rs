@@ -415,6 +415,11 @@ fn stage(
     // the backup's Mac used: confirmation, a choice of engine, and a build on
     // this one come first (SPEC.md, Deleting and keeping).
     tx.execute("UPDATE agent_profiles SET source_approved = 0", [])?;
+    // Named secrets wait too, and what was shared with a host is forgotten:
+    // Brainiac cannot vouch for a host's copy after a restore, and the host's
+    // own list shows what it holds (docs/design/scheduled-runs.md).
+    tx.execute("UPDATE named_secrets SET source_approved = 0", [])?;
+    tx.execute("DELETE FROM host_secret_shares", [])?;
     tx.execute(
         "UPDATE agent_hosts SET socket = NULL, image_id = NULL, image_recipe = NULL,
            image_built_at = NULL
