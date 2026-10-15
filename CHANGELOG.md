@@ -11,6 +11,8 @@ into the release's section.
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-10-15
+
 - In a pull request, opening a file or stepping with the keyboard no longer marks it reviewed: tick the file or use **Mark reviewed and next**. The toolbar shows how many files are reviewed, **Next unreviewed**, and **Unreviewed only**, and reviewed files stay where they are in the list.
 - Files Changed steps by change with `J` / `K` (into the next or previous file at a file's end) and by file with `Shift+J` / `Shift+K`; `⌘P` finds a changed file, `T` focuses the file tree (and hides it when pressed again), and `?` lists the shortcuts. A file reopens where you left it.
 - The bottom bar shows the shortcuts for what you are doing in a pull request (the diff, the file tree, a comment box, a dialog), dimming ones that cannot act yet.
@@ -216,7 +218,8 @@ First public build: a read-only Git viewer and multi-repository tracker for macO
 - The Branches tab is a placeholder.
 - Not signed with an Apple Developer certificate; the first launch needs right-click > Open (see the README).
 
-[Unreleased]: https://github.com/B87/brainiac/compare/v0.6.3...HEAD
+[Unreleased]: https://github.com/B87/brainiac/compare/v0.6.4...HEAD
+[0.6.4]: https://github.com/B87/brainiac/compare/v0.6.3...v0.6.4
 [0.6.3]: https://github.com/B87/brainiac/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/B87/brainiac/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/B87/brainiac/compare/v0.6.0...v0.6.1
