@@ -163,6 +163,10 @@ pub enum Request {
         socket: String,
         tag: String,
         hex: String,
+        /// A layer's base image, already on the engine: the Dockerfile's
+        /// BASE argument, and nothing is pulled.
+        #[serde(default)]
+        base: Option<String>,
     },
     /// Stop every live run's containers and keep them. The guard's socket
     /// answers this when the Mac cannot.

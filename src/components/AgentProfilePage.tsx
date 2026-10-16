@@ -303,6 +303,33 @@ export default function AgentProfilePage({
         </div>
       </Group>
 
+      <Group label="Tools">
+        <div className="settings-group">
+          <label className="settings-row">
+            <input
+              type="checkbox"
+              checked={profile.tools}
+              disabled={busy}
+              onChange={(e) =>
+                void act(() =>
+                  ipc.setProfileTools(profile.id, e.target.checked),
+                )
+              }
+            />
+            <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+              <span className="font-medium">Python and Google Cloud CLI</span>
+              <Hint>
+                Runs use the image with Python 3 and gcloud added, for scripts
+                that check services. Brainiac builds the layer from its own
+                recipe with the next Build image on each host, about 640 MB
+                larger; it installs no Python packages, so a script can use the
+                standard library only.
+              </Hint>
+            </span>
+          </label>
+        </div>
+      </Group>
+
       <ProfileSecretsGroup
         key={`secrets-${profile.id}`}
         profileId={profile.id}

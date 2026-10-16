@@ -697,6 +697,8 @@ export const ipc = {
     invoke<HostSecrets>("share_secret_with_host", { id, hostId }),
   removeSecretFromHost: (id: string, hostId: string) =>
     invoke<HostSecrets>("remove_secret_from_host", { id, hostId }),
+  setProfileTools: (profileId: string, on: boolean) =>
+    invoke<AgentSettings>("set_profile_tools", { profileId, on }),
   getProfileSecrets: (profileId: string) =>
     invoke<string[]>("get_profile_secrets", { profileId }),
   setProfileSecrets: (profileId: string, secretIds: string[]) =>

@@ -915,6 +915,7 @@ impl RunRuntime {
         socket: &str,
         tag: &str,
         context: &[u8],
+        base: Option<&str>,
     ) -> AppResult<String> {
         let hex = super::controller::protocol::encode_hex(context);
         match self
@@ -923,6 +924,7 @@ impl RunRuntime {
                     socket: socket.to_string(),
                     tag: tag.to_string(),
                     hex,
+                    base: base.map(str::to_string),
                 },
                 COLLECT_TIMEOUT,
             )

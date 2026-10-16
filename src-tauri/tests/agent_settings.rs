@@ -683,3 +683,30 @@ async fn a_profile_chooses_which_named_secrets_its_runs_get() {
         .await
         .is_err());
 }
+
+#[tokio::test]
+async fn a_profile_that_asks_for_the_tools_layer_needs_it_built_on_the_host() {
+    use brainiac_lib::agents::settings::image_for;
+    let h = Harness::new();
+    assert!(!h.agents.wants_tools().await.unwrap());
+    let before = h.agents.get().await.unwrap();
+    assert!(!claude(&before).tools);
+
+    let after = h.agents.set_tools(CLAUDE_CODE, true).await.unwrap();
+    assert!(claude(&after).tools);
+    assert!(h.agents.wants_tools().await.unwrap());
+    // This Mac has no layer yet: the profile names what to do, and its runs
+    // have no image to start from.
+    let host = &after.hosts[0];
+    assert!(host.tools_image.is_none());
+    assert!(run_missing(claude(&after), host)
+        .iter()
+        .any(|m| m.contains("Python and the Google Cloud CLI")));
+    assert!(image_for(claude(&after), host).is_none());
+    assert!(h.agents.set_tools("no-such-agent", true).await.is_err());
+
+    let off = h.agents.set_tools(CLAUDE_CODE, false).await.unwrap();
+    assert!(!run_missing(claude(&off), &off.hosts[0])
+        .iter()
+        .any(|m| m.contains("Python and the Google Cloud CLI")));
+}

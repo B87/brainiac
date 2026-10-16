@@ -569,6 +569,7 @@ pub fn run() {
             commands::share_secret_with_host,
             commands::remove_secret_from_host,
             commands::remove_unlisted_host_secret,
+            commands::set_profile_tools,
             commands::get_profile_secrets,
             commands::set_profile_secrets,
             commands::get_agent_host_job_log,

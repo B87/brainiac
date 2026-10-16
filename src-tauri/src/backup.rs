@@ -422,7 +422,8 @@ fn stage(
     tx.execute("DELETE FROM host_secret_shares", [])?;
     tx.execute(
         "UPDATE agent_hosts SET socket = NULL, image_id = NULL, image_recipe = NULL,
-           image_built_at = NULL
+           image_built_at = NULL, tools_image_id = NULL, tools_image_recipe = NULL,
+           tools_image_built_at = NULL
          WHERE kind = 'local'",
         [],
     )?;

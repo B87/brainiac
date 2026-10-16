@@ -823,6 +823,17 @@ pub async fn remove_secret_from_host(
     named.unshare(&id, &host_id, &runtime).await
 }
 
+/// Settings → Agents, a profile: runs use the image with Python and the
+/// Google Cloud CLI.
+#[tauri::command]
+pub async fn set_profile_tools(
+    profile_id: String,
+    on: bool,
+    agents: State<'_, AgentSettingsState>,
+) -> AppResult<crate::models::AgentSettings> {
+    agents.set_tools(&profile_id, on).await
+}
+
 /// Settings → Agents, a profile: the named secrets its runs get.
 #[tauri::command]
 pub async fn get_profile_secrets(

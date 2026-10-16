@@ -574,6 +574,18 @@ impl AgentHostService {
         Ok(())
     }
 
+    async fn settings_wants_tools(&self) -> AppResult<bool> {
+        self.db
+            .call(|conn| {
+                Ok(conn.query_row(
+                    "SELECT EXISTS (SELECT 1 FROM agent_profiles WHERE tools = 1)",
+                    [],
+                    |r| r.get::<_, bool>(0),
+                )?)
+            })
+            .await
+    }
+
     /// Build image on a host, as the two steps of `host_jobs::image`,
     /// numbered from `at` in `job`.
     pub async fn build_image(
@@ -587,14 +599,30 @@ impl AgentHostService {
         let runtime = self.connected(&row).await?;
         let tag = image::name_for(&image::recipe());
         let built = runtime
-            .build_image_remote(DOCKER_SOCKET, &tag, &image::context())
+            .build_image_remote(DOCKER_SOCKET, &tag, &image::context(), None)
             .await?;
+        // The layer on top, when a profile asks for it.
+        let tools = if self.settings_wants_tools().await? {
+            let tools_tag = image::name_for(&image::tools_recipe(&image::recipe()));
+            let id = runtime
+                .build_image_remote(
+                    DOCKER_SOCKET,
+                    &tools_tag,
+                    &image::tools_context(),
+                    Some(&tag),
+                )
+                .await?;
+            Some(id)
+        } else {
+            None
+        };
         job.finish(
             at + host_jobs::image::BUILD,
             Some(format!("{tag} · {}", short_id(&built))),
         );
         job.begin(at + host_jobs::image::PROBE);
         let recipe = image::recipe();
+        let tools_recipe = image::tools_recipe(&recipe);
         let now = now_rfc3339();
         let host_id = id.to_string();
         self.db
@@ -604,6 +632,13 @@ impl AgentHostService {
                         version = version + 1, updated_at = ?4 WHERE id = ?1",
                     params![host_id, built, recipe, now],
                 )?;
+                if let Some(tools) = tools {
+                    conn.execute(
+                        "UPDATE agent_hosts SET tools_image_id = ?2, tools_image_recipe = ?3,
+                            tools_image_built_at = ?4 WHERE id = ?1",
+                        params![host_id, tools, tools_recipe, now],
+                    )?;
+                }
                 Ok(())
             })
             .await?;
@@ -973,12 +1008,17 @@ pub fn list(conn: &Connection) -> AppResult<Vec<AgentHost>> {
             ))
         })?
         .collect::<rusqlite::Result<_>>()?;
+    let tools_profiles: std::collections::HashSet<String> = conn
+        .prepare("SELECT id FROM agent_profiles WHERE tools = 1")?
+        .query_map([], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
     let mut stmt = conn.prepare(
         "SELECT h.id, h.kind, COALESCE(m.name, ?1), m.ssh_user, m.ssh_host, m.ssh_port,
             m.identity_path, m.fingerprint, h.installation, COALESCE(m.approved, 1),
             h.engine_name, h.loop_devices, h.image_id, h.image_recipe, h.image_built_at,
             h.socket, h.state_kept, h.version, h.controller_build, h.protocol,
-            h.controller_installed_at
+            h.controller_installed_at, h.tools_image_id, h.tools_image_recipe,
+            h.tools_image_built_at
          FROM agent_hosts h LEFT JOIN machines m ON m.id = h.machine_id
          ORDER BY h.kind, 3",
     )?;
@@ -1009,6 +1049,21 @@ pub fn list(conn: &Connection) -> AppResult<Vec<AgentHost>> {
             }),
             _ => None,
         };
+        let tools_id: Option<String> = r.get(21)?;
+        let tools_recipe: Option<String> = r.get(22)?;
+        let tools_built: Option<String> = r.get(23)?;
+        let tools_current = image::tools_recipe(&recipe);
+        let tools_image = match (tools_id.clone(), tools_built) {
+            (Some(id), Some(built_at)) => Some(AgentImage {
+                name: image::name_for(tools_recipe.as_deref().unwrap_or("")),
+                id,
+                built_at,
+                // Built on this base: a rebuilt base makes the layer stale.
+                current: image_recipe.as_deref() == Some(recipe.as_str())
+                    && tools_recipe.as_deref() == Some(tools_current.as_str()),
+            }),
+            _ => None,
+        };
         let emergency = if kind == "ssh" {
             match (user, host, port) {
                 (Some(user), Some(host), Some(port)) => Some(format!(
@@ -1028,7 +1083,11 @@ pub fn list(conn: &Connection) -> AppResult<Vec<AgentHost>> {
                 profile_id: profile.clone(),
                 passed_at: passed_at.clone(),
                 current: revisions.get(profile) == Some(revision)
-                    && image_id.as_ref() == Some(image)
+                    && (if tools_profiles.contains(profile) {
+                        tools_id.as_ref()
+                    } else {
+                        image_id.as_ref()
+                    }) == Some(image)
                     && (kind_is_ssh || engine.is_some() && *engine == socket),
             })
             .collect();
@@ -1055,6 +1114,7 @@ pub fn list(conn: &Connection) -> AppResult<Vec<AgentHost>> {
             engine_name: r.get(10)?,
             loop_devices,
             image,
+            tools_image,
             missing,
             tests,
             emergency_stop: emergency,

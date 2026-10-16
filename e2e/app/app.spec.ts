@@ -594,6 +594,23 @@ test("An agent's page chooses which named secrets its runs get", async ({
   ).toBeChecked();
 });
 
+test("An agent can ask for Python and the Google Cloud CLI, which the next Build image adds", async ({
+  page,
+}) => {
+  await openSettings(page, "Agents");
+  await page.getByRole("button", { name: /^Claude Code,/ }).click();
+  await page
+    .getByRole("checkbox", { name: /Python and Google Cloud CLI/ })
+    .check();
+  expect((await calls(page, "set_profile_tools")).at(-1)).toMatchObject({
+    profileId: "claude-code",
+    on: true,
+  });
+  await expect(
+    page.getByRole("checkbox", { name: /Python and Google Cloud CLI/ }),
+  ).toBeChecked();
+});
+
 test("Settings → Agents lists four agents, and OpenCode · OpenRouter's page saves its key and model", async ({
   page,
 }) => {

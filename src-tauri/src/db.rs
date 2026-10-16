@@ -74,6 +74,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0014_profile_host_secrets",
         include_str!("../migrations/0014_profile_host_secrets.sql"),
     ),
+    (
+        "0015_tools_layer",
+        include_str!("../migrations/0015_tools_layer.sql"),
+    ),
 ];
 
 /// How many daily backups to keep.

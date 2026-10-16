@@ -509,9 +509,7 @@ impl AgentRunService {
         }
         let run_id = uuid::Uuid::new_v4().to_string();
         // `run_missing` above promised the image, and on this Mac the engine.
-        let image = host
-            .image
-            .clone()
+        let image = settings::image_for(&profile, &host)
             .ok_or_else(|| AppError::validation("Build the image first."))?;
         let (socket, engine_name) = if remote {
             self.refuse_if_upgrading(&host_id)?;
@@ -2187,9 +2185,7 @@ impl AgentRunService {
             .engine_socket
             .clone()
             .ok_or_else(|| AppError::validation("Choose where runs execute first."))?;
-        let image = host
-            .image
-            .clone()
+        let image = settings::image_for(&profile, &host)
             .ok_or_else(|| AppError::validation("Build the image first."))?;
         let run_id = format!("test-{}", uuid::Uuid::new_v4());
         let started = self
@@ -2231,9 +2227,7 @@ impl AgentRunService {
     ) -> AppResult<AgentTestResult> {
         let settings = self.settings.get().await?;
         let (profile, host) = test_subject(&settings, host_id, profile_id)?;
-        let image = host
-            .image
-            .clone()
+        let image = settings::image_for(&profile, &host)
             .ok_or_else(|| AppError::validation("Build the image on this host first."))?;
         let hosts = self
             .hosts

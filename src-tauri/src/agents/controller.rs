@@ -647,8 +647,13 @@ impl<W: Workloads> Controller<W> {
                 .probe(&socket, image.as_deref())
                 .await
                 .map(|report| Response::Engine { report }),
-            Request::BuildImage { socket, tag, hex } => self
-                .build_image(&socket, &tag, &hex)
+            Request::BuildImage {
+                socket,
+                tag,
+                hex,
+                base,
+            } => self
+                .build_image(&socket, &tag, &hex, base.as_deref())
                 .await
                 .map(|id| Response::Image { id }),
             Request::ReadExplanation { run_id } => self
@@ -1552,7 +1557,13 @@ impl<W: Workloads> Controller<W> {
         Ok((offset, total, protocol::encode_hex(&buf)))
     }
 
-    async fn build_image(&self, socket: &str, tag: &str, hex: &str) -> AppResult<String> {
+    async fn build_image(
+        &self,
+        socket: &str,
+        tag: &str,
+        hex: &str,
+        base: Option<&str>,
+    ) -> AppResult<String> {
         if tag.is_empty() || tag.len() > 128 || tag.contains('\n') {
             return Err(AppError::validation("That image name is not usable."));
         }
@@ -1561,7 +1572,10 @@ impl<W: Workloads> Controller<W> {
         if bytes.len() > MAX_LINE_BYTES {
             return Err(AppError::validation("The image context is too large."));
         }
-        self.workloads.build_image(socket, tag, bytes).await
+        if base.is_some_and(|b| b.is_empty() || b.len() > 128 || b.contains('\n')) {
+            return Err(AppError::validation("That base image name is not usable."));
+        }
+        self.workloads.build_image(socket, tag, bytes, base).await
     }
 
     /// Stop every live run's containers and keep them (SPEC.md, Emergency stop).

@@ -58,6 +58,7 @@ const profile: AgentProfile = {
   memory_mib: 8192,
   workspace_gib: 20,
   model: "",
+  tools: false,
   missing: [],
   version: 3,
 };
@@ -84,6 +85,7 @@ const thisMac: AgentHost = {
   engine_name: "OrbStack",
   loop_devices: false,
   image: null,
+  tools_image: null,
   missing: [],
   tests: [],
   emergency_stop: null,
@@ -152,6 +154,35 @@ describe("Settings → Agents", () => {
     ]);
     // Another profile's test does not count.
     expect(runMissing(profile, tested(true))).toHaveLength(1);
+  });
+
+  it("asks for the tools layer on a host that lacks it or has it out of date", () => {
+    const wants = { ...openrouter, tools: true };
+    const host = (tools_image: AgentHost["tools_image"]): AgentHost => ({
+      ...thisMac,
+      tools_image,
+      tests: [
+        {
+          profile_id: wants.id,
+          passed_at: "2026-10-05T10:00:00Z",
+          current: true,
+        },
+      ],
+    });
+    expect(runMissing(wants, host(null))).toEqual([
+      "Build the image on This Mac to add Python and the Google Cloud CLI.",
+    ]);
+    const layer = {
+      name: "brainiac-agents:aaaaaaaaaaaa",
+      id: "sha256:a",
+      built_at: "2026-10-05T10:00:00Z",
+    };
+    expect(runMissing(wants, host({ ...layer, current: false }))).toEqual([
+      "Rebuild the image on This Mac: the Python and Google Cloud CLI layer is out of date.",
+    ]);
+    expect(runMissing(wants, host({ ...layer, current: true }))).toEqual([]);
+    // A profile that does not ask for it is not held up by it.
+    expect(runMissing(openrouter, host(null))).toEqual([]);
   });
 
   it("gives each profile's test on a host one state", () => {

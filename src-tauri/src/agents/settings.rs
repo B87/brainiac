@@ -397,7 +397,8 @@ impl AgentSettingsService {
                 .call(move |conn| {
                     conn.execute(
                         "UPDATE agent_hosts SET socket = ?2, image_id = NULL, image_recipe = NULL,
-                           image_built_at = NULL, version = version + 1, updated_at = ?3
+                           image_built_at = NULL, tools_image_id = NULL,
+                           tools_image_recipe = NULL, tools_image_built_at = NULL, version = version + 1, updated_at = ?3
                          WHERE id = ?1",
                         params![super::hosts::LOCAL_ID, socket, now],
                     )?;
@@ -640,6 +641,13 @@ impl AgentSettingsService {
             .await?
             .ok_or_else(|| AppError::validation("Choose where runs execute first."))?;
         let built = image::build(Path::new(&socket)).await?;
+        // The layer on top, when a profile asks for it; its failure fails the
+        // build, so a profile never runs without its tools.
+        let tools = if self.wants_tools().await? {
+            Some(image::build_tools(Path::new(&socket), &built.name).await?)
+        } else {
+            None
+        };
         let now = now_rfc3339();
         let recorded =
             self.db
@@ -652,6 +660,23 @@ impl AgentSettingsService {
                 )?)
                 })
                 .await?;
+        if let Some(tools) = &tools {
+            let (id, recipe, now) = (
+                tools.id.clone(),
+                image::tools_recipe(&image::recipe()),
+                now_rfc3339(),
+            );
+            self.db
+                .call(move |conn| {
+                    conn.execute(
+                        "UPDATE agent_hosts SET tools_image_id = ?2, tools_image_recipe = ?3,
+                           tools_image_built_at = ?4, version = version + 1 WHERE id = ?1",
+                        params![super::hosts::LOCAL_ID, id, recipe, now],
+                    )?;
+                    Ok(())
+                })
+                .await?;
+        }
         if recorded == 0 {
             return Err(AppError::new(
                 ErrorCode::Conflict,
@@ -659,6 +684,38 @@ impl AgentSettingsService {
             ));
         }
         tracing::info!(image = %built.name, "agent image built");
+        self.get().await
+    }
+
+    /// Some profile asks for the tools layer, so Build image makes it.
+    pub async fn wants_tools(&self) -> AppResult<bool> {
+        self.db
+            .call(|conn| {
+                Ok(conn.query_row(
+                    "SELECT EXISTS (SELECT 1 FROM agent_profiles WHERE tools = 1)",
+                    [],
+                    |r| r.get::<_, bool>(0),
+                )?)
+            })
+            .await
+    }
+
+    /// A profile's runs use the image with Python and the Google Cloud CLI.
+    /// The host's layer is built by the next Build image.
+    pub async fn set_tools(&self, profile_id: &str, on: bool) -> AppResult<AgentSettings> {
+        let id = profile_id.to_string();
+        let changed = self
+            .db
+            .call(move |conn| {
+                Ok(conn.execute(
+                    "UPDATE agent_profiles SET tools = ?2, version = version + 1 WHERE id = ?1",
+                    params![id, on],
+                )?)
+            })
+            .await?;
+        if changed == 0 {
+            return Err(AppError::validation("That agent no longer exists."));
+        }
         self.get().await
     }
 
@@ -755,6 +812,16 @@ fn check_socket(socket: &str) -> AppResult<String> {
 /// What stops a run of this profile on this host, in the order to do it:
 /// the profile's own setup, the host's, then a passed test of the profile
 /// there that still matches (SPEC.md, Settings → Agents, Before the first run).
+/// The image a profile's runs use on a host: the tools layer when it asks
+/// for it, else the run image.
+pub fn image_for(profile: &AgentProfile, host: &AgentHost) -> Option<crate::models::AgentImage> {
+    if profile.tools {
+        host.tools_image.clone()
+    } else {
+        host.image.clone()
+    }
+}
+
 pub fn run_missing(profile: &AgentProfile, host: &AgentHost) -> Vec<String> {
     let mut missing: Vec<String> = profile
         .missing
@@ -763,6 +830,19 @@ pub fn run_missing(profile: &AgentProfile, host: &AgentHost) -> Vec<String> {
         .cloned()
         .collect();
     let name = profile_name(profile);
+    if profile.tools {
+        match &host.tools_image {
+            None => missing.push(format!(
+                "Build the image on {} to add Python and the Google Cloud CLI.",
+                host.name
+            )),
+            Some(i) if !i.current => missing.push(format!(
+                "Rebuild the image on {}: the Python and Google Cloud CLI layer is out of date.",
+                host.name
+            )),
+            Some(_) => {}
+        }
+    }
     match host.tests.iter().find(|t| t.profile_id == profile.id) {
         None => missing.push(format!("Pass a test of {name} on {}.", host.name)),
         Some(t) if !t.current => missing.push(format!(
@@ -804,7 +884,7 @@ fn profile_missing(p: &AgentProfile) -> Vec<String> {
 
 const COLUMNS: &str = "id, agent, provider, payment, secret_source, credential_revision,
     source_approved, credential_pending, credential_saved_at, permissions,
-    time_limit_minutes, cpus, memory_mib, workspace_gib, model, version";
+    time_limit_minutes, cpus, memory_mib, workspace_gib, model, version, tools";
 
 /// Claude Code first, then OpenCode by provider.
 const ORDER: &str = "CASE agent WHEN 'claude_code' THEN 0 ELSE 1 END, provider";
@@ -857,6 +937,7 @@ fn from_row(r: &Row<'_>) -> rusqlite::Result<AgentProfile> {
         model: r.get(14)?,
         missing: Vec::new(),
         version: r.get(15)?,
+        tools: r.get::<_, i64>(16)? != 0,
     };
     profile.missing = profile_missing(&profile);
     Ok(profile)

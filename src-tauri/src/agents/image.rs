@@ -32,6 +32,11 @@ const FILES: &[(&str, &str)] = &[
     ("opencode.json", include_str!("image/opencode.json")),
 ];
 
+/// The tools layer's Dockerfile (docs/design/scheduled-runs.md, The tools
+/// layer). It is not one of `FILES`: the base image's recipe stays the same
+/// whether or not any profile asks for the layer.
+const TOOLS_DOCKERFILE: &str = include_str!("image/tools/Dockerfile");
+
 /// A build installs packages from the network: give it time.
 const BUILD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
@@ -60,6 +65,25 @@ pub fn recipe() -> String {
         .take(6)
         .map(|b| format!("{b:02x}"))
         .collect()
+}
+
+/// The tools layer's recipe on a base recipe: a layer built on an older base
+/// is not current.
+pub fn tools_recipe(base_recipe: &str) -> String {
+    let mut hash = Sha256::new();
+    hash.update(base_recipe.as_bytes());
+    hash.update([0]);
+    hash.update(TOOLS_DOCKERFILE.as_bytes());
+    hash.finalize()
+        .iter()
+        .take(6)
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// The layer's build context: its Dockerfile alone.
+pub(crate) fn tools_context() -> Vec<u8> {
+    tar_of(&[("Dockerfile", TOOLS_DOCKERFILE)])
 }
 
 /// The image's name for a recipe.
@@ -98,30 +122,60 @@ struct Inspect {
 /// Build the image on the engine behind `socket`, pulling the base image
 /// afresh, and return its ID as the engine reports it.
 pub async fn build(socket: &Path) -> AppResult<BuiltImage> {
-    let name = name_for(&recipe());
-    let client = engine::client(socket, BUILD_TIMEOUT)?;
     let labels = serde_json::json!({
         "org.brainiac.role": "agent",
         "org.brainiac.recipe": recipe(),
-    })
-    .to_string();
-    let url = reqwest::Url::parse_with_params(
-        "http://docker/build",
-        &[
-            ("t", name.as_str()),
-            ("labels", labels.as_str()),
-            ("pull", "1"),
-            ("rm", "1"),
-            ("forcerm", "1"),
-        ],
+    });
+    build_context(socket, name_for(&recipe()), labels, context(), None).await
+}
+
+/// Build the tools layer on `base` (the base image's name, already on the
+/// engine, so nothing is pulled) and return its ID.
+pub async fn build_tools(socket: &Path, base: &str) -> AppResult<BuiltImage> {
+    let recipe = tools_recipe(&recipe());
+    let labels = serde_json::json!({
+        "org.brainiac.role": "agent",
+        "org.brainiac.recipe": recipe,
+    });
+    build_context(
+        socket,
+        name_for(&recipe),
+        labels,
+        tools_context(),
+        Some(base),
     )
-    .map_err(|e| {
+    .await
+}
+
+/// One build through the engine's API. With a `base`, the Dockerfile's BASE
+/// argument names it and the engine pulls nothing.
+async fn build_context(
+    socket: &Path,
+    name: String,
+    labels: serde_json::Value,
+    context: Vec<u8>,
+    base: Option<&str>,
+) -> AppResult<BuiltImage> {
+    let client = engine::client(socket, BUILD_TIMEOUT)?;
+    let labels = labels.to_string();
+    let buildargs = base.map(|b| serde_json::json!({ "BASE": b }).to_string());
+    let mut params = vec![
+        ("t", name.as_str()),
+        ("labels", labels.as_str()),
+        ("pull", if base.is_some() { "0" } else { "1" }),
+        ("rm", "1"),
+        ("forcerm", "1"),
+    ];
+    if let Some(args) = &buildargs {
+        params.push(("buildargs", args.as_str()));
+    }
+    let url = reqwest::Url::parse_with_params("http://docker/build", &params).map_err(|e| {
         AppError::io("The build request could not be made.").with_details(e.to_string())
     })?;
     let mut response = client
         .post(url)
         .header("Content-Type", "application/x-tar")
-        .body(context())
+        .body(context)
         .send()
         .await
         .map_err(|e| {
@@ -247,8 +301,12 @@ impl BuildOutput {
 /// The build context: the files as a tar archive (POSIX ustar). Names are
 /// under 100 bytes, so no long-name extension is needed.
 pub(crate) fn context() -> Vec<u8> {
+    tar_of(FILES)
+}
+
+fn tar_of(files: &[(&str, &str)]) -> Vec<u8> {
     let mut tar = Vec::new();
-    for (name, text) in FILES {
+    for (name, text) in files {
         tar.extend_from_slice(&header(name, text.len()));
         tar.extend_from_slice(text.as_bytes());
         tar.resize(tar.len().div_ceil(512) * 512, 0);
@@ -313,6 +371,19 @@ mod tests {
         assert!(dockerfile().contains("ENTRYPOINT"));
     }
 
+    #[test]
+    fn the_tools_layer_is_its_own_recipe_on_a_base() {
+        let a = tools_recipe("aaaaaaaaaaaa");
+        assert_eq!(a.len(), 12);
+        assert_ne!(a, tools_recipe("bbbbbbbbbbbb"));
+        // The base recipe does not depend on the layer.
+        assert!(FILES.iter().all(|(name, _)| *name != "tools/Dockerfile"));
+        assert!(TOOLS_DOCKERFILE.contains("ARG BASE"));
+        let tar = tools_context();
+        assert!(tar.starts_with(b"Dockerfile\0"));
+        assert!(tar.len() >= 512 + TOOLS_DOCKERFILE.len());
+    }
+
     /// Opt in with a real engine's socket: `BRAINIAC_TEST_DOCKER_SOCKET=… cargo
     /// test -- --ignored builds_on_a_real_engine`. It pulls and installs packages.
     #[tokio::test]
@@ -323,6 +394,10 @@ mod tests {
         let built = build(Path::new(&socket)).await.unwrap();
         assert_eq!(built.name, name_for(&recipe()));
         assert!(built.id.starts_with("sha256:"), "{built:?}");
+        // The layer builds on it without pulling anything.
+        let tools = build_tools(Path::new(&socket), &built.name).await.unwrap();
+        assert_eq!(tools.name, name_for(&tools_recipe(&recipe())));
+        assert_ne!(tools.id, built.id);
     }
 
     /// The output split anywhere across chunks, as the engine sends it.

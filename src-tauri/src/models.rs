@@ -3481,6 +3481,8 @@ pub struct AgentProfile {
     /// model name, such as `gpt-6.1-sol` or, on OpenRouter,
     /// `anthropic/claude-sonnet-5-5`.
     pub model: String,
+    /// Runs use the image with Python and the Google Cloud CLI added.
+    pub tools: bool,
     /// What this profile still lacks before any host can run it (the
     /// token or key, the model), in the order to do it.
     pub missing: Vec<String>,
@@ -3538,6 +3540,9 @@ pub struct AgentHost {
     /// The engine can attach the workspace's loop devices.
     pub loop_devices: bool,
     pub image: Option<AgentImage>,
+    /// The tools layer (Python and the Google Cloud CLI) built on `image`;
+    /// `None` until a build with a profile that asks for it.
+    pub tools_image: Option<AgentImage>,
     /// What still stops this host from taking a run, whatever the profile
     /// (the engine, the install, the image), in the order to do it.
     pub missing: Vec<String>,

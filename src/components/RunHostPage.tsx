@@ -219,6 +219,10 @@ function ImageRow({
             {host.kind === "ssh" &&
               host.engine_name &&
               ` · ${host.engine_name}`}
+            {host.tools_image &&
+              (host.tools_image.current
+                ? " · with Python and Google Cloud CLI"
+                : " · its Python and Google Cloud CLI layer is out of date: rebuild it")}
             {building &&
               " · building downloads the base image and packages; it takes a few minutes"}
           </>

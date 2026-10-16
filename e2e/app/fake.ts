@@ -863,6 +863,7 @@ function agentProfile(
     memory_mib: 8192,
     workspace_gib: 20,
     model: "",
+    tools: false,
     missing: [],
     version: 1,
   };
@@ -922,6 +923,7 @@ function agentHost(fields: Partial<AgentHost>): AgentHost {
     engine_name: null,
     loop_devices: false,
     image: null,
+    tools_image: null,
     missing: [],
     tests: [],
     emergency_stop: null,
@@ -2162,9 +2164,26 @@ export class FakeBackend {
         this.refreshAgents();
         return this.agentSettings;
       }
-      case "build_agent_image":
+      case "build_agent_image": {
         this.readyThisMac();
+        const local = this.agentSettings.hosts.find((h) => h.kind === "local");
+        if (local && this.agentSettings.profiles.some((p) => p.tools))
+          local.tools_image = {
+            name: "brainiac-agents:7a1d52c0e9b3",
+            id: "sha256:7a1d52c0e9b3",
+            built_at: "2026-10-05T12:05:00Z",
+            current: true,
+          };
         return this.agentSettings;
+      }
+      case "set_profile_tools": {
+        const profile = this.agentSettings.profiles.find(
+          (p) => p.id === args.profileId,
+        );
+        if (!profile) throw new Error("no such profile");
+        profile.tools = args.on === true;
+        return this.agentSettings;
+      }
       case "agent_dockerfile":
         return "FROM node:22-bookworm-slim\n";
       case "list_agent_runs":
