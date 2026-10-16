@@ -5015,6 +5015,12 @@ pub struct Briefing {
     pub start: String,
     pub prompt: String,
     pub time_limit_minutes: u32,
+    /// Text the agent rewrites after each run and the user can edit; part of
+    /// the next run's prompt.
+    pub memory: String,
+    pub memory_updated_at: Option<String>,
+    /// How many earlier results the next run is shown (0 to 10).
+    pub previous_results: u32,
     #[ts(type = "number")]
     pub version: i64,
 }
@@ -5033,6 +5039,8 @@ pub struct SaveBriefingRequest {
     pub start: String,
     pub prompt: String,
     pub time_limit_minutes: u32,
+    pub memory: String,
+    pub previous_results: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -5070,7 +5078,8 @@ pub struct BriefingFinding {
     /// Stable across days (such as a Sentry issue id), so "seen before" works.
     pub key: String,
     pub title: String,
-    pub severity: BriefingSeverity,
+    /// Only when the briefing is about problems.
+    pub severity: Option<BriefingSeverity>,
     pub detail: String,
     /// An http(s) address, or empty.
     pub link: String,
@@ -5086,6 +5095,8 @@ pub enum BriefingProposalKind {
     Task,
     /// A bug to file in a tracker; shown to copy, never created here.
     Issue,
+    /// A note in the vault on approval.
+    Note,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -5097,8 +5108,8 @@ pub struct BriefingProposal {
     pub body: String,
     /// The finding it comes from, when it names one.
     pub finding_key: Option<String>,
-    /// The task made from it, once the user approved it.
-    pub task_id: Option<String>,
+    /// The task or note made from it, once the user approved it.
+    pub made_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -5108,6 +5119,8 @@ pub struct BriefingResult {
     pub briefing_id: String,
     pub run_id: Option<String>,
     pub state: BriefingState,
+    /// A claim the agent made about a check; `None` on a ready report that
+    /// makes none (ideas, a digest). Never set while working or failed.
     pub status: Option<BriefingStatus>,
     pub summary: String,
     pub findings: Vec<BriefingFinding>,

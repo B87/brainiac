@@ -705,6 +705,8 @@ export const ipc = {
     invoke<NoteSummary>("save_briefing_as_note", { resultId }),
   createBriefingTask: (resultId: string, proposalKey: string) =>
     invoke<BriefingResult>("create_briefing_task", { resultId, proposalKey }),
+  createBriefingNote: (resultId: string, proposalKey: string) =>
+    invoke<NoteSummary>("create_briefing_note", { resultId, proposalKey }),
   listNamedSecrets: () => invoke<NamedSecret[]>("list_named_secrets"),
   saveNamedSecret: (request: SaveNamedSecretRequest) =>
     invoke<NamedSecret>("save_named_secret", { request }),

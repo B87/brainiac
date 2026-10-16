@@ -30,6 +30,23 @@ A scheduled run is still a run of the existing kind: same container, deadline, j
 
 The agent writes `.brainiac/briefing.json`; Brainiac reads back only that file from the container's archive and validates it before showing anything, as it does for `.brainiac/explanation.json` (`code-explanations.md`). Shape, to be defined in `models.rs` when built: status, a summary, findings (title, severity, a link, a stable key such as the Sentry issue id), and proposed items (title, body, kind, the finding key). Unknown fields are dropped; sizes are bounded. The stable key lets Today say "seen yesterday" and lets Create skip an item already created.
 
+### Memory and earlier results
+
+Decided (16 Oct 2026). A briefing is useful across days only if a run knows what the last ones found. Two things carry that, both in the run's prompt, as data and never as instructions:
+
+- **Memory:** bounded text (16,000 characters) on the briefing that the agent may replace by writing `memory` in `briefing.json`, and the user may edit. Absent in the file means unchanged; a user edit made while a run is going wins. It is in `brainiac.db` with the definition, so a backup holds it. It is not a file copied into the container: the container receives nothing new, and the controller needs no new input.
+- **Earlier results:** the last N ready results (0 to 10, three by default), as dates, summaries and the keys and titles of their findings, cut to 6,000 characters.
+
+Both come from earlier runs, so both can carry text that came from outside (a Sentry message, a web page). The prompt labels them as data, the agent's own file contract is the only thing that makes Brainiac act, and nothing in them is run or fetched by Brainiac. When schedules fire on the host (phase 4) the host needs the memory and the earlier results too; the definition then moves to the host with them.
+
+### Result vocabulary
+
+A briefing is not only about problems. `status` is optional (`nothing_found` and `findings` are claims about a check; no status is a report), `severity` is optional, and a proposal may be a task, an issue, or a note. A result with no usable file is still a failure and never a report.
+
+### Continuing a run later
+
+Not built; the design keeps it possible. A result stores its `run_id`, and following a run (reading the file) is separate from ending it (Finish, or Cancel when Finish refuses). A later setting could keep the run open for a few minutes after the file is read, so the user can continue its conversation from Runs, at the cost of the container and the host secrets staying alive. A scheduled run would rather start a new run from the same commit with the briefing as context than keep one open, because an agent session does not outlive its container.
+
 ### Credentials on the host
 
 Decided (15 Oct 2026): credentials live in the **host's own local credential store**, Linux hosts only for now. Google Secret Manager is not used in this design; it stays a later source (`secrets.md`, phase 2). This is the real change. Today a credential is resolved on the Mac, handed to the controller's memory once, and never stored there; the controller "cannot resolve Mac credential sources or renew credentials while the Mac is away" (`agent-runs.md`, Credentials and disclosure). An unattended run has no Mac to ask.

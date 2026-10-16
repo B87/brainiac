@@ -39,6 +39,8 @@ export default function BriefingDialog({
   const [start, setStart] = useState(briefing?.start ?? "HEAD");
   const [prompt, setPrompt] = useState(briefing?.prompt ?? "");
   const [limit, setLimit] = useState(briefing?.time_limit_minutes ?? 30);
+  const [memory, setMemory] = useState(briefing?.memory ?? "");
+  const [previous, setPrevious] = useState(briefing?.previous_results ?? 3);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -78,6 +80,8 @@ export default function BriefingDialog({
           start,
           prompt,
           time_limit_minutes: limit,
+          memory,
+          previous_results: previous,
         }),
       );
     } catch (e) {
@@ -211,6 +215,33 @@ export default function BriefingDialog({
             </select>
           </label>
         </div>
+        <label className="flex flex-col gap-1">
+          <span className="section-label">Memory</span>
+          <textarea
+            className="field min-h-[70px] resize-y leading-relaxed"
+            value={memory}
+            onChange={(e) => setMemory(e.target.value)}
+            placeholder="Empty. The agent can rewrite this after each run; you can edit it too."
+          />
+          <span className="text-[12px] text-muted">
+            Notes for the next run, such as what is already covered. Part of the
+            prompt; the agent treats it as data. Do not keep secrets here.
+          </span>
+        </label>
+        <label className="flex items-center gap-2">
+          <span className="section-label">Earlier results shown to a run</span>
+          <select
+            className="field w-auto"
+            value={previous}
+            onChange={(e) => setPrevious(Number(e.target.value))}
+          >
+            {Array.from({ length: 11 }, (_, n) => n).map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+          </select>
+        </label>
         {blocked.length > 0 && (
           <p className="m-0 text-[12px] text-conflict">
             Not ready to run there: {blocked[0]}

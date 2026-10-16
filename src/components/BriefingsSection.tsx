@@ -112,6 +112,12 @@ export default function BriefingsSection({
               ipc.createBriefingTask(result.id, key),
             )
           }
+          onNote={(result, key) =>
+            void act(`proposal-note-${result.id}-${key}`, async () => {
+              const note = await ipc.createBriefingNote(result.id, key);
+              onOpenNote(note.id);
+            })
+          }
           onOpenRun={onOpenRun}
         />
       ))}
@@ -137,6 +143,7 @@ function BriefingCard({
   onRun,
   onSaveNote,
   onTask,
+  onNote,
   onOpenRun,
 }: {
   item: BriefingOverview;
@@ -145,6 +152,7 @@ function BriefingCard({
   onRun: () => void;
   onSaveNote: (result: BriefingResult) => void;
   onTask: (result: BriefingResult, key: string) => void;
+  onNote: (result: BriefingResult, key: string) => void;
   onOpenRun: (runId: string) => void;
 }) {
   const { briefing, latest } = item;
@@ -183,6 +191,7 @@ function BriefingCard({
           busy={busy}
           onSaveNote={() => onSaveNote(latest)}
           onTask={(key) => onTask(latest, key)}
+          onNote={(key) => onNote(latest, key)}
           onOpenRun={onOpenRun}
         />
       )}
@@ -195,12 +204,14 @@ function Result({
   busy,
   onSaveNote,
   onTask,
+  onNote,
   onOpenRun,
 }: {
   result: BriefingResult;
   busy: string | null;
   onSaveNote: () => void;
   onTask: (key: string) => void;
+  onNote: (key: string) => void;
   onOpenRun: (runId: string) => void;
 }) {
   const when = relativeTime(result.finished_at ?? result.started_at);
@@ -236,7 +247,11 @@ function Result({
     <div className="flex flex-col gap-2">
       <div className="text-[12.5px]">
         <strong>
-          {result.status === "nothing_found" ? "Nothing found" : "Findings"}
+          {result.status === "nothing_found"
+            ? "Nothing found"
+            : result.status === "findings"
+              ? "Findings"
+              : "Report"}
         </strong>{" "}
         <span className="text-muted">
           · {when}
@@ -259,11 +274,16 @@ function Result({
             <div key={p.key} className="flex items-center gap-2 text-[12.5px]">
               <span className="min-w-0 flex-1">
                 <span className="text-muted">
-                  {p.kind === "task" ? "Task" : "Issue"} ·{" "}
+                  {p.kind === "task"
+                    ? "Task"
+                    : p.kind === "note"
+                      ? "Note"
+                      : "Issue"}{" "}
+                  ·{" "}
                 </span>
                 {p.title}
               </span>
-              {p.kind === "task" && !p.task_id && (
+              {p.kind === "task" && !p.made_id && (
                 <button
                   type="button"
                   className="btn btn-sm"
@@ -273,7 +293,21 @@ function Result({
                   Create Task
                 </button>
               )}
-              {p.task_id && <span className="text-muted">Task created</span>}
+              {p.kind === "note" && !p.made_id && (
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  disabled={busy === `proposal-note-${result.id}-${p.key}`}
+                  onClick={() => onNote(p.key)}
+                >
+                  Save as Note
+                </button>
+              )}
+              {p.made_id && (
+                <span className="text-muted">
+                  {p.kind === "note" ? "Note saved" : "Task created"}
+                </span>
+              )}
               {p.kind === "issue" && (
                 <button
                   type="button"
@@ -309,9 +343,11 @@ function Result({
 function FindingRow({ finding }: { finding: BriefingFinding }) {
   return (
     <li className="flex min-w-0 items-baseline gap-2 text-[12.5px]">
-      <span className={`w-14 shrink-0 ${SEVERITY_CLASS[finding.severity]}`}>
-        {finding.severity}
-      </span>
+      {finding.severity && (
+        <span className={`w-14 shrink-0 ${SEVERITY_CLASS[finding.severity]}`}>
+          {finding.severity}
+        </span>
+      )}
       <span className="min-w-0 flex-1">
         {finding.link ? (
           <button

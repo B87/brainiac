@@ -5,7 +5,11 @@ export type BriefingFinding = {
 /**
  * Stable across days (such as a Sentry issue id), so "seen before" works.
  */
-key: string, title: string, severity: BriefingSeverity, detail: string, 
+key: string, title: string, 
+/**
+ * Only when the briefing is about problems.
+ */
+severity: BriefingSeverity | null, detail: string, 
 /**
  * An http(s) address, or empty.
  */

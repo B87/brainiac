@@ -896,7 +896,7 @@ pub async fn create_briefing_task(
             "Only a task proposal can be made into a task here.",
         ));
     }
-    if proposal.task_id.is_some() {
+    if proposal.made_id.is_some() {
         return Err(crate::models::AppError::validation(
             "A task was already made from this proposal.",
         ));
@@ -914,8 +914,49 @@ pub async fn create_briefing_task(
         })
         .await?;
     briefings
-        .mark_task(&result_id, &proposal_key, &task.id)
+        .mark_made(&result_id, &proposal_key, &task.id)
         .await
+}
+
+/// **Save as Note** on a note proposal of a ready briefing, once.
+#[tauri::command]
+pub async fn create_briefing_note(
+    result_id: String,
+    proposal_key: String,
+    briefings: State<'_, Briefings>,
+    notes: State<'_, Notes>,
+) -> AppResult<crate::models::NoteSummary> {
+    let proposal = briefings.proposal(&result_id, &proposal_key).await?;
+    if proposal.kind != crate::models::BriefingProposalKind::Note {
+        return Err(crate::models::AppError::validation(
+            "Only a note proposal can be made into a note here.",
+        ));
+    }
+    if proposal.made_id.is_some() {
+        return Err(crate::models::AppError::validation(
+            "A note was already made from this proposal.",
+        ));
+    }
+    let (briefing, result, _) = briefings.markdown(&result_id).await?;
+    let body = format!("# {}\n\n{}\n", proposal.title, proposal.body);
+    let note = notes
+        .create_with_body(
+            crate::models::CreateNoteRequest {
+                folder: Some("Briefings".to_string()),
+                title: Some(proposal.title.clone()),
+                repository_id: Some(briefing.repository_id.clone()),
+            },
+            vec![
+                ("briefing".to_string(), briefing.name.clone()),
+                ("date".to_string(), result.started_at.clone()),
+            ],
+            body,
+        )
+        .await?;
+    briefings
+        .mark_made(&result_id, &proposal_key, &note.id)
+        .await?;
+    Ok(note)
 }
 
 /// Settings → Agents, a profile: runs use the image with Python and the

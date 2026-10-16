@@ -7,6 +7,6 @@ export type BriefingProposal = { key: string, kind: BriefingProposalKind, title:
  */
 finding_key: string | null, 
 /**
- * The task made from it, once the user approved it.
+ * The task or note made from it, once the user approved it.
  */
-task_id: string | null, };
+made_id: string | null, };

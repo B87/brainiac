@@ -179,6 +179,8 @@ impl Harness {
                 start: "main".into(),
                 prompt: "Check production.".into(),
                 time_limit_minutes: 30,
+                memory: String::new(),
+                previous_results: 3,
             })
             .await
             .unwrap()
@@ -232,13 +234,13 @@ async fn run_now_keeps_the_checked_briefing_and_remembers_yesterdays_findings() 
     // A task is made once from a proposal.
     let marked = h
         .briefings
-        .mark_task(&second.id, "fix-1", "task-1")
+        .mark_made(&second.id, "fix-1", "task-1")
         .await
         .unwrap();
-    assert_eq!(marked.proposals[0].task_id.as_deref(), Some("task-1"));
+    assert_eq!(marked.proposals[0].made_id.as_deref(), Some("task-1"));
     assert!(h
         .briefings
-        .mark_task(&second.id, "fix-1", "task-2")
+        .mark_made(&second.id, "fix-1", "task-2")
         .await
         .is_err());
 
@@ -301,6 +303,8 @@ async fn a_start_that_is_refused_is_kept_as_a_failed_result() {
             start: "no-such-branch".into(),
             prompt: briefing.prompt.clone(),
             time_limit_minutes: briefing.time_limit_minutes,
+            memory: String::new(),
+            previous_results: 3,
         })
         .await
         .unwrap();
@@ -320,6 +324,103 @@ async fn a_start_that_is_refused_is_kept_as_a_failed_result() {
             start: "main".into(),
             prompt: "y".into(),
             time_limit_minutes: 30,
+            memory: String::new(),
+            previous_results: 3,
+        })
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn the_memory_and_earlier_results_go_into_the_prompt_and_the_agent_rewrites_the_memory() {
+    let h = Harness::new().await;
+    let briefing = h
+        .briefings
+        .save(SaveBriefingRequest {
+            id: None,
+            expected_version: 0,
+            name: "Ideas".into(),
+            repository_id: h.repository_id.clone(),
+            profile_id: CLAUDE_CODE.into(),
+            host_id: String::new(),
+            start: "main".into(),
+            prompt: "Find blog post ideas.".into(),
+            time_limit_minutes: 30,
+            memory: "Already covered: rust async.".into(),
+            previous_results: 2,
+        })
+        .await
+        .unwrap();
+    assert!(briefing.memory_updated_at.is_some());
+
+    // A report with no status and no severity, and a new memory.
+    h.engine.get().briefings.push_back(
+        r#"{"summary":"Two ideas.","memory":"Covered: rust async, error handling.",
+            "findings":[{"title":"Idea: errors"}],
+            "proposals":[{"kind":"note","title":"Post: errors","body":"Angle"}]}"#
+            .into(),
+    );
+    let first = h.run(&briefing).await;
+    assert_eq!(first.state, BriefingState::Ready, "{first:?}");
+    assert_eq!(first.status, None);
+    assert_eq!(first.findings[0].severity, None);
+    let prompts = h.engine.get().prompts.clone();
+    assert!(prompts[0].contains("Already covered: rust async."));
+    assert!(!prompts[0].contains("<earlier>"));
+
+    let after = h.briefings.overview().await.unwrap().remove(0).briefing;
+    assert_eq!(after.memory, "Covered: rust async, error handling.");
+
+    // The next run is shown the new memory and the earlier result.
+    h.engine
+        .get()
+        .briefings
+        .push_back(r#"{"summary":"One idea."}"#.into());
+    h.engine.get().prompts.clear();
+    let second = h.run(&after).await;
+    assert_eq!(second.state, BriefingState::Ready);
+    let prompts = h.engine.get().prompts.clone();
+    assert!(prompts[0].contains("Covered: rust async, error handling."));
+    assert!(prompts[0].contains("- "));
+    assert!(prompts[0].contains("Two ideas."));
+    assert!(prompts[0].contains("[idea-errors] Idea: errors"));
+    // Leaving the memory out of the file keeps it.
+    let kept = h.briefings.overview().await.unwrap().remove(0).briefing;
+    assert_eq!(kept.memory, "Covered: rust async, error handling.");
+
+    // The user's edit changes it, and too many earlier results are refused.
+    let edited = h
+        .briefings
+        .save(SaveBriefingRequest {
+            id: Some(kept.id.clone()),
+            expected_version: kept.version,
+            name: kept.name.clone(),
+            repository_id: kept.repository_id.clone(),
+            profile_id: kept.profile_id.clone(),
+            host_id: String::new(),
+            start: "main".into(),
+            prompt: kept.prompt.clone(),
+            time_limit_minutes: 30,
+            memory: "Only the user's note.".into(),
+            previous_results: 0,
+        })
+        .await
+        .unwrap();
+    assert_eq!(edited.memory, "Only the user's note.");
+    assert!(h
+        .briefings
+        .save(SaveBriefingRequest {
+            id: Some(edited.id.clone()),
+            expected_version: edited.version,
+            name: edited.name.clone(),
+            repository_id: edited.repository_id.clone(),
+            profile_id: edited.profile_id.clone(),
+            host_id: String::new(),
+            start: "main".into(),
+            prompt: edited.prompt.clone(),
+            time_limit_minutes: 30,
+            memory: String::new(),
+            previous_results: 11,
         })
         .await
         .is_err());

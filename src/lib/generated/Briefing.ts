@@ -11,4 +11,13 @@ host_id: string,
 /**
  * A branch or commit, resolved at each start.
  */
-start: string, prompt: string, time_limit_minutes: number, version: number, };
+start: string, prompt: string, time_limit_minutes: number, 
+/**
+ * Text the agent rewrites after each run and the user can edit; part of
+ * the next run's prompt.
+ */
+memory: string, memory_updated_at: string | null, 
+/**
+ * How many earlier results the next run is shown (0 to 10).
+ */
+previous_results: number, version: number, };

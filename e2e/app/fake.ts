@@ -1221,7 +1221,15 @@ export class FakeBackend {
         title: "Fix the checkout error",
         body: "",
         finding_key: "SENTRY-1",
-        task_id: null,
+        made_id: null,
+      },
+      {
+        key: "note-1",
+        kind: "note",
+        title: "Post idea: checkout errors",
+        body: "Angle: ...",
+        finding_key: null,
+        made_id: null,
       },
       {
         key: "bug-1",
@@ -1229,7 +1237,7 @@ export class FakeBackend {
         title: "Checkout TypeError",
         body: "See SENTRY-1",
         finding_key: "SENTRY-1",
-        task_id: null,
+        made_id: null,
       },
     ];
   }
@@ -3037,6 +3045,9 @@ export class FakeBackend {
           start: r.start,
           prompt: r.prompt,
           time_limit_minutes: r.time_limit_minutes,
+          memory: r.memory,
+          memory_updated_at: r.memory ? new Date().toISOString() : null,
+          previous_results: r.previous_results,
           version: (found?.version ?? 0) + 1,
         };
         if (found) Object.assign(found, saved);
@@ -3083,8 +3094,24 @@ export class FakeBackend {
           (p) => p.key === args.proposalKey,
         );
         if (!result || !proposal) throw new Error("no such proposal");
-        proposal.task_id = uid("task");
+        proposal.made_id = uid("task");
         return result;
+      }
+      case "create_briefing_note": {
+        const result = this.briefingResults.find((r) => r.id === args.resultId);
+        const proposal = result?.proposals.find(
+          (p) => p.key === args.proposalKey,
+        );
+        if (!result || !proposal) throw new Error("no such proposal");
+        const note = this.handle("create_note", {
+          request: {
+            folder: "Briefings",
+            title: proposal.title,
+            repository_id: null,
+          },
+        }) as { id: string };
+        proposal.made_id = note.id;
+        return note;
       }
       case "get_today": {
         const all = [...this.tasks.values()];

@@ -626,6 +626,7 @@ test("A briefing is added on Today, Run Now starts it, and its checked result of
   const form = page.getByRole("form", { name: "New briefing" });
   await form.getByLabel("Name", { exact: true }).fill("Morning check");
   await form.getByLabel("What to check").fill("Check production errors.");
+  await form.getByLabel("Memory").fill("Ignore SENTRY-9.");
   await page
     .getByRole("dialog", { name: "New briefing" })
     .getByRole("button", { name: "Save" })
@@ -655,9 +656,18 @@ test("A briefing is added on Today, Run Now starts it, and its checked result of
   );
   await expect(card.getByRole("button", { name: "Copy" })).toBeVisible();
 
-  // Save as note opens the note.
-  await card.getByRole("button", { name: "Save as Note" }).click();
+  // A note proposal is saved once; the briefing itself can be saved too.
+  await card.getByRole("button", { name: "Save as Note" }).first().click();
+  expect((await calls(page, "create_briefing_note")).at(-1)).toMatchObject({
+    proposalKey: "note-1",
+  });
+  await page.getByRole("button", { name: "Today" }).click();
+  await expect(card).toContainText("Note saved");
+  await card.getByRole("button", { name: "Save as Note" }).last().click();
   expect((await calls(page, "save_briefing_as_note")).length).toBe(1);
+  expect((await calls(page, "save_briefing")).at(-1)).toMatchObject({
+    request: { memory: "Ignore SENTRY-9.", previous_results: 3 },
+  });
 
   // Tomorrow's run: the same finding says it was seen before. A run that
   // wrote nothing is a failure, never "nothing found".

@@ -589,6 +589,7 @@ pub fn run() {
             commands::run_briefing_now,
             commands::save_briefing_as_note,
             commands::create_briefing_task,
+            commands::create_briefing_note,
             commands::get_profile_secrets,
             commands::set_profile_secrets,
             commands::get_agent_host_job_log,
