@@ -664,7 +664,7 @@ impl<W: Workloads> Controller<W> {
                 key: _,
                 value,
             } => self
-                .put_model_credential(&profile_id, &value)
+                .put_model_credential(&profile_id, &value.0)
                 .await
                 .map(|()| Response::Done),
             Request::ProbeEngine { socket, image } => self
@@ -1476,7 +1476,12 @@ impl<W: Workloads> Controller<W> {
                 self.spawn(async move { controller.finish_stop(&run).await });
             }
         }
-        self.schedule_tick().await;
+        // Reading a container or sealing a key can wait on the engine: that
+        // must not hold up expiring a run or retrying a stop.
+        if self.service {
+            let controller = Arc::clone(self);
+            self.spawn(async move { controller.schedule_tick().await });
+        }
         if let Some(idle) = idle_exit {
             let quiet = self
                 .last_request
@@ -1545,15 +1550,27 @@ impl<W: Workloads> Controller<W> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        // Written beside the bundle and moved into place when it is whole, so a
+        // run or a schedule never starts from half of one.
+        let part = path.with_extension("bundle.part");
         use std::io::{Seek, SeekFrom, Write};
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .write(true)
             .truncate(offset == 0)
-            .open(&path)?;
+            .open(&part)?;
         file.seek(SeekFrom::Start(offset))?;
         file.write_all(&bytes)?;
         let size = file.metadata()?.len();
+        drop(file);
+        if offset + bytes.len() as u64 == total {
+            if size != total {
+                return Err(AppError::validation(
+                    "The bundle is not the size it was sent as.",
+                ));
+            }
+            std::fs::rename(&part, &path)?;
+        }
         Ok((path.display().to_string(), size))
     }
 

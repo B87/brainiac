@@ -27,12 +27,16 @@ use crate::models::{AppError, AppResult, BriefingResult, BriefingState, RunPermi
 /// A slot is started on time if the host sees it this soon after the time.
 /// Later than this it was missed (or started late, when the schedule says so).
 const GRACE: Span = Span::seconds(180);
+/// The longest one look at the schedules may take.
+const LOOK_LIMIT: std::time::Duration = std::time::Duration::from_secs(120);
 /// How often the controller looks at its schedules.
 const LOOK_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
 /// Results kept per schedule; unacknowledged ones are never dropped.
 const KEEP_RESULTS: usize = 14;
 /// Missed slots recorded after a long outage.
 const MAX_MISSED: usize = 7;
+/// Results sent in one answer.
+pub const RESULTS_PER_ANSWER: usize = 5;
 /// Most slots looked at in one go.
 const MAX_SLOTS: usize = 400;
 
@@ -48,6 +52,19 @@ pub(super) struct ScheduleRecord {
     pub cursor: String,
     /// Newest first.
     pub results: Vec<ScheduledResult>,
+    /// Runs that already left a result, so a run still on this host after its
+    /// result was taken and pruned is not counted as one that left none.
+    #[serde(default)]
+    pub followed: Vec<String>,
+}
+
+impl ScheduleRecord {
+    fn note_followed(&mut self, run_id: &str) {
+        if !self.followed.iter().any(|r| r == run_id) {
+            self.followed.insert(0, run_id.to_string());
+            self.followed.truncate(400);
+        }
+    }
 }
 
 /// A scheduled run being followed: the turn last read, and whether the
@@ -65,6 +82,7 @@ pub(super) struct Schedules {
     /// The slot each run was started for.
     slots: HashMap<String, String>,
     last_look: Option<Instant>,
+    looking: bool,
     last_saved: Option<Instant>,
 }
 
@@ -81,7 +99,16 @@ impl Schedules {
                     .ok()
                     .and_then(|b| serde_json::from_slice::<ScheduleRecord>(&b).ok())
                 {
-                    Some(record) => {
+                    Some(mut record) => {
+                        // A record from before runs were remembered: its results name them.
+                        let seen: Vec<String> = record
+                            .results
+                            .iter()
+                            .filter_map(|r| r.run_id.clone())
+                            .collect();
+                        for run_id in seen {
+                            record.note_followed(&run_id);
+                        }
                         records.insert(record.spec.routine_id.clone(), record);
                     }
                     None => {
@@ -267,10 +294,13 @@ impl<W: Workloads> Controller<W> {
                 bundle_at: None,
                 cursor: since.to_rfc3339(),
                 results: Vec::new(),
+                followed: Vec::new(),
             });
-        // Turning a schedule on counts from now: the slots it was off are not owed.
-        if fresh || (!record.spec.enabled && spec.enabled) {
-            record.cursor = since.to_rfc3339();
+        // A new schedule counts from when it was approved. One turned back on
+        // (resumed, or approved again) counts from now: the time it was off is
+        // not owed, and is not "missed".
+        if !fresh && !record.spec.enabled && spec.enabled {
+            record.cursor = Local::now().to_rfc3339();
         }
         record.spec = spec;
         if let Some(memory) = memory {
@@ -292,7 +322,22 @@ impl<W: Workloads> Controller<W> {
         if !valid_id(routine_id) {
             return Err(AppError::validation("That routine ID is not valid."));
         }
-        self.schedules().records.remove(routine_id);
+        let profile = {
+            let mut schedules = self.schedules();
+            let removed = schedules.records.remove(routine_id);
+            // The agent's key goes with the last schedule that used it.
+            removed.and_then(|r| {
+                let profile = r.spec.profile_id;
+                let used = schedules
+                    .records
+                    .values()
+                    .any(|other| other.spec.profile_id == profile);
+                (!used).then_some(profile)
+            })
+        };
+        if let Some(profile) = profile {
+            self.secrets.delete_model(&profile);
+        }
         let _ = std::fs::remove_file(self.schedule_dir().join(format!("{routine_id}.json")));
         let _ = std::fs::remove_dir_all(self.state.run_dir(&bundle_key(routine_id)));
         Ok(())
@@ -336,7 +381,16 @@ impl<W: Workloads> Controller<W> {
                     .flatten(),
                 live_run: live.get(&r.spec.routine_id).cloned(),
                 credential: self.secrets.has_model(&r.spec.profile_id),
-                results: r.results.clone(),
+                // Only what the Mac has not taken, a few at a time and the
+                // oldest first, so an answer stays small however long it was away.
+                results: r
+                    .results
+                    .iter()
+                    .rev()
+                    .filter(|x| !x.acked)
+                    .take(RESULTS_PER_ANSWER)
+                    .cloned()
+                    .collect(),
             })
             .collect();
         out.sort_by(|a, b| a.spec.name.cmp(&b.spec.name));
@@ -377,16 +431,25 @@ impl<W: Workloads> Controller<W> {
         }
         {
             let mut schedules = self.schedules();
-            if schedules
-                .last_look
-                .is_some_and(|t| t.elapsed() < LOOK_EVERY)
+            // One look at a time: a slow engine delays the next, never doubles it.
+            if schedules.looking
+                || schedules
+                    .last_look
+                    .is_some_and(|t| t.elapsed() < LOOK_EVERY)
             {
                 return;
             }
+            schedules.looking = true;
             schedules.last_look = Some(Instant::now());
         }
-        self.fire_due().await;
-        self.follow_scheduled().await;
+        let work = async {
+            self.fire_due().await;
+            self.follow_scheduled().await;
+        };
+        if tokio::time::timeout(LOOK_LIMIT, work).await.is_err() {
+            tracing::warn!("a look at the schedules took too long and was stopped");
+        }
+        self.schedules().looking = false;
     }
 
     async fn fire_due(self: &Arc<Self>) {
@@ -419,7 +482,10 @@ impl<W: Workloads> Controller<W> {
                 let Some(time) = parse_time(&record.spec.time) else {
                     continue;
                 };
-                let after = parse_stamp(&record.cursor).unwrap_or(at);
+                // After a very long outage the newest slots count, not the oldest.
+                let after = parse_stamp(&record.cursor)
+                    .unwrap_or(at)
+                    .max(at - Span::days(MAX_SLOTS as i64));
                 let slots = slots_in(record.spec.days, time, after, at);
                 record.cursor = at.to_rfc3339();
                 if slots.is_empty() {
@@ -577,6 +643,9 @@ impl<W: Workloads> Controller<W> {
                 return;
             }
         }
+        if let Some(run_id) = &result.run_id {
+            record.note_followed(run_id);
+        }
         record.results.insert(0, result);
         prune(&mut record.results);
         let record = record.clone();
@@ -618,11 +687,7 @@ impl<W: Workloads> Controller<W> {
                 .schedules()
                 .records
                 .get(&seen.routine_id)
-                .is_some_and(|r| {
-                    r.results
-                        .iter()
-                        .any(|x| x.run_id.as_deref() == Some(run_id.as_str()))
-                });
+                .is_some_and(|r| r.followed.iter().any(|x| x == &run_id));
             if recorded {
                 continue;
             }
@@ -712,9 +777,16 @@ impl<W: Workloads> Controller<W> {
                         drive.followed_up = true;
                     }
                     let command_id = format!("{run_id}-prompt-{}", seen.turn + 1);
-                    let _ = self
+                    let sent = self
                         .prompt(&run_id, &command_id, routines::follow_up(&problems))
                         .await;
+                    if sent.is_err() {
+                        // Not delivered: look at this turn again next time.
+                        if let Some(drive) = self.schedules().driving.get_mut(&run_id) {
+                            drive.followed_up = false;
+                            drive.checked_turn = seen.turn.saturating_sub(1);
+                        }
+                    }
                 }
                 Err(problems) => {
                     self.record_result(
@@ -764,6 +836,7 @@ impl<W: Workloads> Controller<W> {
                 record.memory_updated_at = Some(now());
             }
         }
+        record.note_followed(run_id);
         record.results.insert(
             0,
             ScheduledResult {
@@ -903,6 +976,39 @@ mod tests {
         assert!(slots_in(ScheduleDays::Daily, time, at, at).is_empty());
         let before = local(2026, 10, 14, 6, 59);
         assert_eq!(slots_in(ScheduleDays::Daily, time, before, at).len(), 1);
+    }
+
+    #[test]
+    fn a_record_from_before_runs_were_remembered_learns_them_from_its_results() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut record = ScheduleRecord {
+            spec: serde_json::from_value(serde_json::json!({
+                "routine_id": "r1", "name": "n", "days": "daily", "time": "07:00",
+                "late_start": false, "enabled": true, "profile_id": "p",
+                "credential_key": "ANTHROPIC_API_KEY", "agent": "claude_code",
+                "provider": "anthropic", "model": "", "image": "i", "cpus": 1,
+                "memory_mib": 1024, "workspace_gib": 1, "time_limit_secs": 600,
+                "host_secrets": [], "prompt": "p", "previous_results": 0
+            }))
+            .unwrap(),
+            memory: String::new(),
+            memory_updated_at: None,
+            bundle_commit: None,
+            bundle_at: None,
+            cursor: "2026-10-01T00:00:00+00:00".into(),
+            results: Vec::new(),
+            followed: Vec::new(),
+        };
+        let mut r = missed_result(local(2026, 10, 1, 7, 0));
+        r.run_id = Some("run-1".into());
+        record.results.push(r);
+        std::fs::write(
+            dir.path().join("r1.json"),
+            serde_json::to_vec(&record).unwrap(),
+        )
+        .unwrap();
+        let loaded = Schedules::load(dir.path());
+        assert_eq!(loaded.records["r1"].followed, ["run-1"]);
     }
 
     #[test]

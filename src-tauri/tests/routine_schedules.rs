@@ -227,6 +227,51 @@ async fn a_schedule_is_off_until_approved_then_the_host_fires_it_and_the_app_tak
         .await
         .is_err());
 
+    // A schedule starts from a named branch or a commit, not from HEAD.
+    let moving = h
+        .routines
+        .save(SaveRoutineRequest {
+            id: Some(routine.id.clone()),
+            expected_version: routine.version,
+            name: routine.name.clone(),
+            repository_id: routine.repository_id.clone(),
+            profile_id: routine.profile_id.clone(),
+            host_id: routine.host_id.clone(),
+            start: "HEAD".into(),
+            prompt: routine.prompt.clone(),
+            time_limit_minutes: routine.time_limit_minutes,
+            memory: routine.memory.clone(),
+            previous_results: routine.previous_results,
+        })
+        .await
+        .unwrap();
+    let refused = h
+        .routines
+        .set_schedule(SetScheduleRequest {
+            routine_id: moving.id.clone(),
+            when: h.when(1),
+        })
+        .await
+        .unwrap_err();
+    assert!(refused.message.contains("not HEAD"), "{refused:?}");
+    let routine = h
+        .routines
+        .save(SaveRoutineRequest {
+            id: Some(moving.id.clone()),
+            expected_version: moving.version,
+            name: moving.name.clone(),
+            repository_id: moving.repository_id.clone(),
+            profile_id: moving.profile_id.clone(),
+            host_id: moving.host_id.clone(),
+            start: "main".into(),
+            prompt: moving.prompt.clone(),
+            time_limit_minutes: moving.time_limit_minutes,
+            memory: moving.memory.clone(),
+            previous_results: moving.previous_results,
+        })
+        .await
+        .unwrap();
+
     // Due in the next minute: off, and nothing on the host, until approved.
     h.routines
         .set_schedule(SetScheduleRequest {

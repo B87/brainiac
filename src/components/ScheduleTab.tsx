@@ -52,6 +52,8 @@ export default function ScheduleTab({
   const [approving, setApproving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const remote = routine.host_id !== "";
+  // What the host runs must not depend on what is checked out here.
+  const moving = routine.start.trim().toUpperCase() === "HEAD";
 
   const act = async (key: string, action: () => Promise<unknown>) => {
     setBusy(key);
@@ -75,6 +77,15 @@ export default function ScheduleTab({
       <p className="m-0 px-5 py-4 text-muted">
         A schedule runs on a run host, because this Mac sleeps. Choose a host
         for this routine in Definition first.
+      </p>
+    );
+  }
+  if (moving) {
+    return (
+      <p className="m-0 px-5 py-4 text-muted">
+        A schedule starts from a branch or a commit, not HEAD, so what the host
+        runs does not depend on what is checked out on this Mac. Change Start
+        from in Definition first.
       </p>
     );
   }

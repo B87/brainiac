@@ -180,9 +180,10 @@ async fn the_host_fires_a_due_slot_reads_the_briefing_and_keeps_it_until_acknowl
     let after = h.status().await;
     assert!(after.results.iter().all(|r| r.acked));
 
-    // It fired once for the slot, not again on the next look.
+    // It fired once for the slot, not again on the next look: nothing new
+    // waits (what was taken is not sent again).
     tokio::time::sleep(Duration::from_secs(6)).await;
-    assert_eq!(h.status().await.results.len(), 1);
+    assert!(h.status().await.results.is_empty());
 }
 
 #[tokio::test]
@@ -208,7 +209,12 @@ async fn a_slot_the_host_missed_is_recorded_and_a_late_start_runs_once() {
     h.runtime.delete_schedule(ROUTINE).await.unwrap();
     assert!(h.runtime.schedules().await.unwrap().0.is_empty());
 
-    // The same with a late start: one run, now.
+    // The same with a late start: one run, now. Removing the schedule took
+    // the code and the agent's key with it.
+    h.runtime
+        .put_model_credential("claude-code", CredentialKey::AnthropicApiKey, KEY.into())
+        .await
+        .unwrap();
     h.send_code().await;
     h.engine.get().briefings.push_back(BRIEFING.into());
     h.put(h.spec(3 * 3600, true), 6 * 3600).await;
@@ -249,4 +255,45 @@ async fn a_firing_that_cannot_start_says_why_and_a_bad_schedule_is_refused() {
     let mut named = h.spec(70, false);
     named.host_secrets = vec!["MODELKEY_CLAUDE_CODE".into()];
     assert!(h.runtime.put_schedule(put(named)).await.is_err());
+}
+
+#[tokio::test]
+async fn resuming_does_not_owe_the_time_it_was_off_and_the_agents_key_cannot_be_reached_as_a_secret(
+) {
+    let h = Harness::new().await;
+    h.runtime
+        .put_model_credential("claude-code", CredentialKey::AnthropicApiKey, KEY.into())
+        .await
+        .unwrap();
+    h.send_code().await;
+
+    // Off, with a slot three hours ago inside the time it was off.
+    let mut off = h.spec(3 * 3600, false);
+    off.enabled = false;
+    h.put(off, 6 * 3600).await;
+    // Turned on: the hours it was off are not owed, so nothing is "missed".
+    h.put(h.spec(3 * 3600, false), 6 * 3600).await;
+    tokio::time::sleep(Duration::from_secs(7)).await;
+    let status = h.status().await;
+    assert!(status.results.is_empty(), "{:?}", status.results);
+    assert!(status.next_fire.is_some());
+
+    // The sealed key is not a secret a client can set or remove by name.
+    let put = h
+        .runtime
+        .put_secret("MODELKEY_CLAUDE_CODE", "12345678abcd".into())
+        .await;
+    assert!(put.is_err());
+    assert!(h
+        .runtime
+        .delete_secret("MODELKEY_CLAUDE_CODE")
+        .await
+        .is_err());
+
+    // It goes with the last schedule that used it.
+    assert!(h.status().await.credential);
+    h.runtime.delete_schedule(ROUTINE).await.unwrap();
+    h.send_code().await;
+    h.put(h.spec(70, false), 600).await;
+    assert!(!h.status().await.credential);
 }

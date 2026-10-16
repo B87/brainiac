@@ -949,7 +949,7 @@ impl RunRuntime {
         self.done(Request::PutModelCredential {
             profile_id: profile_id.to_string(),
             key,
-            value,
+            value: super::controller::protocol::Sensitive(value),
         })
         .await
     }

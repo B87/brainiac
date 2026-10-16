@@ -173,7 +173,7 @@ pub enum Request {
     PutModelCredential {
         profile_id: String,
         key: CredentialKey,
-        value: String,
+        value: Sensitive,
     },
     /// What the engine on this host is, and whether it can attach loop devices.
     ProbeEngine {
@@ -332,6 +332,18 @@ pub fn valid_secret_name(name: &str) -> bool {
         && !name.ends_with("_PROXY")
         && !name.ends_with("_OPTIONS")
         && !name.ends_with("OPT")
+}
+
+/// A value that never shows in a log: its `Debug` is redacted. It is a plain
+/// string on the wire.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Sensitive(pub String);
+
+impl fmt::Debug for Sensitive {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("[redacted]")
+    }
 }
 
 /// When a schedule fires, in the host's local time.

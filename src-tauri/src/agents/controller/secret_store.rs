@@ -60,6 +60,14 @@ impl SecretStore {
 
     /// Seal a value and keep it under `name`, replacing any earlier one.
     pub async fn put(&self, name: &str, value: &str) -> AppResult<()> {
+        // A model credential is kept only through `put_model`.
+        if name.starts_with(MODEL_PREFIX) {
+            return Err(AppError::validation("That is not a secret's name."));
+        }
+        self.put_sealed(name, value).await
+    }
+
+    async fn put_sealed(&self, name: &str, value: &str) -> AppResult<()> {
         if !valid_secret_name(name) {
             return Err(AppError::validation(
                 "A secret's name must be capitals, digits and underscores, and not one the agent or the container uses.",
@@ -100,7 +108,12 @@ impl SecretStore {
 
     /// Seal a profile's model credential for schedules to start runs with.
     pub async fn put_model(&self, profile_id: &str, value: &str) -> AppResult<()> {
-        self.put(&Self::model_name(profile_id), value).await
+        self.put_sealed(&Self::model_name(profile_id), value).await
+    }
+
+    /// Forget a profile's model credential.
+    pub fn delete_model(&self, profile_id: &str) {
+        let _ = fs::remove_file(self.path(&Self::model_name(profile_id)));
     }
 
     /// Open it again when a schedule fires.
@@ -115,7 +128,7 @@ impl SecretStore {
 
     /// Forget a secret. Removing one that is not there is not an error.
     pub fn delete(&self, name: &str) -> AppResult<()> {
-        if !valid_secret_name(name) {
+        if !valid_secret_name(name) || name.starts_with(MODEL_PREFIX) {
             return Err(AppError::validation("That is not a secret's name."));
         }
         match fs::remove_file(self.path(name)) {

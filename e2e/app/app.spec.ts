@@ -726,6 +726,8 @@ test("A routine on a run host gets a schedule that is off until approved, is tur
   await form.getByLabel("Name", { exact: true }).fill("Morning check");
   await form.getByLabel("Prompt").fill("Check production errors.");
   await form.getByLabel("Runs on").selectOption({ label: "runner.example" });
+  // A schedule needs a branch, not HEAD.
+  await form.getByLabel("Start from").fill("main");
   await form.getByRole("button", { name: "Create Routine" }).click();
   await page.getByRole("tab", { name: "Schedule" }).click();
   await page.getByRole("button", { name: "Add a schedule…" }).click();

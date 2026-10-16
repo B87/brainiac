@@ -16,7 +16,7 @@ use super::{insert_or_ignore, previous_keys, RoutineService};
 use crate::agents::controller::protocol::{
     PutSchedule, ScheduleDays, ScheduleSpec, ScheduleStatus, ScheduledResult, ScheduledState,
 };
-use crate::agents::controller::schedule::parse_time;
+use crate::agents::controller::schedule::{parse_time, RESULTS_PER_ANSWER};
 use crate::agents::runtime::RunRuntime;
 use crate::agents::settings::{credential_key, image_for};
 use crate::models::{
@@ -151,12 +151,37 @@ impl RoutineService {
                 None => routine.profile_id.clone(),
             }),
         );
+        // How big a run is and which model it asks for change what it costs and does.
+        let host = settings.hosts.iter().find(|h| h.id == routine.host_id);
+        parts.insert(
+            "the model and resources".to_string(),
+            digest(&match profile {
+                Some(p) => format!(
+                    "{}|{}|{}|{}",
+                    p.model, p.cpus, p.memory_mib, p.workspace_gib
+                ),
+                None => String::new(),
+            }),
+        );
+        parts.insert(
+            "the earlier briefings it sees".to_string(),
+            digest(&routine.previous_results.to_string()),
+        );
         parts.insert(
             "the secrets and tools it gets".to_string(),
             digest(&format!(
-                "{}|{}",
+                "{}|{}|{}",
                 secrets.join(","),
-                profile.is_some_and(|p| p.tools)
+                profile.is_some_and(|p| p.tools),
+                // The layer's image: a rebuilt one is different code in the run.
+                match (profile, host) {
+                    (Some(p), Some(h)) if p.tools => h
+                        .tools_image
+                        .as_ref()
+                        .map(|i| i.id.clone())
+                        .unwrap_or_default(),
+                    _ => String::new(),
+                }
             )),
         );
         parts.insert(
@@ -291,6 +316,7 @@ impl RoutineService {
             ));
         }
         let when = request.when;
+        check_start(&routine)?;
         if parse_time(&when.time).is_none() {
             return Err(AppError::validation("The time is HH:MM, such as 07:00."));
         }
@@ -331,7 +357,16 @@ impl RoutineService {
         if !s.scheduled() {
             return Ok(());
         }
-        if s.approved_parts.is_some() {
+        let _one = self.syncing.lock().await;
+        // A host that was removed has nothing left to tell.
+        let host_exists = self
+            .agent_settings
+            .get()
+            .await?
+            .hosts
+            .iter()
+            .any(|h| h.id == routine.host_id);
+        if s.approved_parts.is_some() && host_exists {
             // The host has it: it must be told, or it would go on firing.
             let runtime = self.runs.runtime_of(&routine.host_id).await.map_err(|e| {
                 host_down(&e, "The schedule is still there and still runs on the host")
@@ -366,6 +401,9 @@ impl RoutineService {
         if !s.scheduled() {
             return Err(AppError::validation("This routine has no schedule yet."));
         }
+        check_start(&routine)?;
+        // One conversation with the host at a time, so a sync cannot undo this.
+        let one = self.syncing.lock().await;
         let runtime = self
             .runs
             .runtime_of(&routine.host_id)
@@ -420,6 +458,7 @@ impl RoutineService {
             })
             .await?;
         self.set_error(id, None);
+        drop(one);
         let _ = self.sync_host(&routine.host_id).await;
         Ok(())
     }
@@ -437,6 +476,7 @@ impl RoutineService {
                 "Approve the schedule before it runs again: something it depends on changed.",
             ));
         }
+        let _one = self.syncing.lock().await;
         if s.approved_parts.is_some() {
             let runtime = self
                 .runs
@@ -474,6 +514,7 @@ impl RoutineService {
         let Ok(routine) = self.routine(id).await else {
             return;
         };
+        let _one = self.syncing.lock().await;
         let enabled = !s.paused
             && self
                 .changed(&routine, &s)
@@ -796,6 +837,33 @@ impl RoutineService {
         status: &ScheduleStatus,
     ) -> AppResult<()> {
         let start_commit = status.bundle_commit.clone().unwrap_or_default();
+        let mut batch = status.clone();
+        // The host sends a few at a time; keep asking while it has more.
+        for _ in 0..8 {
+            let more = self
+                .import_batch(routine, runtime, &batch, &start_commit)
+                .await?
+                >= RESULTS_PER_ANSWER;
+            if !more {
+                break;
+            }
+            let (all, _) = runtime.schedules().await?;
+            match all.into_iter().find(|s| s.spec.routine_id == routine.id) {
+                Some(next) => batch = next,
+                None => break,
+            }
+        }
+        Ok(())
+    }
+
+    /// Take one batch; how many it held.
+    async fn import_batch(
+        self: &Arc<Self>,
+        routine: &Routine,
+        runtime: &RunRuntime,
+        status: &ScheduleStatus,
+        start_commit: &str,
+    ) -> AppResult<usize> {
         let mut taken = Vec::new();
         for r in status.results.iter().filter(|r| !r.acked) {
             if let Some(run_id) = &r.run_id {
@@ -803,7 +871,7 @@ impl RoutineService {
                 // still a briefing worth keeping.
                 if let Err(e) = self
                     .runs
-                    .adopt_routine_run(routine, run_id, &start_commit)
+                    .adopt_routine_run(routine, run_id, start_commit)
                     .await
                 {
                     tracing::warn!(run = %run_id, error = %e, "a scheduled run was not listed");
@@ -815,10 +883,11 @@ impl RoutineService {
                 .await?;
             taken.push(r.id.clone());
         }
+        let count = taken.len();
         if !taken.is_empty() {
             runtime.ack_schedule_results(&routine.id, taken).await?;
         }
-        Ok(())
+        Ok(count)
     }
 
     async fn result_of(&self, routine: &Routine, r: &ScheduledResult) -> BriefingResult {
@@ -878,6 +947,7 @@ impl RoutineService {
                 let mut stmt = conn.prepare(
                     "SELECT id, routine_id, run_id FROM briefing_results
                      WHERE cost_micros IS NULL AND run_id IS NOT NULL AND state <> 'working'
+                       AND created_at > datetime('now', '-21 days')
                      ORDER BY created_at DESC LIMIT 40",
                 )?;
                 let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
@@ -890,47 +960,83 @@ impl RoutineService {
         };
         for (result_id, routine_id, run_id) in pending {
             let Some((micros, currency)) = self.runs.reported_cost(&run_id).await else {
+                // Nothing reported, and the run is over: it will not be.
+                if self
+                    .runs
+                    .get(&run_id)
+                    .await
+                    .is_ok_and(|r| r.phase == crate::models::RunPhase::Ended)
+                {
+                    self.store_cost(&result_id, 0, "none").await;
+                }
                 continue;
             };
             let micros = micros as i64;
-            let (id, cur) = (result_id.clone(), currency.clone());
-            let _ = self
-                .history
-                .call(move |conn| {
-                    conn.execute(
-                        "UPDATE briefing_results SET cost_micros = ?2, cost_currency = ?3
-                         WHERE id = ?1",
-                        params![id, micros, cur],
-                    )?;
-                    Ok(())
-                })
-                .await;
-            // Over its ceiling: pause it, and say why.
-            let Ok(s) = self.sched(&routine_id).await else {
-                continue;
-            };
-            if currency == "USD" && s.scheduled() && !s.paused && micros > s.ceiling {
-                let note = format!(
-                    "Paused: a run cost ${:.2}, over its ${:.2} ceiling.",
-                    micros as f64 / 1e6,
-                    s.ceiling as f64 / 1e6
-                );
-                if self.set_paused(&routine_id, true).await.is_ok() {
-                    let key = routine_id.clone();
-                    let _ = self
-                        .core
-                        .call(move |conn| {
-                            conn.execute(
-                                "UPDATE routines SET notice = ?2 WHERE id = ?1",
-                                params![key, note],
-                            )?;
-                            Ok(())
-                        })
-                        .await;
+            // Over its ceiling: pause it first, and keep the cost unrecorded
+            // when that fails, so the next look tries again.
+            if let Ok(s) = self.sched(&routine_id).await {
+                if currency == "USD" && s.scheduled() && !s.paused && micros > s.ceiling {
+                    let note = format!(
+                        "Paused: a run cost ${:.2}, over its ${:.2} ceiling.",
+                        micros as f64 / 1e6,
+                        s.ceiling as f64 / 1e6
+                    );
+                    match self.set_paused(&routine_id, true).await {
+                        Ok(()) => {
+                            let key = routine_id.clone();
+                            let _ = self
+                                .core
+                                .call(move |conn| {
+                                    conn.execute(
+                                        "UPDATE routines SET notice = ?2 WHERE id = ?1",
+                                        params![key, note],
+                                    )?;
+                                    Ok(())
+                                })
+                                .await;
+                        }
+                        Err(e) => {
+                            self.set_error(
+                                &routine_id,
+                                Some(format!(
+                                    "A run cost more than its ceiling, but the schedule could not be paused: {}",
+                                    e.message
+                                )),
+                            );
+                            continue;
+                        }
+                    }
                 }
             }
+            self.store_cost(&result_id, micros, &currency).await;
         }
     }
+
+    async fn store_cost(&self, result_id: &str, micros: i64, currency: &str) {
+        let (id, cur) = (result_id.to_string(), currency.to_string());
+        let _ = self
+            .history
+            .call(move |conn| {
+                conn.execute(
+                    "UPDATE briefing_results SET cost_micros = ?2, cost_currency = ?3
+                     WHERE id = ?1",
+                    params![id, micros, cur],
+                )?;
+                Ok(())
+            })
+            .await;
+    }
+}
+
+/// A schedule starts from a named branch or a commit, never from `HEAD`: what
+/// the host runs must not depend on what is checked out here.
+fn check_start(routine: &Routine) -> AppResult<()> {
+    if routine.start.trim().eq_ignore_ascii_case("HEAD") {
+        return Err(AppError::validation(
+            "A schedule starts from a branch or a commit, not HEAD, so what the host runs does not depend on what is checked out here. Change Start from in Definition.",
+        ));
+    }
+    Ok(())
 }
 
 /// The host was due to run and has not been heard from since.

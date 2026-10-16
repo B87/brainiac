@@ -3106,6 +3106,11 @@ export class FakeBackend {
         const r = args.request as { routine_id: string; when: ScheduleWhen };
         const routine = this.routines.find((b) => b.id === r.routine_id);
         if (!routine) throw new Error("no such routine");
+        if (routine.start.trim().toUpperCase() === "HEAD")
+          throw {
+            code: "VALIDATION",
+            message: "A schedule starts from a branch or a commit, not HEAD.",
+          };
         if (routine.host_id === "")
           throw {
             code: "VALIDATION",
