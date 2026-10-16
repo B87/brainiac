@@ -58,7 +58,6 @@ const profile: AgentProfile = {
   memory_mib: 8192,
   workspace_gib: 20,
   model: "",
-  tools: false,
   missing: [],
   version: 3,
 };
@@ -157,7 +156,7 @@ describe("Settings → Agents", () => {
   });
 
   it("asks for the tools layer on a host that lacks it or has it out of date", () => {
-    const wants = { ...openrouter, tools: true };
+    const wants = openrouter;
     const host = (tools_image: AgentHost["tools_image"]): AgentHost => ({
       ...thisMac,
       tools_image,
@@ -169,7 +168,7 @@ describe("Settings → Agents", () => {
         },
       ],
     });
-    expect(runMissing(wants, host(null))).toEqual([
+    expect(runMissing(wants, host(null), true)).toEqual([
       "Build the image on This Mac to add Python and the Google Cloud CLI.",
     ]);
     const layer = {
@@ -177,11 +176,15 @@ describe("Settings → Agents", () => {
       id: "sha256:a",
       built_at: "2026-10-05T10:00:00Z",
     };
-    expect(runMissing(wants, host({ ...layer, current: false }))).toEqual([
-      "Rebuild the image on This Mac: the Python and Google Cloud CLI layer is out of date.",
-    ]);
-    expect(runMissing(wants, host({ ...layer, current: true }))).toEqual([]);
-    // A profile that does not ask for it is not held up by it.
+    expect(runMissing(wants, host({ ...layer, current: false }), true)).toEqual(
+      [
+        "Rebuild the image on This Mac: the Python and Google Cloud CLI layer is out of date.",
+      ],
+    );
+    expect(runMissing(wants, host({ ...layer, current: true }), true)).toEqual(
+      [],
+    );
+    // A run that does not ask for it is not held up by it.
     expect(runMissing(openrouter, host(null))).toEqual([]);
   });
 

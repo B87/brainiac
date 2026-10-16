@@ -261,7 +261,7 @@ pub fn run() {
             let explain_runs = Arc::clone(&runs);
             let explain_agent_settings = Arc::clone(&agent_settings);
             let (explain_core, explain_history) = (stores.core.clone(), stores.history.clone());
-            app.manage(Arc::new(agents::host_jobs::HostJobService::new(
+            let host_jobs = Arc::new(agents::host_jobs::HostJobService::new(
                 agent_hosts,
                 Arc::clone(&runs),
                 Arc::clone(&agent_settings),
@@ -270,7 +270,8 @@ pub fn run() {
                 // The window says it too; a notification is for when Brainiac
                 // is not the active app (SPEC.md, Host jobs).
                 events::notifier(handle.clone(), events::Notify::WhenInactive),
-            )));
+            ));
+            app.manage(Arc::clone(&host_jobs));
             // Reconnect to runs left live or uncollected, and apply retention
             // once an hour (SPEC.md, Leaving and coming back; Deleting and keeping).
             let reconnecting = Arc::clone(&runs);
@@ -287,7 +288,7 @@ pub fn run() {
                 accounts,
                 Arc::clone(&connections),
                 agent_settings,
-                named_secrets,
+                Arc::clone(&named_secrets),
             )));
             app.manage(Arc::new(databases::health::HealthService::new(
                 Arc::clone(&connections),
@@ -320,6 +321,8 @@ pub fn run() {
                 explain_history.clone(),
                 Arc::clone(&explain_runs),
                 Arc::clone(&explain_agent_settings),
+                Arc::clone(&named_secrets),
+                host_jobs,
                 run_changes.clone(),
             );
             app.manage(Arc::clone(&routines));
@@ -590,7 +593,6 @@ pub fn run() {
             commands::share_secret_with_host,
             commands::remove_secret_from_host,
             commands::remove_unlisted_host_secret,
-            commands::set_profile_tools,
             commands::list_routines,
             commands::list_routine_results,
             commands::set_routine_schedule,
@@ -604,8 +606,8 @@ pub fn run() {
             commands::save_briefing_as_note,
             commands::create_briefing_task,
             commands::create_briefing_note,
-            commands::get_profile_secrets,
-            commands::set_profile_secrets,
+            commands::named_secret_usage,
+            commands::send_run_secrets,
             commands::get_agent_host_job_log,
             commands::remove_agent_host,
             commands::get_run_controller_status,

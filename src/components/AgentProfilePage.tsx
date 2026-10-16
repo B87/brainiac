@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import {
   credentialWord,
   dayLabel,
@@ -33,7 +33,6 @@ import {
 } from "../lib/secrets";
 import { parseInRange, requestSettings } from "../lib/settings";
 import { HostPill } from "./HostJobView";
-import ProfileSecretsGroup from "./ProfileSecretsGroup";
 import { Breadcrumb } from "./RunHostPage";
 import SecretSourceFields from "./SecretSourceFields";
 import { CommitField, Group, Hint } from "./SettingsPanes";
@@ -303,37 +302,7 @@ export default function AgentProfilePage({
         </div>
       </Group>
 
-      <Group label="Tools">
-        <div className="settings-group">
-          <label className="settings-row">
-            <input
-              type="checkbox"
-              checked={profile.tools}
-              disabled={busy}
-              onChange={(e) =>
-                void act(() =>
-                  ipc.setProfileTools(profile.id, e.target.checked),
-                )
-              }
-            />
-            <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-              <span className="font-medium">Python and Google Cloud CLI</span>
-              <Hint>
-                Runs use the image with Python 3 and gcloud added, for scripts
-                that check services. Brainiac builds the layer from its own
-                recipe with the next Build image on each host, about 640 MB
-                larger; it installs no Python packages, so a script can use the
-                standard library only.
-              </Hint>
-            </span>
-          </label>
-        </div>
-      </Group>
-
-      <ProfileSecretsGroup
-        key={`secrets-${profile.id}`}
-        profileId={profile.id}
-      />
+      <UsedBy profileId={profile.id} />
     </div>
   );
 }
@@ -563,5 +532,49 @@ function CredentialSection({
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * The routines that run with this agent. An agent is only the AI and who
+ * pays: the access and tools a run gets are chosen by the run or routine.
+ */
+function UsedBy({ profileId }: { profileId: string }) {
+  const [names, setNames] = useState<string[] | null>(null);
+  useEffect(() => {
+    let alive = true;
+    ipc
+      .listRoutines()
+      .then(
+        (all) =>
+          alive &&
+          setNames(
+            all
+              .filter((o) => o.routine.profile_id === profileId)
+              .map((o) => `${o.routine.name} · ${o.host_name}`),
+          ),
+      )
+      .catch(() => alive && setNames([]));
+    return () => {
+      alive = false;
+    };
+  }, [profileId]);
+  return (
+    <Group label="Used by">
+      <div className="settings-group">
+        <div className="settings-row flex-col items-start gap-1">
+          {names === null ? (
+            <span className="text-muted">Loading…</span>
+          ) : names.length === 0 ? (
+            <span className="text-muted">No routine runs with this agent.</span>
+          ) : (
+            names.map((n) => <span key={n}>{n}</span>)
+          )}
+          <Hint>
+            Secrets and tools are chosen by each run or routine, not here.
+          </Hint>
+        </div>
+      </div>
+    </Group>
   );
 }

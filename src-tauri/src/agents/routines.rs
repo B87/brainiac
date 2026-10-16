@@ -47,6 +47,10 @@ pub struct RoutineService {
     history: Db,
     runs: Arc<AgentRunService>,
     agent_settings: Arc<AgentSettingsService>,
+    /// Sends a routine's access to its host before a run or with an approval.
+    named: Arc<super::named_secrets::NamedSecretService>,
+    /// Prepares a host (its helper, its image) for an approved schedule.
+    jobs: Arc<super::host_jobs::HostJobService>,
     run_events: broadcast::Sender<String>,
     // `JoinHandle`s of the tasks following a run, by result ID, so one result
     // is followed once.
@@ -63,6 +67,8 @@ impl RoutineService {
         history: Db,
         runs: Arc<AgentRunService>,
         agent_settings: Arc<AgentSettingsService>,
+        named: Arc<super::named_secrets::NamedSecretService>,
+        jobs: Arc<super::host_jobs::HostJobService>,
         run_events: broadcast::Sender<String>,
     ) -> Arc<Self> {
         Arc::new(RoutineService {
@@ -70,6 +76,8 @@ impl RoutineService {
             history,
             runs,
             agent_settings,
+            named,
+            jobs,
             run_events,
             driving: Mutex::new(HashMap::new()),
             sync_errors: Mutex::new(HashMap::new()),
@@ -169,6 +177,16 @@ impl RoutineService {
             return Err(AppError::validation("Choose a repository and an agent."));
         }
         let memory = clean(&request.memory, MAX_MEMORY);
+        let mut secret_ids = request.secret_ids.clone();
+        secret_ids.sort();
+        secret_ids.dedup();
+        if !secret_ids.is_empty() && request.host_id.is_empty() {
+            return Err(AppError::validation(
+                "Secrets reach a run only on a Linux run host. Choose a host, or clear the access.",
+            ));
+        }
+        // Each must exist; the names are what a run asks its host for.
+        self.agent_settings.secret_names(&secret_ids).await?;
         if request.previous_results > MAX_PREVIOUS {
             return Err(AppError::validation(
                 "A run can be shown at most ten earlier results.",
@@ -190,7 +208,7 @@ impl RoutineService {
                            host_id = ?5, start = ?6, prompt = ?7, time_limit_minutes = ?8,
                            memory_updated_at = CASE WHEN memory = ?11 THEN memory_updated_at ELSE ?9 END,
                            memory_unsent = CASE WHEN memory = ?11 THEN memory_unsent ELSE 1 END,
-                           memory = ?11, previous_results = ?12,
+                           memory = ?11, previous_results = ?12, tools = ?13,
                            version = version + 1, updated_at = ?9
                          WHERE id = ?1 AND version = ?10",
                         params![
@@ -205,7 +223,8 @@ impl RoutineService {
                             now,
                             request.expected_version,
                             memory,
-                            request.previous_results
+                            request.previous_results,
+                            request.tools
                         ],
                     )?;
                     if changed == 0 {
@@ -218,8 +237,8 @@ impl RoutineService {
                     conn.execute(
                         "INSERT INTO routines (id, name, repository_id, profile_id, host_id,
                            start, prompt, time_limit_minutes, created_at, updated_at, memory,
-                           memory_updated_at, previous_results)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?10, ?11, ?12)",
+                           memory_updated_at, previous_results, tools)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?10, ?11, ?12, ?13)",
                         params![
                             id,
                             name,
@@ -232,8 +251,19 @@ impl RoutineService {
                             now,
                             memory,
                             (!memory.is_empty()).then(|| now.clone()),
-                            request.previous_results
+                            request.previous_results,
+                            request.tools
                         ],
+                    )?;
+                }
+                conn.execute(
+                    "DELETE FROM routine_secrets WHERE routine_id = ?1",
+                    params![id],
+                )?;
+                for secret in &secret_ids {
+                    conn.execute(
+                        "INSERT INTO routine_secrets (routine_id, secret_id) VALUES (?1, ?2)",
+                        params![id, secret],
                     )?;
                 }
                 Ok(())
@@ -371,6 +401,14 @@ impl RoutineService {
             .history
             .call(move |conn| earlier_results(conn, &id, count))
             .await?;
+        // The routine's access goes to its host first: Run now was the
+        // user's go-ahead, and the routine's page lists what it sends.
+        if !routine.secret_ids.is_empty() {
+            let runtime = self.runs.runtime_of(&routine.host_id).await?;
+            self.named
+                .ensure_on_host(&routine.secret_ids, &routine.host_id, &runtime)
+                .await?;
+        }
         self.runs
             .start(StartRunRequest {
                 repository_id: routine.repository_id.clone(),
@@ -390,6 +428,8 @@ impl RoutineService {
                     id: routine.id.clone(),
                     name: routine.name.clone(),
                 }),
+                secret_ids: routine.secret_ids.clone(),
+                tools: routine.tools,
             })
             .await
     }
@@ -1076,7 +1116,7 @@ fn severity_word(s: BriefingSeverity) -> &'static str {
 // Storage
 // ---------------------------------------------------------------------------
 
-const COLUMNS: &str = "id, name, repository_id, profile_id, host_id, start, prompt, time_limit_minutes, version, memory, memory_updated_at, previous_results";
+const COLUMNS: &str = "id, name, repository_id, profile_id, host_id, start, prompt, time_limit_minutes, version, memory, memory_updated_at, previous_results, tools, (SELECT group_concat(secret_id, ',') FROM routine_secrets WHERE routine_id = routines.id)";
 
 fn from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Routine> {
     Ok(Routine {
@@ -1092,6 +1132,15 @@ fn from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Routine> {
         memory: r.get(9)?,
         memory_updated_at: r.get(10)?,
         previous_results: r.get(11)?,
+        tools: r.get::<_, i64>(12)? != 0,
+        secret_ids: {
+            let mut ids: Vec<String> = r
+                .get::<_, Option<String>>(13)?
+                .map(|t| t.split(',').map(str::to_string).collect())
+                .unwrap_or_default();
+            ids.sort();
+            ids
+        },
     })
 }
 

@@ -1,14 +1,18 @@
 import { useEffect, useState } from "react";
 import { durationLabel, providerName } from "../lib/agentRuns";
 import { relativeTime } from "../lib/format";
+import { currentStep, useHostJobsContext } from "../lib/hostJobs";
 import {
+  type AgentHost,
   type AgentSettings,
   errorMessage,
   ipc,
+  type NamedSecret,
   type RoutineOverview,
   type ScheduleWhen,
 } from "../lib/ipc";
 import { hostTime, scheduleWords, usd } from "../lib/routines";
+import { toSend, useHostCopies } from "./AccessPicker";
 import Dialog from "./Dialog";
 
 const WEEKDAYS = [
@@ -51,6 +55,8 @@ export default function ScheduleTab({
   const [busy, setBusy] = useState<string | null>(null);
   const [approving, setApproving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The host's job while it is prepared for this schedule.
+  const job = useHostJobsContext()[routine.host_id];
   const remote = routine.host_id !== "";
   // What the host runs must not depend on what is checked out here.
   const moving = routine.start.trim().toUpperCase() === "HEAD";
@@ -212,7 +218,15 @@ export default function ScheduleTab({
       {schedule && (
         <Section title="State">
           <Row label="Approval">
-            {schedule.state === "needs_approval" ? (
+            {schedule.state === "preparing" ? (
+              <span>
+                Approved. Preparing {item.host_name}
+                {job?.state === "running"
+                  ? `: ${job.steps[currentStep(job)]?.title ?? ""}`
+                  : ""}
+                . The schedule goes there when that is done.
+              </span>
+            ) : schedule.state === "needs_approval" ? (
               <span className="text-dirty">
                 Needs approval: {schedule.changed.join(", ")}.
               </span>
@@ -227,9 +241,11 @@ export default function ScheduleTab({
             <span>
               {schedule.state === "paused"
                 ? "Paused"
-                : schedule.state === "needs_approval"
-                  ? "Off until approved"
-                  : (hostTime(schedule.next_fire) ?? "Not known yet")}
+                : schedule.state === "preparing"
+                  ? `When ${item.host_name} is prepared`
+                  : schedule.state === "needs_approval"
+                    ? "Off until approved"
+                    : (hostTime(schedule.next_fire) ?? "Not known yet")}
             </span>
             <Hint>
               {schedule.synced_at
@@ -312,20 +328,22 @@ export default function ScheduleTab({
             Save schedule…
           </button>
         )}
-        {schedule && schedule.state !== "needs_approval" && (
-          <button
-            type="button"
-            className="btn"
-            disabled={busy !== null}
-            onClick={() =>
-              void act("pause", () =>
-                ipc.pauseRoutine(routine.id, schedule.state !== "paused"),
-              )
-            }
-          >
-            {schedule.state === "paused" ? "Resume" : "Pause"}
-          </button>
-        )}
+        {schedule &&
+          schedule.state !== "needs_approval" &&
+          schedule.state !== "preparing" && (
+            <button
+              type="button"
+              className="btn"
+              disabled={busy !== null}
+              onClick={() =>
+                void act("pause", () =>
+                  ipc.pauseRoutine(routine.id, schedule.state !== "paused"),
+                )
+              }
+            >
+              {schedule.state === "paused" ? "Resume" : "Pause"}
+            </button>
+          )}
         {schedule && (
           <button
             type="button"
@@ -372,30 +390,30 @@ function ApproveDialog({
 }) {
   const { routine } = item;
   const [settings, setSettings] = useState<AgentSettings | null>(null);
-  const [secrets, setSecrets] = useState<string[]>([]);
+  const [secrets, setSecrets] = useState<NamedSecret[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [readOnly, setReadOnly] = useState(false);
   useEffect(() => {
     let alive = true;
-    Promise.all([
-      ipc.getAgentSettings(),
-      ipc.getProfileSecrets(routine.profile_id),
-      ipc.listNamedSecrets(),
-    ])
-      .then(([s, ids, all]) => {
+    Promise.all([ipc.getAgentSettings(), ipc.listNamedSecrets()])
+      .then(([s, all]) => {
         if (!alive) return;
         setSettings(s);
-        setSecrets(
-          all.filter((n) => ids.includes(n.id)).map((n) => n.env_name),
-        );
+        setSecrets(all.filter((n) => routine.secret_ids.includes(n.id)));
       })
       .catch((e) => alive && setError(errorMessage(e)));
     return () => {
       alive = false;
     };
-  }, [routine.profile_id]);
+  }, [routine.secret_ids]);
+  const held = useHostCopies(routine.host_id);
+  const sending = toSend(routine.secret_ids, held);
   const profile = settings?.profiles.find((p) => p.id === routine.profile_id);
   const host = settings?.hosts.find((h) => h.id === routine.host_id);
+  // What approving does to the host before the schedule can go there.
+  const prepare = host ? preparation(host, routine.tools) : [];
+  const confirmed = sending.length === 0 || readOnly;
   return (
     <Dialog
       title="Approve schedule"
@@ -414,7 +432,7 @@ function ApproveDialog({
           <button
             type="button"
             className="btn btn-sm btn-primary"
-            disabled={busy || !profile}
+            disabled={busy || !profile || !confirmed}
             onClick={() => {
               setBusy(true);
               setError(null);
@@ -427,7 +445,9 @@ function ApproveDialog({
                 });
             }}
           >
-            Approve and Enable
+            {prepare.length > 0
+              ? `Approve and Prepare ${host?.name ?? "the Host"}`
+              : "Approve and Enable"}
           </button>
         </>
       }
@@ -461,13 +481,34 @@ function ApproveDialog({
           <strong>Network:</strong> unrestricted. A run can reach any site.
         </li>
         <li>
-          <strong>Secrets:</strong>{" "}
-          {secrets.length ? secrets.join(", ") : "none"}
-          {profile?.tools
-            ? ". Python and Google Cloud CLI are in its image"
-            : ""}
-          .
+          <strong>Access:</strong>{" "}
+          {secrets.length === 0
+            ? "none."
+            : secrets.map((n, i) => (
+                <span key={n.id}>
+                  {i > 0 && ", "}
+                  <code className="mono">{n.env_name}</code>{" "}
+                  <span className="text-muted">
+                    ({n.as_file ? "a file" : "a value"}
+                    {sending.includes(n.env_name)
+                      ? `, sent to ${host?.name ?? "the host"} now`
+                      : held
+                        ? ", already there"
+                        : ""}
+                    )
+                  </span>
+                </span>
+              ))}
+          {routine.tools &&
+            " Python and the Google Cloud CLI are in its image."}
         </li>
+        {prepare.length > 0 && (
+          <li>
+            <strong>Host changes:</strong> {prepare.join(", and ")}. The
+            schedule goes to {host?.name} when that is done; you can close this
+            meanwhile.
+          </li>
+        )}
         <li>
           <strong>Limits:</strong> {durationLabel(routine.time_limit_minutes)}{" "}
           and a {usd(draft.cost_ceiling_micros)} cost ceiling, checked after
@@ -478,6 +519,19 @@ function ApproveDialog({
           proposes tasks, notes and issues, which wait for you.
         </li>
       </ul>
+      {sending.length > 0 && (
+        <label className="mt-3 flex items-start gap-2 rounded-md bg-panel px-3 py-2">
+          <input
+            type="checkbox"
+            checked={readOnly}
+            onChange={(e) => setReadOnly(e.target.checked)}
+          />
+          <span>
+            {sending.join(", ")} can read and nothing more. Brainiac cannot
+            check what a token allows, and a run can print it.
+          </span>
+        </label>
+      )}
     </Dialog>
   );
 }
@@ -516,4 +570,17 @@ function Row({
 
 function Hint({ children }: { children: React.ReactNode }) {
   return <span className="text-[12px] text-muted">{children}</span>;
+}
+
+/** What preparing the host for a routine does, in words; empty when ready. */
+function preparation(host: AgentHost, tools: boolean): string[] {
+  const steps: string[] = [];
+  if (host.upgrade_available)
+    steps.push(
+      `upgrade its Brainiac helper${host.available_build ? ` to ${host.available_build}` : ""}`,
+    );
+  const built = (i: AgentHost["image"]) => !!i?.current;
+  if (!built(host.image) || (tools && !built(host.tools_image)))
+    steps.push("build its image with Python and the Google Cloud CLI");
+  return steps;
 }

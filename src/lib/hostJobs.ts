@@ -83,6 +83,7 @@ const RUNNING: Record<HostJobKind, string> = {
   build_image: "Building the image",
   test: "Testing",
   setup: "Setting up",
+  prepare: "Preparing for a routine",
 };
 
 const ENDED: Record<HostJobKind, string> = {
@@ -91,6 +92,7 @@ const ENDED: Record<HostJobKind, string> = {
   build_image: "Image build",
   test: "Test",
   setup: "Setup",
+  prepare: "Preparation",
 };
 
 /** What the status bar and a host's row say: "upgrading", "testing". */
@@ -100,6 +102,7 @@ const VERB: Record<HostJobKind, string> = {
   build_image: "building its image",
   test: "testing",
   setup: "setting up",
+  prepare: "preparing for a routine",
 };
 
 export function jobTitle(job: HostJob): string {
@@ -242,6 +245,7 @@ export function jobOutcome(
       build_image: `The image build on ${name} failed`,
       test: `${name}'s test did not pass`,
       setup: `Setting up ${name} failed`,
+      prepare: `Preparing ${name} for a routine failed`,
     };
     return {
       title: `${what[job.kind]}${where}`,

@@ -4,6 +4,7 @@ import {
   errorMessage,
   ipc,
   type NamedSecret,
+  type NamedSecretUsage,
   type SecretEntry,
   type SecretsOverview,
 } from "../lib/ipc";
@@ -27,6 +28,7 @@ const ownerKey = (o: CredentialOwner) =>
 export default function SecretsSection() {
   const [overview, setOverview] = useState<SecretsOverview | null>(null);
   const [named, setNamed] = useState<NamedSecret[]>([]);
+  const [usage, setUsage] = useState<NamedSecretUsage[]>([]);
   // A form is open to add a secret (null) or to change one.
   const [editing, setEditing] = useState<NamedSecret | null | undefined>(
     undefined,
@@ -42,6 +44,10 @@ export default function SecretsSection() {
       .listNamedSecrets()
       .then(setNamed)
       .catch((e) => setError(errorMessage(e)));
+    ipc
+      .namedSecretUsage()
+      .then(setUsage)
+      .catch(() => {});
   };
   useEffect(load, []);
 
@@ -79,6 +85,10 @@ export default function SecretsSection() {
             entry={entry}
             onOverview={setOverview}
             onEdit={secret ? () => setEditing(secret) : undefined}
+            usage={
+              secret ? usage.find((u) => u.secret_id === secret.id) : undefined
+            }
+            onCopiesChanged={load}
             onDelete={
               secret
                 ? async () => {
@@ -111,9 +121,9 @@ export default function SecretsSection() {
               Add Secret…
             </button>
             <span className="text-[11.5px] text-muted">
-              A token or key of your own, such as a Sentry token, that a run
-              host can keep for runs it starts without this Mac. Share it from
-              the host's page.
+              A token or key of your own, such as a Sentry token. A run or
+              routine chooses it under Access; a run host gets a sealed copy
+              when one of them first needs it there.
             </span>
           </div>
         )
@@ -130,9 +140,14 @@ function SecretRow({
   onOverview,
   onEdit,
   onDelete,
+  usage,
+  onCopiesChanged,
 }: {
   entry: SecretEntry;
   onOverview: (o: SecretsOverview) => void;
+  /** A named secret: the routines that use it and its copies on hosts. */
+  usage?: NamedSecretUsage;
+  onCopiesChanged?: () => void;
   /** A named secret can be changed here. */
   onEdit?: () => void;
   onDelete?: () => Promise<void>;
@@ -246,6 +261,63 @@ function SecretRow({
           )}
         </div>
       </div>
+      {usage && (
+        <div className="flex flex-col gap-1 text-[12px]">
+          <span className="text-fg-2">
+            Used by{" "}
+            {usage.routines.length ? usage.routines.join(", ") : "no routine"}
+          </span>
+          {usage.copies.map((c) => (
+            <div key={c.host_id} className="flex items-center gap-2">
+              <span
+                className={c.state === "shared" ? "text-fg-2" : "text-conflict"}
+              >
+                {c.state === "shared"
+                  ? `On ${c.host_name}`
+                  : c.state === "failed"
+                    ? `${c.host_name}: did not finish`
+                    : `Out of date on ${c.host_name}: its runs get the old value`}
+              </span>
+              {c.shared_at && (
+                <span className="text-muted">
+                  sent {new Date(c.shared_at).toLocaleString()}
+                </span>
+              )}
+              <span className="flex-1" />
+              {c.state !== "shared" && (
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  disabled={busy}
+                  onClick={() =>
+                    void act(async () => {
+                      await ipc.shareSecretWithHost(usage.secret_id, c.host_id);
+                      onCopiesChanged?.();
+                      return null;
+                    })
+                  }
+                >
+                  Send Again
+                </button>
+              )}
+              <button
+                type="button"
+                className="btn btn-sm"
+                disabled={busy}
+                onClick={() =>
+                  void act(async () => {
+                    await ipc.removeSecretFromHost(usage.secret_id, c.host_id);
+                    onCopiesChanged?.();
+                    return null;
+                  })
+                }
+              >
+                Remove from {c.host_name}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
       {refreshed && (
         <p className="m-0 text-[12px] text-muted">
           Forgotten: it is read, or asked for, again when next used.

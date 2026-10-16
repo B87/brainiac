@@ -60,7 +60,7 @@ export function shareLabel(state: HostSecretState): string {
     case "failed":
       return "Retry";
     default:
-      return "Share Again";
+      return "Send Again";
   }
 }
 

@@ -3481,8 +3481,6 @@ pub struct AgentProfile {
     /// model name, such as `gpt-6.1-sol` or, on OpenRouter,
     /// `anthropic/claude-sonnet-5-5`.
     pub model: String,
-    /// Runs use the image with Python and the Google Cloud CLI added.
-    pub tools: bool,
     /// What this profile still lacks before any host can run it (the
     /// token or key, the model), in the order to do it.
     pub missing: Vec<String>,
@@ -3587,6 +3585,9 @@ pub enum HostJobKind {
     Test,
     /// Add host: install, build the image, and test, one after another.
     Setup,
+    /// For an approved routine: upgrade the helper if it is older, then build
+    /// the image if it is not current.
+    Prepare,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -3985,6 +3986,13 @@ pub struct StartRunRequest {
     /// Set when a routine starts the run: the run is titled by the routine's
     /// name and linked to it in Runs.
     pub routine: Option<RunRoutine>,
+    /// The named secrets (Settings → Secrets) the run gets, by ID. Only a
+    /// Linux run host can give them; the caller sends any the host lacks first.
+    #[serde(default)]
+    pub secret_ids: Vec<String>,
+    /// The run uses the image with Python and the Google Cloud CLI.
+    #[serde(default)]
+    pub tools: bool,
 }
 
 /// The routine a run belongs to.
@@ -4239,6 +4247,28 @@ pub struct NamedSecret {
     pub version: i64,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// Where a named secret is used and which hosts hold a copy, from what
+/// Brainiac recorded (Settings → Secrets). The hosts are not asked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct NamedSecretUsage {
+    pub secret_id: String,
+    /// The names of the routines whose runs get it.
+    pub routines: Vec<String>,
+    pub copies: Vec<SecretCopy>,
+}
+
+/// One host's copy of a named secret.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SecretCopy {
+    pub host_id: String,
+    pub host_name: String,
+    pub state: HostSecretState,
+    pub shared_at: Option<String>,
+    pub failure: Option<String>,
 }
 
 /// Settings → Secrets, **Add secret…** and **Edit**.
@@ -5034,6 +5064,11 @@ pub struct Routine {
     pub start: String,
     pub prompt: String,
     pub time_limit_minutes: u32,
+    /// The named secrets its runs get, by ID: the routine is where the agent,
+    /// the host and the access meet (docs/design/routines-ux.md).
+    pub secret_ids: Vec<String>,
+    /// Its runs use the image with Python and the Google Cloud CLI.
+    pub tools: bool,
     /// Text the agent rewrites after each run and the user can edit; part of
     /// the next run's prompt.
     pub memory: String,
@@ -5058,6 +5093,8 @@ pub struct SaveRoutineRequest {
     pub start: String,
     pub prompt: String,
     pub time_limit_minutes: u32,
+    pub secret_ids: Vec<String>,
+    pub tools: bool,
     pub memory: String,
     pub previous_results: u32,
 }
@@ -5207,6 +5244,9 @@ pub enum ScheduleState {
     Overdue,
     /// The host cannot be reached now; nothing is known to be missed.
     Unreachable,
+    /// Approved; the host's helper is being upgraded or its image built, and
+    /// the schedule is sent once that is done.
+    Preparing,
 }
 
 /// A routine's schedule and what is known of the host's side of it.

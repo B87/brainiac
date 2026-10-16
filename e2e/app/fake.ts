@@ -869,7 +869,6 @@ function agentProfile(
     memory_mib: 8192,
     workspace_gib: 20,
     model: "",
-    tools: false,
     missing: [],
     version: 1,
   };
@@ -1179,7 +1178,6 @@ export class FakeBackend {
 
   /** Settings → Secrets, named secrets; and what was shared with hosts. */
   namedSecrets: NamedSecret[] = [];
-  profileSecrets = new Map<string, string[]>();
   /** What each host holds, by variable name; and what Brainiac sent. */
   hostCopies = new Map<string, Set<string>>();
   hostShares = new Map<
@@ -1281,6 +1279,20 @@ export class FakeBackend {
         made_id: null,
       },
     ];
+  }
+
+  /** What sending a secret to a host leaves: a copy at its revision. */
+  sendCopy(hostId: string, secretId: string) {
+    const secret = this.namedSecrets.find((n) => n.id === secretId);
+    if (!secret || !hostId) return;
+    this.hostShares.set(`${hostId}:${secret.id}`, {
+      revision: secret.credential.revision,
+      at: new Date().toISOString(),
+      failure: null,
+    });
+    const copies = this.hostCopies.get(hostId) ?? new Set<string>();
+    copies.add(secret.env_name);
+    this.hostCopies.set(hostId, copies);
   }
 
   hostSecrets(hostId: string): HostSecrets {
@@ -2267,21 +2279,14 @@ export class FakeBackend {
       case "build_agent_image": {
         this.readyThisMac();
         const local = this.agentSettings.hosts.find((h) => h.kind === "local");
-        if (local && this.agentSettings.profiles.some((p) => p.tools))
+        // The tools layer is built with every image.
+        if (local)
           local.tools_image = {
             name: "brainiac-agents:7a1d52c0e9b3",
             id: "sha256:7a1d52c0e9b3",
             built_at: "2026-10-05T12:05:00Z",
             current: true,
           };
-        return this.agentSettings;
-      }
-      case "set_profile_tools": {
-        const profile = this.agentSettings.profiles.find(
-          (p) => p.id === args.profileId,
-        );
-        if (!profile) throw new Error("no such profile");
-        profile.tools = args.on === true;
         return this.agentSettings;
       }
       case "agent_dockerfile":
@@ -2338,7 +2343,9 @@ export class FakeBackend {
           deadline_at: null,
           created_at: new Date().toISOString(),
           starting: "copy",
-          host_secrets: (this.profileSecrets.get(profile.id) ?? [])
+          host_secrets: (
+            (args.request as { secret_ids?: string[] }).secret_ids ?? []
+          )
             .map((id) => this.namedSecrets.find((n) => n.id === id)?.env_name)
             .filter((n): n is string => !!n),
         });
@@ -2921,6 +2928,10 @@ export class FakeBackend {
       case "get_host_secrets":
         return this.hostSecrets(String(args.hostId));
       case "share_secret_with_host": {
+        if (!this.shareFailure) {
+          this.sendCopy(String(args.hostId), String(args.id));
+          return this.hostSecrets(String(args.hostId));
+        }
         const hostId = String(args.hostId);
         const secret = this.namedSecrets.find((n) => n.id === args.id);
         if (!secret) throw new Error("no such secret");
@@ -2959,14 +2970,35 @@ export class FakeBackend {
         this.hostCopies.get(hostId)?.delete(secret.env_name);
         return this.hostSecrets(hostId);
       }
-      case "get_profile_secrets":
-        return this.profileSecrets.get(String(args.profileId)) ?? [];
-      case "set_profile_secrets": {
-        const ids = (args.secretIds as string[]).filter((id) =>
-          this.namedSecrets.some((n) => n.id === id),
-        );
-        this.profileSecrets.set(String(args.profileId), ids);
-        return ids;
+      case "named_secret_usage":
+        return this.namedSecrets.map((n) => ({
+          secret_id: n.id,
+          routines: this.routines
+            .filter((r) => r.secret_ids.includes(n.id))
+            .map((r) => r.name),
+          copies: [...this.hostShares.entries()]
+            .filter(([key]) => key.endsWith(`:${n.id}`))
+            .map(([key, share]) => {
+              const hostId = key.slice(0, key.length - n.id.length - 1);
+              return {
+                host_id: hostId,
+                host_name:
+                  this.agentSettings.hosts.find((h) => h.id === hostId)?.name ??
+                  hostId,
+                state: share.failure
+                  ? "failed"
+                  : share.revision === n.credential.revision
+                    ? "shared"
+                    : "out_of_date",
+                shared_at: share.at,
+                failure: share.failure,
+              };
+            }),
+        }));
+      case "send_run_secrets": {
+        for (const id of args.secretIds as string[])
+          this.sendCopy(String(args.hostId), id);
+        return null;
       }
       case "remove_unlisted_host_secret": {
         const hostId = String(args.hostId);
@@ -3089,6 +3121,8 @@ export class FakeBackend {
           start: r.start,
           prompt: r.prompt,
           time_limit_minutes: r.time_limit_minutes,
+          secret_ids: r.secret_ids ?? [],
+          tools: r.tools ?? false,
           memory: r.memory,
           memory_updated_at: r.memory ? new Date().toISOString() : null,
           previous_results: r.previous_results,
@@ -3131,6 +3165,10 @@ export class FakeBackend {
       case "approve_routine_schedule": {
         const s = this.schedules.get(String(args.id));
         if (!s) throw new Error("no schedule");
+        // The routine's access goes to its host with the approval.
+        const routine = this.routines.find((r) => r.id === args.id);
+        for (const id of routine?.secret_ids ?? [])
+          this.sendCopy(routine?.host_id ?? "", id);
         s.approved = true;
         s.changed = [];
         return null;

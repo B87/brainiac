@@ -41,6 +41,8 @@ function item(name: string, latest: BriefingResult | null): RoutineOverview {
       start: "HEAD",
       prompt: "p",
       time_limit_minutes: 30,
+      secret_ids: [],
+      tools: false,
       memory: "",
       memory_updated_at: null,
       previous_results: 3,

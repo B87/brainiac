@@ -31,10 +31,6 @@ credential_ageing: boolean, permissions: RunPermissions, time_limit_minutes: num
  */
 model: string, 
 /**
- * Runs use the image with Python and the Google Cloud CLI added.
- */
-tools: boolean, 
-/**
  * What this profile still lacks before any host can run it (the
  * token or key, the model), in the order to do it.
  */

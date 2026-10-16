@@ -12,6 +12,7 @@ import {
   type RepositorySummary,
   type Routine,
 } from "../lib/ipc";
+import AccessPicker from "./AccessPicker";
 
 /**
  * A routine's definition (docs/design/routines-ux.md, Definition): what to
@@ -45,8 +46,10 @@ export default function RoutineForm({
   const [previous, setPrevious] = useState(routine?.previous_results ?? 3);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [secretNames, setSecretNames] = useState<string[]>([]);
-  const [lacking, setLacking] = useState<string[]>([]);
+  const [secretIds, setSecretIds] = useState<string[]>(
+    routine?.secret_ids ?? [],
+  );
+  const [tools, setTools] = useState(routine?.tools ?? false);
 
   useEffect(() => {
     let alive = true;
@@ -67,41 +70,7 @@ export default function RoutineForm({
   const host =
     hosts.find((h) => (h.kind === "local" ? "" : h.id) === hostId) ?? null;
   const profile = settings?.profiles.find((p) => p.id === profileId) ?? null;
-  const blocked = profile && host ? runMissing(profile, host) : [];
-
-  // What the agent's runs get, by name, and which of it the host does not hold.
-  useEffect(() => {
-    setSecretNames([]);
-    setLacking([]);
-    if (!profileId) return;
-    let alive = true;
-    (async () => {
-      const [ids, all] = await Promise.all([
-        ipc.getProfileSecrets(profileId),
-        ipc.listNamedSecrets(),
-      ]);
-      const chosen = all.filter((n) => ids.includes(n.id));
-      if (!alive) return;
-      setSecretNames(chosen.map((n) => n.env_name));
-      if (chosen.length === 0 || !hostId) return;
-      const held = await ipc.getHostSecrets(hostId);
-      if (!alive || held.problem) return;
-      setLacking(
-        held.rows
-          .filter(
-            (r) =>
-              ids.includes(r.secret_id) &&
-              (r.state === "not_shared" ||
-                r.state === "missing_on_host" ||
-                r.state === "failed"),
-          )
-          .map((r) => r.env_name),
-      );
-    })().catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, [profileId, hostId]);
+  const blocked = profile && host ? runMissing(profile, host, tools) : [];
 
   const ready =
     name.trim() !== "" &&
@@ -124,6 +93,8 @@ export default function RoutineForm({
           start,
           prompt,
           time_limit_minutes: limit,
+          secret_ids: secretIds,
+          tools,
           memory,
           previous_results: previous,
         }),
@@ -241,35 +212,30 @@ export default function RoutineForm({
         </Field>
       </Group>
 
-      <Group title="What it can use" note="set on the agent's page">
-        <Field label="Host secrets">
-          {secretNames.length ? (
-            <div className="flex flex-wrap gap-1.5">
-              {secretNames.map((n) => (
-                <code key={n} className="mono rounded bg-panel px-1.5 py-px">
-                  {n}
-                </code>
-              ))}
-            </div>
-          ) : (
-            <span className="text-muted">None</span>
-          )}
-          {lacking.length > 0 ? (
-            <span className="text-[12px] text-conflict">
-              The host does not hold {lacking.join(", ")}: share{" "}
-              {lacking.length === 1 ? "it" : "them"} on its page, or the run
-              will not start.
-            </span>
-          ) : (
-            <Hint>Sealed copies on the host; the agent could read them.</Hint>
-          )}
+      <Group title="What it can use">
+        <Field label="Access">
+          <AccessPicker
+            hostId={hostId}
+            hostName={host?.name ?? "the host"}
+            chosen={secretIds}
+            onChange={setSecretIds}
+            sentWith="the approval or Run Now"
+          />
         </Field>
-        <Field label="Tools">
-          <span>
-            {profile?.tools
-              ? "Python and Google Cloud CLI"
-              : "The standard run image"}
+        <Field label="Tools" htmlFor="routine-tools">
+          <span className="flex items-center gap-2">
+            <input
+              id="routine-tools"
+              type="checkbox"
+              checked={tools}
+              onChange={(e) => setTools(e.target.checked)}
+            />
+            <span>Python and the Google Cloud CLI</span>
           </span>
+          <Hint>
+            Its runs use the image with them, which each host builds with its
+            image.
+          </Hint>
         </Field>
       </Group>
 

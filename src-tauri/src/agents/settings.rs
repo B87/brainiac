@@ -225,79 +225,35 @@ pub struct AgentSettingsService {
 }
 
 impl AgentSettingsService {
-    /// The named secrets a profile's runs get (ids), in the order of their names.
-    pub async fn profile_secrets(&self, profile_id: &str) -> AppResult<Vec<String>> {
-        let id = profile_id.to_string();
-        self.db
-            .call(move |conn| {
-                let mut stmt = conn.prepare(
-                    "SELECT p.secret_id FROM profile_host_secrets p
-                       JOIN named_secrets n ON n.id = p.secret_id
-                      WHERE p.profile_id = ?1 ORDER BY n.env_name",
-                )?;
-                let rows = stmt.query_map(params![id], |r| r.get::<_, String>(0))?;
-                Ok(rows.collect::<Result<Vec<_>, _>>()?)
-            })
-            .await
-    }
-
-    /// The variable names a run of this profile asks its host for.
-    pub async fn profile_secret_names(&self, profile_id: &str) -> AppResult<Vec<String>> {
-        let id = profile_id.to_string();
-        self.db
-            .call(move |conn| {
-                let mut stmt = conn.prepare(
-                    "SELECT n.env_name FROM profile_host_secrets p
-                       JOIN named_secrets n ON n.id = p.secret_id
-                      WHERE p.profile_id = ?1 ORDER BY n.env_name",
-                )?;
-                let rows = stmt.query_map(params![id], |r| r.get::<_, String>(0))?;
-                Ok(rows.collect::<Result<Vec<_>, _>>()?)
-            })
-            .await
-    }
-
-    /// Replace the profile's choice. A run carries at most eight.
-    pub async fn set_profile_secrets(
-        &self,
-        profile_id: &str,
-        secret_ids: Vec<String>,
-    ) -> AppResult<Vec<String>> {
-        let mut ids = secret_ids;
+    /// The variable names of named secrets, by ID, sorted: what a run asks
+    /// its host for. An ID that no longer exists is refused, so a run never
+    /// starts without a secret it was set to get. At most eight.
+    pub async fn secret_names(&self, ids: &[String]) -> AppResult<Vec<String>> {
+        let mut ids = ids.to_vec();
         ids.sort();
         ids.dedup();
         if ids.len() > 8 {
             return Err(AppError::validation("A run can get at most eight secrets."));
         }
-        let profile = profile_id.to_string();
         self.db
             .call(move |conn| {
-                let tx = conn.transaction()?;
-                let known: bool = tx.query_row(
-                    "SELECT EXISTS (SELECT 1 FROM agent_profiles WHERE id = ?1)",
-                    params![profile],
-                    |r| r.get(0),
-                )?;
-                if !known {
-                    return Err(AppError::validation("That agent no longer exists."));
-                }
-                tx.execute(
-                    "DELETE FROM profile_host_secrets WHERE profile_id = ?1",
-                    params![profile],
-                )?;
+                let mut names = Vec::new();
                 for id in &ids {
-                    // A secret deleted meanwhile is skipped, not an error.
-                    tx.execute(
-                        "INSERT INTO profile_host_secrets (profile_id, secret_id)
-                         SELECT ?1, id FROM named_secrets WHERE id = ?2",
-                        params![profile, id],
-                    )?;
+                    let name: Option<String> = conn
+                        .query_row(
+                            "SELECT env_name FROM named_secrets WHERE id = ?1",
+                            params![id],
+                            |r| r.get(0),
+                        )
+                        .optional()?;
+                    names.push(name.ok_or_else(|| {
+                        AppError::validation("A secret chosen for the run no longer exists.")
+                    })?);
                 }
-                tx.commit()?;
-                Ok(())
+                names.sort();
+                Ok(names)
             })
-            .await?;
-        self.profile_secrets(profile_id).await
+            .await
     }
 
     pub fn new(db: Db, credentials: Arc<CredentialService>) -> Self {
@@ -641,13 +597,9 @@ impl AgentSettingsService {
             .await?
             .ok_or_else(|| AppError::validation("Choose where runs execute first."))?;
         let built = image::build(Path::new(&socket)).await?;
-        // The layer on top, when a profile asks for it; its failure fails the
-        // build, so a profile never runs without its tools.
-        let tools = if self.wants_tools().await? {
-            Some(image::build_tools(Path::new(&socket), &built.name).await?)
-        } else {
-            None
-        };
+        // The layer on top, always: a run or routine may ask for the tools,
+        // and its failure fails the build, so none runs without them.
+        let tools = image::build_tools(Path::new(&socket), &built.name).await?;
         let now = now_rfc3339();
         let recorded =
             self.db
@@ -660,7 +612,7 @@ impl AgentSettingsService {
                 )?)
                 })
                 .await?;
-        if let Some(tools) = &tools {
+        {
             let (id, recipe, now) = (
                 tools.id.clone(),
                 image::tools_recipe(&image::recipe()),
@@ -684,38 +636,6 @@ impl AgentSettingsService {
             ));
         }
         tracing::info!(image = %built.name, "agent image built");
-        self.get().await
-    }
-
-    /// Some profile asks for the tools layer, so Build image makes it.
-    pub async fn wants_tools(&self) -> AppResult<bool> {
-        self.db
-            .call(|conn| {
-                Ok(conn.query_row(
-                    "SELECT EXISTS (SELECT 1 FROM agent_profiles WHERE tools = 1)",
-                    [],
-                    |r| r.get::<_, bool>(0),
-                )?)
-            })
-            .await
-    }
-
-    /// A profile's runs use the image with Python and the Google Cloud CLI.
-    /// The host's layer is built by the next Build image.
-    pub async fn set_tools(&self, profile_id: &str, on: bool) -> AppResult<AgentSettings> {
-        let id = profile_id.to_string();
-        let changed = self
-            .db
-            .call(move |conn| {
-                Ok(conn.execute(
-                    "UPDATE agent_profiles SET tools = ?2, version = version + 1 WHERE id = ?1",
-                    params![id, on],
-                )?)
-            })
-            .await?;
-        if changed == 0 {
-            return Err(AppError::validation("That agent no longer exists."));
-        }
         self.get().await
     }
 
@@ -812,17 +732,17 @@ fn check_socket(socket: &str) -> AppResult<String> {
 /// What stops a run of this profile on this host, in the order to do it:
 /// the profile's own setup, the host's, then a passed test of the profile
 /// there that still matches (SPEC.md, Settings → Agents, Before the first run).
-/// The image a profile's runs use on a host: the tools layer when it asks
-/// for it, else the run image.
-pub fn image_for(profile: &AgentProfile, host: &AgentHost) -> Option<crate::models::AgentImage> {
-    if profile.tools {
+/// The image a run uses on a host: the tools layer when the run or routine
+/// asks for the tools, else the run image.
+pub fn image_for(tools: bool, host: &AgentHost) -> Option<crate::models::AgentImage> {
+    if tools {
         host.tools_image.clone()
     } else {
         host.image.clone()
     }
 }
 
-pub fn run_missing(profile: &AgentProfile, host: &AgentHost) -> Vec<String> {
+pub fn run_missing(profile: &AgentProfile, host: &AgentHost, tools: bool) -> Vec<String> {
     let mut missing: Vec<String> = profile
         .missing
         .iter()
@@ -830,7 +750,7 @@ pub fn run_missing(profile: &AgentProfile, host: &AgentHost) -> Vec<String> {
         .cloned()
         .collect();
     let name = profile_name(profile);
-    if profile.tools {
+    if tools {
         match &host.tools_image {
             None => missing.push(format!(
                 "Build the image on {} to add Python and the Google Cloud CLI.",
@@ -884,7 +804,7 @@ fn profile_missing(p: &AgentProfile) -> Vec<String> {
 
 const COLUMNS: &str = "id, agent, provider, payment, secret_source, credential_revision,
     source_approved, credential_pending, credential_saved_at, permissions,
-    time_limit_minutes, cpus, memory_mib, workspace_gib, model, version, tools";
+    time_limit_minutes, cpus, memory_mib, workspace_gib, model, version";
 
 /// Claude Code first, then OpenCode by provider.
 const ORDER: &str = "CASE agent WHEN 'claude_code' THEN 0 ELSE 1 END, provider";
@@ -937,7 +857,6 @@ fn from_row(r: &Row<'_>) -> rusqlite::Result<AgentProfile> {
         model: r.get(14)?,
         missing: Vec::new(),
         version: r.get(15)?,
-        tools: r.get::<_, i64>(16)? != 0,
     };
     profile.missing = profile_missing(&profile);
     Ok(profile)

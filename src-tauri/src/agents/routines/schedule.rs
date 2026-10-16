@@ -45,11 +45,13 @@ pub(super) struct Sched {
     pub code_at: Option<String>,
     pub memory_unsent: bool,
     pub notice: Option<String>,
+    /// Approved, and waiting for the host to be prepared.
+    pub preparing: bool,
 }
 
 pub(super) const SCHED_COLUMNS: &str = "schedule_days, schedule_time, late_start, \
     paused, cost_ceiling_micros, approved_parts, approved_at, host_next_fire, host_synced_at, \
-    code_commit, code_at, memory_unsent, notice";
+    code_commit, code_at, memory_unsent, notice, preparing";
 
 pub(super) fn sched_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Sched> {
     Ok(Sched {
@@ -66,6 +68,7 @@ pub(super) fn sched_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Sched> {
         code_at: r.get(10)?,
         memory_unsent: r.get::<_, i64>(11)? != 0,
         notice: r.get(12)?,
+        preparing: r.get::<_, i64>(13)? != 0,
     })
 }
 
@@ -135,7 +138,7 @@ impl RoutineService {
             .find(|p| p.id == routine.profile_id);
         let secrets = self
             .agent_settings
-            .profile_secret_names(&routine.profile_id)
+            .secret_names(&routine.secret_ids)
             .await?;
         let mut parts = BTreeMap::new();
         parts.insert(
@@ -172,10 +175,10 @@ impl RoutineService {
             digest(&format!(
                 "{}|{}|{}",
                 secrets.join(","),
-                profile.is_some_and(|p| p.tools),
+                routine.tools,
                 // The layer's image: a rebuilt one is different code in the run.
-                match (profile, host) {
-                    (Some(p), Some(h)) if p.tools => h
+                match host {
+                    Some(h) if routine.tools => h
                         .tools_image
                         .as_ref()
                         .map(|i| i.id.clone())
@@ -238,7 +241,9 @@ impl RoutineService {
             .unwrap_or_else(|p| p.into_inner())
             .get(&routine.id)
             .cloned();
-        let state = if !changed.is_empty() {
+        let state = if s.preparing {
+            ScheduleState::Preparing
+        } else if !changed.is_empty() {
             ScheduleState::NeedsApproval
         } else if s.paused {
             ScheduleState::Paused
@@ -382,7 +387,8 @@ impl RoutineService {
                     "UPDATE routines SET schedule_days = NULL, schedule_time = NULL,
                        late_start = 0, paused = 0, approved_parts = NULL, approved_at = NULL,
                        host_next_fire = NULL, host_synced_at = NULL, code_commit = NULL,
-                       code_at = NULL, memory_unsent = 0, notice = NULL, version = version + 1
+                       code_at = NULL, memory_unsent = 0, notice = NULL, preparing = 0,
+                       version = version + 1
                      WHERE id = ?1",
                     params![key],
                 )?;
@@ -393,8 +399,10 @@ impl RoutineService {
         Ok(())
     }
 
-    /// Approve the schedule as it is now: send the host the agent's key and
-    /// the code, check that the secrets it names are there, and turn it on.
+    /// Approve the schedule as it is now. The routine's access goes to the
+    /// host first. A host whose helper is older or whose image is not built
+    /// is prepared (a host job), and the schedule is sent when that is done;
+    /// otherwise the agent's key, the code and the schedule are sent now.
     pub async fn approve(self: &Arc<Self>, id: &str) -> AppResult<()> {
         let routine = self.routine(id).await?;
         let s = self.sched(id).await?;
@@ -409,58 +417,159 @@ impl RoutineService {
             .runtime_of(&routine.host_id)
             .await
             .map_err(|e| host_down(&e, "Nothing was sent"))?;
-        // A secret the agent's runs get has to be on the host already.
-        let names = self
-            .agent_settings
-            .profile_secret_names(&routine.profile_id)
-            .await?;
-        if !names.is_empty() {
-            let held = runtime
-                .list_secrets()
-                .await
-                .map_err(|e| host_down(&e, "Nothing was sent"))?;
-            let lacking: Vec<&String> = names
-                .iter()
-                .filter(|n| !held.iter().any(|h| &h.name == *n))
-                .collect();
-            if !lacking.is_empty() {
-                return Err(AppError::validation(format!(
-                    "The host does not hold {}. Share {} on its page first.",
-                    lacking
-                        .iter()
-                        .map(|n| n.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                    if lacking.len() == 1 { "it" } else { "them" }
-                )));
-            }
+        if !routine.secret_ids.is_empty() {
+            self.named
+                .ensure_on_host(&routine.secret_ids, &routine.host_id, &runtime)
+                .await?;
         }
+        let host = self.host_of(&routine).await?;
+        if needs_preparing(&host, routine.tools) {
+            self.set_preparing(id, true, None).await?;
+            drop(one);
+            match self
+                .jobs
+                .start(&routine.host_id, crate::models::HostJobKind::Prepare, None)
+                .await
+            {
+                Ok(_) => {}
+                // Another job on the host: wait for it, then look again.
+                Err(e) if e.code == ErrorCode::Conflict => {}
+                Err(e) => {
+                    self.set_preparing(id, false, None).await?;
+                    return Err(e);
+                }
+            }
+            self.wait_prepared(&routine.host_id);
+            return Ok(());
+        }
+        let done = self.send_approved(&routine, &s, &runtime).await;
+        drop(one);
+        done?;
+        let _ = self.sync_host(&routine.host_id).await;
+        Ok(())
+    }
+
+    /// Send what was approved and record the approval: the agent's key, the
+    /// code and the schedule, turned on unless it is paused.
+    async fn send_approved(
+        &self,
+        routine: &Routine,
+        s: &Sched,
+        runtime: &RunRuntime,
+    ) -> AppResult<()> {
         let approved_at = now_rfc3339();
-        let enabled = !s.paused;
         let with_time = Sched {
             approved_at: Some(approved_at.clone()),
             ..s.clone()
         };
-        self.push(&routine, &with_time, &runtime, true, enabled, None)
+        self.push(routine, &with_time, runtime, true, !s.paused, None)
             .await?;
-        let parts = serde_json::to_string(&self.parts(&routine, &s).await?).map_err(|e| {
+        // Taken after the host was prepared, so a newly built image is part
+        // of what was approved.
+        let parts = serde_json::to_string(&self.parts(routine, s).await?).map_err(|e| {
             AppError::io("The approval could not be kept.").with_details(e.to_string())
         })?;
-        let key = id.to_string();
+        let key = routine.id.clone();
         self.core
             .call(move |conn| {
                 conn.execute(
                     "UPDATE routines SET approved_parts = ?2, approved_at = ?3, notice = NULL,
-                       version = version + 1 WHERE id = ?1",
+                       preparing = 0, version = version + 1 WHERE id = ?1",
                     params![key, parts, approved_at],
                 )?;
                 Ok(())
             })
             .await?;
-        self.set_error(id, None);
-        drop(one);
-        let _ = self.sync_host(&routine.host_id).await;
+        self.set_error(&routine.id, None);
         Ok(())
+    }
+
+    async fn host_of(&self, routine: &Routine) -> AppResult<AgentHost> {
+        self.agent_settings
+            .get()
+            .await?
+            .hosts
+            .into_iter()
+            .find(|h| h.id == routine.host_id)
+            .ok_or_else(|| AppError::validation("The routine's host no longer exists."))
+    }
+
+    async fn set_preparing(&self, id: &str, on: bool, notice: Option<String>) -> AppResult<()> {
+        let key = id.to_string();
+        self.core
+            .call(move |conn| {
+                conn.execute(
+                    "UPDATE routines SET preparing = ?2, notice = ?3, version = version + 1
+                     WHERE id = ?1",
+                    params![key, on, notice],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    /// Wait in the background for the host's job to end, then finish the
+    /// approvals that waited for it.
+    fn wait_prepared(self: &Arc<Self>, host_id: &str) {
+        let service = Arc::clone(self);
+        let host = host_id.to_string();
+        tokio::spawn(async move {
+            while service.jobs.busy(&host) {
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            }
+            service.finish_preparing(&host).await;
+        });
+    }
+
+    /// Every routine on this host waiting to be prepared: send it now if the
+    /// host is ready, or say why not and leave it unapproved.
+    pub(super) async fn finish_preparing(self: &Arc<Self>, host_id: &str) {
+        if self.jobs.busy(host_id) {
+            return;
+        }
+        let host = host_id.to_string();
+        let Ok(ids) = self
+            .core
+            .call(move |conn| {
+                let mut stmt =
+                    conn.prepare("SELECT id FROM routines WHERE host_id = ?1 AND preparing = 1")?;
+                let rows = stmt.query_map(params![host], |r| r.get::<_, String>(0))?;
+                Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+            })
+            .await
+        else {
+            return;
+        };
+        for id in ids {
+            let _one = self.syncing.lock().await;
+            let result = async {
+                let routine = self.routine(&id).await?;
+                let s = self.sched(&id).await?;
+                if !s.preparing {
+                    return Ok(());
+                }
+                let host = self.host_of(&routine).await?;
+                if needs_preparing(&host, routine.tools) {
+                    let why = self
+                        .jobs
+                        .list()
+                        .into_iter()
+                        .find(|j| j.host_id == routine.host_id)
+                        .and_then(|j| j.error)
+                        .unwrap_or_else(|| "it is not ready yet".into());
+                    return Err(AppError::dependency(format!(
+                        "{} could not be prepared: {why} Approve again to retry.",
+                        host.name
+                    )));
+                }
+                let runtime = self.runs.runtime_of(&routine.host_id).await?;
+                self.send_approved(&routine, &s, &runtime).await
+            }
+            .await;
+            if let Err(e) = result {
+                let _ = self.set_preparing(&id, false, Some(e.message)).await;
+            }
+        }
     }
 
     /// Pause or resume on the host. If the host cannot be told, nothing changes
@@ -514,6 +623,10 @@ impl RoutineService {
         let Ok(routine) = self.routine(id).await else {
             return;
         };
+        if s.preparing {
+            // Nothing is on the host yet; the approval's end sends it.
+            return;
+        }
         let _one = self.syncing.lock().await;
         let enabled = !s.paused
             && self
@@ -552,7 +665,7 @@ impl RoutineService {
         secrets: Vec<String>,
         enabled: bool,
     ) -> AppResult<ScheduleSpec> {
-        let image = image_for(profile, host).ok_or_else(|| {
+        let image = image_for(routine.tools, host).ok_or_else(|| {
             AppError::validation(format!("Build the image on {} first.", host.name))
         })?;
         let days = s
@@ -607,7 +720,7 @@ impl RoutineService {
             .ok_or_else(|| AppError::validation("The routine's host no longer exists."))?;
         let secrets = self
             .agent_settings
-            .profile_secret_names(&profile.id)
+            .secret_names(&routine.secret_ids)
             .await?;
         let spec = self.spec(routine, s, &profile, &host, secrets, enabled)?;
         if full {
@@ -685,6 +798,8 @@ impl RoutineService {
             }
         };
         for host in hosts {
+            // An approval that waited for the host, left by a quit or a restart.
+            self.finish_preparing(&host).await;
             if let Err(e) = self.sync_host(&host).await {
                 tracing::info!(host = %host, error = %e, "a host's schedules were not heard");
             }
@@ -1073,4 +1188,12 @@ fn host_down(error: &AppError, consequence: &str) -> AppError {
             error.message
         ),
     )
+}
+
+/// A host must be prepared before a schedule can be sent to it: its helper
+/// is older than this Brainiac, or the image the routine's runs use is not
+/// built as this Brainiac would build it.
+fn needs_preparing(host: &AgentHost, tools: bool) -> bool {
+    let current = |i: &Option<crate::models::AgentImage>| i.as_ref().is_some_and(|i| i.current);
+    host.upgrade_available || !current(&host.image) || (tools && !current(&host.tools_image))
 }

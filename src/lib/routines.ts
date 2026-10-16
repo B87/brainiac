@@ -12,6 +12,7 @@ export type RoutineStateKey =
   | "overdue"
   | "unreachable"
   | "paused"
+  | "preparing"
   | "ready"
   | "never";
 export type Tone = "ok" | "warn" | "bad" | "work" | "idle";
@@ -41,6 +42,8 @@ export function routineState(item: RoutineOverview): RoutineState {
   const schedule = item.schedule;
   if (r?.state === "working")
     return { key: "working", word: "Working", tone: "work", order: 1 };
+  if (schedule?.state === "preparing")
+    return { key: "preparing", word: "Preparing host", tone: "work", order: 1 };
   if (schedule?.state === "needs_approval")
     return { key: "approval", word: "Needs approval", tone: "warn", order: 0 };
   if (schedule?.state === "overdue")

@@ -4,4 +4,4 @@ export type SaveRoutineRequest = {
 /**
  * `None` adds one.
  */
-id: string | null, expected_version: number, name: string, repository_id: string, profile_id: string, host_id: string, start: string, prompt: string, time_limit_minutes: number, memory: string, previous_results: number, };
+id: string | null, expected_version: number, name: string, repository_id: string, profile_id: string, host_id: string, start: string, prompt: string, time_limit_minutes: number, secret_ids: Array<string>, tools: boolean, memory: string, previous_results: number, };

@@ -99,6 +99,7 @@ import type { MergeOptions } from "./generated/MergeOptions";
 import type { MergeOutcome } from "./generated/MergeOutcome";
 import type { MergeRequest } from "./generated/MergeRequest";
 import type { NamedSecret } from "./generated/NamedSecret";
+import type { NamedSecretUsage } from "./generated/NamedSecretUsage";
 import type { NoteChangedEvent } from "./generated/NoteChangedEvent";
 import type { NoteContent } from "./generated/NoteContent";
 import type { NoteContext } from "./generated/NoteContext";
@@ -291,6 +292,7 @@ export type { LinkedRepository } from "./generated/LinkedRepository";
 export type { MemberOrigin } from "./generated/MemberOrigin";
 export type { MemberStatus } from "./generated/MemberStatus";
 export type { NamedSecret } from "./generated/NamedSecret";
+export type { NamedSecretUsage } from "./generated/NamedSecretUsage";
 export type { NoteDraft } from "./generated/NoteDraft";
 export type { NotePlacement } from "./generated/NotePlacement";
 export type { NoteTextState } from "./generated/NoteTextState";
@@ -340,6 +342,7 @@ export type { ScheduleWhen } from "./generated/ScheduleWhen";
 export type { SearchGroup } from "./generated/SearchGroup";
 export type { SearchHit } from "./generated/SearchHit";
 export type { SearchKind } from "./generated/SearchKind";
+export type { SecretCopy } from "./generated/SecretCopy";
 export type { SetScheduleRequest } from "./generated/SetScheduleRequest";
 export type { StartExplanationRequest } from "./generated/StartExplanationRequest";
 export type { StartRunRequest } from "./generated/StartRunRequest";
@@ -736,12 +739,11 @@ export const ipc = {
     invoke<HostSecrets>("share_secret_with_host", { id, hostId }),
   removeSecretFromHost: (id: string, hostId: string) =>
     invoke<HostSecrets>("remove_secret_from_host", { id, hostId }),
-  setProfileTools: (profileId: string, on: boolean) =>
-    invoke<AgentSettings>("set_profile_tools", { profileId, on }),
-  getProfileSecrets: (profileId: string) =>
-    invoke<string[]>("get_profile_secrets", { profileId }),
-  setProfileSecrets: (profileId: string, secretIds: string[]) =>
-    invoke<string[]>("set_profile_secrets", { profileId, secretIds }),
+  /** Settings → Secrets: the routines using each secret and its copies on hosts. */
+  namedSecretUsage: () => invoke<NamedSecretUsage[]>("named_secret_usage"),
+  /** New run: send the run's access its host lacks, before Start. */
+  sendRunSecrets: (hostId: string, secretIds: string[]) =>
+    invoke<void>("send_run_secrets", { hostId, secretIds }),
   removeUnlistedHostSecret: (name: string, hostId: string) =>
     invoke<HostSecrets>("remove_unlisted_host_secret", { name, hostId }),
   /** Machines → a run host, Health: read now, nothing stored. */

@@ -34,6 +34,7 @@ import {
 } from "../lib/ipc";
 import { plural } from "../lib/repo";
 import { requestSettings } from "../lib/settings";
+import AccessPicker, { toSend, useHostCopies } from "./AccessPicker";
 import Dialog from "./Dialog";
 import {
   AlertIcon,
@@ -91,6 +92,9 @@ export default function NewRunDialog({
   const [profileId, setProfileId] = useState("");
   const [hostId, setHostId] = useState("");
   const [limits, setLimits] = useState(false);
+  // The run's access and its tools (docs/design/routines-ux.md).
+  const [secretIds, setSecretIds] = useState<string[]>([]);
+  const [tools, setTools] = useState(false);
   // Whether the repository's code may go to the agent's provider (SPEC.md,
   // section 13, Code sharing): asked here the first time.
   const [question, setQuestion] = useState<CodeSharingQuestion | null>(null);
@@ -182,7 +186,7 @@ export default function NewRunDialog({
   const profiles = settings?.profiles ?? [];
   /** What stops each profile's runs on the chosen host. */
   const missingOf = (p: AgentProfile) =>
-    chosen ? runMissing(p, chosen) : p.missing;
+    chosen ? runMissing(p, chosen, tools) : p.missing;
   const profile = profiles.find((p) => p.id === profileId) ?? null;
   // The first profile ready on the host, until one is chosen; a host that
   // cannot run the chosen one moves to the first that it can.
@@ -191,50 +195,33 @@ export default function NewRunDialog({
     if (!settings || !chosen) return;
     if (profile && missingOf(profile).length === 0) return;
     const first =
-      settings.profiles.find((p) => runMissing(p, chosen).length === 0) ??
-      (profile ? null : settings.profiles[0]);
+      settings.profiles.find(
+        (p) => runMissing(p, chosen, tools).length === 0,
+      ) ?? (profile ? null : settings.profiles[0]);
     if (first) chooseProfile(first);
   }, [settings, chosen?.id]);
   const blocked = profile ? missingOf(profile) : [];
 
-  // The host secrets this agent's runs get, and which of them the chosen
-  // host does not hold. Names only; a host that cannot be asked adds no warning.
-  const [secretNames, setSecretNames] = useState<string[]>([]);
-  const [secretsMissing, setSecretsMissing] = useState<string[]>([]);
-  const profileKey = profile?.id ?? "";
+  // The run's access and tools, as last time on this host (a convenience
+  // kept in this window's storage; none for a host never used).
   const hostKey = remote && chosen ? chosen.id : "";
   useEffect(() => {
-    setSecretNames([]);
-    setSecretsMissing([]);
-    if (!profileKey) return;
-    let alive = true;
-    (async () => {
-      const [ids, all] = await Promise.all([
-        ipc.getProfileSecrets(profileKey),
-        ipc.listNamedSecrets(),
-      ]);
-      const chosenSecrets = all.filter((n) => ids.includes(n.id));
-      if (!alive) return;
-      setSecretNames(chosenSecrets.map((n) => n.env_name));
-      if (chosenSecrets.length === 0 || !hostKey) return;
-      const held = await ipc.getHostSecrets(hostKey);
-      if (!alive || held.problem) return;
-      setSecretsMissing(
-        held.rows
-          .filter(
-            (r) =>
-              ids.includes(r.secret_id) &&
-              (r.state === "not_shared" ||
-                r.state === "missing_on_host" ||
-                r.state === "failed"),
-          )
-          .map((r) => r.env_name),
+    let last: { secretIds?: string[]; tools?: boolean } = {};
+    try {
+      last = JSON.parse(
+        localStorage.getItem(`newRun.access.${hostKey}`) ?? "{}",
       );
-    })().catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, [profileKey, hostKey]);
+    } catch {
+      // Storage may be unavailable; start with nothing.
+    }
+    setSecretIds(Array.isArray(last.secretIds) ? last.secretIds : []);
+    setTools(last.tools === true);
+  }, [hostKey]);
+  const held = useHostCopies(hostKey);
+  const secretNames = (held?.rows ?? [])
+    .filter((r) => secretIds.includes(r.secret_id))
+    .map((r) => r.env_name);
+  const sending = toSend(secretIds, held);
   const agent = profile?.agent ?? "claude_code";
   const ends = new Date(Date.now() + timeLimit * 60_000).toLocaleTimeString(
     "en-GB",
@@ -287,6 +274,18 @@ export default function NewRunDialog({
         if (!answer) return;
       }
       if (!preview) return;
+      // The access the host lacks goes first; the dialog said what goes.
+      if (hostKey && secretIds.length > 0) {
+        await ipc.sendRunSecrets(hostKey, secretIds);
+      }
+      try {
+        localStorage.setItem(
+          `newRun.access.${hostKey}`,
+          JSON.stringify({ secretIds, tools }),
+        );
+      } catch {
+        // Not remembered; nothing else depends on it.
+      }
       const run = await ipc.startAgentRun({
         repository_id: repo,
         start_commit: preview.commit,
@@ -300,6 +299,8 @@ export default function NewRunDialog({
         host_id: hostId,
         profile_id: profile.id,
         routine: null,
+        secret_ids: secretIds,
+        tools,
       });
       onStarted(run);
     } catch (e) {
@@ -642,6 +643,24 @@ export default function NewRunDialog({
           </div>
         )}
         <div className="flex flex-col gap-1.5">
+          <FieldLabel>Access</FieldLabel>
+          <AccessPicker
+            hostId={hostKey}
+            hostName={hostName}
+            chosen={secretIds}
+            onChange={setSecretIds}
+            sentWith="Start"
+          />
+          <label className="flex items-center gap-2 text-[12.5px]">
+            <input
+              type="checkbox"
+              checked={tools}
+              onChange={(e) => setTools(e.target.checked)}
+            />
+            Python and the Google Cloud CLI in the run's image
+          </label>
+        </div>
+        <div className="flex flex-col gap-1.5">
           <FieldLabel id={`${id}-perm`}>Permissions</FieldLabel>
           <fieldset
             className="seg m-0 self-start border-0"
@@ -767,26 +786,14 @@ export default function NewRunDialog({
           </Disclosure>
           {secretNames.length > 0 && (
             <Disclosure icon={<KeyIcon size={15} />}>
-              {remote ? (
-                <>
-                  This run also gets {secretNames.join(", ")} from {hostName}'s
-                  sealed copies. The agent can read{" "}
-                  {secretNames.length === 1 ? "it" : "them"}, and so can the
-                  repository's code.
-                </>
-              ) : (
-                <>
-                  This agent is set to give runs {secretNames.join(", ")}, which
-                  only a Linux run host keeps. Choose a run host or clear them
-                  in Settings → Agents.
-                </>
-              )}
-              {secretsMissing.length > 0 && (
-                <strong className="text-conflict">
+              This run gets {secretNames.join(", ")} from {hostName}'s sealed
+              copies. The agent can read{" "}
+              {secretNames.length === 1 ? "it" : "them"}, and so can the
+              repository's code.
+              {sending.length > 0 && (
+                <strong>
                   {" "}
-                  {hostName} does not hold {secretsMissing.join(", ")}: share{" "}
-                  {secretsMissing.length === 1 ? "it" : "them"} on its page, or
-                  the run will not start.
+                  Starting sends {sending.join(", ")} to {hostName} first.
                 </strong>
               )}
             </Disclosure>

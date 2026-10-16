@@ -13,6 +13,15 @@ host_id: string,
  */
 start: string, prompt: string, time_limit_minutes: number, 
 /**
+ * The named secrets its runs get, by ID: the routine is where the agent,
+ * the host and the access meet (docs/design/routines-ux.md).
+ */
+secret_ids: Array<string>, 
+/**
+ * Its runs use the image with Python and the Google Cloud CLI.
+ */
+tools: boolean, 
+/**
  * Text the agent rewrites after each run and the user can edit; part of
  * the next run's prompt.
  */

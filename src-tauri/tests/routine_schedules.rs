@@ -12,6 +12,9 @@ use std::time::Duration;
 
 use brainiac_lib::agents::controller::state::StateDir;
 use brainiac_lib::agents::controller::{serve, Config};
+use brainiac_lib::agents::host_jobs::HostJobService;
+use brainiac_lib::agents::hosts::AgentHostService;
+use brainiac_lib::agents::named_secrets::NamedSecretService;
 use brainiac_lib::agents::routines::RoutineService;
 use brainiac_lib::agents::{
     image, AgentRunService, AgentSettingsService, RepositoryLookup, RunArtifacts, RunRuntime,
@@ -19,10 +22,11 @@ use brainiac_lib::agents::{
 use brainiac_lib::credentials::{CommandRunner, CredentialService, MemoryStore};
 use brainiac_lib::db::Stores;
 use brainiac_lib::git::GitService;
+use brainiac_lib::machines::MachineService;
 use brainiac_lib::models::{
     AgentPayment, AgentProvider, AnswerCodeSharingRequest, BriefingState, Routine,
-    SaveAgentCredentialRequest, SaveRoutineRequest, ScheduleDaysKind, ScheduleState, ScheduleWhen,
-    SecretSource, SetScheduleRequest, Settings,
+    SaveAgentCredentialRequest, SaveNamedSecretRequest, SaveRoutineRequest, ScheduleDaysKind,
+    ScheduleState, ScheduleWhen, SecretSource, SetScheduleRequest, Settings,
 };
 use brainiac_lib::sharing::CodeSharingService;
 use brainiac_lib::workspaces::RepositoryService;
@@ -41,6 +45,7 @@ struct Harness {
     runtime: Arc<RunRuntime>,
     runs: Arc<AgentRunService>,
     routines: Arc<RoutineService>,
+    named: Arc<NamedSecretService>,
     _server: tokio::task::JoinHandle<()>,
     _tmp: tempfile::TempDir,
 }
@@ -76,6 +81,8 @@ impl Harness {
         ));
         // A run host reached over SSH, with its image built.
         let recipe = image::recipe();
+        // Its controller is this Brainiac's, so approval has nothing to prepare.
+        let build = brainiac_lib::agents::runner_binary::current_build().unwrap_or_default();
         core.call(move |conn| {
             conn.execute_batch(&format!(
                 "INSERT INTO machines (id, name, ssh_user, ssh_host, ssh_port, fingerprint,
@@ -83,9 +90,11 @@ impl Harness {
                  VALUES ('m1', 'runner.example', 'brainiac', 'runner.example', 22, 'SHA256:x',
                    '2026-10-05T00:00:00Z', '2026-10-05T00:00:00Z');
                  INSERT INTO agent_hosts (id, kind, machine_id, installation, loop_devices,
-                   image_id, image_recipe, image_built_at, created_at, updated_at)
+                   image_id, image_recipe, image_built_at, created_at, updated_at,
+                   controller_build)
                  VALUES ('{HOST}', 'ssh', 'm1', 'install', 1, 'sha256:abc', '{recipe}',
-                   '2026-10-05T00:00:00Z', '2026-10-05T00:00:00Z', '2026-10-05T00:00:00Z');"
+                   '2026-10-05T00:00:00Z', '2026-10-05T00:00:00Z', '2026-10-05T00:00:00Z',
+                   '{build}');"
             ))?;
             Ok(())
         })
@@ -146,7 +155,7 @@ impl Harness {
             history.clone(),
             Arc::clone(&settings),
             sharing,
-            credentials,
+            Arc::clone(&credentials),
             artifacts,
             Arc::new(RunRuntime::attach(
                 StateDir::new(tmp.path().join("local")),
@@ -158,13 +167,39 @@ impl Harness {
             }),
         );
         runs.use_runtime_for_host(HOST, Arc::clone(&runtime));
-        let routines = RoutineService::new(core, history, Arc::clone(&runs), settings, changes);
+        let named = Arc::new(NamedSecretService::new(
+            core.clone(),
+            Arc::clone(&credentials),
+        ));
+        let jobs = Arc::new(HostJobService::new(
+            Arc::new(AgentHostService::new(
+                core.clone(),
+                history.clone(),
+                &data,
+                Arc::new(MachineService::new(core.clone(), &data)),
+            )),
+            Arc::clone(&runs),
+            Arc::clone(&settings),
+            &data,
+            Arc::new(|_| {}),
+            Arc::new(|_, _| {}),
+        ));
+        let routines = RoutineService::new(
+            core,
+            history,
+            Arc::clone(&runs),
+            settings,
+            Arc::clone(&named),
+            jobs,
+            changes,
+        );
         Harness {
             repository_id,
             engine,
             runtime,
             runs,
             routines,
+            named,
             _server: server,
             _tmp: tmp,
         }
@@ -184,6 +219,8 @@ impl Harness {
                 time_limit_minutes: 30,
                 memory: "Ignore SENTRY-9.".into(),
                 previous_results: 3,
+                secret_ids: Vec::new(),
+                tools: false,
             })
             .await
             .unwrap()
@@ -242,6 +279,8 @@ async fn a_schedule_is_off_until_approved_then_the_host_fires_it_and_the_app_tak
             time_limit_minutes: routine.time_limit_minutes,
             memory: routine.memory.clone(),
             previous_results: routine.previous_results,
+            secret_ids: Vec::new(),
+            tools: false,
         })
         .await
         .unwrap();
@@ -268,6 +307,8 @@ async fn a_schedule_is_off_until_approved_then_the_host_fires_it_and_the_app_tak
             time_limit_minutes: moving.time_limit_minutes,
             memory: moving.memory.clone(),
             previous_results: moving.previous_results,
+            secret_ids: Vec::new(),
+            tools: false,
         })
         .await
         .unwrap();
@@ -354,6 +395,8 @@ async fn a_change_turns_the_schedule_off_on_the_host_and_pause_and_remove_reach_
             time_limit_minutes: routine.time_limit_minutes,
             memory: routine.memory.clone(),
             previous_results: routine.previous_results,
+            secret_ids: Vec::new(),
+            tools: false,
         })
         .await
         .unwrap();
@@ -378,4 +421,83 @@ async fn a_change_turns_the_schedule_off_on_the_host_and_pause_and_remove_reach_
     assert!(h.runtime.schedules().await.unwrap().0.is_empty());
     let overview = h.routines.overview().await.unwrap();
     assert!(overview[0].schedule.is_none());
+}
+
+#[tokio::test]
+async fn a_routines_access_goes_to_its_host_with_the_approval() {
+    let h = Harness::new().await;
+    let secret = h
+        .named
+        .save(SaveNamedSecretRequest {
+            id: None,
+            expected_version: 0,
+            label: "Sentry".into(),
+            env_name: "SENTRY_TOKEN".into(),
+            as_file: false,
+            note: String::new(),
+            source: SecretSource::Store,
+            secret: Some("sntrys_example_token_value".into()),
+        })
+        .await
+        .unwrap();
+    let plain = h.routine().await;
+    let routine = h
+        .routines
+        .save(SaveRoutineRequest {
+            id: Some(plain.id.clone()),
+            expected_version: plain.version,
+            name: plain.name.clone(),
+            repository_id: plain.repository_id.clone(),
+            profile_id: plain.profile_id.clone(),
+            host_id: plain.host_id.clone(),
+            start: plain.start.clone(),
+            prompt: plain.prompt.clone(),
+            time_limit_minutes: plain.time_limit_minutes,
+            secret_ids: vec![secret.id.clone()],
+            tools: false,
+            memory: plain.memory.clone(),
+            previous_results: plain.previous_results,
+        })
+        .await
+        .unwrap();
+    assert_eq!(routine.secret_ids, vec![secret.id.clone()]);
+    // Nothing goes to the host when the routine is saved.
+    assert!(h.runtime.list_secrets().await.unwrap().is_empty());
+
+    h.routines
+        .set_schedule(SetScheduleRequest {
+            routine_id: routine.id.clone(),
+            when: h.when(30),
+        })
+        .await
+        .unwrap();
+    h.routines.approve(&routine.id).await.unwrap();
+    let held = h.runtime.list_secrets().await.unwrap();
+    assert!(held.iter().any(|s| s.name == "SENTRY_TOKEN"));
+    let (on_host, _) = h.runtime.schedules().await.unwrap();
+    assert_eq!(on_host[0].spec.host_secrets, ["SENTRY_TOKEN"]);
+    let usage = h.named.usage().await.unwrap();
+    assert_eq!(usage[0].routines, ["Morning check"]);
+    assert_eq!(usage[0].copies.len(), 1);
+
+    // A routine with access needs a run host: this Mac keeps no secrets.
+    let refused = h
+        .routines
+        .save(SaveRoutineRequest {
+            id: None,
+            expected_version: 0,
+            name: "Local".into(),
+            repository_id: plain.repository_id.clone(),
+            profile_id: plain.profile_id.clone(),
+            host_id: String::new(),
+            start: "main".into(),
+            prompt: "Check.".into(),
+            time_limit_minutes: 30,
+            secret_ids: vec![secret.id.clone()],
+            tools: false,
+            memory: String::new(),
+            previous_results: 3,
+        })
+        .await;
+    assert!(refused.is_err());
 }

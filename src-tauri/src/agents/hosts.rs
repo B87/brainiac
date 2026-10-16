@@ -574,18 +574,6 @@ impl AgentHostService {
         Ok(())
     }
 
-    async fn settings_wants_tools(&self) -> AppResult<bool> {
-        self.db
-            .call(|conn| {
-                Ok(conn.query_row(
-                    "SELECT EXISTS (SELECT 1 FROM agent_profiles WHERE tools = 1)",
-                    [],
-                    |r| r.get::<_, bool>(0),
-                )?)
-            })
-            .await
-    }
-
     /// Build image on a host, as the two steps of `host_jobs::image`,
     /// numbered from `at` in `job`.
     pub async fn build_image(
@@ -601,21 +589,16 @@ impl AgentHostService {
         let built = runtime
             .build_image_remote(DOCKER_SOCKET, &tag, &image::context(), None)
             .await?;
-        // The layer on top, when a profile asks for it.
-        let tools = if self.settings_wants_tools().await? {
-            let tools_tag = image::name_for(&image::tools_recipe(&image::recipe()));
-            let id = runtime
-                .build_image_remote(
-                    DOCKER_SOCKET,
-                    &tools_tag,
-                    &image::tools_context(),
-                    Some(&tag),
-                )
-                .await?;
-            Some(id)
-        } else {
-            None
-        };
+        // The layer on top, always: a run or routine may ask for the tools.
+        let tools_tag = image::name_for(&image::tools_recipe(&image::recipe()));
+        let tools = runtime
+            .build_image_remote(
+                DOCKER_SOCKET,
+                &tools_tag,
+                &image::tools_context(),
+                Some(&tag),
+            )
+            .await?;
         job.finish(
             at + host_jobs::image::BUILD,
             Some(format!("{tag} · {}", short_id(&built))),
@@ -632,7 +615,7 @@ impl AgentHostService {
                         version = version + 1, updated_at = ?4 WHERE id = ?1",
                     params![host_id, built, recipe, now],
                 )?;
-                if let Some(tools) = tools {
+                {
                     conn.execute(
                         "UPDATE agent_hosts SET tools_image_id = ?2, tools_image_recipe = ?3,
                             tools_image_built_at = ?4 WHERE id = ?1",
@@ -1008,10 +991,6 @@ pub fn list(conn: &Connection) -> AppResult<Vec<AgentHost>> {
             ))
         })?
         .collect::<rusqlite::Result<_>>()?;
-    let tools_profiles: std::collections::HashSet<String> = conn
-        .prepare("SELECT id FROM agent_profiles WHERE tools = 1")?
-        .query_map([], |r| r.get(0))?
-        .collect::<rusqlite::Result<_>>()?;
     let mut stmt = conn.prepare(
         "SELECT h.id, h.kind, COALESCE(m.name, ?1), m.ssh_user, m.ssh_host, m.ssh_port,
             m.identity_path, m.fingerprint, h.installation, COALESCE(m.approved, 1),
@@ -1083,11 +1062,8 @@ pub fn list(conn: &Connection) -> AppResult<Vec<AgentHost>> {
                 profile_id: profile.clone(),
                 passed_at: passed_at.clone(),
                 current: revisions.get(profile) == Some(revision)
-                    && (if tools_profiles.contains(profile) {
-                        tools_id.as_ref()
-                    } else {
-                        image_id.as_ref()
-                    }) == Some(image)
+                    // A test runs on the plain image, with or without the tools layer.
+                    && image_id.as_ref() == Some(image)
                     && (kind_is_ssh || engine.is_some() && *engine == socket),
             })
             .collect();

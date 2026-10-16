@@ -42,7 +42,7 @@ fn profile<'a>(s: &'a AgentSettings, id: &str) -> &'a AgentProfile {
 
 /// What stops a Claude Code run on this Mac.
 fn missing(s: &AgentSettings) -> Vec<String> {
-    run_missing(claude(s), &s.hosts[0])
+    run_missing(claude(s), &s.hosts[0], false)
 }
 
 struct Harness {
@@ -628,7 +628,7 @@ async fn each_opencode_profile_takes_its_own_providers_key_and_a_model() {
 }
 
 #[tokio::test]
-async fn a_profile_chooses_which_named_secrets_its_runs_get() {
+async fn a_runs_secrets_are_asked_for_by_variable_name_and_must_exist() {
     let h = Harness::new();
     for (id, name) in [("s1", "SENTRY_TOKEN"), ("s2", "GOOGLE_KEY")] {
         let (id, name) = (id.to_string(), name.to_string());
@@ -644,69 +644,35 @@ async fn a_profile_chooses_which_named_secrets_its_runs_get() {
             .await
             .unwrap();
     }
-    assert!(h
-        .agents
-        .profile_secrets(CLAUDE_CODE)
-        .await
-        .unwrap()
-        .is_empty());
-    h.agents
-        .set_profile_secrets(CLAUDE_CODE, vec!["s1".into(), "s2".into(), "s1".into()])
-        .await
-        .unwrap();
-    // Listed by variable name, once each.
+    assert!(h.agents.secret_names(&[]).await.unwrap().is_empty());
+    // Sorted by variable name, once each.
     assert_eq!(
-        h.agents.profile_secret_names(CLAUDE_CODE).await.unwrap(),
+        h.agents
+            .secret_names(&["s1".into(), "s2".into(), "s1".into()])
+            .await
+            .unwrap(),
         ["GOOGLE_KEY", "SENTRY_TOKEN"]
     );
-    // An unknown agent is refused; a secret deleted meanwhile is dropped.
-    assert!(h
-        .agents
-        .set_profile_secrets("no-such-agent", vec![])
-        .await
-        .is_err());
-    h.core
-        .call(|conn| {
-            conn.execute("DELETE FROM named_secrets WHERE id = 's1'", [])?;
-            Ok(())
-        })
-        .await
-        .unwrap();
-    assert_eq!(
-        h.agents.profile_secret_names(CLAUDE_CODE).await.unwrap(),
-        ["GOOGLE_KEY"]
-    );
+    // A secret deleted meanwhile is refused, so a run never starts without it.
+    assert!(h.agents.secret_names(&["gone".into()]).await.is_err());
     let nine: Vec<String> = (0..9).map(|i| format!("x{i}")).collect();
-    assert!(h
-        .agents
-        .set_profile_secrets(CLAUDE_CODE, nine)
-        .await
-        .is_err());
+    assert!(h.agents.secret_names(&nine).await.is_err());
 }
 
 #[tokio::test]
-async fn a_profile_that_asks_for_the_tools_layer_needs_it_built_on_the_host() {
+async fn a_run_that_asks_for_the_tools_needs_the_layer_built_on_the_host() {
     use brainiac_lib::agents::settings::image_for;
     let h = Harness::new();
-    assert!(!h.agents.wants_tools().await.unwrap());
-    let before = h.agents.get().await.unwrap();
-    assert!(!claude(&before).tools);
-
-    let after = h.agents.set_tools(CLAUDE_CODE, true).await.unwrap();
-    assert!(claude(&after).tools);
-    assert!(h.agents.wants_tools().await.unwrap());
-    // This Mac has no layer yet: the profile names what to do, and its runs
-    // have no image to start from.
-    let host = &after.hosts[0];
+    let s = h.agents.get().await.unwrap();
+    // This Mac has no layer yet: a run with the tools names what to do, and
+    // has no image to start from; one without them does not ask.
+    let host = &s.hosts[0];
     assert!(host.tools_image.is_none());
-    assert!(run_missing(claude(&after), host)
+    assert!(run_missing(claude(&s), host, true)
         .iter()
         .any(|m| m.contains("Python and the Google Cloud CLI")));
-    assert!(image_for(claude(&after), host).is_none());
-    assert!(h.agents.set_tools("no-such-agent", true).await.is_err());
-
-    let off = h.agents.set_tools(CLAUDE_CODE, false).await.unwrap();
-    assert!(!run_missing(claude(&off), &off.hosts[0])
+    assert!(image_for(true, host).is_none());
+    assert!(!run_missing(claude(&s), host, false)
         .iter()
         .any(|m| m.contains("Python and the Google Cloud CLI")));
 }

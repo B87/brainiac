@@ -476,15 +476,16 @@ impl AgentRunService {
             .find(|h| h.id == host_id)
             .cloned()
             .ok_or_else(|| AppError::validation("Choose a host for the run."))?;
-        if let Some(first) = settings::run_missing(&profile, &host).first() {
+        if let Some(first) = settings::run_missing(&profile, &host, request.tools).first() {
             return Err(AppError::validation(format!(
                 "Settings → Agents is not ready: {first}"
             )));
         }
+        let host_secrets = self.settings.secret_names(&request.secret_ids).await?;
         // Secrets are sealed by a Linux host's controller; this Mac has none.
-        if !remote && !self.settings.profile_secrets(&profile.id).await?.is_empty() {
+        if !remote && !host_secrets.is_empty() {
             return Err(AppError::validation(
-                "This agent is set to give runs host secrets, which only a Linux run host keeps. Choose a run host, or clear the secrets in Settings → Agents.",
+                "Secrets reach a run only on a Linux run host, which keeps them sealed. Choose a run host, or clear the run's access.",
             ));
         }
         // The repository's answer for this provider, before anything is
@@ -527,7 +528,7 @@ impl AgentRunService {
         }
         let run_id = uuid::Uuid::new_v4().to_string();
         // `run_missing` above promised the image, and on this Mac the engine.
-        let image = settings::image_for(&profile, &host)
+        let image = settings::image_for(request.tools, &host)
             .ok_or_else(|| AppError::validation("Build the image first."))?;
         let (socket, engine_name) = if remote {
             self.refuse_if_upgrading(&host_id)?;
@@ -552,7 +553,6 @@ impl AgentRunService {
             .as_ref()
             .map(|r| r.name.clone())
             .unwrap_or_else(|| title_of(&prompt, &credential.value));
-        let host_secrets = self.settings.profile_secret_names(&profile.id).await?;
         let row = RunRow::new(store::NewRun {
             id: run_id.clone(),
             repository_id: request.repository_id.clone(),
@@ -640,7 +640,7 @@ impl AgentRunService {
             .find(|h| h.id == host_id)
             .cloned()
             .ok_or_else(|| AppError::validation("Choose a host in Settings → Explanations."))?;
-        if let Some(first) = settings::run_missing(&profile, &host).first() {
+        if let Some(first) = settings::run_missing(&profile, &host, false).first() {
             return Err(AppError::validation(format!(
                 "Settings → Agents is not ready: {first}"
             )));
@@ -1824,9 +1824,9 @@ impl AgentRunService {
             .find(|h| h.id == routine.host_id)
             .cloned()
             .ok_or_else(|| AppError::validation("The routine's host no longer exists."))?;
-        let image = settings::image_for(&profile, &host);
+        let image = settings::image_for(routine.tools, &host);
         let (name, _) = self.repositories.locate(&routine.repository_id).await?;
-        let host_secrets = self.settings.profile_secret_names(&profile.id).await?;
+        let host_secrets = self.settings.secret_names(&routine.secret_ids).await?;
         let row = RunRow::new(store::NewRun {
             id: run_id.to_string(),
             repository_id: routine.repository_id.clone(),
@@ -2318,7 +2318,7 @@ impl AgentRunService {
             .engine_socket
             .clone()
             .ok_or_else(|| AppError::validation("Choose where runs execute first."))?;
-        let image = settings::image_for(&profile, &host)
+        let image = settings::image_for(false, &host)
             .ok_or_else(|| AppError::validation("Build the image first."))?;
         let run_id = format!("test-{}", uuid::Uuid::new_v4());
         let started = self
@@ -2360,7 +2360,7 @@ impl AgentRunService {
     ) -> AppResult<AgentTestResult> {
         let settings = self.settings.get().await?;
         let (profile, host) = test_subject(&settings, host_id, profile_id)?;
-        let image = settings::image_for(&profile, &host)
+        let image = settings::image_for(false, &host)
             .ok_or_else(|| AppError::validation("Build the image on this host first."))?;
         let hosts = self
             .hosts

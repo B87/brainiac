@@ -21,7 +21,8 @@ export default function NamedSecretForm({
 }: {
   /** The secret being changed, or null to add one. */
   secret: NamedSecret | null;
-  onSaved: () => void;
+  /** Gets the secret as saved, so a picker can tick a new one. */
+  onSaved: (saved: NamedSecret) => void;
   onCancel: () => void;
 }) {
   const id = useId();
@@ -58,7 +59,7 @@ export default function NamedSecretForm({
     setBusy(true);
     setError(null);
     try {
-      await ipc.saveNamedSecret({
+      const saved = await ipc.saveNamedSecret({
         id: secret?.id ?? null,
         expected_version: secret?.version ?? 0,
         label,
@@ -70,7 +71,7 @@ export default function NamedSecretForm({
         secret: source.kind === "store" && value.trim() ? value : null,
       });
       setValue("");
-      onSaved();
+      onSaved(saved);
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -84,6 +85,9 @@ export default function NamedSecretForm({
       className="flex flex-col gap-2 rounded-[10px] border bg-app px-3.5 py-3"
       onSubmit={(e) => {
         e.preventDefault();
+        // Inside a routine's form (Access, New Access…), saving the secret
+        // must not also submit the routine.
+        e.stopPropagation();
         void submit();
       }}
     >

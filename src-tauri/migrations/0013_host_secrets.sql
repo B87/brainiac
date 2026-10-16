@@ -17,6 +17,9 @@ CREATE TABLE named_secrets (
   label               TEXT NOT NULL,
   env_name            TEXT NOT NULL UNIQUE,
   note                TEXT NOT NULL DEFAULT '',
+  -- A run gets a file holding the value, the variable holding its path (a key
+  -- file a tool reads, like GOOGLE_APPLICATION_CREDENTIALS).
+  as_file             INTEGER NOT NULL DEFAULT 0,
   secret_source       TEXT NOT NULL DEFAULT '{"kind":"none"}',
   credential_revision INTEGER NOT NULL DEFAULT 1,
   source_approved     INTEGER NOT NULL DEFAULT 1,

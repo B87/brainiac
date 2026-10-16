@@ -76,7 +76,7 @@ async fn set_up(core: &Db, settings: &AgentSettingsService, id: &str, key: &str,
     let profile = settings.profiles.iter().find(|p| p.id == id).unwrap();
     let local = &settings.hosts[0];
     assert_eq!(
-        brainiac_lib::agents::settings::run_missing(profile, local),
+        brainiac_lib::agents::settings::run_missing(profile, local, false),
         Vec::<String>::new()
     );
 }
@@ -273,6 +273,8 @@ impl Harness {
                 model: model.into(),
                 host_id: String::new(),
                 profile_id: profile_id.into(),
+                secret_ids: Vec::new(),
+                tools: false,
             })
             .await
     }

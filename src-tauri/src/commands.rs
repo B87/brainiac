@@ -1003,50 +1003,28 @@ pub async fn create_briefing_note(
     Ok(note)
 }
 
-/// Settings → Agents, a profile: runs use the image with Python and the
-/// Google Cloud CLI.
+/// Settings → Secrets: where each named secret is used and which hosts hold a copy.
 #[tauri::command]
-pub async fn set_profile_tools(
-    profile_id: String,
-    on: bool,
-    agents: State<'_, AgentSettingsState>,
-    routines: State<'_, Routines>,
-) -> AppResult<crate::models::AgentSettings> {
-    let settings = agents.set_tools(&profile_id, on).await?;
-    resync_schedules(&routines);
-    Ok(settings)
+pub async fn named_secret_usage(
+    named: State<'_, NamedSecrets>,
+) -> AppResult<Vec<crate::models::NamedSecretUsage>> {
+    named.usage().await
 }
 
-/// A change to an agent is part of what a schedule was approved for, so tell
-/// the hosts now: one that keeps firing the old spec would go on handing a run
-/// a secret that was just taken away. `spawn` runs it in the background; a
-/// host that cannot be reached is tried again by the next sync.
-fn resync_schedules(routines: &Routines) {
-    let routines = routines.clone();
-    tauri::async_runtime::spawn(async move {
-        routines.sync_all().await;
-    });
-}
-
-/// Settings → Agents, a profile: the named secrets its runs get.
+/// New run, **Send and start**: the run's access goes to its host first, then
+/// the run starts. The dialog listed what goes.
 #[tauri::command]
-pub async fn get_profile_secrets(
-    profile_id: String,
-    agents: State<'_, AgentSettingsState>,
-) -> AppResult<Vec<String>> {
-    agents.profile_secrets(&profile_id).await
-}
-
-#[tauri::command]
-pub async fn set_profile_secrets(
-    profile_id: String,
+pub async fn send_run_secrets(
+    host_id: String,
     secret_ids: Vec<String>,
-    agents: State<'_, AgentSettingsState>,
-    routines: State<'_, Routines>,
-) -> AppResult<Vec<String>> {
-    let names = agents.set_profile_secrets(&profile_id, secret_ids).await?;
-    resync_schedules(&routines);
-    Ok(names)
+    named: State<'_, NamedSecrets>,
+    hosts: State<'_, AgentHosts>,
+) -> AppResult<()> {
+    if secret_ids.is_empty() || host_id.is_empty() {
+        return Ok(());
+    }
+    let runtime = hosts.runtime(&host_id).await?;
+    named.ensure_on_host(&secret_ids, &host_id, &runtime).await
 }
 
 /// **Remove** a copy the host holds that no secret here names.

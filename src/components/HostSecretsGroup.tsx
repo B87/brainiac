@@ -89,15 +89,19 @@ export default function HostSecretsGroup({ host }: { host: AgentHost }) {
     }
   };
 
+  // Only what the host holds or was sent: a secret goes to a host with a
+  // routine's approval or a run's start, never from this page.
+  const rows = state?.rows.filter((r) => r.state !== "not_shared") ?? [];
   return (
-    <Group label="Secrets on this host">
+    <Group label="Secrets held here">
       <div className="settings-group flex flex-col">
-        {state?.rows.length === 0 && (
+        {state && rows.length === 0 && state.only_on_host.length === 0 && (
           <div className="settings-row text-[12.5px] text-muted">
-            No secrets yet. Add one in Settings → Secrets, then share it here.
+            None. A secret comes here when a routine that uses it is approved on
+            this host, or a run with it starts here.
           </div>
         )}
-        {state?.rows.map((row) => (
+        {rows.map((row) => (
           <fieldset
             key={row.secret_id}
             className="settings-row m-0 flex min-w-0 flex-col items-stretch gap-1 border-0"
@@ -119,14 +123,16 @@ export default function HostSecretsGroup({ host }: { host: AgentHost }) {
                   row.state !== "failed" &&
                   ` · ${relativeTime(row.shared_at)}`}
               </span>
-              <button
-                type="button"
-                className="btn btn-sm"
-                disabled={busy !== null}
-                onClick={() => void act(row, ipc.shareSecretWithHost)}
-              >
-                {busy === row.secret_id ? "Working…" : shareLabel(row.state)}
-              </button>
+              {row.state !== "shared" && (
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  disabled={busy !== null}
+                  onClick={() => void act(row, ipc.shareSecretWithHost)}
+                >
+                  {busy === row.secret_id ? "Working…" : shareLabel(row.state)}
+                </button>
+              )}
               {removable(row.state) && (
                 <button
                   type="button"
@@ -183,7 +189,7 @@ export default function HostSecretsGroup({ host }: { host: AgentHost }) {
         The host keeps a sealed copy that only its controller can open, so a run
         started on {host.name} can use it without this Mac. Anyone with access
         to the host or its administrator account can still reach what a run
-        uses: share tokens that can read and nothing more.
+        uses: give runs tokens that can read and nothing more.
       </Hint>
     </Group>
   );

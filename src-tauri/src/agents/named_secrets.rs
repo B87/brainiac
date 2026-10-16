@@ -469,6 +469,100 @@ impl NamedSecretService {
         self.host_secrets(host_id, Some(runtime)).await
     }
 
+    /// Send each of these secrets the host does not hold as it is now (never
+    /// sent, out of date, missing, or a share that did not finish). The
+    /// caller has told the user: New run and the approval list what goes.
+    pub async fn ensure_on_host(
+        &self,
+        ids: &[String],
+        host_id: &str,
+        runtime: &RunRuntime,
+    ) -> AppResult<()> {
+        let held = self.host_secrets(host_id, Some(runtime)).await?;
+        if let Some(problem) = held.problem {
+            return Err(AppError::dependency(problem));
+        }
+        for id in ids {
+            let current = held
+                .rows
+                .iter()
+                .any(|r| &r.secret_id == id && r.state == HostSecretState::Shared);
+            if !current {
+                self.share(id, host_id, runtime).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Settings → Secrets: for each secret, the routines that use it and the
+    /// hosts Brainiac sent a copy to, from its own records.
+    pub async fn usage(&self) -> AppResult<Vec<crate::models::NamedSecretUsage>> {
+        let secrets = self.list().await?;
+        let (routines, shares) = self
+            .db
+            .call(|conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT s.secret_id, r.name FROM routine_secrets s
+                       JOIN routines r ON r.id = s.routine_id ORDER BY r.name",
+                )?;
+                let routines = stmt
+                    .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                let mut stmt = conn.prepare(
+                    "SELECT x.secret_id, x.host_id, COALESCE(m.name, 'This Mac'), x.shared_revision,
+                            x.shared_at, x.failure
+                       FROM host_secret_shares x JOIN agent_hosts h ON h.id = x.host_id
+                       LEFT JOIN machines m ON m.id = h.machine_id
+                      ORDER BY 3",
+                )?;
+                let shares = stmt
+                    .query_map([], |r| {
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, String>(2)?,
+                            r.get::<_, i64>(3)?,
+                            r.get::<_, String>(4)?,
+                            r.get::<_, Option<String>>(5)?,
+                        ))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok((routines, shares))
+            })
+            .await?;
+        Ok(secrets
+            .iter()
+            .map(|secret| crate::models::NamedSecretUsage {
+                secret_id: secret.id.clone(),
+                routines: routines
+                    .iter()
+                    .filter(|(id, _)| id == &secret.id)
+                    .map(|(_, name)| name.clone())
+                    .collect(),
+                copies: shares
+                    .iter()
+                    // A share that never reached the host (revision 0) is no copy.
+                    .filter(|s| s.0 == secret.id && (s.3 > 0 || s.5.is_some()))
+                    .map(|(_, host_id, host_name, revision, at, failure)| {
+                        crate::models::SecretCopy {
+                            host_id: host_id.clone(),
+                            host_name: host_name.clone(),
+                            state: if failure.is_some() {
+                                HostSecretState::Failed
+                            } else if *revision != secret.credential.revision {
+                                HostSecretState::OutOfDate
+                            } else {
+                                HostSecretState::Shared
+                            },
+                            shared_at: (*revision > 0).then(|| at.clone()),
+                            failure: failure.clone(),
+                        }
+                    })
+                    .collect(),
+            })
+            .collect())
+    }
+
     /// **Remove from host**: the host forgets the secret, then so does the ledger.
     pub async fn unshare(
         &self,

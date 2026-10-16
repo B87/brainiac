@@ -26,4 +26,13 @@ profile_id: string,
  * Set when a routine starts the run: the run is titled by the routine's
  * name and linked to it in Runs.
  */
-routine: RunRoutine | null, };
+routine: RunRoutine | null, 
+/**
+ * The named secrets (Settings → Secrets) the run gets, by ID. Only a
+ * Linux run host can give them; the caller sends any the host lacks first.
+ */
+secret_ids: Array<string>, 
+/**
+ * The run uses the image with Python and the Google Cloud CLI.
+ */
+tools: boolean, };

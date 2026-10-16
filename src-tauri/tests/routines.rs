@@ -11,6 +11,9 @@ use std::time::Duration;
 
 use brainiac_lib::agents::controller::state::StateDir;
 use brainiac_lib::agents::controller::{serve, Config};
+use brainiac_lib::agents::host_jobs::HostJobService;
+use brainiac_lib::agents::hosts::AgentHostService;
+use brainiac_lib::agents::named_secrets::NamedSecretService;
 use brainiac_lib::agents::routines::RoutineService;
 use brainiac_lib::agents::{
     image, AgentRunService, AgentSettingsService, RepositoryLookup, RunArtifacts, RunRuntime,
@@ -18,6 +21,7 @@ use brainiac_lib::agents::{
 use brainiac_lib::credentials::{CommandRunner, CredentialService, MemoryStore};
 use brainiac_lib::db::Stores;
 use brainiac_lib::git::GitService;
+use brainiac_lib::machines::MachineService;
 use brainiac_lib::models::{
     AgentPayment, AgentProvider, AnswerCodeSharingRequest, BriefingResult, BriefingState,
     BriefingStatus, Routine, SaveAgentCredentialRequest, SaveRoutineRequest, SecretSource,
@@ -141,7 +145,7 @@ impl Harness {
             history.clone(),
             Arc::clone(&settings),
             sharing,
-            credentials,
+            Arc::clone(&credentials),
             artifacts,
             Arc::new(RunRuntime::attach(
                 StateDir::new(tmp.path().join("c")),
@@ -158,7 +162,24 @@ impl Harness {
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        let routines = RoutineService::new(core, history, runs, settings, changes);
+        let named = Arc::new(NamedSecretService::new(
+            core.clone(),
+            Arc::clone(&credentials),
+        ));
+        let jobs = Arc::new(HostJobService::new(
+            Arc::new(AgentHostService::new(
+                core.clone(),
+                history.clone(),
+                &data,
+                Arc::new(MachineService::new(core.clone(), &data)),
+            )),
+            Arc::clone(&runs),
+            Arc::clone(&settings),
+            &data,
+            Arc::new(|_| {}),
+            Arc::new(|_, _| {}),
+        ));
+        let routines = RoutineService::new(core, history, runs, settings, named, jobs, changes);
         Harness {
             _tmp: tmp,
             repository_id,
@@ -182,6 +203,8 @@ impl Harness {
                 time_limit_minutes: 30,
                 memory: String::new(),
                 previous_results: 3,
+                secret_ids: Vec::new(),
+                tools: false,
             })
             .await
             .unwrap()
@@ -306,6 +329,8 @@ async fn a_start_that_is_refused_is_kept_as_a_failed_result() {
             time_limit_minutes: routine.time_limit_minutes,
             memory: String::new(),
             previous_results: 3,
+            secret_ids: Vec::new(),
+            tools: false,
         })
         .await
         .unwrap();
@@ -327,6 +352,8 @@ async fn a_start_that_is_refused_is_kept_as_a_failed_result() {
             time_limit_minutes: 30,
             memory: String::new(),
             previous_results: 3,
+            secret_ids: Vec::new(),
+            tools: false,
         })
         .await
         .is_err());
@@ -349,6 +376,8 @@ async fn the_memory_and_earlier_results_go_into_the_prompt_and_the_agent_rewrite
             time_limit_minutes: 30,
             memory: "Already covered: rust async.".into(),
             previous_results: 2,
+            secret_ids: Vec::new(),
+            tools: false,
         })
         .await
         .unwrap();
@@ -404,6 +433,8 @@ async fn the_memory_and_earlier_results_go_into_the_prompt_and_the_agent_rewrite
             time_limit_minutes: 30,
             memory: "Only the user's note.".into(),
             previous_results: 0,
+            secret_ids: Vec::new(),
+            tools: false,
         })
         .await
         .unwrap();
@@ -422,6 +453,8 @@ async fn the_memory_and_earlier_results_go_into_the_prompt_and_the_agent_rewrite
             time_limit_minutes: 30,
             memory: String::new(),
             previous_results: 11,
+            secret_ids: Vec::new(),
+            tools: false,
         })
         .await
         .is_err());

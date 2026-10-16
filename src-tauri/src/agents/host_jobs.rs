@@ -137,6 +137,11 @@ pub fn steps_for(
             steps.extend(test_steps(name, profiles));
             steps
         }
+        HostJobKind::Prepare => {
+            let mut steps = install_steps(name, user);
+            steps.extend(image_steps(name));
+            steps
+        }
     }
 }
 
@@ -636,13 +641,17 @@ impl HostJobService {
             error_details: None,
             cancellable: matches!(
                 kind,
-                HostJobKind::Install | HostJobKind::Upgrade | HostJobKind::Setup
+                HostJobKind::Install
+                    | HostJobKind::Upgrade
+                    | HostJobKind::Setup
+                    | HostJobKind::Prepare
             ),
             from_build: host.controller_build.clone(),
             to_build: match kind {
                 HostJobKind::Install | HostJobKind::Upgrade | HostJobKind::Setup => {
                     host.available_build.clone()
                 }
+                HostJobKind::Prepare if host.upgrade_available => host.available_build.clone(),
                 _ => None,
             },
             profile_ids: profile_ids.clone(),
@@ -686,6 +695,31 @@ impl HostJobService {
                 self.hosts.deploy(id, job, 0).await.map(|_| ())
             }
             HostJobKind::BuildImage => self.hosts.build_image(id, job, 0).await.map(|_| ()),
+            // Only what is behind is done; the rest is marked as skipped.
+            HostJobKind::Prepare => {
+                let host = self.hosts.host(id).await?;
+                if host.upgrade_available {
+                    self.hosts.deploy(id, job, 0).await?;
+                } else {
+                    for i in 0..install::COUNT {
+                        job.skip(i, "Already current");
+                    }
+                }
+                let host = self.hosts.host(id).await?;
+                let current =
+                    |i: &Option<crate::models::AgentImage>| i.as_ref().is_some_and(|i| i.current);
+                if current(&host.image) && current(&host.tools_image) {
+                    for i in 0..image::COUNT {
+                        job.skip(install::COUNT + i, "Already built");
+                    }
+                    Ok(())
+                } else {
+                    self.hosts
+                        .build_image(id, job, install::COUNT)
+                        .await
+                        .map(|_| ())
+                }
+            }
             HostJobKind::Test => match profiles.first() {
                 Some(profile) => self.test(id, profile, job, 0, true).await,
                 None => Err(AppError::validation("Choose the agent to test.")),
@@ -784,9 +818,13 @@ fn check_start(host: &AgentHost, kind: HostJobKind) -> AppResult<()> {
     }
     match kind {
         HostJobKind::Install | HostJobKind::Setup => Ok(()),
-        HostJobKind::Upgrade | HostJobKind::BuildImage if !host.installed => Err(
-            AppError::validation("Install the run controller on this host first."),
-        ),
+        HostJobKind::Upgrade | HostJobKind::BuildImage | HostJobKind::Prepare
+            if !host.installed =>
+        {
+            Err(AppError::validation(
+                "Install the run controller on this host first.",
+            ))
+        }
         HostJobKind::Test if host.image.as_ref().is_none_or(|i| !i.current) => Err(
             AppError::validation("Build the image on this host before testing it."),
         ),
@@ -848,6 +886,10 @@ pub fn outcome(job: &HostJob) -> Option<(String, String)> {
                     ),
                 }
             }
+            HostJobKind::Prepare => (
+                format!("{name} is prepared"),
+                format!("In {took}. The approved schedule goes there now."),
+            ),
         }),
         HostJobState::Failed | HostJobState::Interrupted => {
             let at = job
@@ -873,6 +915,7 @@ fn failed_title(job: &HostJob) -> String {
         HostJobKind::BuildImage => format!("The image build on {name} failed"),
         HostJobKind::Test => format!("{name}'s test did not pass"),
         HostJobKind::Setup => format!("Setting up {name} failed"),
+        HostJobKind::Prepare => format!("Preparing {name} for a routine failed"),
     }
 }
 

@@ -71,20 +71,12 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../migrations/0013_host_secrets.sql"),
     ),
     (
-        "0014_profile_host_secrets",
-        include_str!("../migrations/0014_profile_host_secrets.sql"),
+        "0014_tools_layer",
+        include_str!("../migrations/0014_tools_layer.sql"),
     ),
     (
-        "0015_tools_layer",
-        include_str!("../migrations/0015_tools_layer.sql"),
-    ),
-    (
-        "0016_routines",
-        include_str!("../migrations/0016_routines.sql"),
-    ),
-    (
-        "0017_secret_as_file",
-        include_str!("../migrations/0017_secret_as_file.sql"),
+        "0015_routines",
+        include_str!("../migrations/0015_routines.sql"),
     ),
 ];
 

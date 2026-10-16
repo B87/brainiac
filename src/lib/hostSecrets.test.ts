@@ -39,11 +39,11 @@ describe("secrets on a host", () => {
     expect(stateHelp(row("failed"))).toContain("did not finish");
   });
 
-  it("offers Share, Retry or Share Again, and Remove only when a copy may exist", () => {
+  it("offers Share, Retry or Send Again, and Remove only when a copy may exist", () => {
     expect(shareLabel("not_shared")).toBe("Share");
     expect(shareLabel("failed")).toBe("Retry");
-    expect(shareLabel("out_of_date")).toBe("Share Again");
-    expect(shareLabel("shared")).toBe("Share Again");
+    expect(shareLabel("out_of_date")).toBe("Send Again");
+    expect(shareLabel("shared")).toBe("Send Again");
     expect(removable("not_shared")).toBe(false);
     expect(removable("failed")).toBe(true);
     expect(removable("shared")).toBe(true);

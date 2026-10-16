@@ -13,6 +13,8 @@ CREATE TABLE routines (
   start              TEXT NOT NULL DEFAULT 'HEAD',
   prompt             TEXT NOT NULL,
   time_limit_minutes INTEGER NOT NULL,
+  -- The routine's runs use the image with Python and the Google Cloud CLI.
+  tools              INTEGER NOT NULL DEFAULT 0,
   -- Text the agent rewrites after each run and the user can edit; part of the
   -- next run's prompt, as data. Bounded; never a file in the container.
   memory             TEXT NOT NULL DEFAULT '',
@@ -39,9 +41,21 @@ CREATE TABLE routines (
   code_at            TEXT,
   -- The memory was edited here and the host has not been told.
   memory_unsent      INTEGER NOT NULL DEFAULT 0,
+  -- Approved, and waiting for the host to be prepared (its helper upgraded,
+  -- its image built) before the schedule is sent.
+  preparing          INTEGER NOT NULL DEFAULT 0,
   -- Why the schedule was paused or turned off by Brainiac, in words.
   notice             TEXT,
   version            INTEGER NOT NULL DEFAULT 1,
   created_at         TEXT NOT NULL,
   updated_at         TEXT NOT NULL
+);
+
+-- The named secrets a routine's runs get (docs/design/routines-ux.md): the
+-- routine is where the agent, the host and the access meet. Deleting either
+-- side removes the row; a routine whose access changed needs approval again.
+CREATE TABLE routine_secrets (
+  routine_id TEXT NOT NULL REFERENCES routines (id) ON DELETE CASCADE,
+  secret_id  TEXT NOT NULL REFERENCES named_secrets (id) ON DELETE CASCADE,
+  PRIMARY KEY (routine_id, secret_id)
 );
