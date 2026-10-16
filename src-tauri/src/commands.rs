@@ -1010,8 +1010,22 @@ pub async fn set_profile_tools(
     profile_id: String,
     on: bool,
     agents: State<'_, AgentSettingsState>,
+    routines: State<'_, Routines>,
 ) -> AppResult<crate::models::AgentSettings> {
-    agents.set_tools(&profile_id, on).await
+    let settings = agents.set_tools(&profile_id, on).await?;
+    resync_schedules(&routines);
+    Ok(settings)
+}
+
+/// A change to an agent is part of what a schedule was approved for, so tell
+/// the hosts now: one that keeps firing the old spec would go on handing a run
+/// a secret that was just taken away. `spawn` runs it in the background; a
+/// host that cannot be reached is tried again by the next sync.
+fn resync_schedules(routines: &Routines) {
+    let routines = routines.clone();
+    tauri::async_runtime::spawn(async move {
+        routines.sync_all().await;
+    });
 }
 
 /// Settings → Agents, a profile: the named secrets its runs get.
@@ -1028,8 +1042,11 @@ pub async fn set_profile_secrets(
     profile_id: String,
     secret_ids: Vec<String>,
     agents: State<'_, AgentSettingsState>,
+    routines: State<'_, Routines>,
 ) -> AppResult<Vec<String>> {
-    agents.set_profile_secrets(&profile_id, secret_ids).await
+    let names = agents.set_profile_secrets(&profile_id, secret_ids).await?;
+    resync_schedules(&routines);
+    Ok(names)
 }
 
 /// **Remove** a copy the host holds that no secret here names.

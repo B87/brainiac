@@ -442,18 +442,20 @@ impl NamedSecretService {
         check_value(&value)?;
         let kept = runtime
             .put_secret(&secret.env_name, value, secret.as_file)
-            .await
-            .and_then(|list| {
-                // A controller from before files keeps the value as a value
-                // and lists no `file`: say so rather than run without the file.
-                let mine = list.iter().find(|s| s.name == secret.env_name);
-                if secret.as_file && !mine.is_some_and(|s| s.file) {
-                    return Err(AppError::dependency(
-                        "This host's run controller is older than Brainiac and cannot give a run a file. Upgrade it in Settings → Agents.",
-                    ));
-                }
-                Ok(list)
-            });
+            .await;
+        // A host that kept the value as a plain value must not keep it: a run
+        // would get the whole key where a path was meant.
+        let kept = match kept {
+            Ok(list)
+                if secret.as_file && !list.iter().any(|s| s.name == secret.env_name && s.file) =>
+            {
+                let _ = runtime.delete_secret(&secret.env_name).await;
+                Err(AppError::dependency(
+                    "This host's run controller is older than Brainiac and cannot give a run a file. Upgrade it in Settings → Agents.",
+                ))
+            }
+            other => other,
+        };
         match kept {
             Ok(_) => {
                 self.record_share(host_id, id, Some(revision), None).await?;

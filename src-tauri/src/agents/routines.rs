@@ -426,6 +426,8 @@ impl RoutineService {
         let mut events = self.run_events.subscribe();
         let mut checked_turn = 0u32;
         let mut followed_up = false;
+        // Reads that failed on the way to the host, not on the file.
+        let mut read_failures = 0u32;
         loop {
             let key = id.to_string();
             let Ok(Some(row)) = self.history.call(move |conn| get(conn, &key)).await else {
@@ -484,6 +486,20 @@ impl RoutineService {
                         )
                         .await;
                         let _ = self.runs.cancel(&run_id).await;
+                    }
+                    // The host could not be reached or did not answer in time:
+                    // the run finished and the file is there, so look again a
+                    // few times before calling the briefing lost.
+                    Err(e)
+                        if read_failures < 4
+                            && matches!(
+                                e.code,
+                                ErrorCode::DependencyUnavailable | ErrorCode::Timeout
+                            ) =>
+                    {
+                        read_failures += 1;
+                        checked_turn = run.turn.saturating_sub(1);
+                        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
                     }
                     Err(e) => {
                         self.fail(id, &e.message, Some(&run)).await;

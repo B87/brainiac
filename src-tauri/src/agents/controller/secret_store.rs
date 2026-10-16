@@ -83,8 +83,13 @@ impl SecretStore {
         }
         self.put_sealed(name, value, file).await?;
         // One name, one way of arriving: the other kind is forgotten.
-        let _ = fs::remove_file(self.path_for(name, !file));
-        Ok(())
+        match fs::remove_file(self.path_for(name, !file)) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            // Left in place it would be delivered the old way, with the old value.
+            Err(e) => Err(AppError::io("The secret could not be saved on this host.")
+                .with_details(e.to_string())),
+        }
     }
 
     async fn put_sealed(&self, name: &str, value: &str, file: bool) -> AppResult<()> {
