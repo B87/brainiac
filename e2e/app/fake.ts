@@ -13,8 +13,6 @@ import type {
   AgentSettings,
   AnswerCodeSharingRequest,
   AppSnapshot,
-  Briefing,
-  BriefingOverview,
   BriefingResult,
   Cell,
   CodeAnswer,
@@ -46,6 +44,8 @@ import type {
   ResolveThreadRequest,
   ReviewDraft,
   ReviewDrafts,
+  Routine,
+  RoutineOverview,
   RunEvent,
   RunStatementRequest,
   SaveDbConnectionRequest,
@@ -554,6 +554,7 @@ function sampleRun(fields: Partial<AgentRun>): AgentRun {
     cleanup_pending: null,
     explain: false,
     host_secrets: [],
+    routine_id: null,
     cursor: 0,
     created_at: minutesFromNow(-20),
     updated_at: minutesFromNow(0),
@@ -1185,14 +1186,14 @@ export class FakeBackend {
   >();
   /** A test makes the next Share fail with this sentence. */
   shareFailure: string | null = null;
-  briefings: Briefing[] = [];
+  routines: Routine[] = [];
   briefingResults: BriefingResult[] = [];
   /** The agent finished a briefing's run: Ready with a finding and a proposal, or Failed. */
   finishBriefing(id: string, how: "findings" | "failed") {
     const r = this.briefingResults.find((x) => x.id === id);
     if (!r) return;
     const prev = this.briefingResults.find(
-      (x) => x.briefing_id === r.briefing_id && x.state === "ready",
+      (x) => x.routine_id === r.routine_id && x.state === "ready",
     );
     r.finished_at = new Date().toISOString();
     r.duration_secs = 120;
@@ -3019,25 +3020,26 @@ export class FakeBackend {
         this.later("task_changed", { task_id: t.id, version: t.version });
         return t;
       }
-      case "list_briefings":
-        return this.briefings.map(
-          (briefing): BriefingOverview => ({
-            briefing,
+      case "list_routines":
+        return this.routines.map(
+          (routine): RoutineOverview => ({
+            routine,
             repository_name: "parser",
+            host_name: routine.host_id === "" ? "This Mac" : "runner.example",
             latest:
               [...this.briefingResults]
                 .reverse()
-                .find((r) => r.briefing_id === briefing.id) ?? null,
+                .find((r) => r.routine_id === routine.id) ?? null,
           }),
         );
-      case "save_briefing": {
-        const r = args.request as Briefing & {
+      case "save_routine": {
+        const r = args.request as Routine & {
           id: string | null;
           expected_version: number;
         };
-        const found = this.briefings.find((b) => b.id === r.id);
-        const saved: Briefing = {
-          id: found?.id ?? uid("briefing"),
+        const found = this.routines.find((b) => b.id === r.id);
+        const saved: Routine = {
+          id: found?.id ?? uid("routine"),
           name: r.name,
           repository_id: r.repository_id,
           profile_id: r.profile_id,
@@ -3051,16 +3053,20 @@ export class FakeBackend {
           version: (found?.version ?? 0) + 1,
         };
         if (found) Object.assign(found, saved);
-        else this.briefings.push(saved);
+        else this.routines.push(saved);
         return saved;
       }
-      case "delete_briefing":
-        this.briefings = this.briefings.filter((b) => b.id !== args.id);
+      case "list_routine_results":
+        return [...this.briefingResults]
+          .reverse()
+          .filter((r) => r.routine_id === args.routineId);
+      case "delete_routine":
+        this.routines = this.routines.filter((b) => b.id !== args.id);
         return null;
-      case "run_briefing_now": {
+      case "run_routine_now": {
         const result: BriefingResult = {
           id: uid("result"),
-          briefing_id: String(args.id),
+          routine_id: String(args.id),
           run_id: "run-1",
           state: "working",
           status: null,
@@ -3073,13 +3079,21 @@ export class FakeBackend {
           duration_secs: null,
         };
         this.briefingResults.push(result);
+        const routine = this.routines.find((b) => b.id === args.id);
+        this.runs.push(
+          sampleRun({
+            id: "run-routine-1",
+            title: routine?.name ?? "Routine",
+            routine_id: String(args.id),
+            phase: "running",
+            activity: "working",
+          }),
+        );
         return result;
       }
       case "save_briefing_as_note": {
         const result = this.briefingResults.find((r) => r.id === args.resultId);
-        const briefing = this.briefings.find(
-          (b) => b.id === result?.briefing_id,
-        );
+        const briefing = this.routines.find((b) => b.id === result?.routine_id);
         return this.handle("create_note", {
           request: {
             folder: "Briefings",

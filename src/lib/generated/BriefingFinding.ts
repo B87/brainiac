@@ -7,7 +7,7 @@ export type BriefingFinding = {
  */
 key: string, title: string, 
 /**
- * Only when the briefing is about problems.
+ * Only when the routine is about problems.
  */
 severity: BriefingSeverity | null, detail: string, 
 /**
@@ -15,6 +15,6 @@ severity: BriefingSeverity | null, detail: string,
  */
 link: string, 
 /**
- * The previous briefing of this definition had a finding with this key.
+ * The previous routine of this definition had a finding with this key.
  */
 seen_before: boolean, };

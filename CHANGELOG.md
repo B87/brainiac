@@ -11,7 +11,7 @@ into the release's section.
 
 ## [Unreleased]
 
-- Settings → Secrets can keep secrets of your own, such as a Sentry token, and a run host's page can share them: the host keeps a sealed copy, and shows when it is out of date. An agent's page can choose which secrets its runs on a Linux run host get; New run and the run's page name them. Today can show routines: saved runs that check something and leave a short report (a briefing), started with Run Now. A routine keeps a memory the agent and you can edit, and is shown its earlier briefings. An agent's page can add Python and the Google Cloud CLI to its runs' image, built by the next Build image.
+- Settings → Secrets can keep secrets of your own, such as a Sentry token, and a run host's page can share them: the host keeps a sealed copy, and shows when it is out of date. An agent's page can choose which secrets its runs on a Linux run host get; New run and the run's page name them. Routines are saved runs that check something and leave a short report (a briefing), started with Run Now: a Routines section lists them, each has its own page, and Today shows the ones with news. A routine keeps a memory the agent and you can edit, and is shown its earlier briefings. An agent's page can add Python and the Google Cloud CLI to its runs' image, built by the next Build image.
 
 - A run host's page has a Health section: whether it answers, its uptime, load, memory, disk, Docker engine and runs, with what to fix when something is wrong. Upgrade the host's controller to see it.
 

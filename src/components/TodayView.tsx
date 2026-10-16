@@ -4,6 +4,7 @@ import {
   errorMessage,
   ipc,
   type RepositorySummary,
+  type RoutineOverview,
   type Task,
   type TodayView as Today,
 } from "../lib/ipc";
@@ -11,7 +12,6 @@ import { step, useKeys } from "../lib/keys";
 import { useSidePanel } from "../lib/sidePanel";
 import { createLatest } from "../lib/stale";
 import { formatDay, localDate } from "../lib/tasks";
-import BriefingsSection from "./BriefingsSection";
 import {
   ChevronDown,
   ChevronRight,
@@ -21,6 +21,7 @@ import {
   TodayIcon,
 } from "./icons";
 import { RepoLine } from "./RepoChip";
+import RoutinesDigest from "./RoutinesDigest";
 import SidePanelButton from "./SidePanelButton";
 import TaskRow from "./TaskRow";
 import { toggleTask, useTaskEvents } from "./TasksView";
@@ -38,7 +39,9 @@ export default function TodayView({
   onNew,
   onOpenNote,
   onOpenRepo,
-  onOpenRun,
+  routines,
+  onOpenRoutine,
+  onAllRoutines,
   onFetch,
   onError,
 }: {
@@ -48,7 +51,9 @@ export default function TodayView({
   onNew: () => void;
   onOpenNote: (noteId: string) => void;
   onOpenRepo: (repositoryId: string) => void;
-  onOpenRun: (runId: string) => void;
+  routines: RoutineOverview[];
+  onOpenRoutine: (routineId: string) => void;
+  onAllRoutines: () => void;
   onFetch: (ids: string[]) => void;
   onError: (message: string | null) => void;
 }) {
@@ -152,11 +157,11 @@ export default function TodayView({
           </button>
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto pb-6">
-          <BriefingsSection
-            repositories={snapshot.repositories}
-            onOpenNote={onOpenNote}
-            onOpenRun={onOpenRun}
-            onError={onError}
+          <RoutinesDigest
+            routines={routines}
+            today={date}
+            onOpen={onOpenRoutine}
+            onAll={onAllRoutines}
           />
           {today && today.to_sort.length > 0 && (
             <button

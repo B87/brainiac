@@ -611,81 +611,95 @@ test("An agent can ask for Python and the Google Cloud CLI, which the next Build
   ).toBeChecked();
 });
 
-test("A routine is added on Today, Run Now starts it, and its checked result offers a task and a note; a run with no briefing reads as failed", async ({
+test("A routine is added in Routines, Run Now starts it, its checked briefing offers a task and a note, and Today shows a line for it", async ({
   page,
 }) => {
   await page.evaluate(() => {
     window.fake.readyThisMac();
     window.fake.readyProfile("claude-code", ["local"]);
   });
-  await page.getByRole("button", { name: "Today" }).click();
-  const section = page.getByRole("region", { name: "Routines" });
-  await expect(section).toContainText("A routine is a run that checks");
+  const nav = page.getByRole("navigation", {
+    name: "Repositories and workspaces",
+  });
+  await nav.getByRole("button", { name: "Routines" }).click();
+  await expect(page.getByText("A routine is a run that checks")).toBeVisible();
 
-  await section.getByRole("button", { name: "New Routine…" }).click();
+  // New Routine…: a page with the definition, not a dialog.
+  await page.getByRole("button", { name: "New Routine…" }).first().click();
   const form = page.getByRole("form", { name: "New routine" });
   await form.getByLabel("Name", { exact: true }).fill("Morning check");
-  await form.getByLabel("What to check").fill("Check production errors.");
-  await form.getByLabel("Memory").fill("Ignore SENTRY-9.");
-  await page
-    .getByRole("dialog", { name: "New routine" })
-    .getByRole("button", { name: "Save" })
-    .click();
-  const card = section.getByRole("group", { name: "Morning check" });
-  await expect(card).toContainText("Not run yet.");
+  await form.getByLabel("Prompt").fill("Check production errors.");
+  await form.getByLabel("Notes for the next run").fill("Ignore SENTRY-9.");
+  await form.getByRole("button", { name: "Create Routine" }).click();
+  expect((await calls(page, "save_routine")).at(-1)).toMatchObject({
+    request: { memory: "Ignore SENTRY-9.", previous_results: 3 },
+  });
+  const header = page.getByRole("heading", { name: "Morning check" });
+  await expect(header).toBeVisible();
+  await expect(page.getByText("Not run yet.")).toBeVisible();
+  await expect(page.getByText("The network is unrestricted.")).toBeVisible();
 
-  // Run Now: working, then the checked result.
-  await card.getByRole("button", { name: "Run Now" }).click();
-  await expect(card).toContainText("Running since");
-  await expect(card.getByRole("button", { name: "Running…" })).toBeDisabled();
+  // Run Now: working, then the checked briefing.
+  await page.getByRole("button", { name: "Run Now" }).click();
+  await expect(page.getByText("Running since")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Running…" })).toBeDisabled();
   await page.evaluate(() => {
     const r = window.fake.briefingResults[0];
     window.fake.finishBriefing(r.id, "findings");
   });
-  await expect(card).toContainText("One new error in checkout.", {
+  await expect(page.getByText("One new error in checkout.")).toBeVisible({
     timeout: 8000,
   });
-  await expect(card).toContainText("TypeError in checkout");
-  await expect(card).toContainText("12 events since yesterday");
+  await expect(page.getByText("TypeError in checkout")).toBeVisible();
 
-  // A task is made once; an issue is only copied.
-  await card.getByRole("button", { name: "Create Task" }).click();
-  await expect(card).toContainText("Task created");
-  await expect(card.getByRole("button", { name: "Create Task" })).toHaveCount(
+  // A task is made once; a note proposal is saved once; an issue is copied.
+  await page.getByRole("button", { name: "Create Task" }).click();
+  await expect(page.getByText("Task created")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Create Task" })).toHaveCount(
     0,
   );
-  await expect(card.getByRole("button", { name: "Copy" })).toBeVisible();
-
-  // A note proposal is saved once; the briefing itself can be saved too.
-  await card.getByRole("button", { name: "Save as Note" }).first().click();
+  await expect(page.getByRole("button", { name: "Copy" })).toBeVisible();
+  await page.getByRole("button", { name: "Save as Note" }).first().click();
   expect((await calls(page, "create_briefing_note")).at(-1)).toMatchObject({
     proposalKey: "note-1",
   });
-  await page.getByRole("button", { name: "Today" }).click();
-  await expect(card).toContainText("Note saved");
-  await card.getByRole("button", { name: "Save as Note" }).last().click();
-  expect((await calls(page, "save_briefing_as_note")).length).toBe(1);
-  expect((await calls(page, "save_briefing")).at(-1)).toMatchObject({
-    request: { memory: "Ignore SENTRY-9.", previous_results: 3 },
-  });
 
-  // Tomorrow's run: the same finding says it was seen before. A run that
-  // wrote nothing is a failure, never "nothing found".
-  await page.getByRole("button", { name: "Today" }).click();
-  await card.getByRole("button", { name: "Run Now" }).click();
+  // History lists the briefings; Runs tags the run and links back.
+  await nav.getByRole("button", { name: "Routines" }).click();
+  await page
+    .getByRole("button", { name: /Morning check/ })
+    .first()
+    .dblclick();
+  await page.getByRole("tab", { name: "History" }).click();
+  await expect(page.getByRole("list", { name: "Briefings" })).toBeVisible();
+  await nav.getByRole("button", { name: "Runs" }).click();
+  await expect(
+    page.getByText("Routine", { exact: true }).first(),
+  ).toBeVisible();
+
+  // Today: one line, opening the routine's page. A run that left no
+  // briefing is "No briefing", never "nothing found".
+  await nav.getByRole("button", { name: "Today" }).click();
+  const digest = page.getByRole("region", { name: "Routines" });
+  await expect(digest).toContainText("Morning check");
+  await expect(digest).toContainText("1 finding");
+  await nav.getByRole("button", { name: "Routines" }).click();
+  await page
+    .getByRole("button", { name: /Morning check/ })
+    .first()
+    .click();
+  await page.getByRole("button", { name: "Run Now" }).click();
   await page.evaluate(() => {
     const r = window.fake.briefingResults[1];
-    window.fake.finishBriefing(r.id, "findings");
-  });
-  await expect(card).toContainText("seen before", { timeout: 8000 });
-  await card.getByRole("button", { name: "Run Now" }).click();
-  await page.evaluate(() => {
-    const r = window.fake.briefingResults[2];
     window.fake.finishBriefing(r.id, "failed");
   });
-  await expect(card).toContainText("No briefing:", { timeout: 8000 });
-  await expect(card).toContainText('This is not "nothing found"');
-  await expect(card).not.toContainText("Nothing found");
+  await expect(
+    page.getByText("No briefing", { exact: true }).first(),
+  ).toBeVisible({
+    timeout: 8000,
+  });
+  await expect(page.getByText("Nothing found")).toHaveCount(0);
+  await expect(page.getByTitle("Routines that need you")).toHaveText("1");
 });
 
 test("Settings → Agents lists four agents, and OpenCode · OpenRouter's page saves its key and model", async ({

@@ -299,6 +299,7 @@ export default function NewRunDialog({
         model: model.trim(),
         host_id: hostId,
         profile_id: profile.id,
+        routine: null,
       });
       onStarted(run);
     } catch (e) {

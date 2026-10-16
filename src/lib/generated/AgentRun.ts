@@ -84,6 +84,10 @@ explain: boolean,
  */
 host_secrets: Array<string>, 
 /**
+ * The routine this run is a run of, when it is one.
+ */
+routine_id: string | null, 
+/**
  * The journal sequence mirrored so far.
  */
 cursor: number, created_at: string, updated_at: string, version: number, 

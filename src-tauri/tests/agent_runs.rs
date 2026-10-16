@@ -261,6 +261,7 @@ impl Harness {
     ) -> brainiac_lib::models::AppResult<AgentRun> {
         self.runs
             .start(StartRunRequest {
+                routine: None,
                 repository_id: "repo-1".into(),
                 start_commit: self.start.clone(),
                 prompt: prompt.into(),

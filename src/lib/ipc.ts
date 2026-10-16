@@ -20,8 +20,6 @@ import type { AppError } from "./generated/AppError";
 import type { ApproveAgentHostRequest } from "./generated/ApproveAgentHostRequest";
 import type { AppSnapshot } from "./generated/AppSnapshot";
 import type { BranchComparison } from "./generated/BranchComparison";
-import type { Briefing } from "./generated/Briefing";
-import type { BriefingOverview } from "./generated/BriefingOverview";
 import type { BriefingResult } from "./generated/BriefingResult";
 import type { BusyTerminal } from "./generated/BusyTerminal";
 import type { Cell } from "./generated/Cell";
@@ -140,6 +138,8 @@ import type { RestoreResult } from "./generated/RestoreResult";
 import type { ResultColumn } from "./generated/ResultColumn";
 import type { ReviewCounts } from "./generated/ReviewCounts";
 import type { ReviewDrafts } from "./generated/ReviewDrafts";
+import type { Routine } from "./generated/Routine";
+import type { RoutineOverview } from "./generated/RoutineOverview";
 import type { RunBranchCommand } from "./generated/RunBranchCommand";
 import type { RunChanges } from "./generated/RunChanges";
 import type { RunControllerStatus } from "./generated/RunControllerStatus";
@@ -153,7 +153,6 @@ import type { RunStatementRequest } from "./generated/RunStatementRequest";
 import type { RunsOn } from "./generated/RunsOn";
 import type { SaveAgentCredentialRequest } from "./generated/SaveAgentCredentialRequest";
 import type { SaveAgentSettingsRequest } from "./generated/SaveAgentSettingsRequest";
-import type { SaveBriefingRequest } from "./generated/SaveBriefingRequest";
 import type { SaveDbConnectionRequest } from "./generated/SaveDbConnectionRequest";
 import type { SavedQuery } from "./generated/SavedQuery";
 import type { SaveForgeAccountOutcome } from "./generated/SaveForgeAccountOutcome";
@@ -163,6 +162,7 @@ import type { SaveNoteRequest } from "./generated/SaveNoteRequest";
 import type { SaveNoteResult } from "./generated/SaveNoteResult";
 import type { SaveQueryRequest } from "./generated/SaveQueryRequest";
 import type { SaveReviewDraftRequest } from "./generated/SaveReviewDraftRequest";
+import type { SaveRoutineRequest } from "./generated/SaveRoutineRequest";
 import type { SearchRequest } from "./generated/SearchRequest";
 import type { SearchResults } from "./generated/SearchResults";
 import type { SecretEntry } from "./generated/SecretEntry";
@@ -219,9 +219,7 @@ export type { AgentTestStep } from "./generated/AgentTestStep";
 export type { AnswerCodeSharingRequest } from "./generated/AnswerCodeSharingRequest";
 export type { Backlink } from "./generated/Backlink";
 export type { BranchComparison } from "./generated/BranchComparison";
-export type { Briefing } from "./generated/Briefing";
 export type { BriefingFinding } from "./generated/BriefingFinding";
-export type { BriefingOverview } from "./generated/BriefingOverview";
 export type { BriefingProposal } from "./generated/BriefingProposal";
 export type { BriefingResult } from "./generated/BriefingResult";
 export type { BusyTerminal } from "./generated/BusyTerminal";
@@ -311,6 +309,8 @@ export type { ReviewDraft } from "./generated/ReviewDraft";
 export type { Reviewer } from "./generated/Reviewer";
 export type { ReviewState } from "./generated/ReviewState";
 export type { ReviewVerdict } from "./generated/ReviewVerdict";
+export type { Routine } from "./generated/Routine";
+export type { RoutineOverview } from "./generated/RoutineOverview";
 export type { RunActivity } from "./generated/RunActivity";
 export type { RunBranchCommand } from "./generated/RunBranchCommand";
 export type { RunChanges } from "./generated/RunChanges";
@@ -330,8 +330,8 @@ export type { RunPlanEntry } from "./generated/RunPlanEntry";
 export type { RunPreview } from "./generated/RunPreview";
 export type { RunStartPreview } from "./generated/RunStartPreview";
 export type { RunStartStep } from "./generated/RunStartStep";
-export type { SaveBriefingRequest } from "./generated/SaveBriefingRequest";
 export type { SaveNamedSecretRequest } from "./generated/SaveNamedSecretRequest";
+export type { SaveRoutineRequest } from "./generated/SaveRoutineRequest";
 export type { SearchGroup } from "./generated/SearchGroup";
 export type { SearchHit } from "./generated/SearchHit";
 export type { SearchKind } from "./generated/SearchKind";
@@ -695,12 +695,14 @@ export const ipc = {
   testAgentSetup: (profileId: string) =>
     invoke<AgentTestResult>("test_agent_setup", { profileId }),
   /** Settings → Secrets, named secrets that can be shared with a run host. */
-  listBriefings: () => invoke<BriefingOverview[]>("list_briefings"),
-  saveBriefing: (request: SaveBriefingRequest) =>
-    invoke<Briefing>("save_briefing", { request }),
-  deleteBriefing: (id: string) => invoke<void>("delete_briefing", { id }),
-  runBriefingNow: (id: string) =>
-    invoke<BriefingResult>("run_briefing_now", { id }),
+  listRoutines: () => invoke<RoutineOverview[]>("list_routines"),
+  saveRoutine: (request: SaveRoutineRequest) =>
+    invoke<Routine>("save_routine", { request }),
+  deleteRoutine: (id: string) => invoke<void>("delete_routine", { id }),
+  listRoutineResults: (routineId: string) =>
+    invoke<BriefingResult[]>("list_routine_results", { routineId }),
+  runRoutineNow: (id: string) =>
+    invoke<BriefingResult>("run_routine_now", { id }),
   saveBriefingAsNote: (resultId: string) =>
     invoke<NoteSummary>("save_briefing_as_note", { resultId }),
   createBriefingTask: (resultId: string, proposalKey: string) =>

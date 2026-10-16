@@ -314,17 +314,17 @@ pub fn run() {
             notes.set_write_note_ids(settings.write_note_ids);
             app.manage(Arc::clone(&notes));
 
-            // --- Briefings (docs/design/scheduled-runs.md) ------------------
-            let briefings = agents::briefings::BriefingService::new(
+            // --- Routines (docs/design/routines-ux.md) ------------------
+            let routines = agents::routines::RoutineService::new(
                 explain_core.clone(),
                 explain_history.clone(),
                 Arc::clone(&explain_runs),
                 Arc::clone(&explain_agent_settings),
                 run_changes.clone(),
             );
-            app.manage(Arc::clone(&briefings));
+            app.manage(Arc::clone(&routines));
             tauri::async_runtime::spawn(async move {
-                briefings.reconnect().await;
+                routines.reconnect().await;
             });
 
             // --- Explaining changes (v0.6) ----------------------------------
@@ -583,10 +583,11 @@ pub fn run() {
             commands::remove_secret_from_host,
             commands::remove_unlisted_host_secret,
             commands::set_profile_tools,
-            commands::list_briefings,
-            commands::save_briefing,
-            commands::delete_briefing,
-            commands::run_briefing_now,
+            commands::list_routines,
+            commands::list_routine_results,
+            commands::save_routine,
+            commands::delete_routine,
+            commands::run_routine_now,
             commands::save_briefing_as_note,
             commands::create_briefing_task,
             commands::create_briefing_note,
@@ -926,6 +927,7 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
     let show_notes = MenuItem::with_id(app, "show_notes", "Notes", true, None::<&str>)?;
     let show_databases = MenuItem::with_id(app, "show_databases", "Databases", true, None::<&str>)?;
     let show_runs = MenuItem::with_id(app, "show_runs", "Runs", true, None::<&str>)?;
+    let show_routines = MenuItem::with_id(app, "show_routines", "Routines", true, None::<&str>)?;
     let check_updates = MenuItem::with_id(
         app,
         "check_updates",
@@ -996,6 +998,7 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
             &show_notes,
             &show_databases,
             &show_runs,
+            &show_routines,
             &show_terminal,
             &PredefinedMenuItem::separator(app)?,
             &refresh,

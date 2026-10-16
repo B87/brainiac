@@ -25,6 +25,7 @@ import {
   PanelLeftIcon,
   PlayIcon,
   PlusIcon,
+  RoutineIcon,
   TaskIcon,
   TerminalIcon,
   TodayIcon,
@@ -48,6 +49,12 @@ export type View =
   | { kind: "databases" }
   /** Runs (v0.5): the list, or one run. */
   | { kind: "runs"; runId?: string }
+  /** Routines: the table, or one routine's page ("new" while adding one). */
+  | {
+      kind: "routines";
+      routineId?: string;
+      tab?: "latest" | "history" | "definition";
+    }
   /** The terminal's tabs, filling the main area (SPEC.md, section 15). */
   | { kind: "terminal" }
   /** One pull request (v0.3), and the view to go back to. */
@@ -69,6 +76,7 @@ type Props = {
   reviewCounts: ReadonlyMap<string, number>;
   /** Runs that need you (SPEC.md, The run). */
   runsNeedingYou?: number;
+  routinesNeedingYou?: number;
   vault: VaultState | null;
   view: View;
   onView: (view: View) => void;
@@ -107,6 +115,7 @@ export default function Sidebar({
   snapshot,
   reviewCounts,
   runsNeedingYou = 0,
+  routinesNeedingYou = 0,
   vault,
   view,
   onView,
@@ -164,6 +173,7 @@ export default function Sidebar({
       <SidebarRail
         view={view}
         runsNeedingYou={runsNeedingYou}
+        routinesNeedingYou={routinesNeedingYou}
         onView={onView}
         onAdd={onAdd}
         onToggle={onToggle}
@@ -252,6 +262,20 @@ export default function Sidebar({
             {runsNeedingYou > 0 && (
               <span className="badge" title="Runs that need you">
                 {runsNeedingYou}
+              </span>
+            )}
+          </button>
+          <button
+            type="button"
+            className="side-row"
+            aria-current={view.kind === "routines"}
+            onClick={() => onView({ kind: "routines" })}
+          >
+            <RoutineIcon className="shrink-0" />
+            <span className="flex-1">Routines</span>
+            {routinesNeedingYou > 0 && (
+              <span className="badge" title="Routines that need you">
+                {routinesNeedingYou}
               </span>
             )}
           </button>
@@ -394,12 +418,14 @@ export default function Sidebar({
 function SidebarRail({
   view,
   runsNeedingYou,
+  routinesNeedingYou,
   onView,
   onAdd,
   onToggle,
 }: {
   view: View;
   runsNeedingYou: number;
+  routinesNeedingYou: number;
   onView: (view: View) => void;
   onAdd: () => void;
   onToggle?: () => void;
@@ -472,6 +498,19 @@ function SidebarRail({
             runsNeedingYou > 0 && (
               <span className="badge" aria-hidden="true">
                 {runsNeedingYou}
+              </span>
+            ),
+          )}
+          {item(
+            routinesNeedingYou > 0
+              ? `Routines, ${routinesNeedingYou} need you`
+              : "Routines",
+            view.kind === "routines",
+            <RoutineIcon size={16} />,
+            { kind: "routines" },
+            routinesNeedingYou > 0 && (
+              <span className="badge" aria-hidden="true">
+                {routinesNeedingYou}
               </span>
             ),
           )}

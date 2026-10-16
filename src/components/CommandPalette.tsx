@@ -21,6 +21,7 @@ import {
   NoteIcon,
   PlayIcon,
   PlusIcon,
+  RoutineIcon,
   SearchIcon,
   TaskIcon,
   TodayIcon,
@@ -271,6 +272,13 @@ export default function CommandPalette({
           hint: "",
           icon: <PlayIcon size={13} />,
           action: () => onView({ kind: "runs" }),
+        },
+        {
+          id: "routines",
+          label: "Routines",
+          hint: "",
+          icon: <RoutineIcon size={13} />,
+          action: () => onView({ kind: "routines" }),
         },
         {
           id: "new-run",

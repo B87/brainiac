@@ -3941,6 +3941,8 @@ pub struct AgentRun {
     pub explain: bool,
     /// The variable names (never values) of the host secrets the run was given.
     pub host_secrets: Vec<String>,
+    /// The routine this run is a run of, when it is one.
+    pub routine_id: Option<String>,
     /// The journal sequence mirrored so far.
     #[ts(type = "number")]
     pub cursor: u64,
@@ -3980,6 +3982,17 @@ pub struct StartRunRequest {
     pub host_id: String,
     /// The agent and provider: one of Settings → Agents' profiles.
     pub profile_id: String,
+    /// Set when a routine starts the run: the run is titled by the routine's
+    /// name and linked to it in Runs.
+    pub routine: Option<RunRoutine>,
+}
+
+/// The routine a run belongs to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RunRoutine {
+    pub id: String,
+    pub name: String,
 }
 
 /// One entry of a run's conversation, as the journal recorded it:
@@ -4998,13 +5011,13 @@ pub struct TerminalExitedEvent {
 }
 
 // ---------------------------------------------------------------------------
-// Briefings (docs/design/scheduled-runs.md; SPEC.md, Today → Briefings)
+// Routines (docs/design/scheduled-runs.md; SPEC.md, Today → Routines)
 // ---------------------------------------------------------------------------
 
 /// A saved run whose job is a short report on Today.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
-pub struct Briefing {
+pub struct Routine {
     pub id: String,
     pub name: String,
     pub repository_id: String,
@@ -5027,7 +5040,7 @@ pub struct Briefing {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
-pub struct SaveBriefingRequest {
+pub struct SaveRoutineRequest {
     /// `None` adds one.
     pub id: Option<String>,
     #[ts(type = "number")]
@@ -5050,7 +5063,7 @@ pub enum BriefingState {
     /// The run is going; nothing to read yet.
     Working,
     Ready,
-    /// There is no briefing: the reason is `error`. Never read as "nothing found".
+    /// There is no routine: the reason is `error`. Never read as "nothing found".
     Failed,
 }
 
@@ -5078,12 +5091,12 @@ pub struct BriefingFinding {
     /// Stable across days (such as a Sentry issue id), so "seen before" works.
     pub key: String,
     pub title: String,
-    /// Only when the briefing is about problems.
+    /// Only when the routine is about problems.
     pub severity: Option<BriefingSeverity>,
     pub detail: String,
     /// An http(s) address, or empty.
     pub link: String,
-    /// The previous briefing of this definition had a finding with this key.
+    /// The previous routine of this definition had a finding with this key.
     pub seen_before: bool,
 }
 
@@ -5116,7 +5129,7 @@ pub struct BriefingProposal {
 #[ts(export)]
 pub struct BriefingResult {
     pub id: String,
-    pub briefing_id: String,
+    pub routine_id: String,
     pub run_id: Option<String>,
     pub state: BriefingState,
     /// A claim the agent made about a check; `None` on a ready report that
@@ -5131,11 +5144,13 @@ pub struct BriefingResult {
     pub duration_secs: Option<u32>,
 }
 
-/// A briefing and its latest result, for Today.
+/// A routine and its latest result, for Today.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
-pub struct BriefingOverview {
-    pub briefing: Briefing,
+pub struct RoutineOverview {
+    pub routine: Routine,
     pub repository_name: String,
+    /// "This Mac" or the run host's name.
+    pub host_name: String,
     pub latest: Option<BriefingResult>,
 }

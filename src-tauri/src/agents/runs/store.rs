@@ -44,6 +44,7 @@ pub struct NewRun {
     pub explain: bool,
     /// The variable names of the host secrets the run was given.
     pub host_secrets: Vec<String>,
+    pub routine_id: Option<String>,
 }
 
 /// One row, as stored.
@@ -103,6 +104,7 @@ pub struct RunRow {
     pub updated_at: String,
     pub explain: bool,
     pub host_secrets: Vec<String>,
+    pub routine_id: Option<String>,
 }
 
 impl RunRow {
@@ -163,6 +165,7 @@ impl RunRow {
             updated_at: now,
             explain: new.explain,
             host_secrets: new.host_secrets,
+            routine_id: new.routine_id,
         }
     }
 
@@ -217,6 +220,7 @@ impl RunRow {
             cleanup_pending: self.cleanup_pending,
             explain: self.explain,
             host_secrets: self.host_secrets,
+            routine_id: self.routine_id,
             cursor: self.cursor,
             created_at: self.created_at,
             updated_at: self.updated_at,
@@ -324,7 +328,7 @@ const COLUMNS: &str = "id, repository_id, repository_name, title, start_commit, 
     expired_asleep, error, pending_permissions, cursor, reported_at, cancel_requested,
     collection, collection_error, result_commit, changed_files, left_out, left_out_more,
     snapshot_accepted, cleanup_pending, version, created_at, updated_at, model, model_used,
-    host_id, host_name, agent, provider, kind, host_secrets";
+    host_id, host_name, agent, provider, kind, host_secrets, routine_id";
 
 fn word<T: serde::Serialize>(value: &T) -> String {
     match serde_json::to_value(value) {
@@ -399,6 +403,7 @@ fn from_row(r: &Row<'_>) -> rusqlite::Result<RunRow> {
         provider: parse(r.get(51)?)?,
         explain: r.get::<_, String>(52)? == "explain",
         host_secrets: parse_json(r.get(53)?),
+        routine_id: r.get(54)?,
     })
 }
 
@@ -428,9 +433,9 @@ pub fn insert(conn: &mut Connection, row: &RunRow) -> AppResult<()> {
            start_subject, profile_id, payment, credential_source, host_id, host_name,
            engine_socket, engine_name, image_name, image_id, permissions, time_limit_minutes,
            cpus, memory_mib, workspace_gib, created_at, updated_at, model, agent, provider, kind,
-           host_secrets)
+           host_secrets, routine_id)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-           ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)",
+           ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)",
         params![
             row.id,
             row.repository_id,
@@ -459,6 +464,7 @@ pub fn insert(conn: &mut Connection, row: &RunRow) -> AppResult<()> {
             row.provider.as_str(),
             if row.explain { "explain" } else { "run" },
             serde_json::to_string(&row.host_secrets).unwrap_or_else(|_| "[]".into()),
+            row.routine_id,
         ],
     )?;
     Ok(())

@@ -823,58 +823,66 @@ pub async fn remove_secret_from_host(
     named.unshare(&id, &host_id, &runtime).await
 }
 
-// Briefings (docs/design/scheduled-runs.md; SPEC.md, Today → Briefings).
+// Routines (docs/design/scheduled-runs.md; SPEC.md, Today → Routines).
 
-pub type Briefings = Arc<crate::agents::briefings::BriefingService>;
+pub type Routines = Arc<crate::agents::routines::RoutineService>;
 
 #[tauri::command]
-pub async fn list_briefings(
-    briefings: State<'_, Briefings>,
-) -> AppResult<Vec<crate::models::BriefingOverview>> {
-    briefings.overview().await
+pub async fn list_routines(
+    routines: State<'_, Routines>,
+) -> AppResult<Vec<crate::models::RoutineOverview>> {
+    routines.overview().await
 }
 
 #[tauri::command]
-pub async fn save_briefing(
-    request: crate::models::SaveBriefingRequest,
-    briefings: State<'_, Briefings>,
-) -> AppResult<crate::models::Briefing> {
-    briefings.save(request).await
+pub async fn list_routine_results(
+    routine_id: String,
+    routines: State<'_, Routines>,
+) -> AppResult<Vec<crate::models::BriefingResult>> {
+    routines.results(&routine_id).await
 }
 
 #[tauri::command]
-pub async fn delete_briefing(id: String, briefings: State<'_, Briefings>) -> AppResult<()> {
-    briefings.delete(&id).await
+pub async fn save_routine(
+    request: crate::models::SaveRoutineRequest,
+    routines: State<'_, Routines>,
+) -> AppResult<crate::models::Routine> {
+    routines.save(request).await
 }
 
-/// **Run now**: start the briefing's run.
 #[tauri::command]
-pub async fn run_briefing_now(
+pub async fn delete_routine(id: String, routines: State<'_, Routines>) -> AppResult<()> {
+    routines.delete(&id).await
+}
+
+/// **Run now**: start the routine's run.
+#[tauri::command]
+pub async fn run_routine_now(
     id: String,
-    briefings: State<'_, Briefings>,
+    routines: State<'_, Routines>,
 ) -> AppResult<crate::models::BriefingResult> {
-    briefings.run_now(&id).await
+    routines.run_now(&id).await
 }
 
-/// **Save as note**: the briefing as a note in the vault, linked to its repository.
+/// **Save as note**: the routine as a note in the vault, linked to its repository.
 #[tauri::command]
 pub async fn save_briefing_as_note(
     result_id: String,
-    briefings: State<'_, Briefings>,
+    routines: State<'_, Routines>,
     notes: State<'_, Notes>,
 ) -> AppResult<crate::models::NoteSummary> {
-    let (briefing, result, body) = briefings.markdown(&result_id).await?;
+    let (routine, result, body) = routines.markdown(&result_id).await?;
     let date = result.started_at.get(..10).unwrap_or_default().to_string();
-    let title = format!("{} {date}", briefing.name);
+    let title = format!("{} {date}", routine.name);
     notes
         .create_with_body(
             crate::models::CreateNoteRequest {
                 folder: Some("Briefings".to_string()),
                 title: Some(title),
-                repository_id: Some(briefing.repository_id.clone()),
+                repository_id: Some(routine.repository_id.clone()),
             },
             vec![
-                ("routine".to_string(), briefing.name.clone()),
+                ("routine".to_string(), routine.name.clone()),
                 ("date".to_string(), result.started_at.clone()),
             ],
             body,
@@ -882,15 +890,15 @@ pub async fn save_briefing_as_note(
         .await
 }
 
-/// **Create task** from a proposal of a ready briefing, once.
+/// **Create task** from a proposal of a ready routine, once.
 #[tauri::command]
 pub async fn create_briefing_task(
     result_id: String,
     proposal_key: String,
-    briefings: State<'_, Briefings>,
+    routines: State<'_, Routines>,
     tasks: State<'_, Tasks>,
 ) -> AppResult<crate::models::BriefingResult> {
-    let proposal = briefings.proposal(&result_id, &proposal_key).await?;
+    let proposal = routines.proposal(&result_id, &proposal_key).await?;
     if proposal.kind != crate::models::BriefingProposalKind::Task {
         return Err(crate::models::AppError::validation(
             "Only a task proposal can be made into a task here.",
@@ -913,20 +921,20 @@ pub async fn create_briefing_task(
             sorted: false,
         })
         .await?;
-    briefings
+    routines
         .mark_made(&result_id, &proposal_key, &task.id)
         .await
 }
 
-/// **Save as Note** on a note proposal of a ready briefing, once.
+/// **Save as Note** on a note proposal of a ready routine, once.
 #[tauri::command]
 pub async fn create_briefing_note(
     result_id: String,
     proposal_key: String,
-    briefings: State<'_, Briefings>,
+    routines: State<'_, Routines>,
     notes: State<'_, Notes>,
 ) -> AppResult<crate::models::NoteSummary> {
-    let proposal = briefings.proposal(&result_id, &proposal_key).await?;
+    let proposal = routines.proposal(&result_id, &proposal_key).await?;
     if proposal.kind != crate::models::BriefingProposalKind::Note {
         return Err(crate::models::AppError::validation(
             "Only a note proposal can be made into a note here.",
@@ -937,23 +945,23 @@ pub async fn create_briefing_note(
             "A note was already made from this proposal.",
         ));
     }
-    let (briefing, result, _) = briefings.markdown(&result_id).await?;
+    let (routine, result, _) = routines.markdown(&result_id).await?;
     let body = format!("# {}\n\n{}\n", proposal.title, proposal.body);
     let note = notes
         .create_with_body(
             crate::models::CreateNoteRequest {
                 folder: Some("Briefings".to_string()),
                 title: Some(proposal.title.clone()),
-                repository_id: Some(briefing.repository_id.clone()),
+                repository_id: Some(routine.repository_id.clone()),
             },
             vec![
-                ("routine".to_string(), briefing.name.clone()),
+                ("routine".to_string(), routine.name.clone()),
                 ("date".to_string(), result.started_at.clone()),
             ],
             body,
         )
         .await?;
-    briefings
+    routines
         .mark_made(&result_id, &proposal_key, &note.id)
         .await?;
     Ok(note)

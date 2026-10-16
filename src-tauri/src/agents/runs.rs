@@ -529,7 +529,11 @@ impl AgentRunService {
         // The credential is read on the Mac, after everything that could be
         // refused, and goes once to the controller.
         let credential = self.credential(&profile).await?;
-        let title = title_of(&prompt, &credential.value);
+        let title = request
+            .routine
+            .as_ref()
+            .map(|r| r.name.clone())
+            .unwrap_or_else(|| title_of(&prompt, &credential.value));
         let host_secrets = self.settings.profile_secret_names(&profile.id).await?;
         let row = RunRow::new(store::NewRun {
             id: run_id.clone(),
@@ -560,6 +564,7 @@ impl AgentRunService {
             model: model.clone(),
             explain: false,
             host_secrets: host_secrets.clone(),
+            routine_id: request.routine.as_ref().map(|r| r.id.clone()),
         });
         let start = StartRun {
             run_id: run_id.clone(),
@@ -697,6 +702,7 @@ impl AgentRunService {
             model: model.clone(),
             explain: true,
             host_secrets: Vec::new(),
+            routine_id: None,
         });
         let start = StartRun {
             run_id: run_id.clone(),

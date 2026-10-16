@@ -1,7 +1,7 @@
-//! Briefings as the app does them (docs/design/scheduled-runs.md): Run now
+//! Routines as the app does them (docs/design/scheduled-runs.md): Run now
 //! starts a run on the fake engine, the file the agent writes is checked and
 //! kept as a result, a bad file gets one follow-up turn and then fails, a
-//! run that writes nothing is a failed briefing and never "nothing found",
+//! run that writes nothing is a failed routine and never "nothing found",
 //! and a finding seen yesterday says so. The controller runs in this process.
 
 mod fake_engine;
@@ -9,9 +9,9 @@ mod fake_engine;
 use std::sync::Arc;
 use std::time::Duration;
 
-use brainiac_lib::agents::briefings::BriefingService;
 use brainiac_lib::agents::controller::state::StateDir;
 use brainiac_lib::agents::controller::{serve, Config};
+use brainiac_lib::agents::routines::RoutineService;
 use brainiac_lib::agents::{
     image, AgentRunService, AgentSettingsService, RepositoryLookup, RunArtifacts, RunRuntime,
 };
@@ -19,8 +19,9 @@ use brainiac_lib::credentials::{CommandRunner, CredentialService, MemoryStore};
 use brainiac_lib::db::Stores;
 use brainiac_lib::git::GitService;
 use brainiac_lib::models::{
-    AgentPayment, AgentProvider, AnswerCodeSharingRequest, Briefing, BriefingResult, BriefingState,
-    BriefingStatus, SaveAgentCredentialRequest, SaveBriefingRequest, SecretSource, Settings,
+    AgentPayment, AgentProvider, AnswerCodeSharingRequest, BriefingResult, BriefingState,
+    BriefingStatus, Routine, SaveAgentCredentialRequest, SaveRoutineRequest, SecretSource,
+    Settings,
 };
 use brainiac_lib::sharing::CodeSharingService;
 use brainiac_lib::workspaces::RepositoryService;
@@ -34,7 +35,7 @@ struct Harness {
     repository_id: String,
     engine: FakeEngine,
     _server: tokio::task::JoinHandle<()>,
-    briefings: Arc<BriefingService>,
+    routines: Arc<RoutineService>,
 }
 
 impl Harness {
@@ -157,19 +158,19 @@ impl Harness {
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        let briefings = BriefingService::new(core, history, runs, settings, changes);
+        let routines = RoutineService::new(core, history, runs, settings, changes);
         Harness {
             _tmp: tmp,
             repository_id,
             engine,
             _server: server,
-            briefings,
+            routines,
         }
     }
 
-    async fn briefing(&self) -> Briefing {
-        self.briefings
-            .save(SaveBriefingRequest {
+    async fn routine(&self) -> Routine {
+        self.routines
+            .save(SaveRoutineRequest {
                 id: None,
                 expected_version: 0,
                 name: "Morning check".into(),
@@ -187,10 +188,10 @@ impl Harness {
     }
 
     /// Run now and wait for the result to leave Working.
-    async fn run(&self, briefing: &Briefing) -> BriefingResult {
-        let started = self.briefings.run_now(&briefing.id).await.unwrap();
+    async fn run(&self, routine: &Routine) -> BriefingResult {
+        let started = self.routines.run_now(&routine.id).await.unwrap();
         for _ in 0..400 {
-            let result = self.briefings.result(&started.id).await.unwrap();
+            let result = self.routines.result(&started.id).await.unwrap();
             if result.state != BriefingState::Working {
                 return result;
             }
@@ -207,9 +208,9 @@ const FINDINGS: &str = r#"{"status":"findings","summary":"One error.","findings"
 #[tokio::test]
 async fn run_now_keeps_the_checked_briefing_and_remembers_yesterdays_findings() {
     let h = Harness::new().await;
-    let briefing = h.briefing().await;
+    let routine = h.routine().await;
     h.engine.get().briefings.push_back(FINDINGS.to_string());
-    let first = h.run(&briefing).await;
+    let first = h.run(&routine).await;
     assert_eq!(first.state, BriefingState::Ready, "{first:?}");
     assert_eq!(first.status, Some(BriefingStatus::Findings));
     assert_eq!(first.findings[0].key, "SENTRY-1");
@@ -227,24 +228,24 @@ async fn run_now_keeps_the_checked_briefing_and_remembers_yesterdays_findings() 
 
     // The next day the same finding is not new.
     h.engine.get().briefings.push_back(FINDINGS.to_string());
-    let second = h.run(&briefing).await;
+    let second = h.run(&routine).await;
     assert_eq!(second.state, BriefingState::Ready);
     assert!(second.findings[0].seen_before);
 
     // A task is made once from a proposal.
     let marked = h
-        .briefings
+        .routines
         .mark_made(&second.id, "fix-1", "task-1")
         .await
         .unwrap();
     assert_eq!(marked.proposals[0].made_id.as_deref(), Some("task-1"));
     assert!(h
-        .briefings
+        .routines
         .mark_made(&second.id, "fix-1", "task-2")
         .await
         .is_err());
 
-    let overview = h.briefings.overview().await.unwrap();
+    let overview = h.routines.overview().await.unwrap();
     assert_eq!(overview.len(), 1);
     assert_eq!(overview[0].latest.as_ref().unwrap().id, second.id);
 }
@@ -252,7 +253,7 @@ async fn run_now_keeps_the_checked_briefing_and_remembers_yesterdays_findings() 
 #[tokio::test]
 async fn a_bad_file_gets_one_follow_up_then_fails_and_no_file_is_not_nothing_found() {
     let h = Harness::new().await;
-    let briefing = h.briefing().await;
+    let routine = h.routine().await;
 
     // Bad first, good second: the follow-up turn names what was wrong.
     {
@@ -262,7 +263,7 @@ async fn a_bad_file_gets_one_follow_up_then_fails_and_no_file_is_not_nothing_fou
             .push_back(r#"{"status":"fine","summary":"x"}"#.into());
         engine.briefings.push_back(FINDINGS.into());
     }
-    let result = h.run(&briefing).await;
+    let result = h.run(&routine).await;
     assert_eq!(result.state, BriefingState::Ready, "{result:?}");
     let prompts = h.engine.get().prompts.clone();
     assert_eq!(prompts.len(), 2);
@@ -275,13 +276,13 @@ async fn a_bad_file_gets_one_follow_up_then_fails_and_no_file_is_not_nothing_fou
         engine.briefings.push_back("not json".into());
         engine.briefings.push_back("still not json".into());
     }
-    let failed = h.run(&briefing).await;
+    let failed = h.run(&routine).await;
     assert_eq!(failed.state, BriefingState::Failed);
     assert!(failed.status.is_none());
     assert!(failed.error.as_deref().unwrap().contains("usable briefing"));
 
     // Nothing written at all: failed, never "nothing found".
-    let none = h.run(&briefing).await;
+    let none = h.run(&routine).await;
     assert_eq!(none.state, BriefingState::Failed);
     assert!(none.status.is_none());
     assert!(none.error.as_deref().unwrap().contains("briefing.json"));
@@ -290,36 +291,36 @@ async fn a_bad_file_gets_one_follow_up_then_fails_and_no_file_is_not_nothing_fou
 #[tokio::test]
 async fn a_start_that_is_refused_is_kept_as_a_failed_result() {
     let h = Harness::new().await;
-    let mut briefing = h.briefing().await;
-    briefing = h
-        .briefings
-        .save(SaveBriefingRequest {
-            id: Some(briefing.id.clone()),
-            expected_version: briefing.version,
-            name: briefing.name.clone(),
-            repository_id: briefing.repository_id.clone(),
-            profile_id: briefing.profile_id.clone(),
+    let mut routine = h.routine().await;
+    routine = h
+        .routines
+        .save(SaveRoutineRequest {
+            id: Some(routine.id.clone()),
+            expected_version: routine.version,
+            name: routine.name.clone(),
+            repository_id: routine.repository_id.clone(),
+            profile_id: routine.profile_id.clone(),
             host_id: String::new(),
             start: "no-such-branch".into(),
-            prompt: briefing.prompt.clone(),
-            time_limit_minutes: briefing.time_limit_minutes,
+            prompt: routine.prompt.clone(),
+            time_limit_minutes: routine.time_limit_minutes,
             memory: String::new(),
             previous_results: 3,
         })
         .await
         .unwrap();
-    let result = h.briefings.run_now(&briefing.id).await.unwrap();
+    let result = h.routines.run_now(&routine.id).await.unwrap();
     assert_eq!(result.state, BriefingState::Failed);
     assert!(result.error.as_deref().unwrap().contains("did not start"));
     // A stale version is refused when saving.
     assert!(h
-        .briefings
-        .save(SaveBriefingRequest {
-            id: Some(briefing.id.clone()),
+        .routines
+        .save(SaveRoutineRequest {
+            id: Some(routine.id.clone()),
             expected_version: 1,
             name: "x".into(),
-            repository_id: briefing.repository_id,
-            profile_id: briefing.profile_id,
+            repository_id: routine.repository_id,
+            profile_id: routine.profile_id,
             host_id: String::new(),
             start: "main".into(),
             prompt: "y".into(),
@@ -334,9 +335,9 @@ async fn a_start_that_is_refused_is_kept_as_a_failed_result() {
 #[tokio::test]
 async fn the_memory_and_earlier_results_go_into_the_prompt_and_the_agent_rewrites_the_memory() {
     let h = Harness::new().await;
-    let briefing = h
-        .briefings
-        .save(SaveBriefingRequest {
+    let routine = h
+        .routines
+        .save(SaveRoutineRequest {
             id: None,
             expected_version: 0,
             name: "Ideas".into(),
@@ -351,7 +352,7 @@ async fn the_memory_and_earlier_results_go_into_the_prompt_and_the_agent_rewrite
         })
         .await
         .unwrap();
-    assert!(briefing.memory_updated_at.is_some());
+    assert!(routine.memory_updated_at.is_some());
 
     // A report with no status and no severity, and a new memory.
     h.engine.get().briefings.push_back(
@@ -360,7 +361,7 @@ async fn the_memory_and_earlier_results_go_into_the_prompt_and_the_agent_rewrite
             "proposals":[{"kind":"note","title":"Post: errors","body":"Angle"}]}"#
             .into(),
     );
-    let first = h.run(&briefing).await;
+    let first = h.run(&routine).await;
     assert_eq!(first.state, BriefingState::Ready, "{first:?}");
     assert_eq!(first.status, None);
     assert_eq!(first.findings[0].severity, None);
@@ -368,7 +369,7 @@ async fn the_memory_and_earlier_results_go_into_the_prompt_and_the_agent_rewrite
     assert!(prompts[0].contains("Already covered: rust async."));
     assert!(!prompts[0].contains("<earlier>"));
 
-    let after = h.briefings.overview().await.unwrap().remove(0).briefing;
+    let after = h.routines.overview().await.unwrap().remove(0).routine;
     assert_eq!(after.memory, "Covered: rust async, error handling.");
 
     // The next run is shown the new memory and the earlier result.
@@ -385,13 +386,13 @@ async fn the_memory_and_earlier_results_go_into_the_prompt_and_the_agent_rewrite
     assert!(prompts[0].contains("Two ideas."));
     assert!(prompts[0].contains("[idea-errors] Idea: errors"));
     // Leaving the memory out of the file keeps it.
-    let kept = h.briefings.overview().await.unwrap().remove(0).briefing;
+    let kept = h.routines.overview().await.unwrap().remove(0).routine;
     assert_eq!(kept.memory, "Covered: rust async, error handling.");
 
     // The user's edit changes it, and too many earlier results are refused.
     let edited = h
-        .briefings
-        .save(SaveBriefingRequest {
+        .routines
+        .save(SaveRoutineRequest {
             id: Some(kept.id.clone()),
             expected_version: kept.version,
             name: kept.name.clone(),
@@ -408,8 +409,8 @@ async fn the_memory_and_earlier_results_go_into_the_prompt_and_the_agent_rewrite
         .unwrap();
     assert_eq!(edited.memory, "Only the user's note.");
     assert!(h
-        .briefings
-        .save(SaveBriefingRequest {
+        .routines
+        .save(SaveRoutineRequest {
             id: Some(edited.id.clone()),
             expected_version: edited.version,
             name: edited.name.clone(),

@@ -4,7 +4,7 @@ import type { BriefingProposal } from "./BriefingProposal";
 import type { BriefingState } from "./BriefingState";
 import type { BriefingStatus } from "./BriefingStatus";
 
-export type BriefingResult = { id: string, briefing_id: string, run_id: string | null, state: BriefingState, 
+export type BriefingResult = { id: string, routine_id: string, run_id: string | null, state: BriefingState, 
 /**
  * A claim the agent made about a check; `None` on a ready report that
  * makes none (ideas, a digest). Never set while working or failed.

@@ -3,7 +3,7 @@
 /**
  * A saved run whose job is a short report on Today.
  */
-export type Briefing = { id: string, name: string, repository_id: string, profile_id: string, 
+export type Routine = { id: string, name: string, repository_id: string, profile_id: string, 
 /**
  * Empty: this Mac.
  */

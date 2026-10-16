@@ -358,6 +358,13 @@ export const HomeIcon = (p: IconProps) => (
   </Svg>
 );
 
+/** Two arrows chasing each other: a routine, something that comes round. */
+export const RoutineIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M13 6.5A5 5 0 0 0 4 5M3 3v2.5h2.5M3 9.5A5 5 0 0 0 12 11M13 13v-2.5h-2.5" />
+  </Svg>
+);
+
 /** A filled triangle: Run. */
 export const PlayIcon = ({ size = 11, className }: IconProps) => (
   <svg

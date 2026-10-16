@@ -79,12 +79,8 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../migrations/0015_tools_layer.sql"),
     ),
     (
-        "0016_briefings",
-        include_str!("../migrations/0016_briefings.sql"),
-    ),
-    (
-        "0017_briefing_memory",
-        include_str!("../migrations/0017_briefing_memory.sql"),
+        "0016_routines",
+        include_str!("../migrations/0016_routines.sql"),
     ),
 ];
 
