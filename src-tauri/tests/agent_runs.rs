@@ -825,6 +825,7 @@ async fn a_start_the_controller_answers_with_an_error_is_a_refusal() {
         known_concepts: None,
         secrets: Vec::new(),
         host_secrets: Vec::new(),
+        routine_id: None,
     };
     // A bundle that is not there: the controller answers, and made nothing.
     let missing = h.tmp.path().join("missing.bundle");

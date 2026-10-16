@@ -17,6 +17,7 @@ pub mod guard;
 pub mod health;
 pub mod journal;
 pub mod protocol;
+pub mod schedule;
 pub mod secret_store;
 pub mod state;
 
@@ -357,6 +358,8 @@ pub struct Controller<W: Workloads> {
     workloads: W,
     /// Secrets kept on this host for runs that name them.
     secrets: secret_store::SecretStore,
+    /// Schedules this host fires (docs/design/routines-ux.md).
+    schedules: Mutex<schedule::Schedules>,
     runs: Mutex<HashMap<String, Arc<Run>>>,
     signals: mpsc::UnboundedSender<Signal>,
     connections: Arc<AtomicUsize>,
@@ -465,12 +468,14 @@ impl<W: Workloads> Controller<W> {
             }
             runs.insert(id, run);
         }
+        let schedules = schedule::Schedules::load(&state.root().join("schedules"));
         let controller = Arc::new(Self {
             state,
             installation,
             service,
             workloads,
             secrets,
+            schedules: Mutex::new(schedules),
             runs: Mutex::new(runs),
             signals,
             connections: Arc::new(AtomicUsize::new(0)),
@@ -643,6 +648,25 @@ impl<W: Workloads> Controller<W> {
             Request::ListSecrets => Ok(Response::Secrets {
                 secrets: self.secrets.list(),
             }),
+            Request::PutSchedule(put) => self.put_schedule(*put).map(|()| Response::Done),
+            Request::DeleteSchedule { routine_id } => {
+                self.delete_schedule(&routine_id).map(|()| Response::Done)
+            }
+            Request::Schedules => {
+                let (schedules, now) = self.schedule_statuses();
+                Ok(Response::Schedules { schedules, now })
+            }
+            Request::AckScheduleResults { routine_id, ids } => {
+                self.ack_results(&routine_id, &ids).map(|()| Response::Done)
+            }
+            Request::PutModelCredential {
+                profile_id,
+                key: _,
+                value,
+            } => self
+                .put_model_credential(&profile_id, &value)
+                .await
+                .map(|()| Response::Done),
             Request::ProbeEngine { socket, image } => self
                 .workloads
                 .probe(&socket, image.as_deref())
@@ -734,6 +758,7 @@ impl<W: Workloads> Controller<W> {
             ended_at: None,
             expired_asleep: false,
             error: None,
+            routine_id: start.routine_id.clone(),
         };
         record.save(&dir)?;
         let mut ledger = Ledger::open(&dir)?;
@@ -1451,6 +1476,7 @@ impl<W: Workloads> Controller<W> {
                 self.spawn(async move { controller.finish_stop(&run).await });
             }
         }
+        self.schedule_tick().await;
         if let Some(idle) = idle_exit {
             let quiet = self
                 .last_request
@@ -1669,7 +1695,7 @@ fn check_host_secret_names(sent: &[ExtraSecret], host: &[String]) -> AppResult<(
     }
     let mut seen: HashSet<&str> = sent.iter().map(|s| s.name.as_str()).collect();
     for name in host {
-        if !valid_secret_name(name) {
+        if !valid_secret_name(name) || name.starts_with(secret_store::MODEL_PREFIX) {
             return Err(AppError::validation("That is not a secret's name."));
         }
         if !seen.insert(name.as_str()) {

@@ -36,6 +36,10 @@ pub struct SecretInfo {
     pub set_at: u64,
 }
 
+/// Model credentials are sealed like secrets under this prefix, and a run
+/// cannot name one (`list` hides them and `check_host_secret_names` refuses).
+pub const MODEL_PREFIX: &str = "MODELKEY_";
+
 pub struct SecretStore {
     dir: PathBuf,
     program: PathBuf,
@@ -79,6 +83,36 @@ impl SecretStore {
             })
     }
 
+    /// The sealed name a profile's model credential is kept under.
+    fn model_name(profile_id: &str) -> String {
+        let tail: String = profile_id
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() {
+                    c.to_ascii_uppercase()
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        format!("{MODEL_PREFIX}{tail}")
+    }
+
+    /// Seal a profile's model credential for schedules to start runs with.
+    pub async fn put_model(&self, profile_id: &str, value: &str) -> AppResult<()> {
+        self.put(&Self::model_name(profile_id), value).await
+    }
+
+    /// Open it again when a schedule fires.
+    pub async fn get_model(&self, profile_id: &str) -> AppResult<String> {
+        self.get(&Self::model_name(profile_id)).await
+    }
+
+    /// Whether this host holds that profile's model credential.
+    pub fn has_model(&self, profile_id: &str) -> bool {
+        self.path(&Self::model_name(profile_id)).is_file()
+    }
+
     /// Forget a secret. Removing one that is not there is not an error.
     pub fn delete(&self, name: &str) -> AppResult<()> {
         if !valid_secret_name(name) {
@@ -104,7 +138,8 @@ impl SecretStore {
             .filter_map(|entry| {
                 let file = entry.file_name().into_string().ok()?;
                 let name = file.strip_suffix(".cred")?;
-                if !valid_secret_name(name) {
+                // A model credential kept for a schedule is not a secret a run names.
+                if !valid_secret_name(name) || name.starts_with(MODEL_PREFIX) {
                     return None;
                 }
                 let set_at = entry

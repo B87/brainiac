@@ -132,6 +132,7 @@ impl Harness {
             known_concepts: None,
             secrets: Vec::new(),
             host_secrets: Vec::new(),
+            routine_id: None,
         }
     }
 
@@ -804,6 +805,7 @@ async fn a_run_on_a_real_engine() {
         known_concepts: None,
         secrets: Vec::new(),
         host_secrets: Vec::new(),
+        routine_id: None,
     };
     runtime.start(start).await.unwrap();
 
@@ -1111,6 +1113,7 @@ async fn an_opencode_run_on_a_real_engine() {
         known_concepts: None,
         secrets: Vec::new(),
         host_secrets: Vec::new(),
+        routine_id: None,
     };
     runtime.start(start).await.unwrap();
 

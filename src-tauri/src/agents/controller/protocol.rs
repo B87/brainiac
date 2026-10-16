@@ -155,6 +155,26 @@ pub enum Request {
     DeleteSecret { name: String },
     /// The names of the secrets kept on this host and when each was set.
     ListSecrets,
+    /// Keep a routine's schedule on this host (docs/design/routines-ux.md,
+    /// Schedules): the host fires it and keeps what it leaves until the Mac asks.
+    PutSchedule(Box<PutSchedule>),
+    /// Forget a routine's schedule, its copy of the code, and its results here.
+    DeleteSchedule { routine_id: String },
+    /// Every schedule on this host with its state and the results the Mac has
+    /// not acknowledged.
+    Schedules,
+    /// The Mac has taken these results; they are not sent again.
+    AckScheduleResults {
+        routine_id: String,
+        ids: Vec<String>,
+    },
+    /// Keep a profile's model credential on this host, sealed, so a schedule
+    /// can start a run with no Mac. It is never returned and never listed.
+    PutModelCredential {
+        profile_id: String,
+        key: CredentialKey,
+        value: String,
+    },
     /// What the engine on this host is, and whether it can attach loop devices.
     ProbeEngine {
         socket: String,
@@ -314,6 +334,103 @@ pub fn valid_secret_name(name: &str) -> bool {
         && !name.ends_with("OPT")
 }
 
+/// When a schedule fires, in the host's local time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduleDays {
+    Daily,
+    Weekdays,
+    /// 0 is Monday, 6 is Sunday.
+    Weekly(u8),
+}
+
+/// What a host needs to start a routine's run with no Mac. The model
+/// credential and the host secrets are on the host already; the code is the
+/// bundle the Mac last sent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduleSpec {
+    pub routine_id: String,
+    pub name: String,
+    pub days: ScheduleDays,
+    /// "HH:MM" in the host's local time.
+    pub time: String,
+    /// Start a missed run when the host is back, once, instead of recording it missed.
+    pub late_start: bool,
+    /// Approved and not paused.
+    pub enabled: bool,
+    pub profile_id: String,
+    pub credential_key: CredentialKey,
+    pub agent: AgentKind,
+    pub provider: AgentProvider,
+    pub model: String,
+    pub image: String,
+    pub cpus: u32,
+    pub memory_mib: u32,
+    pub workspace_gib: u32,
+    pub time_limit_secs: u64,
+    pub host_secrets: Vec<String>,
+    /// The user's words; the host adds the memory, the earlier briefings and
+    /// the file contract.
+    pub prompt: String,
+    pub previous_results: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PutSchedule {
+    pub spec: ScheduleSpec,
+    /// Replace the host's memory (the user edited it, or the schedule is new).
+    #[serde(default)]
+    pub memory: Option<String>,
+    /// The bundle uploaded for this routine (as run `sched-<routine id>`) is
+    /// complete and holds this commit.
+    #[serde(default)]
+    pub bundle_commit: Option<String>,
+    /// Count slots from this time (RFC 3339), not from when the host hears of
+    /// the schedule; the Mac's approval time, so none between is lost.
+    #[serde(default)]
+    pub since: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduledState {
+    Ready,
+    Failed,
+    /// The host was not running at the time and the schedule does not start late.
+    Missed,
+}
+
+/// What one firing left, kept until the Mac acknowledges it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduledResult {
+    pub id: String,
+    /// The time it was due, RFC 3339 with the host's offset.
+    pub slot: String,
+    pub run_id: Option<String>,
+    pub state: ScheduledState,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    /// The checked briefing, when there is one.
+    pub draft: Option<super::super::routines::Draft>,
+    pub error: Option<String>,
+    #[serde(default)]
+    pub acked: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduleStatus {
+    pub spec: ScheduleSpec,
+    pub memory: String,
+    pub bundle_commit: Option<String>,
+    pub bundle_at: Option<String>,
+    /// The next time it fires, RFC 3339 with the host's offset; none when disabled.
+    pub next_fire: Option<String>,
+    pub live_run: Option<String>,
+    /// The model credential for this profile is on the host.
+    pub credential: bool,
+    pub results: Vec<ScheduledResult>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StartRun {
     /// Brainiac's ID for the run: letters, digits, and dashes.
@@ -356,6 +473,10 @@ pub struct StartRun {
     /// values: a run started from the Mac.
     #[serde(default)]
     pub secrets: Vec<ExtraSecret>,
+    /// The routine this run belongs to, when the host started it from a
+    /// schedule: the controller then reads its briefing when the turn ends.
+    #[serde(default)]
+    pub routine_id: Option<String>,
     /// Names of secrets kept on this host, which the controller opens itself
     /// when the run starts: a run that has no Mac to send values.
     #[serde(default)]
@@ -414,6 +535,11 @@ pub enum Response {
     },
     Secrets {
         secrets: Vec<super::secret_store::SecretInfo>,
+    },
+    Schedules {
+        schedules: Vec<ScheduleStatus>,
+        /// The host's clock when it answered, RFC 3339 with its offset.
+        now: String,
     },
     Image {
         id: String,

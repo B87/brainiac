@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
 use super::runs::AgentRunService;
@@ -727,7 +727,7 @@ fn history_text(earlier: &[BriefingResult]) -> String {
     out
 }
 
-fn follow_up(problems: &[String]) -> String {
+pub fn follow_up(problems: &[String]) -> String {
     let mut text = String::from("Brainiac could not use `.brainiac/briefing.json`:\n");
     for p in problems {
         text.push_str("- ");
@@ -743,6 +743,7 @@ fn follow_up(problems: &[String]) -> String {
 // ---------------------------------------------------------------------------
 
 /// A checked briefing, before it is stored.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Draft {
     /// `None`: a report that claims nothing about a check.
     pub status: Option<BriefingStatus>,

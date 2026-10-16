@@ -906,6 +906,78 @@ impl RunRuntime {
         }
     }
 
+    /// Keep a routine's schedule on this host.
+    pub async fn put_schedule(
+        &self,
+        put: super::controller::protocol::PutSchedule,
+    ) -> AppResult<()> {
+        self.done(Request::PutSchedule(Box::new(put))).await
+    }
+
+    pub async fn delete_schedule(&self, routine_id: &str) -> AppResult<()> {
+        self.done(Request::DeleteSchedule {
+            routine_id: routine_id.to_string(),
+        })
+        .await
+    }
+
+    /// Every schedule on this host, and the host's clock.
+    pub async fn schedules(
+        &self,
+    ) -> AppResult<(Vec<super::controller::protocol::ScheduleStatus>, String)> {
+        match self.call(Request::Schedules, self.call_timeout).await? {
+            Response::Schedules { schedules, now } => Ok((schedules, now)),
+            _ => Err(unexpected()),
+        }
+    }
+
+    pub async fn ack_schedule_results(&self, routine_id: &str, ids: Vec<String>) -> AppResult<()> {
+        self.done(Request::AckScheduleResults {
+            routine_id: routine_id.to_string(),
+            ids,
+        })
+        .await
+    }
+
+    /// Seal a profile's model credential on this host, for schedules.
+    pub async fn put_model_credential(
+        &self,
+        profile_id: &str,
+        key: super::controller::protocol::CredentialKey,
+        value: String,
+    ) -> AppResult<()> {
+        self.done(Request::PutModelCredential {
+            profile_id: profile_id.to_string(),
+            key,
+            value,
+        })
+        .await
+    }
+
+    /// Send a file as this routine's code on the host (the bundle a schedule
+    /// starts its runs from), replacing the last one.
+    pub async fn send_schedule_bundle(&self, routine_id: &str, path: &Path) -> AppResult<()> {
+        let bytes = tokio::fs::read(path).await.map_err(|e| {
+            AppError::io("The routine's code was not exported.").with_details(e.to_string())
+        })?;
+        let mut connection = self.connect().await?;
+        upload_bundle(
+            &mut connection,
+            &format!("sched-{routine_id}"),
+            &bytes,
+            self.call_timeout,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    async fn done(&self, request: Request) -> AppResult<()> {
+        match self.call(request, self.call_timeout).await? {
+            Response::Done => Ok(()),
+            _ => Err(unexpected()),
+        }
+    }
+
     /// The controller's own numbers and its host's.
     pub async fn health(&self) -> AppResult<super::controller::health::HealthReport> {
         match self.call(Request::Health, self.call_timeout).await? {

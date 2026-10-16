@@ -1,0 +1,252 @@
+//! A run host fires a routine's schedule with no Mac (docs/design/
+//! routines-ux.md, Schedules): the controller keeps the schedule, the code and
+//! the sealed model credential; starts the run at the time; follows it;
+//! reads and checks the briefing; and keeps what it left until the Mac takes
+//! it. A slot the host missed is recorded, not forgotten. The controller runs
+//! in this process, on the fake engine.
+
+mod fake_engine;
+
+use std::time::Duration;
+
+use brainiac_lib::agents::controller::protocol::{
+    CredentialKey, PutSchedule, ScheduleDays, ScheduleSpec, ScheduleStatus, ScheduledState,
+};
+use brainiac_lib::agents::controller::state::StateDir;
+use brainiac_lib::agents::controller::{serve, Config};
+use brainiac_lib::agents::RunRuntime;
+use brainiac_lib::models::{AgentKind, AgentProvider, BriefingStatus};
+use chrono::Local;
+use fake_engine::{fake_creds, git, FakeEngine, KEY};
+
+const ROUTINE: &str = "11111111-2222-3333-4444-555555555555";
+const COMMIT: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const BRIEFING: &str = r#"{"status":"findings","summary":"One error.",
+  "memory":"Covered SENTRY-1.",
+  "findings":[{"key":"SENTRY-1","title":"Boom","severity":"high"}],
+  "proposals":[{"kind":"task","title":"Fix it"}]}"#;
+
+struct Harness {
+    tmp: tempfile::TempDir,
+    engine: FakeEngine,
+    runtime: RunRuntime,
+    _server: tokio::task::JoinHandle<()>,
+}
+
+impl Harness {
+    async fn new() -> Harness {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = StateDir::new(tmp.path().join("controller"));
+        let socket = tmp.path().join("controller").join("runner.sock");
+        let config = Config {
+            state: state.clone(),
+            socket: socket.clone(),
+            idle_exit: None,
+            spawn_guard: false,
+            creds_program: Some(fake_creds(tmp.path())),
+            service: true,
+        };
+        let engine = FakeEngine::default();
+        engine.get().volumes = tmp.path().join("volumes");
+        let serving = engine.clone();
+        let server = tokio::spawn(async move {
+            serve(config, serving).await.unwrap();
+        });
+        let runtime = RunRuntime::attach(state, socket);
+        for _ in 0..100 {
+            if runtime.running().await.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        Harness {
+            tmp,
+            engine,
+            runtime,
+            _server: server,
+        }
+    }
+
+    /// A schedule due `ago_secs` seconds ago (rounded down to the minute), counted from `since_secs` ago.
+    fn spec(&self, ago_secs: i64, late_start: bool) -> ScheduleSpec {
+        let slot = Local::now() - chrono::Duration::seconds(ago_secs);
+        ScheduleSpec {
+            routine_id: ROUTINE.into(),
+            name: "Morning check".into(),
+            days: ScheduleDays::Daily,
+            time: slot.format("%H:%M").to_string(),
+            late_start,
+            enabled: true,
+            profile_id: "claude-code".into(),
+            credential_key: CredentialKey::AnthropicApiKey,
+            agent: AgentKind::ClaudeCode,
+            provider: AgentProvider::Anthropic,
+            model: String::new(),
+            image: "brainiac-agents:test".into(),
+            cpus: 2,
+            memory_mib: 2048,
+            workspace_gib: 1,
+            time_limit_secs: 600,
+            host_secrets: Vec::new(),
+            prompt: "Check production.".into(),
+            previous_results: 2,
+        }
+    }
+
+    async fn send_code(&self) {
+        // A real bundle with the branch `start`, as a run's start is.
+        let repo = self.tmp.path().join("code");
+        let file = self.tmp.path().join("code.bundle");
+        if !repo.exists() {
+            std::fs::create_dir_all(&repo).unwrap();
+            git(&repo, &["init", "-q", "-b", "start"]);
+            std::fs::write(repo.join("README.md"), "# Service\n").unwrap();
+            git(&repo, &["add", "."]);
+            git(&repo, &["commit", "-q", "-m", "First"]);
+        }
+        git(
+            &repo,
+            &["bundle", "create", "-q", file.to_str().unwrap(), "start"],
+        );
+        self.runtime
+            .send_schedule_bundle(ROUTINE, &file)
+            .await
+            .unwrap();
+    }
+
+    async fn put(&self, spec: ScheduleSpec, since_secs: i64) {
+        self.runtime
+            .put_schedule(PutSchedule {
+                spec,
+                memory: Some("Ignore SENTRY-9.".into()),
+                bundle_commit: Some(COMMIT.into()),
+                since: Some((Local::now() - chrono::Duration::seconds(since_secs)).to_rfc3339()),
+            })
+            .await
+            .unwrap();
+    }
+
+    async fn status(&self) -> ScheduleStatus {
+        let (list, _) = self.runtime.schedules().await.unwrap();
+        list.into_iter().next().expect("a schedule")
+    }
+
+    /// Wait for the schedule to have a result.
+    async fn first_result(&self) -> ScheduleStatus {
+        for _ in 0..600 {
+            let status = self.status().await;
+            if !status.results.is_empty() {
+                return status;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("the schedule never left a result");
+    }
+}
+
+#[tokio::test]
+async fn the_host_fires_a_due_slot_reads_the_briefing_and_keeps_it_until_acknowledged() {
+    let h = Harness::new().await;
+    h.runtime
+        .put_model_credential("claude-code", CredentialKey::AnthropicApiKey, KEY.into())
+        .await
+        .unwrap();
+    h.send_code().await;
+    h.engine.get().briefings.push_back(BRIEFING.into());
+    h.put(h.spec(70, false), 600).await;
+
+    let status = h.first_result().await;
+    let result = &status.results[0];
+    assert_eq!(result.state, ScheduledState::Ready, "{result:?}");
+    let draft = result.draft.as_ref().unwrap();
+    assert_eq!(draft.status, Some(BriefingStatus::Findings));
+    assert_eq!(draft.findings[0].key, "SENTRY-1");
+    // The host's memory is the agent's new one; the earlier prompt carried the old.
+    assert_eq!(status.memory, "Covered SENTRY-1.");
+    let prompts = h.engine.get().prompts.clone();
+    assert!(prompts[0].starts_with("Check production."));
+    assert!(prompts[0].contains("Ignore SENTRY-9."));
+    assert!(prompts[0].contains(".brainiac/briefing.json"));
+    // The key reached the run, and the model credential is not a secret a run names.
+    assert!(status.credential);
+    assert!(h.runtime.list_secrets().await.unwrap().is_empty());
+    assert!(status.next_fire.is_some());
+
+    // Taken, it is not sent again as new.
+    h.runtime
+        .ack_schedule_results(ROUTINE, vec![result.id.clone()])
+        .await
+        .unwrap();
+    let after = h.status().await;
+    assert!(after.results.iter().all(|r| r.acked));
+
+    // It fired once for the slot, not again on the next look.
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    assert_eq!(h.status().await.results.len(), 1);
+}
+
+#[tokio::test]
+async fn a_slot_the_host_missed_is_recorded_and_a_late_start_runs_once() {
+    let h = Harness::new().await;
+    h.runtime
+        .put_model_credential("claude-code", CredentialKey::AnthropicApiKey, KEY.into())
+        .await
+        .unwrap();
+    h.send_code().await;
+
+    // Due three hours ago, counted from six hours ago: missed, said so.
+    h.put(h.spec(3 * 3600, false), 6 * 3600).await;
+    let status = h.first_result().await;
+    assert_eq!(status.results[0].state, ScheduledState::Missed);
+    assert!(status.results[0].draft.is_none());
+    assert!(status.results[0]
+        .error
+        .as_deref()
+        .unwrap()
+        .contains("does not start late"));
+    assert!(status.live_run.is_none());
+    h.runtime.delete_schedule(ROUTINE).await.unwrap();
+    assert!(h.runtime.schedules().await.unwrap().0.is_empty());
+
+    // The same with a late start: one run, now.
+    h.send_code().await;
+    h.engine.get().briefings.push_back(BRIEFING.into());
+    h.put(h.spec(3 * 3600, true), 6 * 3600).await;
+    let status = h.first_result().await;
+    assert_eq!(
+        status.results[0].state,
+        ScheduledState::Ready,
+        "{:?}",
+        status.results
+    );
+}
+
+#[tokio::test]
+async fn a_firing_that_cannot_start_says_why_and_a_bad_schedule_is_refused() {
+    let h = Harness::new().await;
+    // No model credential on the host: the firing fails with the reason.
+    h.send_code().await;
+    h.put(h.spec(70, false), 600).await;
+    let status = h.first_result().await;
+    assert_eq!(status.results[0].state, ScheduledState::Failed);
+    assert!(status.results[0]
+        .error
+        .as_deref()
+        .unwrap()
+        .contains("agent's key"));
+    assert!(!status.credential);
+
+    // Not a time, and a secret name that is a model credential's.
+    let mut bad = h.spec(70, false);
+    bad.time = "7am".into();
+    let put = |spec| PutSchedule {
+        spec,
+        memory: None,
+        bundle_commit: None,
+        since: None,
+    };
+    assert!(h.runtime.put_schedule(put(bad)).await.is_err());
+    let mut named = h.spec(70, false);
+    named.host_secrets = vec!["MODELKEY_CLAUDE_CODE".into()];
+    assert!(h.runtime.put_schedule(put(named)).await.is_err());
+}

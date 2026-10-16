@@ -588,6 +588,7 @@ impl AgentRunService {
             known_concepts: None,
             secrets: Vec::new(),
             host_secrets,
+            routine_id: None,
         };
         self.begin(row, start, host_id, request.repository_id.clone(), root)
             .await?;
@@ -725,6 +726,7 @@ impl AgentRunService {
             known_concepts: request.known_concepts,
             secrets: Vec::new(),
             host_secrets: Vec::new(),
+            routine_id: None,
         };
         self.begin(row, start, host_id, request.repository_id, root)
             .await?;
@@ -2347,6 +2349,7 @@ impl AgentRunService {
             known_concepts: None,
             secrets: Vec::new(),
             host_secrets: Vec::new(),
+            routine_id: None,
         };
         self.rt(run_id).await?.start(start).await?;
         Ok(())
