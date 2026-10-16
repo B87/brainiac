@@ -611,7 +611,7 @@ test("An agent can ask for Python and the Google Cloud CLI, which the next Build
   ).toBeChecked();
 });
 
-test("A briefing is added on Today, Run Now starts it, and its checked result offers a task and a note; a run with no briefing reads as failed", async ({
+test("A routine is added on Today, Run Now starts it, and its checked result offers a task and a note; a run with no briefing reads as failed", async ({
   page,
 }) => {
   await page.evaluate(() => {
@@ -619,16 +619,16 @@ test("A briefing is added on Today, Run Now starts it, and its checked result of
     window.fake.readyProfile("claude-code", ["local"]);
   });
   await page.getByRole("button", { name: "Today" }).click();
-  const section = page.getByRole("region", { name: "Briefings" });
-  await expect(section).toContainText("A briefing is a run that checks");
+  const section = page.getByRole("region", { name: "Routines" });
+  await expect(section).toContainText("A routine is a run that checks");
 
-  await section.getByRole("button", { name: "New Briefing…" }).click();
-  const form = page.getByRole("form", { name: "New briefing" });
+  await section.getByRole("button", { name: "New Routine…" }).click();
+  const form = page.getByRole("form", { name: "New routine" });
   await form.getByLabel("Name", { exact: true }).fill("Morning check");
   await form.getByLabel("What to check").fill("Check production errors.");
   await form.getByLabel("Memory").fill("Ignore SENTRY-9.");
   await page
-    .getByRole("dialog", { name: "New briefing" })
+    .getByRole("dialog", { name: "New routine" })
     .getByRole("button", { name: "Save" })
     .click();
   const card = section.getByRole("group", { name: "Morning check" });

@@ -21,7 +21,7 @@ const SEVERITY_CLASS = {
 } as const;
 
 /**
- * Briefings on Today (docs/design/scheduled-runs.md): each saved briefing and
+ * Routines on Today (docs/design/scheduled-runs.md): each saved briefing and
  * what its last run left. A run that left nothing usable says so; it is never
  * shown as "nothing found".
  */
@@ -72,22 +72,23 @@ export default function BriefingsSection({
 
   if (items === null) return null;
   return (
-    <section aria-label="Briefings" className="border-b pb-3">
+    <section aria-label="Routines" className="border-b pb-3">
       <div className="flex items-center gap-2 px-4 pt-4 pb-1">
-        <span className="section-label flex-1">Briefings</span>
+        <span className="section-label flex-1">Routines</span>
         <button
           type="button"
           className="btn btn-sm"
           disabled={repositories.length === 0}
           onClick={() => setEditing("new")}
         >
-          New Briefing…
+          New Routine…
         </button>
       </div>
       {items.length === 0 && (
         <p className="m-0 px-4 py-2 text-[12.5px] text-muted">
-          A briefing is a run that checks something and leaves a short report
-          here, such as production errors each morning. Add one, then Run now.
+          A routine is a run that checks something and leaves a short report (a
+          briefing) here, such as production errors each morning. Add one, then
+          Run Now.
         </p>
       )}
       {items.map((item) => (

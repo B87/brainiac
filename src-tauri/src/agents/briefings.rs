@@ -1,4 +1,5 @@
-//! Briefings (docs/design/scheduled-runs.md, The briefing result): a saved
+//! Routines (docs/design/routines-ux.md; the code keeps the earlier name
+//! "briefing"): a saved
 //! run whose job is a short report. **Run now** starts an ordinary run with
 //! Brainiac's prompt appended; when the agent's turn ends, Brainiac reads
 //! back only `.brainiac/briefing.json` from the container, checks it, and
@@ -116,7 +117,7 @@ impl BriefingService {
         let name = request.name.trim().to_string();
         if name.is_empty() || name.chars().count() > MAX_NAME {
             return Err(AppError::validation(
-                "Give the briefing a name of up to 80 characters.",
+                "Give the routine a name of up to 80 characters.",
             ));
         }
         let prompt = request.prompt.trim().to_string();
@@ -176,7 +177,7 @@ impl BriefingService {
                     if changed == 0 {
                         return Err(AppError::new(
                             ErrorCode::Conflict,
-                            "This briefing changed since you opened it.",
+                            "This routine changed since you opened it.",
                         ));
                     }
                 } else {
@@ -237,7 +238,7 @@ impl BriefingService {
                     from_row,
                 )
                 .optional()?
-                .ok_or_else(|| AppError::not_found("That briefing no longer exists."))
+                .ok_or_else(|| AppError::not_found("That routine no longer exists."))
             })
             .await
     }
@@ -259,7 +260,7 @@ impl BriefingService {
         {
             return Err(AppError::new(
                 ErrorCode::Conflict,
-                "This briefing is already running.",
+                "This routine is already running.",
             ));
         }
         let result_id = uuid::Uuid::new_v4().to_string();
@@ -316,7 +317,7 @@ impl BriefingService {
             .profiles
             .iter()
             .find(|p| p.id == briefing.profile_id)
-            .ok_or_else(|| AppError::validation("The briefing's agent no longer exists."))?;
+            .ok_or_else(|| AppError::validation("The routine's agent no longer exists."))?;
         let (id, count) = (briefing.id.clone(), briefing.previous_results);
         let earlier = self
             .history
@@ -389,7 +390,7 @@ impl BriefingService {
             let run = match self.runs.get(&run_id).await {
                 Ok(run) => run,
                 Err(e) if e.code == ErrorCode::NotFound => {
-                    self.fail(id, "The briefing's run is gone.", None).await;
+                    self.fail(id, "The routine's run is gone.", None).await;
                     return;
                 }
                 Err(_) => {

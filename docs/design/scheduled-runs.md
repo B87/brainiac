@@ -2,9 +2,13 @@
 
 Design notes for a run that starts on a schedule on an always-on run host and leaves a short report, a briefing, for the user to read on Today. The motivating case: every morning, check a production environment (Google Cloud and Sentry, through scripts and skill instructions kept in one repository), and turn what is found into a note and proposed tasks or Jira issues.
 
+## Terminology (16 Oct 2026)
+
+This document says "briefing" for the saved definition because it was written first. The visible words are now **Routine** for the definition (what to run, where, and optionally when) and **Briefing** for a result it leaves, as `routines-ux.md` sets out. Read "briefing" below as "routine" where it means the definition, and as "briefing" where it means the report or `.brainiac/briefing.json`.
+
 ## Status: proposal (15 Oct 2026)
 
-Phase 3 is built (16 Oct 2026): briefings, the `briefing.json` result and its checks, Run now, and the Today card with Create Task and Save as Note (`SPEC.md`, section 6; `architecture.md`, Decisions). Schedules (phase 4) are not. Phase 1 is started (15 Oct 2026): the controller's `Health` request and a Health section on a run host's page (`SPEC.md`, Remote hosts; `architecture.md`, Decisions). The Machines pane of its own, the last hour kept in memory, and everything else here are not built, and none of it is in scope for v0.6. It reverses three lines in [`agent-runs.md`](agent-runs.md) and [`secrets.md`](secrets.md) (below), so it needs its own decision in `architecture.md` before any code.
+Phase 3 is built (16 Oct 2026): briefings, the `briefing.json` result and its checks, Run now, and the Today card with Create Task and Save as Note (`SPEC.md`, section 6; `architecture.md`, Decisions). Schedules (phase 4) are not. How briefings and their schedules are listed, opened and read is redesigned in [`routines-ux.md`](routines-ux.md) (proposal, 16 Oct 2026); the Today block built so far is the first slice that design replaces. Phase 1 is started (15 Oct 2026): the controller's `Health` request and a Health section on a run host's page (`SPEC.md`, Remote hosts; `architecture.md`, Decisions). The Machines pane of its own, the last hour kept in memory, and everything else here are not built, and none of it is in scope for v0.6. It reverses three lines in [`agent-runs.md`](agent-runs.md) and [`secrets.md`](secrets.md) (below), so it needs its own decision in `architecture.md` before any code.
 
 ## Why
 

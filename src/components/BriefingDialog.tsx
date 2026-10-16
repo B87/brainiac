@@ -15,7 +15,7 @@ import {
 import Dialog from "./Dialog";
 
 /**
- * Add or edit a briefing (docs/design/scheduled-runs.md): which repository,
+ * Add or edit a routine (docs/design/scheduled-runs.md): which repository,
  * agent and host, what to check, and the time limit. Run now starts it.
  */
 export default function BriefingDialog({
@@ -97,7 +97,7 @@ export default function BriefingDialog({
 
   return (
     <Dialog
-      title={briefing ? `Edit ${briefing.name}` : "New briefing"}
+      title={briefing ? `Edit ${briefing.name}` : "New routine"}
       width={620}
       onClose={onClose}
       footer={
@@ -122,7 +122,7 @@ export default function BriefingDialog({
       }
     >
       <form
-        aria-label={briefing ? `Edit ${briefing.name}` : "New briefing"}
+        aria-label={briefing ? `Edit ${briefing.name}` : "New routine"}
         className="flex flex-col gap-3"
         onSubmit={(e) => {
           e.preventDefault();

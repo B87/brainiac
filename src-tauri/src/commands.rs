@@ -874,7 +874,7 @@ pub async fn save_briefing_as_note(
                 repository_id: Some(briefing.repository_id.clone()),
             },
             vec![
-                ("briefing".to_string(), briefing.name.clone()),
+                ("routine".to_string(), briefing.name.clone()),
                 ("date".to_string(), result.started_at.clone()),
             ],
             body,
@@ -947,7 +947,7 @@ pub async fn create_briefing_note(
                 repository_id: Some(briefing.repository_id.clone()),
             },
             vec![
-                ("briefing".to_string(), briefing.name.clone()),
+                ("routine".to_string(), briefing.name.clone()),
                 ("date".to_string(), result.started_at.clone()),
             ],
             body,
