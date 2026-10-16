@@ -1170,6 +1170,7 @@ export class FakeBackend {
 
   /** Settings → Secrets, named secrets; and what was shared with hosts. */
   namedSecrets: NamedSecret[] = [];
+  profileSecrets = new Map<string, string[]>();
   /** What each host holds, by variable name; and what Brainiac sent. */
   hostCopies = new Map<string, Set<string>>();
   hostShares = new Map<
@@ -2833,6 +2834,15 @@ export class FakeBackend {
         this.hostShares.delete(`${hostId}:${secret.id}`);
         this.hostCopies.get(hostId)?.delete(secret.env_name);
         return this.hostSecrets(hostId);
+      }
+      case "get_profile_secrets":
+        return this.profileSecrets.get(String(args.profileId)) ?? [];
+      case "set_profile_secrets": {
+        const ids = (args.secretIds as string[]).filter((id) =>
+          this.namedSecrets.some((n) => n.id === id),
+        );
+        this.profileSecrets.set(String(args.profileId), ids);
+        return ids;
       }
       case "remove_unlisted_host_secret": {
         const hostId = String(args.hostId);

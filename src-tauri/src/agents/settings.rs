@@ -225,6 +225,81 @@ pub struct AgentSettingsService {
 }
 
 impl AgentSettingsService {
+    /// The named secrets a profile's runs get (ids), in the order of their names.
+    pub async fn profile_secrets(&self, profile_id: &str) -> AppResult<Vec<String>> {
+        let id = profile_id.to_string();
+        self.db
+            .call(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT p.secret_id FROM profile_host_secrets p
+                       JOIN named_secrets n ON n.id = p.secret_id
+                      WHERE p.profile_id = ?1 ORDER BY n.env_name",
+                )?;
+                let rows = stmt.query_map(params![id], |r| r.get::<_, String>(0))?;
+                Ok(rows.collect::<Result<Vec<_>, _>>()?)
+            })
+            .await
+    }
+
+    /// The variable names a run of this profile asks its host for.
+    pub async fn profile_secret_names(&self, profile_id: &str) -> AppResult<Vec<String>> {
+        let id = profile_id.to_string();
+        self.db
+            .call(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT n.env_name FROM profile_host_secrets p
+                       JOIN named_secrets n ON n.id = p.secret_id
+                      WHERE p.profile_id = ?1 ORDER BY n.env_name",
+                )?;
+                let rows = stmt.query_map(params![id], |r| r.get::<_, String>(0))?;
+                Ok(rows.collect::<Result<Vec<_>, _>>()?)
+            })
+            .await
+    }
+
+    /// Replace the profile's choice. A run carries at most eight.
+    pub async fn set_profile_secrets(
+        &self,
+        profile_id: &str,
+        secret_ids: Vec<String>,
+    ) -> AppResult<Vec<String>> {
+        let mut ids = secret_ids;
+        ids.sort();
+        ids.dedup();
+        if ids.len() > 8 {
+            return Err(AppError::validation("A run can get at most eight secrets."));
+        }
+        let profile = profile_id.to_string();
+        self.db
+            .call(move |conn| {
+                let tx = conn.transaction()?;
+                let known: bool = tx.query_row(
+                    "SELECT EXISTS (SELECT 1 FROM agent_profiles WHERE id = ?1)",
+                    params![profile],
+                    |r| r.get(0),
+                )?;
+                if !known {
+                    return Err(AppError::validation("That agent no longer exists."));
+                }
+                tx.execute(
+                    "DELETE FROM profile_host_secrets WHERE profile_id = ?1",
+                    params![profile],
+                )?;
+                for id in &ids {
+                    // A secret deleted meanwhile is skipped, not an error.
+                    tx.execute(
+                        "INSERT INTO profile_host_secrets (profile_id, secret_id)
+                         SELECT ?1, id FROM named_secrets WHERE id = ?2",
+                        params![profile, id],
+                    )?;
+                }
+                tx.commit()?;
+                Ok(())
+            })
+            .await?;
+        self.profile_secrets(profile_id).await
+    }
+
     pub fn new(db: Db, credentials: Arc<CredentialService>) -> Self {
         AgentSettingsService {
             db,

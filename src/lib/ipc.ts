@@ -697,6 +697,10 @@ export const ipc = {
     invoke<HostSecrets>("share_secret_with_host", { id, hostId }),
   removeSecretFromHost: (id: string, hostId: string) =>
     invoke<HostSecrets>("remove_secret_from_host", { id, hostId }),
+  getProfileSecrets: (profileId: string) =>
+    invoke<string[]>("get_profile_secrets", { profileId }),
+  setProfileSecrets: (profileId: string, secretIds: string[]) =>
+    invoke<string[]>("set_profile_secrets", { profileId, secretIds }),
   removeUnlistedHostSecret: (name: string, hostId: string) =>
     invoke<HostSecrets>("remove_unlisted_host_secret", { name, hostId }),
   /** Machines → a run host, Health: read now, nothing stored. */

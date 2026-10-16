@@ -33,6 +33,7 @@ import {
 } from "../lib/secrets";
 import { parseInRange, requestSettings } from "../lib/settings";
 import { HostPill } from "./HostJobView";
+import ProfileSecretsGroup from "./ProfileSecretsGroup";
 import { Breadcrumb } from "./RunHostPage";
 import SecretSourceFields from "./SecretSourceFields";
 import { CommitField, Group, Hint } from "./SettingsPanes";
@@ -301,6 +302,11 @@ export default function AgentProfilePage({
           />
         </div>
       </Group>
+
+      <ProfileSecretsGroup
+        key={`secrets-${profile.id}`}
+        profileId={profile.id}
+      />
     </div>
   );
 }

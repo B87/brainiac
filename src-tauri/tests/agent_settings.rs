@@ -626,3 +626,60 @@ async fn each_opencode_profile_takes_its_own_providers_key_and_a_model() {
     assert_eq!(entries[0].label, "OpenCode · OpenRouter runs");
     assert_eq!(entries[0].destination, "OpenRouter, with an API key");
 }
+
+#[tokio::test]
+async fn a_profile_chooses_which_named_secrets_its_runs_get() {
+    let h = Harness::new();
+    for (id, name) in [("s1", "SENTRY_TOKEN"), ("s2", "GOOGLE_KEY")] {
+        let (id, name) = (id.to_string(), name.to_string());
+        h.core
+            .call(move |conn| {
+                conn.execute(
+                    "INSERT INTO named_secrets (id, label, env_name, created_at, updated_at)
+                     VALUES (?1, ?1, ?2, 'now', 'now')",
+                    rusqlite::params![id, name],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+    }
+    assert!(h
+        .agents
+        .profile_secrets(CLAUDE_CODE)
+        .await
+        .unwrap()
+        .is_empty());
+    h.agents
+        .set_profile_secrets(CLAUDE_CODE, vec!["s1".into(), "s2".into(), "s1".into()])
+        .await
+        .unwrap();
+    // Listed by variable name, once each.
+    assert_eq!(
+        h.agents.profile_secret_names(CLAUDE_CODE).await.unwrap(),
+        ["GOOGLE_KEY", "SENTRY_TOKEN"]
+    );
+    // An unknown agent is refused; a secret deleted meanwhile is dropped.
+    assert!(h
+        .agents
+        .set_profile_secrets("no-such-agent", vec![])
+        .await
+        .is_err());
+    h.core
+        .call(|conn| {
+            conn.execute("DELETE FROM named_secrets WHERE id = 's1'", [])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        h.agents.profile_secret_names(CLAUDE_CODE).await.unwrap(),
+        ["GOOGLE_KEY"]
+    );
+    let nine: Vec<String> = (0..9).map(|i| format!("x{i}")).collect();
+    assert!(h
+        .agents
+        .set_profile_secrets(CLAUDE_CODE, nine)
+        .await
+        .is_err());
+}

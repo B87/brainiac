@@ -566,6 +566,34 @@ test("Settings → Agents chooses This Mac's engine on its page and saves a past
   await expect(page.getByText(key)).toBeHidden();
 });
 
+test("An agent's page chooses which named secrets its runs get", async ({
+  page,
+}) => {
+  await openSettings(page, "Secrets");
+  await page.getByRole("button", { name: "Add Secret…" }).click();
+  const form = page.getByRole("form", { name: "Add secret" });
+  await form.getByLabel("Name", { exact: true }).fill("Sentry token");
+  await form.getByLabel("Variable a run sees it as").fill("SENTRY_TOKEN");
+  await form.getByLabel("Value", { exact: true }).fill("sntrys_example_token");
+  await form.getByRole("button", { name: "Save" }).click();
+
+  await openSettings(page, "Agents");
+  await page.getByRole("button", { name: /^Claude Code,/ }).click();
+  const choice = page.getByRole("checkbox", { name: /Sentry token/ });
+  await expect(choice).not.toBeChecked();
+  await choice.check();
+  await expect(choice).toBeChecked();
+  expect((await calls(page, "set_profile_secrets")).at(-1)).toMatchObject({
+    profileId: "claude-code",
+  });
+  // It stays chosen after leaving the page.
+  await openSettings(page, "Agents");
+  await page.getByRole("button", { name: /^Claude Code,/ }).click();
+  await expect(
+    page.getByRole("checkbox", { name: /Sentry token/ }),
+  ).toBeChecked();
+});
+
 test("Settings → Agents lists four agents, and OpenCode · OpenRouter's page saves its key and model", async ({
   page,
 }) => {
@@ -2105,6 +2133,8 @@ test("⇧⌘T opens another tab, ⌘1 and ⌘2 switch between them, and closing 
   await page.keyboard.press("Meta+t");
   await expect(terminalTabs(page)).toHaveCount(1);
   await expect(terminalTabs(page).first()).toContainText("Home");
+  // The tab shows before the program starts; wait for it.
+  await expect(terminalTabs(page).first()).toContainText("zsh");
   expect(await calls(page, "open_terminal")).toMatchObject([
     { request: { cwd: "" } },
   ]);

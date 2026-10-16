@@ -42,7 +42,7 @@ A Sentry token is neither an account's token nor a connection's password, so Set
 - **Sentry and Google Cloud credentials:** named secrets (above) chosen on the profile, delivered to the container under names the descriptor approves. The Google Cloud one is a service account key for the checks themselves, with viewer roles only.
 - **Which local store.** Decided (15 Oct 2026): `systemd-creds --user`, which encrypts a value so that only that user on that machine can decrypt it, with the ciphertext as a file in the controller's state folder. Tried on the target host (Ubuntu, systemd 259) as the controller's user `brainiac`: a value encrypted and decrypted without root or a login session. Still to confirm on that host: a stored value decrypts again after a reboot. `secrets.md` plans the Secret Service for a desktop Linux host later, and a host without `systemd-creds --user` cannot take secrets, with the reason shown; there is no plain-file fallback.
 - **What this saves.** No Google authentication changes, no service account that exists only to read secrets, and no second network hop at 07:00. The cost is that rotation means sharing again from the app, and there is no central audit log.
-- The home server is reached over Tailscale with the system SSH, verified host keys, and the controller as a service, as in `agent-runs.md` (Remote sessions); a private network is not a reason to loosen any of that. Outbound access from the host still goes through the allowlist.
+- The home server is reached over Tailscale with the system SSH, verified host keys, and the controller as a service, as in `agent-runs.md` (Remote sessions); a private network is not a reason to loosen any of that.
 
 Each share on a host has a visible state, in the host's Secrets section and on the profile that uses it:
 
@@ -60,7 +60,7 @@ Scope rules that follow, because anyone with access to the host can read what it
 
 ### The tools layer
 
-Decided (15 Oct 2026). The run image today is Node 22 on Debian with `git`, `ripgrep` and the two agents (`src-tauri/src/agents/image/Dockerfile`), and it is one image for every run. The morning check needs Python and the Google Cloud CLI (`gcloud`). Adding them to that image would make every run's image and build larger for a tool most runs never use, and installing at run time is not possible once the allowlist limits a run to its provider and the hosts the user named.
+Decided (15 Oct 2026). The run image today is Node 22 on Debian with `git`, `ripgrep` and the two agents (`src-tauri/src/agents/image/Dockerfile`), and it is one image for every run. The morning check needs Python and the Google Cloud CLI (`gcloud`). Adding them to that image would make every run's image and build larger for a tool most runs never use, and installing at run time would also make a run depend on the network at its start.
 
 So Brainiac builds an optional **tools layer** on top of the base image, from a Dockerfile compiled into Brainiac like the base one, with the same rules: pinned base digest, pinned packages, the build context is those files and nothing else, and a repository's own Dockerfile or `requirements.txt` is never read at build.
 
@@ -70,9 +70,16 @@ So Brainiac builds an optional **tools layer** on top of the base image, from a 
 - The layer is part of what a schedule's approval records (image digest), so a rebuild asks for approval again.
 - The user's scripts live in the repository, which the run already has. A script that imports a third-party package will not find it; that is a limit of the layer, shown in its description, until a list exists.
 
-### The network allowlist comes first
+### The network allowlist is out of scope
 
-Decided (15 Oct 2026): the allowlist is part of this work, not optional. A run that holds production read access must not have unrestricted egress. This depends on the allowlist mode in `agent-runs.md` (Isolation and permissions): provider, plus the user-added hosts for Google APIs and Sentry, nothing else, with no unrestricted fallback. Schedules are not enabled for a host until the allowlist is tested on it.
+Decided (16 Oct 2026): this work does not include the network allowlist. It was a prerequisite in the first draft; the maintainer moved it out. The consequence is plain and is shown, not hidden: a run that holds host secrets has the same unrestricted egress as any run (`agent-runs.md`, Isolation and permissions), so a prompt-injected run could send a secret it holds to any address. What limits that, until an allowlist exists:
+
+- Only secrets the user names on a profile reach a run, and only on a host the user shared them to.
+- Use tokens that can read and nothing more; the Share section says so.
+- New run and the profile list the secrets a run will get, next to the unrestricted network disclosure.
+- Schedules (phase 4) show the same disclosure in their approval.
+
+The allowlist remains a later, separate design (`agent-runs.md`). It is not a gate for schedules.
 
 ### Outward writes are proposals
 
@@ -106,7 +113,7 @@ Scheduled runs need a host to be more than an entry in Settings → Agents, so t
 ## Phases
 
 1. **Machines pane and Health:** the pane, reachability, and the controller's `health` request. Useful with runs on a host today, before any schedule.
-2. **Secrets on a host and the network allowlist** (the allowlist is a separate design): write-only secrets stored on a Linux host and read by its controller when a run starts, with the share states; named secrets in Settings → Secrets.
+2. **Secrets on a host, and a profile's choice of them:** write-only secrets stored on a Linux host and read by its controller when a run starts, with the share states; named secrets in Settings → Secrets.
 3. **Briefing and Run now:** the `briefing` result kind, validation, the Today card, Save as note, Create task. No schedule yet.
 4. **Schedules on the host:** records, firing, missed-run handling, approval and re-approval, cost and pause, overdue display.
 5. **Later:** a Jira adapter for approve-and-create, notifications, several schedules per profile.
@@ -124,7 +131,6 @@ Scheduled runs need a host to be more than an entry in Settings → Agents, so t
 | Question | Decides |
 | --- | --- |
 | Does a value stored with `systemd-creds --user` still decrypt after the host reboots? Works as the controller's user without root (tried 15 Oct 2026) | Whether the store survives a restart |
-| Is the host's engine one whose network policy Brainiac can enforce and test? | Whether schedules can ship on that host |
 | Does the skill need anything beyond one repository and API access? | Whether a multi-repository run is needed (the design assumes not) |
 | Does the model credential for an unattended run (a `claude setup-token` token or an API key) fall under the open terms question in `agent-runs.md`? | Whether a Claude plan may power scheduled runs at all |
 | How long may a host be silent before a schedule is overdue? | The overdue window |

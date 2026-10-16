@@ -463,6 +463,12 @@ impl AgentRunService {
                 "Settings → Agents is not ready: {first}"
             )));
         }
+        // Secrets are sealed by a Linux host's controller; this Mac has none.
+        if !remote && !self.settings.profile_secrets(&profile.id).await?.is_empty() {
+            return Err(AppError::validation(
+                "This agent is set to give runs host secrets, which only a Linux run host keeps. Choose a run host, or clear the secrets in Settings → Agents.",
+            ));
+        }
         // The repository's answer for this provider, before anything is
         // copied; New run asked when there was none.
         self.sharing
@@ -555,6 +561,7 @@ impl AgentRunService {
             model: model.clone(),
             explain: false,
         });
+        let host_secrets = self.settings.profile_secret_names(&profile.id).await?;
         let start = StartRun {
             run_id: run_id.clone(),
             attempt: 1,
@@ -576,7 +583,7 @@ impl AgentRunService {
             model,
             known_concepts: None,
             secrets: Vec::new(),
-            host_secrets: Vec::new(),
+            host_secrets,
         };
         self.begin(row, start, host_id, request.repository_id.clone(), root)
             .await?;

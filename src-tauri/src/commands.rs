@@ -823,6 +823,24 @@ pub async fn remove_secret_from_host(
     named.unshare(&id, &host_id, &runtime).await
 }
 
+/// Settings → Agents, a profile: the named secrets its runs get.
+#[tauri::command]
+pub async fn get_profile_secrets(
+    profile_id: String,
+    agents: State<'_, AgentSettingsState>,
+) -> AppResult<Vec<String>> {
+    agents.profile_secrets(&profile_id).await
+}
+
+#[tauri::command]
+pub async fn set_profile_secrets(
+    profile_id: String,
+    secret_ids: Vec<String>,
+    agents: State<'_, AgentSettingsState>,
+) -> AppResult<Vec<String>> {
+    agents.set_profile_secrets(&profile_id, secret_ids).await
+}
+
 /// **Remove** a copy the host holds that no secret here names.
 #[tauri::command]
 pub async fn remove_unlisted_host_secret(
