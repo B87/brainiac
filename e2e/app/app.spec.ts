@@ -806,6 +806,48 @@ test("Add host trusts the key and follows its setup as steps, and New run waits 
   );
 });
 
+test("New run says which host secrets a run gets and which the host lacks, and the run lists them", async ({
+  page,
+}) => {
+  await openSettings(page, "Agents");
+  const dialog = await addHost(page);
+  await dialog
+    .getByRole("button", { name: "Trust This Key and Install" })
+    .click();
+  await page.evaluate(() => window.fake.endJob("host-1", "succeeded"));
+  await page.evaluate(() => {
+    window.fake.readyProfile("claude-code", ["host-1"]);
+  });
+
+  await openSettings(page, "Secrets");
+  await page.getByRole("button", { name: "Add Secret…" }).click();
+  const form = page.getByRole("form", { name: "Add secret" });
+  await form.getByLabel("Name", { exact: true }).fill("Sentry token");
+  await form.getByLabel("Variable a run sees it as").fill("SENTRY_TOKEN");
+  await form.getByLabel("Value", { exact: true }).fill("sntrys_example_token");
+  await form.getByRole("button", { name: "Save" }).click();
+  await openSettings(page, "Agents");
+  await page.getByRole("button", { name: /^Claude Code,/ }).click();
+  await page.getByRole("checkbox", { name: /Sentry token/ }).check();
+
+  await page.evaluate(() => window.emitEvent("menu", { id: "palette" }));
+  await page
+    .getByRole("dialog", { name: "Search and switch" })
+    .getByRole("button", { name: "New Run…" })
+    .click();
+  const newRun = page.getByRole("dialog", { name: "New run" });
+  await newRun.getByRole("button", { name: "runner.example · remote" }).click();
+  await expect(newRun).toContainText("also gets SENTRY_TOKEN");
+  await expect(newRun).toContainText("does not hold SENTRY_TOKEN");
+
+  await newRun
+    .getByPlaceholder("What should the agent do?")
+    .fill("Check production");
+  await newRun.getByRole("button", { name: "Allow and start" }).click();
+  await expect(newRun).toBeHidden();
+  await expect(page.getByText("From the host's sealed copies")).toBeVisible();
+});
+
 test("An upgrade can be cancelled before it installs, and a failed one says where and offers Try again", async ({
   page,
 }) => {

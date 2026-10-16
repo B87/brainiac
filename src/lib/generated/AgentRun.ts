@@ -80,6 +80,10 @@ cleanup_pending: string | null,
  */
 explain: boolean, 
 /**
+ * The variable names (never values) of the host secrets the run was given.
+ */
+host_secrets: Array<string>, 
+/**
  * The journal sequence mirrored so far.
  */
 cursor: number, created_at: string, updated_at: string, version: number, 

@@ -170,6 +170,10 @@ pub const HISTORY: Store = Store {
             "0007_concept_kinds",
             include_str!("../migrations/history/0007_concept_kinds.sql"),
         ),
+        (
+            "0008_run_host_secrets",
+            include_str!("../migrations/history/0008_run_host_secrets.sql"),
+        ),
     ],
     backups: Backups::Every { days: 7, keep: 2 },
     adopt_unmarked: false,

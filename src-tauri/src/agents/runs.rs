@@ -532,6 +532,7 @@ impl AgentRunService {
         // refused, and goes once to the controller.
         let credential = self.credential(&profile).await?;
         let title = title_of(&prompt, &credential.value);
+        let host_secrets = self.settings.profile_secret_names(&profile.id).await?;
         let row = RunRow::new(store::NewRun {
             id: run_id.clone(),
             repository_id: request.repository_id.clone(),
@@ -560,8 +561,8 @@ impl AgentRunService {
             workspace_gib: workspace,
             model: model.clone(),
             explain: false,
+            host_secrets: host_secrets.clone(),
         });
-        let host_secrets = self.settings.profile_secret_names(&profile.id).await?;
         let start = StartRun {
             run_id: run_id.clone(),
             attempt: 1,
@@ -697,6 +698,7 @@ impl AgentRunService {
             workspace_gib: profile.workspace_gib,
             model: model.clone(),
             explain: true,
+            host_secrets: Vec::new(),
         });
         let start = StartRun {
             run_id: run_id.clone(),

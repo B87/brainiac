@@ -196,6 +196,45 @@ export default function NewRunDialog({
     if (first) chooseProfile(first);
   }, [settings, chosen?.id]);
   const blocked = profile ? missingOf(profile) : [];
+
+  // The host secrets this agent's runs get, and which of them the chosen
+  // host does not hold. Names only; a host that cannot be asked adds no warning.
+  const [secretNames, setSecretNames] = useState<string[]>([]);
+  const [secretsMissing, setSecretsMissing] = useState<string[]>([]);
+  const profileKey = profile?.id ?? "";
+  const hostKey = remote && chosen ? chosen.id : "";
+  useEffect(() => {
+    setSecretNames([]);
+    setSecretsMissing([]);
+    if (!profileKey) return;
+    let alive = true;
+    (async () => {
+      const [ids, all] = await Promise.all([
+        ipc.getProfileSecrets(profileKey),
+        ipc.listNamedSecrets(),
+      ]);
+      const chosenSecrets = all.filter((n) => ids.includes(n.id));
+      if (!alive) return;
+      setSecretNames(chosenSecrets.map((n) => n.env_name));
+      if (chosenSecrets.length === 0 || !hostKey) return;
+      const held = await ipc.getHostSecrets(hostKey);
+      if (!alive || held.problem) return;
+      setSecretsMissing(
+        held.rows
+          .filter(
+            (r) =>
+              ids.includes(r.secret_id) &&
+              (r.state === "not_shared" ||
+                r.state === "missing_on_host" ||
+                r.state === "failed"),
+          )
+          .map((r) => r.env_name),
+      );
+    })().catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [profileKey, hostKey]);
   const agent = profile?.agent ?? "claude_code";
   const ends = new Date(Date.now() + timeLimit * 60_000).toLocaleTimeString(
     "en-GB",
@@ -725,6 +764,32 @@ export default function NewRunDialog({
             The network is unrestricted: the agent can reach any site, including
             services on {remote ? `${hostName}'s` : "your"} network.
           </Disclosure>
+          {secretNames.length > 0 && (
+            <Disclosure icon={<KeyIcon size={15} />}>
+              {remote ? (
+                <>
+                  This run also gets {secretNames.join(", ")} from {hostName}'s
+                  sealed copies. The agent can read{" "}
+                  {secretNames.length === 1 ? "it" : "them"}, and so can the
+                  repository's code.
+                </>
+              ) : (
+                <>
+                  This agent is set to give runs {secretNames.join(", ")}, which
+                  only a Linux run host keeps. Choose a run host or clear them
+                  in Settings → Agents.
+                </>
+              )}
+              {secretsMissing.length > 0 && (
+                <strong className="text-conflict">
+                  {" "}
+                  {hostName} does not hold {secretsMissing.join(", ")}: share{" "}
+                  {secretsMissing.length === 1 ? "it" : "them"} on its page, or
+                  the run will not start.
+                </strong>
+              )}
+            </Disclosure>
+          )}
           <Disclosure icon={<KeyIcon size={15} />}>
             The agent can read your {credential}, and so can the repository's
             code{agent === "claude_code" ? " and its Claude Code settings" : ""}

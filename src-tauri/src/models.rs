@@ -3934,6 +3934,8 @@ pub struct AgentRun {
     /// An explain run (SPEC.md, section 14): its conversation is How it was
     /// written, read only, and it is not listed in Runs.
     pub explain: bool,
+    /// The variable names (never values) of the host secrets the run was given.
+    pub host_secrets: Vec<String>,
     /// The journal sequence mirrored so far.
     #[ts(type = "number")]
     pub cursor: u64,

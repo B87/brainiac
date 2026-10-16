@@ -271,6 +271,7 @@ describe("Runs", () => {
     snapshot_accepted: false,
     cleanup_pending: null,
     explain: false,
+    host_secrets: [],
     cursor: 12,
     created_at: "2026-10-05T10:00:00Z",
     updated_at: "2026-10-05T10:30:00Z",

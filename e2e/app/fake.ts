@@ -550,6 +550,7 @@ function sampleRun(fields: Partial<AgentRun>): AgentRun {
     snapshot_accepted: false,
     cleanup_pending: null,
     explain: false,
+    host_secrets: [],
     cursor: 0,
     created_at: minutesFromNow(-20),
     updated_at: minutesFromNow(0),
@@ -2218,6 +2219,9 @@ export class FakeBackend {
           deadline_at: null,
           created_at: new Date().toISOString(),
           starting: "copy",
+          host_secrets: (this.profileSecrets.get(profile.id) ?? [])
+            .map((id) => this.namedSecrets.find((n) => n.id === id)?.env_name)
+            .filter((n): n is string => !!n),
         });
         this.runs.push(run);
         this.runEvents[run.id] = [];

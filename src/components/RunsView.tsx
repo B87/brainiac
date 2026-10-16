@@ -1358,6 +1358,12 @@ function RunDetails({
       <Fact label="Image">
         <span className="mono break-all">{run.image_name}</span>
       </Fact>
+      {run.host_secrets.length > 0 && (
+        <Fact label="Secrets">
+          <span className="mono break-all">{run.host_secrets.join(", ")}</span>
+          <Note>From the host's sealed copies; the agent could read them.</Note>
+        </Fact>
+      )}
       <div className="mt-1 flex flex-col gap-1.5 border-t pt-3">
         <span className="section-label">Files the agent says it changed</span>
         {reported.length === 0 ? (
