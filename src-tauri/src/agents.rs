@@ -31,6 +31,7 @@
 //!   (`host_jobs.rs`) runs those steps in the background as jobs the window
 //!   follows.
 
+pub mod briefings;
 pub mod controller;
 pub mod engine;
 pub mod host_health;

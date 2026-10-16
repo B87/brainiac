@@ -11,6 +11,7 @@ import { step, useKeys } from "../lib/keys";
 import { useSidePanel } from "../lib/sidePanel";
 import { createLatest } from "../lib/stale";
 import { formatDay, localDate } from "../lib/tasks";
+import BriefingsSection from "./BriefingsSection";
 import {
   ChevronDown,
   ChevronRight,
@@ -37,6 +38,7 @@ export default function TodayView({
   onNew,
   onOpenNote,
   onOpenRepo,
+  onOpenRun,
   onFetch,
   onError,
 }: {
@@ -46,6 +48,7 @@ export default function TodayView({
   onNew: () => void;
   onOpenNote: (noteId: string) => void;
   onOpenRepo: (repositoryId: string) => void;
+  onOpenRun: (runId: string) => void;
   onFetch: (ids: string[]) => void;
   onError: (message: string | null) => void;
 }) {
@@ -149,6 +152,12 @@ export default function TodayView({
           </button>
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto pb-6">
+          <BriefingsSection
+            repositories={snapshot.repositories}
+            onOpenNote={onOpenNote}
+            onOpenRun={onOpenRun}
+            onError={onError}
+          />
           {today && today.to_sort.length > 0 && (
             <button
               type="button"

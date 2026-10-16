@@ -823,6 +823,101 @@ pub async fn remove_secret_from_host(
     named.unshare(&id, &host_id, &runtime).await
 }
 
+// Briefings (docs/design/scheduled-runs.md; SPEC.md, Today → Briefings).
+
+pub type Briefings = Arc<crate::agents::briefings::BriefingService>;
+
+#[tauri::command]
+pub async fn list_briefings(
+    briefings: State<'_, Briefings>,
+) -> AppResult<Vec<crate::models::BriefingOverview>> {
+    briefings.overview().await
+}
+
+#[tauri::command]
+pub async fn save_briefing(
+    request: crate::models::SaveBriefingRequest,
+    briefings: State<'_, Briefings>,
+) -> AppResult<crate::models::Briefing> {
+    briefings.save(request).await
+}
+
+#[tauri::command]
+pub async fn delete_briefing(id: String, briefings: State<'_, Briefings>) -> AppResult<()> {
+    briefings.delete(&id).await
+}
+
+/// **Run now**: start the briefing's run.
+#[tauri::command]
+pub async fn run_briefing_now(
+    id: String,
+    briefings: State<'_, Briefings>,
+) -> AppResult<crate::models::BriefingResult> {
+    briefings.run_now(&id).await
+}
+
+/// **Save as note**: the briefing as a note in the vault, linked to its repository.
+#[tauri::command]
+pub async fn save_briefing_as_note(
+    result_id: String,
+    briefings: State<'_, Briefings>,
+    notes: State<'_, Notes>,
+) -> AppResult<crate::models::NoteSummary> {
+    let (briefing, result, body) = briefings.markdown(&result_id).await?;
+    let date = result.started_at.get(..10).unwrap_or_default().to_string();
+    let title = format!("{} {date}", briefing.name);
+    notes
+        .create_with_body(
+            crate::models::CreateNoteRequest {
+                folder: Some("Briefings".to_string()),
+                title: Some(title),
+                repository_id: Some(briefing.repository_id.clone()),
+            },
+            vec![
+                ("briefing".to_string(), briefing.name.clone()),
+                ("date".to_string(), result.started_at.clone()),
+            ],
+            body,
+        )
+        .await
+}
+
+/// **Create task** from a proposal of a ready briefing, once.
+#[tauri::command]
+pub async fn create_briefing_task(
+    result_id: String,
+    proposal_key: String,
+    briefings: State<'_, Briefings>,
+    tasks: State<'_, Tasks>,
+) -> AppResult<crate::models::BriefingResult> {
+    let proposal = briefings.proposal(&result_id, &proposal_key).await?;
+    if proposal.kind != crate::models::BriefingProposalKind::Task {
+        return Err(crate::models::AppError::validation(
+            "Only a task proposal can be made into a task here.",
+        ));
+    }
+    if proposal.task_id.is_some() {
+        return Err(crate::models::AppError::validation(
+            "A task was already made from this proposal.",
+        ));
+    }
+    let task = tasks
+        .create(crate::models::TaskFields {
+            title: proposal.title,
+            description: proposal.body,
+            status: crate::models::TaskStatus::Todo,
+            planned_date: None,
+            due_date: None,
+            note_id: None,
+            repository_id: None,
+            sorted: false,
+        })
+        .await?;
+    briefings
+        .mark_task(&result_id, &proposal_key, &task.id)
+        .await
+}
+
 /// Settings → Agents, a profile: runs use the image with Python and the
 /// Google Cloud CLI.
 #[tauri::command]

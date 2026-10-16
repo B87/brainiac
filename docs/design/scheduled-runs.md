@@ -4,7 +4,7 @@ Design notes for a run that starts on a schedule on an always-on run host and le
 
 ## Status: proposal (15 Oct 2026)
 
-Phase 1 is started (15 Oct 2026): the controller's `Health` request and a Health section on a run host's page (`SPEC.md`, Remote hosts; `architecture.md`, Decisions). The Machines pane of its own, the last hour kept in memory, and everything else here are not built, and none of it is in scope for v0.6. It reverses three lines in [`agent-runs.md`](agent-runs.md) and [`secrets.md`](secrets.md) (below), so it needs its own decision in `architecture.md` before any code.
+Phase 3 is built (16 Oct 2026): briefings, the `briefing.json` result and its checks, Run now, and the Today card with Create Task and Save as Note (`SPEC.md`, section 6; `architecture.md`, Decisions). Schedules (phase 4) are not. Phase 1 is started (15 Oct 2026): the controller's `Health` request and a Health section on a run host's page (`SPEC.md`, Remote hosts; `architecture.md`, Decisions). The Machines pane of its own, the last hour kept in memory, and everything else here are not built, and none of it is in scope for v0.6. It reverses three lines in [`agent-runs.md`](agent-runs.md) and [`secrets.md`](secrets.md) (below), so it needs its own decision in `architecture.md` before any code.
 
 ## Why
 

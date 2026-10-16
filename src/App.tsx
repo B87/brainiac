@@ -901,6 +901,7 @@ export default function App() {
                     onNew={() => void newTask()}
                     onOpenNote={openNote}
                     onOpenRepo={openRepo}
+                    onOpenRun={(runId) => showView({ kind: "runs", runId })}
                     onFetch={(ids) => void fetchRepositories(ids)}
                     onError={setBanner}
                   />

@@ -1321,7 +1321,12 @@ impl Workloads for DockerEngine {
         // reader takes only that name, as a regular file within the limit.
         let name: &'static str = match path.rsplit('/').next() {
             Some("explanation.json") => "explanation.json",
-            _ => return Err(AppError::validation("Only an explanation's file is read.")),
+            Some("briefing.json") => "briefing.json",
+            _ => {
+                return Err(AppError::validation(
+                    "Only an explanation's or a briefing's file is read.",
+                ))
+            }
         };
         let mut reader = TarReader::new(vec![Expected {
             name,

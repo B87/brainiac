@@ -611,6 +611,73 @@ test("An agent can ask for Python and the Google Cloud CLI, which the next Build
   ).toBeChecked();
 });
 
+test("A briefing is added on Today, Run Now starts it, and its checked result offers a task and a note; a run with no briefing reads as failed", async ({
+  page,
+}) => {
+  await page.evaluate(() => {
+    window.fake.readyThisMac();
+    window.fake.readyProfile("claude-code", ["local"]);
+  });
+  await page.getByRole("button", { name: "Today" }).click();
+  const section = page.getByRole("region", { name: "Briefings" });
+  await expect(section).toContainText("A briefing is a run that checks");
+
+  await section.getByRole("button", { name: "New Briefing…" }).click();
+  const form = page.getByRole("form", { name: "New briefing" });
+  await form.getByLabel("Name", { exact: true }).fill("Morning check");
+  await form.getByLabel("What to check").fill("Check production errors.");
+  await page
+    .getByRole("dialog", { name: "New briefing" })
+    .getByRole("button", { name: "Save" })
+    .click();
+  const card = section.getByRole("group", { name: "Morning check" });
+  await expect(card).toContainText("Not run yet.");
+
+  // Run Now: working, then the checked result.
+  await card.getByRole("button", { name: "Run Now" }).click();
+  await expect(card).toContainText("Running since");
+  await expect(card.getByRole("button", { name: "Running…" })).toBeDisabled();
+  await page.evaluate(() => {
+    const r = window.fake.briefingResults[0];
+    window.fake.finishBriefing(r.id, "findings");
+  });
+  await expect(card).toContainText("One new error in checkout.", {
+    timeout: 8000,
+  });
+  await expect(card).toContainText("TypeError in checkout");
+  await expect(card).toContainText("12 events since yesterday");
+
+  // A task is made once; an issue is only copied.
+  await card.getByRole("button", { name: "Create Task" }).click();
+  await expect(card).toContainText("Task created");
+  await expect(card.getByRole("button", { name: "Create Task" })).toHaveCount(
+    0,
+  );
+  await expect(card.getByRole("button", { name: "Copy" })).toBeVisible();
+
+  // Save as note opens the note.
+  await card.getByRole("button", { name: "Save as Note" }).click();
+  expect((await calls(page, "save_briefing_as_note")).length).toBe(1);
+
+  // Tomorrow's run: the same finding says it was seen before. A run that
+  // wrote nothing is a failure, never "nothing found".
+  await page.getByRole("button", { name: "Today" }).click();
+  await card.getByRole("button", { name: "Run Now" }).click();
+  await page.evaluate(() => {
+    const r = window.fake.briefingResults[1];
+    window.fake.finishBriefing(r.id, "findings");
+  });
+  await expect(card).toContainText("seen before", { timeout: 8000 });
+  await card.getByRole("button", { name: "Run Now" }).click();
+  await page.evaluate(() => {
+    const r = window.fake.briefingResults[2];
+    window.fake.finishBriefing(r.id, "failed");
+  });
+  await expect(card).toContainText("No briefing:", { timeout: 8000 });
+  await expect(card).toContainText('This is not "nothing found"');
+  await expect(card).not.toContainText("Nothing found");
+});
+
 test("Settings → Agents lists four agents, and OpenCode · OpenRouter's page saves its key and model", async ({
   page,
 }) => {

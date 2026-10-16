@@ -116,6 +116,9 @@ pub enum Request {
     /// changes — v0.6). Added without a protocol bump, as `Preview` was: an
     /// older controller answers that it did not understand.
     ReadExplanation { run_id: String },
+    /// A briefing run's `.brainiac/briefing.json`, read the same way and
+    /// answered as `Explanation` (a file's text, or none).
+    ReadBriefing { run_id: String },
     /// Exit, only when no run is live: a newer Brainiac replaces it.
     Shutdown,
     /// Write the run's input bundle into the controller's state directory,

@@ -314,6 +314,19 @@ pub fn run() {
             notes.set_write_note_ids(settings.write_note_ids);
             app.manage(Arc::clone(&notes));
 
+            // --- Briefings (docs/design/scheduled-runs.md) ------------------
+            let briefings = agents::briefings::BriefingService::new(
+                explain_core.clone(),
+                explain_history.clone(),
+                Arc::clone(&explain_runs),
+                Arc::clone(&explain_agent_settings),
+                run_changes.clone(),
+            );
+            app.manage(Arc::clone(&briefings));
+            tauri::async_runtime::spawn(async move {
+                briefings.reconnect().await;
+            });
+
             // --- Explaining changes (v0.6) ----------------------------------
             let explanations = explain::service::ExplanationService::new(
                 explain_core,
@@ -570,6 +583,12 @@ pub fn run() {
             commands::remove_secret_from_host,
             commands::remove_unlisted_host_secret,
             commands::set_profile_tools,
+            commands::list_briefings,
+            commands::save_briefing,
+            commands::delete_briefing,
+            commands::run_briefing_now,
+            commands::save_briefing_as_note,
+            commands::create_briefing_task,
             commands::get_profile_secrets,
             commands::set_profile_secrets,
             commands::get_agent_host_job_log,

@@ -1746,6 +1746,22 @@ impl AgentRunService {
         self.rt(run_id).await?.read_explanation(run_id).await
     }
 
+    /// A briefing run's file, read from its agent's container.
+    pub async fn read_briefing(&self, run_id: &str) -> AppResult<Option<String>> {
+        self.rt(run_id).await?.read_briefing(run_id).await
+    }
+
+    /// Resolve a briefing's start (a branch or commit) to a commit, as New
+    /// run's preview does: the repository and that commit's tree are checked.
+    pub async fn resolve_start(&self, repository_id: &str, start: &str) -> AppResult<String> {
+        let (_, root) = self.repositories.locate(repository_id).await?;
+        Ok(self
+            .artifacts
+            .preview(repository_id, &root, start)
+            .await?
+            .commit)
+    }
+
     /// The cost an explain run's agent last reported, from its journal.
     pub async fn reported_cost(&self, run_id: &str) -> Option<(u64, String)> {
         let journal = self.journal(run_id).await.ok()?;

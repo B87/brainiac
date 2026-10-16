@@ -546,6 +546,30 @@ impl RunRuntime {
         }
     }
 
+    /// A briefing run's `.brainiac/briefing.json` (`None`: none written).
+    pub async fn read_briefing(&self, run_id: &str) -> AppResult<Option<String>> {
+        let request = Request::ReadBriefing {
+            run_id: run_id.to_string(),
+        };
+        let remote = self.is_remote();
+        match self.call(request, CALL_TIMEOUT).await.map_err(|e| {
+            if !e.message.contains("did not understand the request") {
+                e
+            } else if remote {
+                AppError::dependency(
+                    "This host's run controller is older than Brainiac, so it cannot return a briefing. Upgrade it in Settings → Agents once no run is live there.",
+                )
+            } else {
+                AppError::dependency(
+                    "The run controller is from an earlier Brainiac, so it cannot return a briefing. Run it again once the controller has exited.",
+                )
+            }
+        })? {
+            Response::Explanation { text } => Ok(text),
+            _ => Err(unexpected()),
+        }
+    }
+
     /// A remote controller just installed or restarted: ask until it
     /// answers, for a little while, and say why it did not.
     pub async fn answer(&self) -> AppResult<ControllerInfo> {

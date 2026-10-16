@@ -4996,3 +4996,133 @@ pub struct TerminalExitedEvent {
     /// Absent when it was ended by a signal.
     pub code: Option<i32>,
 }
+
+// ---------------------------------------------------------------------------
+// Briefings (docs/design/scheduled-runs.md; SPEC.md, Today → Briefings)
+// ---------------------------------------------------------------------------
+
+/// A saved run whose job is a short report on Today.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Briefing {
+    pub id: String,
+    pub name: String,
+    pub repository_id: String,
+    pub profile_id: String,
+    /// Empty: this Mac.
+    pub host_id: String,
+    /// A branch or commit, resolved at each start.
+    pub start: String,
+    pub prompt: String,
+    pub time_limit_minutes: u32,
+    #[ts(type = "number")]
+    pub version: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SaveBriefingRequest {
+    /// `None` adds one.
+    pub id: Option<String>,
+    #[ts(type = "number")]
+    pub expected_version: i64,
+    pub name: String,
+    pub repository_id: String,
+    pub profile_id: String,
+    pub host_id: String,
+    pub start: String,
+    pub prompt: String,
+    pub time_limit_minutes: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum BriefingState {
+    /// The run is going; nothing to read yet.
+    Working,
+    Ready,
+    /// There is no briefing: the reason is `error`. Never read as "nothing found".
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum BriefingStatus {
+    NothingFound,
+    Findings,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum BriefingSeverity {
+    Info,
+    Low,
+    Medium,
+    High,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct BriefingFinding {
+    /// Stable across days (such as a Sentry issue id), so "seen before" works.
+    pub key: String,
+    pub title: String,
+    pub severity: BriefingSeverity,
+    pub detail: String,
+    /// An http(s) address, or empty.
+    pub link: String,
+    /// The previous briefing of this definition had a finding with this key.
+    pub seen_before: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum BriefingProposalKind {
+    /// Created in Brainiac on approval.
+    Task,
+    /// A bug to file in a tracker; shown to copy, never created here.
+    Issue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct BriefingProposal {
+    pub key: String,
+    pub kind: BriefingProposalKind,
+    pub title: String,
+    pub body: String,
+    /// The finding it comes from, when it names one.
+    pub finding_key: Option<String>,
+    /// The task made from it, once the user approved it.
+    pub task_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct BriefingResult {
+    pub id: String,
+    pub briefing_id: String,
+    pub run_id: Option<String>,
+    pub state: BriefingState,
+    pub status: Option<BriefingStatus>,
+    pub summary: String,
+    pub findings: Vec<BriefingFinding>,
+    pub proposals: Vec<BriefingProposal>,
+    pub error: Option<String>,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    pub duration_secs: Option<u32>,
+}
+
+/// A briefing and its latest result, for Today.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct BriefingOverview {
+    pub briefing: Briefing,
+    pub repository_name: String,
+    pub latest: Option<BriefingResult>,
+}

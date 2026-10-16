@@ -61,6 +61,8 @@ pub struct Engine {
     /// What an explain prompt writes to `.brainiac/explanation.json`, one
     /// per turn in order; with none left, the agent writes nothing.
     pub explanations: std::collections::VecDeque<String>,
+    /// The same for a briefing's prompt and `.brainiac/briefing.json`.
+    pub briefings: std::collections::VecDeque<String>,
     /// The session's cost the agent reports after each turn, in dollars.
     pub cost: Option<f64>,
     /// Files read from containers, by path.
@@ -396,6 +398,14 @@ pub async fn fake_agent(
                                 "update": { "sessionUpdate": "usage_update", "used": 1000, "size": 200000,
                                     "cost": { "amount": cost, "currency": "USD" } } } }))
                             .await;
+                        }
+                        say(update("written")).await;
+                        say(json!({ "jsonrpc": "2.0", "id": id, "result": { "stopReason": "end_turn" } })).await;
+                    } else if text.contains(".brainiac/briefing.json") {
+                        let next = engine.get().briefings.pop_front();
+                        if let Some(next) = next {
+                            std::fs::create_dir_all(work.join(".brainiac")).unwrap();
+                            std::fs::write(work.join(".brainiac/briefing.json"), next).unwrap();
                         }
                         say(update("written")).await;
                         say(json!({ "jsonrpc": "2.0", "id": id, "result": { "stopReason": "end_turn" } })).await;

@@ -20,6 +20,9 @@ import type { AppError } from "./generated/AppError";
 import type { ApproveAgentHostRequest } from "./generated/ApproveAgentHostRequest";
 import type { AppSnapshot } from "./generated/AppSnapshot";
 import type { BranchComparison } from "./generated/BranchComparison";
+import type { Briefing } from "./generated/Briefing";
+import type { BriefingOverview } from "./generated/BriefingOverview";
+import type { BriefingResult } from "./generated/BriefingResult";
 import type { BusyTerminal } from "./generated/BusyTerminal";
 import type { Cell } from "./generated/Cell";
 import type { CellValue } from "./generated/CellValue";
@@ -150,6 +153,7 @@ import type { RunStatementRequest } from "./generated/RunStatementRequest";
 import type { RunsOn } from "./generated/RunsOn";
 import type { SaveAgentCredentialRequest } from "./generated/SaveAgentCredentialRequest";
 import type { SaveAgentSettingsRequest } from "./generated/SaveAgentSettingsRequest";
+import type { SaveBriefingRequest } from "./generated/SaveBriefingRequest";
 import type { SaveDbConnectionRequest } from "./generated/SaveDbConnectionRequest";
 import type { SavedQuery } from "./generated/SavedQuery";
 import type { SaveForgeAccountOutcome } from "./generated/SaveForgeAccountOutcome";
@@ -215,6 +219,11 @@ export type { AgentTestStep } from "./generated/AgentTestStep";
 export type { AnswerCodeSharingRequest } from "./generated/AnswerCodeSharingRequest";
 export type { Backlink } from "./generated/Backlink";
 export type { BranchComparison } from "./generated/BranchComparison";
+export type { Briefing } from "./generated/Briefing";
+export type { BriefingFinding } from "./generated/BriefingFinding";
+export type { BriefingOverview } from "./generated/BriefingOverview";
+export type { BriefingProposal } from "./generated/BriefingProposal";
+export type { BriefingResult } from "./generated/BriefingResult";
 export type { BusyTerminal } from "./generated/BusyTerminal";
 export type { ChangedFile } from "./generated/ChangedFile";
 export type { ChangedFileStatus } from "./generated/ChangedFileStatus";
@@ -321,6 +330,7 @@ export type { RunPlanEntry } from "./generated/RunPlanEntry";
 export type { RunPreview } from "./generated/RunPreview";
 export type { RunStartPreview } from "./generated/RunStartPreview";
 export type { RunStartStep } from "./generated/RunStartStep";
+export type { SaveBriefingRequest } from "./generated/SaveBriefingRequest";
 export type { SaveNamedSecretRequest } from "./generated/SaveNamedSecretRequest";
 export type { SearchGroup } from "./generated/SearchGroup";
 export type { SearchHit } from "./generated/SearchHit";
@@ -685,6 +695,16 @@ export const ipc = {
   testAgentSetup: (profileId: string) =>
     invoke<AgentTestResult>("test_agent_setup", { profileId }),
   /** Settings → Secrets, named secrets that can be shared with a run host. */
+  listBriefings: () => invoke<BriefingOverview[]>("list_briefings"),
+  saveBriefing: (request: SaveBriefingRequest) =>
+    invoke<Briefing>("save_briefing", { request }),
+  deleteBriefing: (id: string) => invoke<void>("delete_briefing", { id }),
+  runBriefingNow: (id: string) =>
+    invoke<BriefingResult>("run_briefing_now", { id }),
+  saveBriefingAsNote: (resultId: string) =>
+    invoke<NoteSummary>("save_briefing_as_note", { resultId }),
+  createBriefingTask: (resultId: string, proposalKey: string) =>
+    invoke<BriefingResult>("create_briefing_task", { resultId, proposalKey }),
   listNamedSecrets: () => invoke<NamedSecret[]>("list_named_secrets"),
   saveNamedSecret: (request: SaveNamedSecretRequest) =>
     invoke<NamedSecret>("save_named_secret", { request }),

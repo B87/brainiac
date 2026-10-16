@@ -59,6 +59,7 @@ const MAX_INCLUDE: usize = 1000;
 const COLLECTOR_MEMORY_MIB: u32 = 2048;
 /// Where an explain run's agent writes its explanation, and its limit.
 pub const EXPLANATION_PATH: &str = "/workspace/.brainiac/explanation.json";
+pub const BRIEFING_PATH: &str = "/workspace/.brainiac/briefing.json";
 const MAX_EXPLANATION_BYTES: u64 = 2 * 1024 * 1024;
 /// The shortest and longest time limits a run may have.
 const MIN_TIME_LIMIT: u64 = 1;
@@ -657,7 +658,11 @@ impl<W: Workloads> Controller<W> {
                 .await
                 .map(|id| Response::Image { id }),
             Request::ReadExplanation { run_id } => self
-                .read_explanation(&run_id)
+                .read_result_file(&run_id, EXPLANATION_PATH)
+                .await
+                .map(|text| Response::Explanation { text }),
+            Request::ReadBriefing { run_id } => self
+                .read_result_file(&run_id, BRIEFING_PATH)
                 .await
                 .map(|text| Response::Explanation { text }),
             Request::EmergencyStop => {
@@ -1355,7 +1360,7 @@ impl<W: Workloads> Controller<W> {
 
     /// An explain run's file, from its agent's container, while the session
     /// waits for a prompt or after it stopped and before Discard.
-    async fn read_explanation(&self, run_id: &str) -> AppResult<Option<String>> {
+    async fn read_result_file(&self, run_id: &str, path: &str) -> AppResult<Option<String>> {
         let run = self.run(run_id)?;
         let (socket, container) = {
             let inner = run.lock();
@@ -1369,12 +1374,12 @@ impl<W: Workloads> Controller<W> {
         };
         let bytes = self
             .workloads
-            .read_file(&socket, &container, EXPLANATION_PATH, MAX_EXPLANATION_BYTES)
+            .read_file(&socket, &container, path, MAX_EXPLANATION_BYTES)
             .await?;
         bytes
             .map(|b| {
                 String::from_utf8(b)
-                    .map_err(|_| AppError::validation("The explanation's file is not UTF-8."))
+                    .map_err(|_| AppError::validation("The result file is not UTF-8."))
             })
             .transpose()
     }

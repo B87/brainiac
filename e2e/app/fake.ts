@@ -13,6 +13,9 @@ import type {
   AgentSettings,
   AnswerCodeSharingRequest,
   AppSnapshot,
+  Briefing,
+  BriefingOverview,
+  BriefingResult,
   Cell,
   CodeAnswer,
   Comment,
@@ -1182,6 +1185,54 @@ export class FakeBackend {
   >();
   /** A test makes the next Share fail with this sentence. */
   shareFailure: string | null = null;
+  briefings: Briefing[] = [];
+  briefingResults: BriefingResult[] = [];
+  /** The agent finished a briefing's run: Ready with a finding and a proposal, or Failed. */
+  finishBriefing(id: string, how: "findings" | "failed") {
+    const r = this.briefingResults.find((x) => x.id === id);
+    if (!r) return;
+    const prev = this.briefingResults.find(
+      (x) => x.briefing_id === r.briefing_id && x.state === "ready",
+    );
+    r.finished_at = new Date().toISOString();
+    r.duration_secs = 120;
+    if (how === "failed") {
+      r.state = "failed";
+      r.error = "The run ended before it wrote the briefing.";
+      return;
+    }
+    r.state = "ready";
+    r.status = "findings";
+    r.summary = "One new error in checkout.";
+    r.findings = [
+      {
+        key: "SENTRY-1",
+        title: "TypeError in checkout",
+        severity: "high",
+        detail: "12 events since yesterday",
+        link: "https://sentry.example/i/1",
+        seen_before: !!prev,
+      },
+    ];
+    r.proposals = [
+      {
+        key: "fix-1",
+        kind: "task",
+        title: "Fix the checkout error",
+        body: "",
+        finding_key: "SENTRY-1",
+        task_id: null,
+      },
+      {
+        key: "bug-1",
+        kind: "issue",
+        title: "Checkout TypeError",
+        body: "See SENTRY-1",
+        finding_key: "SENTRY-1",
+        task_id: null,
+      },
+    ];
+  }
 
   hostSecrets(hostId: string): HostSecrets {
     const copies = this.hostCopies.get(hostId) ?? new Set<string>();
@@ -2959,6 +3010,81 @@ export class FakeBackend {
         this.tasks.set(t.id, t);
         this.later("task_changed", { task_id: t.id, version: t.version });
         return t;
+      }
+      case "list_briefings":
+        return this.briefings.map(
+          (briefing): BriefingOverview => ({
+            briefing,
+            repository_name: "parser",
+            latest:
+              [...this.briefingResults]
+                .reverse()
+                .find((r) => r.briefing_id === briefing.id) ?? null,
+          }),
+        );
+      case "save_briefing": {
+        const r = args.request as Briefing & {
+          id: string | null;
+          expected_version: number;
+        };
+        const found = this.briefings.find((b) => b.id === r.id);
+        const saved: Briefing = {
+          id: found?.id ?? uid("briefing"),
+          name: r.name,
+          repository_id: r.repository_id,
+          profile_id: r.profile_id,
+          host_id: r.host_id,
+          start: r.start,
+          prompt: r.prompt,
+          time_limit_minutes: r.time_limit_minutes,
+          version: (found?.version ?? 0) + 1,
+        };
+        if (found) Object.assign(found, saved);
+        else this.briefings.push(saved);
+        return saved;
+      }
+      case "delete_briefing":
+        this.briefings = this.briefings.filter((b) => b.id !== args.id);
+        return null;
+      case "run_briefing_now": {
+        const result: BriefingResult = {
+          id: uid("result"),
+          briefing_id: String(args.id),
+          run_id: "run-1",
+          state: "working",
+          status: null,
+          summary: "",
+          findings: [],
+          proposals: [],
+          error: null,
+          started_at: new Date().toISOString(),
+          finished_at: null,
+          duration_secs: null,
+        };
+        this.briefingResults.push(result);
+        return result;
+      }
+      case "save_briefing_as_note": {
+        const result = this.briefingResults.find((r) => r.id === args.resultId);
+        const briefing = this.briefings.find(
+          (b) => b.id === result?.briefing_id,
+        );
+        return this.handle("create_note", {
+          request: {
+            folder: "Briefings",
+            title: `${briefing?.name ?? "Briefing"} today`,
+            repository_id: briefing?.repository_id ?? null,
+          },
+        });
+      }
+      case "create_briefing_task": {
+        const result = this.briefingResults.find((r) => r.id === args.resultId);
+        const proposal = result?.proposals.find(
+          (p) => p.key === args.proposalKey,
+        );
+        if (!result || !proposal) throw new Error("no such proposal");
+        proposal.task_id = uid("task");
+        return result;
       }
       case "get_today": {
         const all = [...this.tasks.values()];
