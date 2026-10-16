@@ -34,6 +34,9 @@ pub struct SecretInfo {
     pub name: String,
     /// Seconds since the Unix epoch.
     pub set_at: u64,
+    /// A run gets it as a file (the variable holds the path), not as a value.
+    #[serde(default)]
+    pub file: bool,
 }
 
 /// Model credentials are sealed like secrets under this prefix, and a run
@@ -58,16 +61,33 @@ impl SecretStore {
         self.dir.join(format!("{name}.cred"))
     }
 
+    /// A secret a run gets as a file is kept as `<NAME>.file.cred`, so the
+    /// store needs no metadata beside the sealed value.
+    fn file_path(&self, name: &str) -> PathBuf {
+        self.dir.join(format!("{name}.file.cred"))
+    }
+
+    fn path_for(&self, name: &str, file: bool) -> PathBuf {
+        if file {
+            self.file_path(name)
+        } else {
+            self.path(name)
+        }
+    }
+
     /// Seal a value and keep it under `name`, replacing any earlier one.
-    pub async fn put(&self, name: &str, value: &str) -> AppResult<()> {
+    pub async fn put(&self, name: &str, value: &str, file: bool) -> AppResult<()> {
         // A model credential is kept only through `put_model`.
         if name.starts_with(MODEL_PREFIX) {
             return Err(AppError::validation("That is not a secret's name."));
         }
-        self.put_sealed(name, value).await
+        self.put_sealed(name, value, file).await?;
+        // One name, one way of arriving: the other kind is forgotten.
+        let _ = fs::remove_file(self.path_for(name, !file));
+        Ok(())
     }
 
-    async fn put_sealed(&self, name: &str, value: &str) -> AppResult<()> {
+    async fn put_sealed(&self, name: &str, value: &str, file: bool) -> AppResult<()> {
         if !valid_secret_name(name) {
             return Err(AppError::validation(
                 "A secret's name must be capitals, digits and underscores, and not one the agent or the container uses.",
@@ -84,7 +104,7 @@ impl SecretStore {
             .mode(0o700)
             .create(&self.dir)
             .and_then(|()| fs::set_permissions(&self.dir, fs::Permissions::from_mode(0o700)))
-            .and_then(|()| write_atomic(&self.path(name), &sealed))
+            .and_then(|()| write_atomic(&self.path_for(name, file), &sealed))
             .map_err(|e| {
                 AppError::io("The secret could not be saved on this host.")
                     .with_details(e.to_string())
@@ -108,7 +128,8 @@ impl SecretStore {
 
     /// Seal a profile's model credential for schedules to start runs with.
     pub async fn put_model(&self, profile_id: &str, value: &str) -> AppResult<()> {
-        self.put_sealed(&Self::model_name(profile_id), value).await
+        self.put_sealed(&Self::model_name(profile_id), value, false)
+            .await
     }
 
     /// Forget a profile's model credential.
@@ -118,7 +139,9 @@ impl SecretStore {
 
     /// Open it again when a schedule fires.
     pub async fn get_model(&self, profile_id: &str) -> AppResult<String> {
-        self.get(&Self::model_name(profile_id)).await
+        self.get(&Self::model_name(profile_id))
+            .await
+            .map(|(value, _)| value)
     }
 
     /// Whether this host holds that profile's model credential.
@@ -131,14 +154,19 @@ impl SecretStore {
         if !valid_secret_name(name) || name.starts_with(MODEL_PREFIX) {
             return Err(AppError::validation("That is not a secret's name."));
         }
-        match fs::remove_file(self.path(name)) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(
-                AppError::io("The secret could not be removed from this host.")
-                    .with_details(e.to_string()),
-            ),
+        for file in [false, true] {
+            match fs::remove_file(self.path_for(name, file)) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(
+                        AppError::io("The secret could not be removed from this host.")
+                            .with_details(e.to_string()),
+                    )
+                }
+            }
         }
+        Ok(())
     }
 
     /// The secrets set, by name.
@@ -151,6 +179,10 @@ impl SecretStore {
             .filter_map(|entry| {
                 let file = entry.file_name().into_string().ok()?;
                 let name = file.strip_suffix(".cred")?;
+                let (name, as_file) = match name.strip_suffix(".file") {
+                    Some(name) => (name, true),
+                    None => (name, false),
+                };
                 // A model credential kept for a schedule is not a secret a run names.
                 if !valid_secret_name(name) || name.starts_with(MODEL_PREFIX) {
                     return None;
@@ -166,6 +198,7 @@ impl SecretStore {
                 Some(SecretInfo {
                     name: name.to_string(),
                     set_at,
+                    file: as_file,
                 })
             })
             .collect();
@@ -175,25 +208,34 @@ impl SecretStore {
 
     /// Open a secret for a run that names it. The only place a value leaves
     /// the store.
-    pub async fn get(&self, name: &str) -> AppResult<String> {
+    /// The value, and whether a run gets it as a file.
+    pub async fn get(&self, name: &str) -> AppResult<(String, bool)> {
         if !valid_secret_name(name) {
             return Err(AppError::validation("That is not a secret's name."));
         }
-        let sealed = match fs::read(self.path(name)) {
-            Ok(bytes) => bytes,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                return Err(AppError::not_found(format!(
-                    "This host does not have the secret {name}. Share it from Settings."
-                )))
+        let mut found = None;
+        for file in [false, true] {
+            match fs::read(self.path_for(name, file)) {
+                Ok(bytes) => {
+                    found = Some((bytes, file));
+                    break;
+                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(AppError::io("A secret could not be read on this host.")
+                        .with_details(e.to_string()))
+                }
             }
-            Err(e) => {
-                return Err(AppError::io("A secret could not be read on this host.")
-                    .with_details(e.to_string()))
-            }
+        }
+        let Some((sealed, file)) = found else {
+            return Err(AppError::not_found(format!(
+                "This host does not have the secret {name}. Share it from Settings."
+            )));
         };
         let opened = self.run("decrypt", name, &sealed).await?;
-        String::from_utf8(opened)
-            .map_err(|_| AppError::io(format!("The secret {name} on this host is not text.")))
+        let value = String::from_utf8(opened)
+            .map_err(|_| AppError::io(format!("The secret {name} on this host is not text.")))?;
+        Ok((value, file))
     }
 
     /// `systemd-creds <verb> --user --name=<name> - -`: the input on stdin and

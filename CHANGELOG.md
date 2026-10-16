@@ -11,6 +11,10 @@ into the release's section.
 
 ## [Unreleased]
 
+- A secret of your own can be given to a run as a file instead of a value, for tools that read a key file such as a Google service account key; its variable holds the file's path. Upgrade the host's controller to share one.
+
+- Reaching a run host no longer fails when Brainiac asks it two things at once (a health check while a briefing is read, or a secret shared during a sync).
+
 - Settings → Secrets can keep secrets of your own, such as a Sentry token, and a run host's page can share them: the host keeps a sealed copy, and shows when it is out of date. An agent's page can choose which secrets its runs on a Linux run host get; New run and the run's page name them. Routines are saved runs that check something and leave a short report (a briefing), started with Run Now: a Routines section lists them, each has its own page, and Today shows the ones with news. A routine on a run host can have a schedule: after you approve it, the host runs it at its time with this Mac off, and Brainiac takes the briefing when it next reaches the host. A routine keeps a memory the agent and you can edit, and is shown its earlier briefings. An agent's page can add Python and the Google Cloud CLI to its runs' image, built by the next Build image.
 
 - A run host's page has a Health section: whether it answers, its uptime, load, memory, disk, Docker engine and runs, with what to fix when something is wrong. Upgrade the host's controller to see it.

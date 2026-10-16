@@ -4230,6 +4230,8 @@ pub struct NamedSecret {
     pub label: String,
     /// The environment variable a run sees it as, and its name on a host.
     pub env_name: String,
+    /// A run gets a file holding the value; the variable is the file's path.
+    pub as_file: bool,
     pub note: String,
     pub credential_source: SecretSource,
     pub credential: CredentialState,
@@ -4249,6 +4251,9 @@ pub struct SaveNamedSecretRequest {
     pub expected_version: i64,
     pub label: String,
     pub env_name: String,
+    /// A run gets the value as a file, and the variable holds its path.
+    #[serde(default)]
+    pub as_file: bool,
     pub note: String,
     /// The Keychain, an environment variable, or a command.
     pub source: SecretSource,
@@ -4262,6 +4267,7 @@ impl std::fmt::Debug for SaveNamedSecretRequest {
         f.debug_struct("SaveNamedSecretRequest")
             .field("id", &self.id)
             .field("env_name", &self.env_name)
+            .field("as_file", &self.as_file)
             .field("source", &self.source)
             .field("secret", &self.secret.as_ref().map(|_| "[redacted]"))
             .finish()

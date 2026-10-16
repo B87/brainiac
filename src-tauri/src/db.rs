@@ -82,6 +82,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0016_routines",
         include_str!("../migrations/0016_routines.sql"),
     ),
+    (
+        "0017_secret_as_file",
+        include_str!("../migrations/0017_secret_as_file.sql"),
+    ),
 ];
 
 /// How many daily backups to keep.

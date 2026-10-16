@@ -89,6 +89,7 @@ impl Harness {
             expected_version: version,
             label: "Sentry".into(),
             env_name: "SENTRY_TOKEN".into(),
+            as_file: false,
             note: "Read-only, project X".into(),
             source: SecretSource::Store,
             secret: secret.map(str::to_string),
@@ -176,7 +177,7 @@ async fn a_secret_the_host_lost_is_missing_and_one_only_the_host_holds_is_listed
     assert_eq!(h.state(&secret.id).await, HostSecretState::MissingOnHost);
 
     h.runtime
-        .put_secret("OTHER_TOKEN", "12345678abcd".into())
+        .put_secret("OTHER_TOKEN", "12345678abcd".into(), false)
         .await
         .unwrap();
     let host = h.named.host_secrets(HOST, Some(&h.runtime)).await.unwrap();
@@ -219,7 +220,7 @@ async fn a_copy_no_secret_names_can_be_removed_by_name() {
     let h = Harness::new().await;
     let secret = h.add().await;
     h.runtime
-        .put_secret("OTHER_TOKEN", "12345678abcd".into())
+        .put_secret("OTHER_TOKEN", "12345678abcd".into(), false)
         .await
         .unwrap();
     // A name a secret uses goes through its own Remove.
@@ -307,4 +308,28 @@ async fn names_values_and_sources_are_checked() {
     // A pasted value never reaches a log through the request.
     let text = format!("{:?}", h.request(None, 0, Some(VALUE)));
     assert!(!text.contains(VALUE), "{text}");
+}
+
+#[tokio::test]
+async fn a_secret_for_a_file_reaches_the_host_as_one_and_cannot_change_while_there() {
+    let h = Harness::new().await;
+    let mut request = h.request(None, 0, Some(VALUE));
+    request.env_name = "GCP_KEY".into();
+    request.as_file = true;
+    let secret = h.named.save(request).await.unwrap();
+    assert!(secret.as_file);
+
+    h.named.share(&secret.id, HOST, &h.runtime).await.unwrap();
+    let listed = h.runtime.list_secrets().await.unwrap();
+    assert!(listed.iter().any(|s| s.name == "GCP_KEY" && s.file));
+
+    // The host holds it as a file: changing how a run gets it waits for Remove.
+    let mut change = h.request(Some(&secret.id), secret.version, None);
+    change.env_name = "GCP_KEY".into();
+    change.as_file = false;
+    let error = h.named.save(change).await.unwrap_err();
+    assert!(
+        error.message.contains("Remove it from the host"),
+        "{error:?}"
+    );
 }

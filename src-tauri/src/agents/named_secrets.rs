@@ -146,6 +146,12 @@ impl NamedSecretService {
         if !adding && stored.version != request.expected_version {
             return Err(conflict());
         }
+        let as_file = request.as_file;
+        if !adding && stored.as_file != as_file && self.has_shares(&id).await? {
+            return Err(AppError::validation(
+                "This secret is on a host the way it is now. Remove it from the host before changing how a run gets it.",
+            ));
+        }
         if !adding && stored.env_name != env_name && self.has_shares(&id).await? {
             return Err(AppError::validation(
                 "This secret is on a host under its current variable name. Remove it from the host before renaming it.",
@@ -168,9 +174,9 @@ impl NamedSecretService {
                     let n = conn
                         .execute(
                             "UPDATE named_secrets SET label = ?2, env_name = ?3, note = ?4,
-                               version = version + 1, updated_at = ?5
+                               version = version + 1, updated_at = ?5, as_file = ?7
                              WHERE id = ?1 AND version = ?6",
-                            params![id2, label, env_name, note, now, version],
+                            params![id2, label, env_name, note, now, version, as_file],
                         )
                         .map_err(|e| unique(e, "Another secret already has that variable name."))?;
                     if n == 0 {
@@ -210,7 +216,7 @@ impl NamedSecretService {
                         "UPDATE named_secrets SET label = ?2, env_name = ?3, note = ?4,
                            secret_source = ?5, credential_revision = ?6, source_approved = 1,
                            credential_pending = ?7, credential_saved_at = ?8,
-                           version = version + 1, updated_at = ?8
+                           version = version + 1, updated_at = ?8, as_file = ?9
                          WHERE id = ?1",
                         params![
                             id2,
@@ -222,6 +228,7 @@ impl NamedSecretService {
                             revision,
                             pending.as_ref().map(word),
                             now,
+                            as_file,
                         ],
                     )
                     .map_err(|e| unique(e, "Another secret already has that variable name."))?;
@@ -433,7 +440,21 @@ impl NamedSecretService {
         // A source may end its output with a newline; a value does not.
         let value = value.trim_end_matches(['\n', '\r']).to_string();
         check_value(&value)?;
-        match runtime.put_secret(&secret.env_name, value).await {
+        let kept = runtime
+            .put_secret(&secret.env_name, value, secret.as_file)
+            .await
+            .and_then(|list| {
+                // A controller from before files keeps the value as a value
+                // and lists no `file`: say so rather than run without the file.
+                let mine = list.iter().find(|s| s.name == secret.env_name);
+                if secret.as_file && !mine.is_some_and(|s| s.file) {
+                    return Err(AppError::dependency(
+                        "This host's run controller is older than Brainiac and cannot give a run a file. Upgrade it in Settings → Agents.",
+                    ));
+                }
+                Ok(list)
+            });
+        match kept {
             Ok(_) => {
                 self.record_share(host_id, id, Some(revision), None).await?;
             }
@@ -637,7 +658,7 @@ fn word<T: serde::Serialize>(value: &T) -> String {
 }
 
 const COLUMNS: &str = "id, label, env_name, note, secret_source, credential_revision,
-    source_approved, credential_pending, version, created_at, updated_at";
+    source_approved, credential_pending, version, created_at, updated_at, as_file";
 
 fn from_row(r: &Row<'_>) -> rusqlite::Result<NamedSecret> {
     let source: String = r.get(4)?;
@@ -662,6 +683,7 @@ fn from_row(r: &Row<'_>) -> rusqlite::Result<NamedSecret> {
         version: r.get(8)?,
         created_at: r.get(9)?,
         updated_at: r.get(10)?,
+        as_file: r.get(11)?,
     })
 }
 
@@ -736,6 +758,7 @@ mod tests {
             id: "s1".into(),
             label: "Sentry".into(),
             env_name: "SENTRY_TOKEN".into(),
+            as_file: false,
             note: String::new(),
             credential_source: SecretSource::Store,
             credential: CredentialState {

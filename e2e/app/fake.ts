@@ -2888,6 +2888,7 @@ export class FakeBackend {
           id: found?.id ?? `named-${this.namedSecrets.length + 1}`,
           label: r.label,
           env_name: r.env_name,
+          as_file: r.as_file,
           note: r.note,
           credential_source: r.source,
           credential: {

@@ -8,6 +8,8 @@
 // instead: JSON with "credential" (exactly the one key below) and "extra"
 // (a few NAME: value secrets, exported to the agent's environment under the
 // names EXTRA_NAME allows). A run without any sends "BRB1" as before.
+// "files" (optional) lists the extra secrets that arrive as a file in memory
+// under the home, the variable holding the file's path.
 //
 // The frame is "BRB1", a 4-byte big-endian length, then JSON with exactly
 // one key, one the agent reads: for Claude Code CLAUDE_CODE_OAUTH_TOKEN (a
@@ -109,6 +111,8 @@ function fail(reason) {
 let key;
 let value;
 let extra = {};
+// Names among `extra` that arrive as a file instead of a value.
+let files = [];
 try {
   const magic = readExact(0, 4);
   const withExtra = magic.equals(Buffer.from("BRB2"));
@@ -131,8 +135,28 @@ try {
   let credential = parsed;
   if (withExtra) {
     const top = parsed && typeof parsed === "object" ? Object.keys(parsed) : [];
-    if (top.length !== 2 || !top.includes("credential") || !top.includes("extra")) {
+    // "files" is optional: a frame without a secret as a file has two keys.
+    const allowed = ["credential", "extra", "files"];
+    if (
+      top.length < 2 ||
+      top.length > 3 ||
+      !top.includes("credential") ||
+      !top.includes("extra") ||
+      top.some((k) => !allowed.includes(k))
+    ) {
       fail("keys");
+    }
+    if (top.includes("files")) {
+      files = parsed.files;
+      if (
+        !Array.isArray(files) ||
+        files.length === 0 ||
+        files.length > MAX_EXTRA ||
+        new Set(files).size !== files.length ||
+        files.some((n) => typeof n !== "string" || !(n in parsed.extra))
+      ) {
+        fail("files");
+      }
     }
     extra = parsed.extra;
     credential = parsed.credential;
@@ -213,8 +237,20 @@ for (const name of CLEARED) {
 }
 env[key] = value;
 value = "";
+// A secret that is a file: written under the home, which is in memory, and
+// the variable holds its path (GOOGLE_APPLICATION_CREDENTIALS and the like).
+const SECRET_DIR = `${home}/.brainiac-secrets`;
+if (files.length > 0) {
+  fs.mkdirSync(SECRET_DIR, { recursive: true, mode: 0o700 });
+}
 for (const [name, secret] of Object.entries(extra)) {
-  env[name] = secret;
+  if (files.includes(name)) {
+    const path = `${SECRET_DIR}/${name}`;
+    fs.writeFileSync(path, secret, { mode: 0o400 });
+    env[name] = path;
+  } else {
+    env[name] = secret;
+  }
   extra[name] = "";
 }
 

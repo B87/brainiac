@@ -281,7 +281,7 @@ async fn resuming_does_not_owe_the_time_it_was_off_and_the_agents_key_cannot_be_
     // The sealed key is not a secret a client can set or remove by name.
     let put = h
         .runtime
-        .put_secret("MODELKEY_CLAUDE_CODE", "12345678abcd".into())
+        .put_secret("MODELKEY_CLAUDE_CODE", "12345678abcd".into(), false)
         .await;
     assert!(put.is_err());
     assert!(h

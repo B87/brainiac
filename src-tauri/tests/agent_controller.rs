@@ -259,6 +259,7 @@ async fn extra_secrets_reach_the_container_once_and_never_the_journal() {
     start.secrets = vec![ExtraSecret {
         name: "SENTRY_TOKEN".into(),
         value: SENTRY.into(),
+        file: false,
     }];
     h.runtime.start(start).await.unwrap();
     h.wait("run-1", "the turn ends", idle).await;
@@ -288,7 +289,7 @@ async fn a_run_opens_the_secrets_the_host_keeps_and_the_mac_sends_no_value() {
     let h = Harness::new().await;
     let listed = h
         .runtime
-        .put_secret("SENTRY_TOKEN", SENTRY.into())
+        .put_secret("SENTRY_TOKEN", SENTRY.into(), false)
         .await
         .unwrap();
     assert_eq!(listed.len(), 1);
@@ -344,7 +345,7 @@ async fn a_run_that_names_a_secret_the_host_lacks_fails_before_a_container_exist
 async fn a_deleted_secret_is_gone_from_the_list_and_the_disk() {
     let h = Harness::new().await;
     h.runtime
-        .put_secret("SENTRY_TOKEN", "12345678abcd".into())
+        .put_secret("SENTRY_TOKEN", "12345678abcd".into(), false)
         .await
         .unwrap();
     assert!(h.state().root().join("secrets/SENTRY_TOKEN.cred").exists());
@@ -365,7 +366,7 @@ async fn a_deleted_secret_is_gone_from_the_list_and_the_disk() {
     assert!(h.runtime.delete_secret("path/../x").await.is_err());
     assert!(h
         .runtime
-        .put_secret("PATH", "12345678abcd".into())
+        .put_secret("PATH", "12345678abcd".into(), false)
         .await
         .is_err());
 }
@@ -377,6 +378,7 @@ async fn a_secret_with_a_name_the_container_uses_is_refused_before_the_run_start
     start.secrets = vec![ExtraSecret {
         name: "LD_PRELOAD".into(),
         value: "/tmp/evil.so".into(),
+        file: false,
     }];
     let err = h.runtime.start(start).await.unwrap_err();
     assert!(format!("{err:?}").contains("secret"), "{err:?}");

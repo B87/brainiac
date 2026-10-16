@@ -27,6 +27,7 @@ export default function NamedSecretForm({
   const id = useId();
   const [label, setLabel] = useState(secret?.label ?? "");
   const [envName, setEnvName] = useState(secret?.env_name ?? "");
+  const [asFile, setAsFile] = useState(secret?.as_file ?? false);
   const [note, setNote] = useState(secret?.note ?? "");
   const [source, setSource] = useState<SourceDraft>(() =>
     draftOf(
@@ -62,6 +63,7 @@ export default function NamedSecretForm({
         expected_version: secret?.version ?? 0,
         label,
         env_name: envName.trim(),
+        as_file: asFile,
         note,
         source: sourceOf(source),
         // Multi-line values (a service account key) keep their line breaks.
@@ -112,6 +114,27 @@ export default function NamedSecretForm({
         <span className="text-[11.5px] text-muted">
           Capitals, digits and underscores. Names that load code or change where
           traffic goes (PATH, NODE_*, GIT_*, *_PROXY …) are refused.
+        </span>
+      </label>
+      <label className="flex items-start gap-2" htmlFor={`${id}-file`}>
+        <input
+          id={`${id}-file`}
+          type="checkbox"
+          className="mt-[3px]"
+          checked={asFile}
+          onChange={(e) => setAsFile(e.target.checked)}
+        />
+        <span className="flex flex-col gap-0.5">
+          <span className="text-[12px] font-medium text-fg-2">
+            Give a run a file, not the value
+          </span>
+          <span className="text-[11.5px] text-muted">
+            The variable then holds the path of a file with the value, kept in
+            memory for that run. For tools that read a key file, such as{" "}
+            <span className="mono">GOOGLE_APPLICATION_CREDENTIALS</span> and a
+            service account key. Change it only while the secret is not on a
+            host.
+          </span>
         </span>
       </label>
       <label className="flex flex-col gap-1" htmlFor={`${id}-source`}>

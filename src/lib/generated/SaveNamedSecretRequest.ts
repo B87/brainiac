@@ -8,7 +8,11 @@ export type SaveNamedSecretRequest = {
 /**
  * `None` adds a secret.
  */
-id: string | null, expected_version: number, label: string, env_name: string, note: string, 
+id: string | null, expected_version: number, label: string, env_name: string, 
+/**
+ * A run gets the value as a file, and the variable holds its path.
+ */
+as_file: boolean, note: string, 
 /**
  * The Keychain, an environment variable, or a command.
  */

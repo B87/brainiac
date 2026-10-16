@@ -259,6 +259,10 @@ pub const MAX_EXTRA_VALUE: usize = 16 * 1024;
 pub struct ExtraSecret {
     pub name: String,
     pub value: String,
+    /// The run gets a file of this value, in memory, and the variable holds
+    /// its path (a key file a tool reads, like GOOGLE_APPLICATION_CREDENTIALS).
+    #[serde(default)]
+    pub file: bool,
 }
 
 // A hand-written `Debug` so a logged request never shows the value.
@@ -267,6 +271,7 @@ impl fmt::Debug for ExtraSecret {
         f.debug_struct("ExtraSecret")
             .field("name", &self.name)
             .field("value", &"[redacted]")
+            .field("file", &self.file)
             .finish()
     }
 }

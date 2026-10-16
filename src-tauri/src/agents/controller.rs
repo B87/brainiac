@@ -632,14 +632,13 @@ impl<W: Workloads> Controller<W> {
                     report: health::collect(self.state.root(), live as u32).await,
                 })
             }
-            Request::PutSecret(secret) => {
-                self.secrets
-                    .put(&secret.name, &secret.value)
-                    .await
-                    .map(|()| Response::Secrets {
-                        secrets: self.secrets.list(),
-                    })
-            }
+            Request::PutSecret(secret) => self
+                .secrets
+                .put(&secret.name, &secret.value, secret.file)
+                .await
+                .map(|()| Response::Secrets {
+                    secrets: self.secrets.list(),
+                }),
             Request::DeleteSecret { name } => {
                 self.secrets.delete(&name).map(|()| Response::Secrets {
                     secrets: self.secrets.list(),
@@ -823,9 +822,10 @@ impl<W: Workloads> Controller<W> {
         let mut secrets = start.secrets.clone();
         for name in &start.host_secrets {
             match self.secrets.get(name).await {
-                Ok(value) => secrets.push(ExtraSecret {
+                Ok((value, file)) => secrets.push(ExtraSecret {
                     name: name.clone(),
                     value,
+                    file,
                 }),
                 Err(error) => {
                     let _ = run.settle(&prompt_id, None);
@@ -1793,18 +1793,24 @@ pub fn frame_with(credential: Credential, extra: Vec<ExtraSecret>) -> Vec<u8> {
                 .expect("JSON serializes"),
         )
     } else {
+        // The names that arrive as files; without any, the frame is as it was.
+        let files: Vec<String> = extra
+            .iter()
+            .filter(|s| s.file)
+            .map(|s| s.name.clone())
+            .collect();
         let extra: serde_json::Map<String, serde_json::Value> = extra
             .into_iter()
             .map(|s| (s.name, serde_json::Value::String(s.value)))
             .collect();
-        (
-            b"BRB2",
-            serde_json::to_vec(&serde_json::json!({
-                "credential": { key.as_str(): value },
-                "extra": extra,
-            }))
-            .expect("JSON serializes"),
-        )
+        let mut body = serde_json::json!({
+            "credential": { key.as_str(): value },
+            "extra": extra,
+        });
+        if !files.is_empty() {
+            body["files"] = serde_json::json!(files);
+        }
+        (b"BRB2", serde_json::to_vec(&body).expect("JSON serializes"))
     };
     let mut frame = Vec::with_capacity(8 + payload.len());
     frame.extend_from_slice(magic);
@@ -2226,6 +2232,7 @@ mod tests {
             vec![ExtraSecret {
                 name: "SENTRY_TOKEN".into(),
                 value: "sntrys_example_token".into(),
+                file: false,
             }],
         );
         assert_eq!(&frame[..4], b"BRB2");
@@ -2238,6 +2245,19 @@ mod tests {
             "sk-ant-api03-example-key-value"
         );
         assert_eq!(value["extra"]["SENTRY_TOKEN"], "sntrys_example_token");
+        // No secret as a file, no `files` key: an image that predates files
+        // sees the frame it knows.
+        assert!(value.get("files").is_none());
+        let frame = frame_with(
+            credential(),
+            vec![ExtraSecret {
+                name: "GCP_KEY".into(),
+                value: "{\"type\":\"service_account\"}".into(),
+                file: true,
+            }],
+        );
+        let value: serde_json::Value = serde_json::from_slice(&frame[8..]).unwrap();
+        assert_eq!(value["files"], serde_json::json!(["GCP_KEY"]));
     }
 
     #[test]
@@ -2245,6 +2265,7 @@ mod tests {
         let secret = |name: &str, value: &str| ExtraSecret {
             name: name.into(),
             value: value.into(),
+            file: false,
         };
         assert!(check_secrets(&[secret("SENTRY_TOKEN", "12345678")]).is_ok());
         assert!(check_secrets(&[]).is_ok());

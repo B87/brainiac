@@ -11,4 +11,8 @@ export type NamedSecret = { id: string, label: string,
 /**
  * The environment variable a run sees it as, and its name on a host.
  */
-env_name: string, note: string, credential_source: SecretSource, credential: CredentialState, version: number, created_at: string, updated_at: string, };
+env_name: string, 
+/**
+ * A run gets a file holding the value; the variable is the file's path.
+ */
+as_file: boolean, note: string, credential_source: SecretSource, credential: CredentialState, version: number, created_at: string, updated_at: string, };

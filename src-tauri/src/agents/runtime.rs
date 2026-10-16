@@ -611,26 +611,46 @@ impl RunRuntime {
         &self,
         any_protocol: bool,
     ) -> AppResult<(Connection, ControllerInfo)> {
-        let Link::Remote { forward, .. } = &self.link else {
+        let Link::Remote {
+            forward, tunnel, ..
+        } = &self.link
+        else {
             return Err(AppError::dependency("This run is not on a remote host."));
         };
-        let log = forward.with_extension("log");
-        self.open_remote(&log, any_protocol)
-            .await
-            .map_err(|e| match ssh_said(&log) {
-                Some(said) => {
-                    let details = match e.details.as_deref() {
-                        Some(d) => format!("{d}\nssh: {said}"),
-                        None => format!("ssh: {said}"),
-                    };
-                    e.with_details(details)
-                }
-                None => e,
-            })
+        // Each connection forwards through a socket of its own. With one
+        // shared path, a second forward unlinked the first one's socket and
+        // its cleanup stopped it, so overlapping calls (a health check, a
+        // sync, a briefing read) failed as "could not be reached".
+        // `fetch_add` on an atomic hands each caller a different number.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 10_000_000;
+        let socket = if *tunnel {
+            forward.with_file_name(format!("f{n}.sock"))
+        } else {
+            forward.clone() // a test's own socket, not a forward
+        };
+        let log = socket.with_extension("log");
+        let result = self.open_remote(&socket, &log, any_protocol).await;
+        if *tunnel && result.is_err() {
+            let _ = std::fs::remove_file(&socket);
+        }
+        let said = ssh_said(&log);
+        let _ = std::fs::remove_file(&log);
+        result.map_err(|e| match said {
+            Some(said) => {
+                let details = match e.details.as_deref() {
+                    Some(d) => format!("{d}\nssh: {said}"),
+                    None => format!("ssh: {said}"),
+                };
+                e.with_details(details)
+            }
+            None => e,
+        })
     }
 
     async fn open_remote(
         &self,
+        forward: &Path,
         log: &Path,
         any_protocol: bool,
     ) -> AppResult<(Connection, ControllerInfo)> {
@@ -638,8 +658,8 @@ impl RunRuntime {
             target,
             token,
             installation,
-            forward,
             tunnel,
+            ..
         } = &self.link
         else {
             return Err(AppError::dependency("This run is not on a remote host."));
@@ -663,7 +683,10 @@ impl RunRuntime {
                 .map_err(|e| {
                     AppError::dependency("SSH could not be started.").with_details(e.to_string())
                 })?;
-            Some(Forward { child })
+            Some(Forward {
+                child,
+                socket: forward.to_path_buf(),
+            })
         } else {
             None
         };
@@ -872,10 +895,12 @@ impl RunRuntime {
         &self,
         name: &str,
         value: String,
+        file: bool,
     ) -> AppResult<Vec<super::controller::secret_store::SecretInfo>> {
         let secret = super::controller::protocol::ExtraSecret {
             name: name.to_string(),
             value,
+            file,
         };
         self.secrets_reply(Request::PutSecret(secret)).await
     }
@@ -1150,6 +1175,8 @@ fn unexpected() -> AppError {
 /// connection does not leave `ssh` running.
 struct Forward {
     child: std::process::Child,
+    /// This connection's own local socket, removed with it.
+    socket: PathBuf,
 }
 
 /// The end of what ssh wrote while it held a forward, if anything.
@@ -1173,6 +1200,7 @@ impl Drop for Forward {
             libc::kill(-pid, libc::SIGKILL);
         }
         let _ = self.child.wait();
+        let _ = std::fs::remove_file(&self.socket);
     }
 }
 

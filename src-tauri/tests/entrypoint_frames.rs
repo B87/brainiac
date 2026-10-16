@@ -27,6 +27,7 @@ fn extra(name: &str, value: &str) -> ExtraSecret {
     ExtraSecret {
         name: name.into(),
         value: value.into(),
+        file: false,
     }
 }
 
@@ -70,6 +71,14 @@ fn the_entrypoint_accepts_the_controllers_frames_and_refuses_the_rest() {
         reply(&with_extra).unwrap(),
         "bootstrap:rejected clone",
         "BRB2 is accepted"
+    );
+
+    let mut key_file = extra("GCP_KEY_FILE", "{\n \"type\": \"service_account\"\n}");
+    key_file.file = true;
+    assert_eq!(
+        reply(&frame_with(credential(), vec![key_file])).unwrap(),
+        "bootstrap:rejected clone",
+        "a secret as a file is accepted"
     );
 
     let cred = r#"{"ANTHROPIC_API_KEY":"sk-ant-api03-example-key-value"}"#;
@@ -118,6 +127,26 @@ fn the_entrypoint_accepts_the_controllers_frames_and_refuses_the_rest() {
                 r#"{"credential":{"ANTHROPIC_API_KEY":"sk-ant-api03-example-key-value","OPENAI_API_KEY":"sk-example-example-1234"},"extra":{"SENTRY_TOKEN":"12345678"}}"#,
             ),
             "keys",
+        ),
+        (
+            "a file that is not among the secrets",
+            raw(
+                b"BRB2",
+                &format!(
+                    r#"{{"credential":{cred},"extra":{{"SENTRY_TOKEN":"12345678"}},"files":["OTHER_KEY"]}}"#
+                ),
+            ),
+            "files",
+        ),
+        (
+            "an empty list of files",
+            raw(
+                b"BRB2",
+                &format!(
+                    r#"{{"credential":{cred},"extra":{{"SENTRY_TOKEN":"12345678"}},"files":[]}}"#
+                ),
+            ),
+            "files",
         ),
         (
             "a stray top-level key",
