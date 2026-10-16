@@ -8,7 +8,7 @@ This document says "briefing" for the saved definition because it was written fi
 
 ## Status: proposal (15 Oct 2026)
 
-Phase 3 is built (16 Oct 2026): briefings, the `briefing.json` result and its checks, Run now, and the Today card with Create Task and Save as Note (`SPEC.md`, section 6; `architecture.md`, Decisions). Schedules (phase 4) are not. How briefings and their schedules are listed, opened and read is redesigned in [`routines-ux.md`](routines-ux.md) (proposal, 16 Oct 2026); the Today block built so far is the first slice that design replaces. Phase 1 is started (15 Oct 2026): the controller's `Health` request and a Health section on a run host's page (`SPEC.md`, Remote hosts; `architecture.md`, Decisions). The Machines pane of its own, the last hour kept in memory, and everything else here are not built, and none of it is in scope for v0.6. It reverses three lines in [`agent-runs.md`](agent-runs.md) and [`secrets.md`](secrets.md) (below), so it needs its own decision in `architecture.md` before any code.
+Phase 4 is built (17 Oct 2026), with the deviations in `architecture.md` (17 Oct 2026): the host starts from the code the Mac last sent it, the agent's key is sealed on the host, cost is checked after a run and not during it, and time is the host's. Phase 3 is built (16 Oct 2026): briefings, the `briefing.json` result and its checks, Run now, and the Today card with Create Task and Save as Note (`SPEC.md`, section 6; `architecture.md`, Decisions). Schedules (phase 4) are not. How briefings and their schedules are listed, opened and read is redesigned in [`routines-ux.md`](routines-ux.md) (proposal, 16 Oct 2026); the Today block built so far is the first slice that design replaces. Phase 1 is started (15 Oct 2026): the controller's `Health` request and a Health section on a run host's page (`SPEC.md`, Remote hosts; `architecture.md`, Decisions). The Machines pane of its own, the last hour kept in memory, and everything else here are not built, and none of it is in scope for v0.6. It reverses three lines in [`agent-runs.md`](agent-runs.md) and [`secrets.md`](secrets.md) (below), so it needs its own decision in `architecture.md` before any code.
 
 ## Why
 
@@ -146,6 +146,17 @@ Scheduled runs need a host to be more than an entry in Settings → Agents, so t
 - Starting a follow-up turn automatically, or a run that continues from yesterday's.
 - Production access beyond read-only tokens; the user's own gcloud login in a container.
 - Recurring tasks and reminders in Brainiac itself (`roadmap.md`), which this does not need.
+
+## Checking a real host
+
+A container rehearsal (16 Oct 2026, Debian trixie, systemd 257, a privileged container with `/var/lib/systemd` on a volume) sealed a value with `systemd-creds --user --name=TOK` as an unprivileged user and opened it again after the container was restarted, from a system service with no login session. A different `--name` failed, and so did a missing `/var/lib/systemd/credential.secret`. So a sealed file is tied to that host key file and the user's uid: restoring a host without the file loses every secret and model key on it. A container is not a reboot and has no TPM. On the real host, as an administrator:
+
+1. `systemctl --version | head -1` and `sudo ls -l /var/lib/systemd/credential.secret; systemd-analyze has-tpm2`
+2. `printf s3cret | sudo -u brainiac systemd-creds encrypt --user --name=TOK - - > /var/lib/brainiac-test.sealed`
+3. `sudo -u brainiac systemd-creds decrypt --user --name=TOK - - < /var/lib/brainiac-test.sealed`
+4. Reboot, then `sudo systemd-run --pipe --wait -p User=brainiac systemd-creds decrypt --user --name=TOK - - < /var/lib/brainiac-test.sealed`, and delete the test file.
+
+Then upgrade the host's controller from its page (it must run this build: protocol 4 and the schedule requests), share a secret, approve a schedule a few minutes ahead, and check the briefing arrives with this Mac asleep.
 
 ## Open questions
 

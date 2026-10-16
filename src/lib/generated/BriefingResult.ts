@@ -9,4 +9,9 @@ export type BriefingResult = { id: string, routine_id: string, run_id: string | 
  * A claim the agent made about a check; `None` on a ready report that
  * makes none (ideas, a digest). Never set while working or failed.
  */
-status: BriefingStatus | null, summary: string, findings: Array<BriefingFinding>, proposals: Array<BriefingProposal>, error: string | null, started_at: string, finished_at: string | null, duration_secs: number | null, };
+status: BriefingStatus | null, summary: string, findings: Array<BriefingFinding>, proposals: Array<BriefingProposal>, error: string | null, started_at: string, finished_at: string | null, duration_secs: number | null, 
+/**
+ * What the agent reported the run cost, in millionths of a unit of
+ * `cost_currency`; none when it reported nothing.
+ */
+cost_micros: number | null, cost_currency: string | null, };

@@ -749,7 +749,8 @@ export default function App() {
       () => void reloadRoutines(),
       routineWorking ? 4000 : 60_000,
     );
-    const focus = () => void reloadRoutines();
+    // Coming back to the window: hear the hosts, then look again.
+    const focus = () => void ipc.syncRoutines().finally(reloadRoutines);
     window.addEventListener("focus", focus);
     return () => {
       clearInterval(timer);

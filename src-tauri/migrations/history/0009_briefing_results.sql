@@ -13,6 +13,10 @@ CREATE TABLE briefing_results (
   error         TEXT,
   created_at    TEXT NOT NULL,
   finished_at   TEXT,
-  duration_secs INTEGER
+  duration_secs INTEGER,
+  -- What the agent reported the run cost, when it did, in millionths of a
+  -- unit of `cost_currency`.
+  cost_micros   INTEGER,
+  cost_currency TEXT
 );
 CREATE INDEX briefing_results_by_briefing ON briefing_results (routine_id, created_at DESC);

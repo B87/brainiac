@@ -169,6 +169,7 @@ import type { SecretEntry } from "./generated/SecretEntry";
 import type { SecretSource } from "./generated/SecretSource";
 import type { SecretsOverview } from "./generated/SecretsOverview";
 import type { SetRepositoryForgeRequest } from "./generated/SetRepositoryForgeRequest";
+import type { SetScheduleRequest } from "./generated/SetScheduleRequest";
 import type { Settings } from "./generated/Settings";
 import type { StartExplanationRequest } from "./generated/StartExplanationRequest";
 import type { StartRunRequest } from "./generated/StartRunRequest";
@@ -311,6 +312,7 @@ export type { ReviewState } from "./generated/ReviewState";
 export type { ReviewVerdict } from "./generated/ReviewVerdict";
 export type { Routine } from "./generated/Routine";
 export type { RoutineOverview } from "./generated/RoutineOverview";
+export type { RoutineSchedule } from "./generated/RoutineSchedule";
 export type { RunActivity } from "./generated/RunActivity";
 export type { RunBranchCommand } from "./generated/RunBranchCommand";
 export type { RunChanges } from "./generated/RunChanges";
@@ -332,9 +334,13 @@ export type { RunStartPreview } from "./generated/RunStartPreview";
 export type { RunStartStep } from "./generated/RunStartStep";
 export type { SaveNamedSecretRequest } from "./generated/SaveNamedSecretRequest";
 export type { SaveRoutineRequest } from "./generated/SaveRoutineRequest";
+export type { ScheduleDaysKind } from "./generated/ScheduleDaysKind";
+export type { ScheduleState } from "./generated/ScheduleState";
+export type { ScheduleWhen } from "./generated/ScheduleWhen";
 export type { SearchGroup } from "./generated/SearchGroup";
 export type { SearchHit } from "./generated/SearchHit";
 export type { SearchKind } from "./generated/SearchKind";
+export type { SetScheduleRequest } from "./generated/SetScheduleRequest";
 export type { StartExplanationRequest } from "./generated/StartExplanationRequest";
 export type { StartRunRequest } from "./generated/StartRunRequest";
 export type { SuggestedMove } from "./generated/SuggestedMove";
@@ -699,6 +705,15 @@ export const ipc = {
   saveRoutine: (request: SaveRoutineRequest) =>
     invoke<Routine>("save_routine", { request }),
   deleteRoutine: (id: string) => invoke<void>("delete_routine", { id }),
+  setRoutineSchedule: (request: SetScheduleRequest) =>
+    invoke<void>("set_routine_schedule", { request }),
+  removeRoutineSchedule: (id: string) =>
+    invoke<void>("remove_routine_schedule", { id }),
+  approveRoutineSchedule: (id: string) =>
+    invoke<void>("approve_routine_schedule", { id }),
+  pauseRoutine: (id: string, paused: boolean) =>
+    invoke<void>("pause_routine", { id, paused }),
+  syncRoutines: () => invoke<void>("sync_routines"),
   listRoutineResults: (routineId: string) =>
     invoke<BriefingResult[]>("list_routine_results", { routineId }),
   runRoutineNow: (id: string) =>

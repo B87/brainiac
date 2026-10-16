@@ -40,6 +40,8 @@ const MAX_HISTORY_CHARS: usize = 6_000;
 /// How long to wait for a run's next change before looking again.
 const LOOK_AGAIN: Duration = Duration::from_secs(5);
 
+mod schedule;
+
 pub struct RoutineService {
     core: Db,
     history: Db,
@@ -49,6 +51,10 @@ pub struct RoutineService {
     // `JoinHandle`s of the tasks following a run, by result ID, so one result
     // is followed once.
     driving: Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
+    /// Why a routine's host could not be reached or told, by routine ID.
+    sync_errors: Mutex<HashMap<String, String>>,
+    /// One conversation with the hosts about schedules at a time.
+    syncing: tokio::sync::Mutex<()>,
 }
 
 impl RoutineService {
@@ -66,6 +72,8 @@ impl RoutineService {
             agent_settings,
             run_events,
             driving: Mutex::new(HashMap::new()),
+            sync_errors: Mutex::new(HashMap::new()),
+            syncing: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -74,7 +82,8 @@ impl RoutineService {
     // -----------------------------------------------------------------------
 
     /// Each routine with its latest result, for Today.
-    pub async fn overview(&self) -> AppResult<Vec<RoutineOverview>> {
+    pub async fn overview(self: &Arc<Self>) -> AppResult<Vec<RoutineOverview>> {
+        self.fill_costs().await;
         let (routines, names) = self
             .core
             .call(|conn| {
@@ -118,7 +127,10 @@ impl RoutineService {
         for routine in routines {
             let id = routine.id.clone();
             let latest = self.history.call(move |conn| latest(conn, &id)).await?;
+            let sched = self.sched(&routine.id).await?;
+            let schedule = self.view(&routine, &sched).await?;
             out.push(RoutineOverview {
+                schedule,
                 host_name: hosts
                     .get(&routine.host_id)
                     .cloned()
@@ -134,7 +146,7 @@ impl RoutineService {
         Ok(out)
     }
 
-    pub async fn save(&self, request: SaveRoutineRequest) -> AppResult<Routine> {
+    pub async fn save(self: &Arc<Self>, request: SaveRoutineRequest) -> AppResult<Routine> {
         let name = request.name.trim().to_string();
         if name.is_empty() || name.chars().count() > MAX_NAME {
             return Err(AppError::validation(
@@ -177,6 +189,7 @@ impl RoutineService {
                         "UPDATE routines SET name = ?2, repository_id = ?3, profile_id = ?4,
                            host_id = ?5, start = ?6, prompt = ?7, time_limit_minutes = ?8,
                            memory_updated_at = CASE WHEN memory = ?11 THEN memory_updated_at ELSE ?9 END,
+                           memory_unsent = CASE WHEN memory = ?11 THEN memory_unsent ELSE 1 END,
                            memory = ?11, previous_results = ?12,
                            version = version + 1, updated_at = ?9
                          WHERE id = ?1 AND version = ?10",
@@ -226,10 +239,20 @@ impl RoutineService {
                 Ok(())
             })
             .await?;
+        // A change to what a schedule was approved for turns it off on the host.
+        self.after_change(&saved).await;
         self.routine(&saved).await
     }
 
-    pub async fn delete(&self, id: &str) -> AppResult<()> {
+    pub async fn delete(self: &Arc<Self>, id: &str) -> AppResult<()> {
+        // A schedule on a host is removed there first, or it would go on firing.
+        if self
+            .sched(id)
+            .await
+            .is_ok_and(|s| s.approved_parts.is_some())
+        {
+            self.remove_schedule(id).await?;
+        }
         let key = id.to_string();
         self.core
             .call(move |conn| {
@@ -300,6 +323,8 @@ impl RoutineService {
                     started_at: now_rfc3339(),
                     finished_at: None,
                     duration_secs: None,
+                    cost_micros: None,
+                    cost_currency: None,
                 };
                 let stored = row.clone();
                 self.history.call(move |conn| insert(conn, &stored)).await?;
@@ -320,6 +345,8 @@ impl RoutineService {
                     started_at: now_rfc3339(),
                     finished_at: Some(now_rfc3339()),
                     duration_secs: None,
+                    cost_micros: None,
+                    cost_currency: None,
                 };
                 let stored = row.clone();
                 self.history.call(move |conn| insert(conn, &stored)).await?;
@@ -1032,7 +1059,7 @@ fn from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Routine> {
     })
 }
 
-const RESULT_COLUMNS: &str = "id, routine_id, run_id, state, status, summary, findings, proposals, error, created_at, finished_at, duration_secs";
+const RESULT_COLUMNS: &str = "id, routine_id, run_id, state, status, summary, findings, proposals, error, created_at, finished_at, duration_secs, cost_micros, cost_currency";
 
 fn word<T: serde::Serialize>(value: &T) -> String {
     match serde_json::to_value(value) {
@@ -1061,7 +1088,32 @@ fn result_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<BriefingResult> {
         started_at: r.get(9)?,
         finished_at: r.get(10)?,
         duration_secs: r.get(11)?,
+        cost_micros: r.get(12)?,
+        cost_currency: r.get(13)?,
     })
+}
+
+fn insert_or_ignore(conn: &mut Connection, r: &BriefingResult) -> AppResult<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO briefing_results (id, routine_id, run_id, state, status, summary,
+           findings, proposals, error, created_at, finished_at, duration_secs)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        params![
+            r.id,
+            r.routine_id,
+            r.run_id,
+            word(&r.state),
+            r.status.as_ref().map(word),
+            r.summary,
+            serde_json::to_string(&r.findings).unwrap_or_else(|_| "[]".into()),
+            serde_json::to_string(&r.proposals).unwrap_or_else(|_| "[]".into()),
+            r.error,
+            r.started_at,
+            r.finished_at,
+            r.duration_secs
+        ],
+    )?;
+    Ok(())
 }
 
 fn insert(conn: &mut Connection, r: &BriefingResult) -> AppResult<()> {
@@ -1307,6 +1359,8 @@ mod tests {
             started_at: "2026-10-14T07:00:00Z".into(),
             finished_at: None,
             duration_secs: None,
+            cost_micros: None,
+            cost_currency: None,
         }];
         let text = with_contract("Check.", "Ignored: SENTRY-9 is noise.", &earlier);
         let memory = text.find("<memory>").unwrap();
@@ -1350,6 +1404,8 @@ mod tests {
             started_at: "t".into(),
             finished_at: None,
             duration_secs: None,
+            cost_micros: None,
+            cost_currency: None,
         };
         let text = render("Morning check", &result);
         assert!(text.starts_with("# Morning check\n\nOne error."));

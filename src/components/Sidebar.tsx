@@ -53,7 +53,7 @@ export type View =
   | {
       kind: "routines";
       routineId?: string;
-      tab?: "latest" | "history" | "definition";
+      tab?: "latest" | "history" | "definition" | "schedule";
     }
   /** The terminal's tabs, filling the main area (SPEC.md, section 15). */
   | { kind: "terminal" }

@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
-import type { BriefingResult, RoutineOverview } from "./ipc";
+import type { BriefingResult, RoutineOverview, RoutineSchedule } from "./ipc";
 import {
+  hostTime,
   inTodayDigest,
   resultWord,
   routineNeedsYou,
   routineState,
+  scheduleWords,
   sortRoutines,
+  usd,
 } from "./routines";
 
 function result(over: Partial<BriefingResult>): BriefingResult {
@@ -22,6 +25,8 @@ function result(over: Partial<BriefingResult>): BriefingResult {
     started_at: "2026-10-14T07:00:00",
     finished_at: null,
     duration_secs: null,
+    cost_micros: null,
+    cost_currency: null,
     ...over,
   };
 }
@@ -44,6 +49,7 @@ function item(name: string, latest: BriefingResult | null): RoutineOverview {
     repository_name: "api",
     host_name: "This Mac",
     latest,
+    schedule: null,
   };
 }
 
@@ -123,5 +129,71 @@ describe("a routine's state", () => {
       ),
     ).toBe(true);
     expect(inTodayDigest(item("a", null), "2026-10-14")).toBe(false);
+  });
+});
+
+describe("a routine's schedule", () => {
+  const schedule = (state: RoutineSchedule["state"]): RoutineSchedule => ({
+    when: {
+      days: "weekdays",
+      weekday: 0,
+      time: "07:00",
+      late_start: false,
+      cost_ceiling_micros: 1_000_000,
+    },
+    state,
+    notice: null,
+    changed: [],
+    next_fire: null,
+    synced_at: null,
+    code_commit: null,
+    code_at: null,
+    error: null,
+    month_cost_micros: 0,
+  });
+  const scheduled = (
+    state: RoutineSchedule["state"],
+    latest: BriefingResult | null,
+  ) => ({
+    ...item("a", latest),
+    schedule: schedule(state),
+  });
+
+  it("says what needs the user before the latest briefing, and counts it", () => {
+    const quiet = result({ status: "nothing_found" });
+    expect(routineState(scheduled("needs_approval", quiet)).word).toBe(
+      "Needs approval",
+    );
+    expect(routineState(scheduled("overdue", quiet)).word).toBe("Overdue");
+    expect(routineState(scheduled("paused", quiet)).word).toBe("Paused");
+    expect(routineState(scheduled("unreachable", quiet)).word).toBe(
+      "Host unreachable",
+    );
+    expect(routineState(scheduled("active", quiet)).word).toBe("Nothing found");
+    expect(routineNeedsYou(scheduled("needs_approval", quiet))).toBe(true);
+    expect(routineNeedsYou(scheduled("overdue", null))).toBe(true);
+    expect(routineNeedsYou(scheduled("paused", quiet))).toBe(false);
+    // An old briefing does not keep a routine off Today when it needs approval.
+    expect(
+      inTodayDigest(scheduled("needs_approval", quiet), "2026-10-20"),
+    ).toBe(true);
+    expect(inTodayDigest(scheduled("paused", quiet), "2026-10-20")).toBe(false);
+  });
+
+  it("is worded in the host's own time", () => {
+    expect(scheduleWords(schedule("active").when)).toBe("Weekdays at 07:00");
+    expect(
+      scheduleWords({
+        ...schedule("active").when,
+        days: "weekly",
+        weekday: 4,
+        time: "16:00",
+      }),
+    ).toBe("Weekly on Friday at 16:00");
+    // Read from the text, not converted: 07:00 in the host's zone stays 07:00.
+    expect(hostTime("2026-10-14T07:00:00+02:00")).toBe("Wed 07:00");
+    expect(hostTime("2026-10-14T07:00:00-09:00")).toBe("Wed 07:00");
+    expect(hostTime(null)).toBeNull();
+    expect(usd(410_000)).toBe("$0.41");
   });
 });

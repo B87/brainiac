@@ -13,14 +13,16 @@ import {
 import { resultWord, routineState } from "../lib/routines";
 import BriefingBody from "./BriefingBody";
 import RoutineForm from "./RoutineForm";
+import ScheduleTab from "./ScheduleTab";
 import StatePill from "./StatePill";
 
-export type RoutineTab = "latest" | "history" | "definition";
+export type RoutineTab = "latest" | "history" | "definition" | "schedule";
 
 const TABS: Array<[RoutineTab, string]> = [
   ["latest", "Latest"],
   ["history", "History"],
   ["definition", "Definition"],
+  ["schedule", "Schedule"],
 ];
 
 /**
@@ -219,6 +221,32 @@ export default function RoutinePage({
         </div>
       )}
 
+      {item.schedule?.state === "needs_approval" && (
+        <Banner tone="warn">
+          <strong>Needs approval.</strong> {item.schedule.changed.join(", ")}{" "}
+          changed since it was approved, so the schedule is off.
+          <button
+            type="button"
+            className="btn btn-sm ml-2"
+            onClick={() => onTab("schedule")}
+          >
+            Review and approve…
+          </button>
+        </Banner>
+      )}
+      {item.schedule?.state === "overdue" && (
+        <Banner tone="bad">
+          <strong>Overdue.</strong> {item.host_name} has not answered since a
+          run was due
+          {item.schedule.synced_at
+            ? ` (last heard ${relativeTime(item.schedule.synced_at)})`
+            : ""}
+          . It may be off or unreachable; nothing here says it ran.
+        </Banner>
+      )}
+      {item.schedule?.notice && (
+        <Banner tone="warn">{item.schedule.notice}</Banner>
+      )}
       <div className="flex gap-2 border-b bg-panel px-5 py-2 text-[12.5px] text-muted">
         <span aria-hidden="true">⚠</span>
         <span>
@@ -272,6 +300,9 @@ export default function RoutinePage({
           onOpenRun={onOpenRun}
           onOpenNote={onOpenNote}
         />
+      )}
+      {tab === "schedule" && (
+        <ScheduleTab item={item} onChanged={onChanged} onError={onError} />
       )}
       {tab === "definition" && (
         <RoutineForm
@@ -419,6 +450,23 @@ function History({
             : "A run started now would not be shown this briefing."}
         </p>
       </div>
+    </div>
+  );
+}
+
+function Banner({
+  tone,
+  children,
+}: {
+  tone: "warn" | "bad";
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      role="status"
+      className={`mx-5 mt-3 rounded-md px-3 py-2 ${tone === "bad" ? "bg-conflict/10 text-conflict" : "bg-dirty/10 text-dirty"}`}
+    >
+      <span className="text-fg">{children}</span>
     </div>
   );
 }

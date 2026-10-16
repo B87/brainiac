@@ -323,8 +323,16 @@ pub fn run() {
                 run_changes.clone(),
             );
             app.manage(Arc::clone(&routines));
+            // Follow what was running, then listen to the hosts that fire
+            // schedules: shortly after launch, and every five minutes.
             tauri::async_runtime::spawn(async move {
                 routines.reconnect().await;
+                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                let mut ticker = tokio::time::interval(std::time::Duration::from_secs(300));
+                loop {
+                    ticker.tick().await;
+                    routines.sync_all().await;
+                }
             });
 
             // --- Explaining changes (v0.6) ----------------------------------
@@ -585,6 +593,11 @@ pub fn run() {
             commands::set_profile_tools,
             commands::list_routines,
             commands::list_routine_results,
+            commands::set_routine_schedule,
+            commands::remove_routine_schedule,
+            commands::approve_routine_schedule,
+            commands::pause_routine,
+            commands::sync_routines,
             commands::save_routine,
             commands::delete_routine,
             commands::run_routine_now,

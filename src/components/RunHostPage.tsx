@@ -26,6 +26,7 @@ import {
 } from "../lib/ipc";
 import HostHealthGroup from "./HostHealthGroup";
 import HostJobView, { HostPill } from "./HostJobView";
+import HostSchedulesGroup from "./HostSchedulesGroup";
 import HostSecretsGroup from "./HostSecretsGroup";
 import { Group, Hint } from "./SettingsPanes";
 
@@ -673,6 +674,10 @@ export function RemoteHostPage({
 
       {host.installed && host.approved && !running && (
         <HostSecretsGroup key={`secrets-${host.id}`} host={host} />
+      )}
+
+      {host.installed && host.approved && !running && (
+        <HostSchedulesGroup key={`schedules-${host.id}`} host={host} />
       )}
 
       {live.length > 0 && (

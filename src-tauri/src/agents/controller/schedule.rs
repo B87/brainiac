@@ -850,6 +850,8 @@ fn earlier_results(record: &ScheduleRecord) -> Vec<BriefingResult> {
                 started_at: r.started_at.clone(),
                 finished_at: r.finished_at.clone(),
                 duration_secs: None,
+                cost_micros: None,
+                cost_currency: None,
             })
         })
         .take(record.spec.previous_results as usize)

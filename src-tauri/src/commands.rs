@@ -834,6 +834,42 @@ pub async fn list_routines(
     routines.overview().await
 }
 
+/// Set a routine's schedule; it stays off until approved.
+#[tauri::command]
+pub async fn set_routine_schedule(
+    request: crate::models::SetScheduleRequest,
+    routines: State<'_, Routines>,
+) -> AppResult<()> {
+    routines.set_schedule(request).await
+}
+
+#[tauri::command]
+pub async fn remove_routine_schedule(id: String, routines: State<'_, Routines>) -> AppResult<()> {
+    routines.remove_schedule(&id).await
+}
+
+/// Approve the schedule as it is: the host gets the agent's key and the code.
+#[tauri::command]
+pub async fn approve_routine_schedule(id: String, routines: State<'_, Routines>) -> AppResult<()> {
+    routines.approve(&id).await
+}
+
+#[tauri::command]
+pub async fn pause_routine(
+    id: String,
+    paused: bool,
+    routines: State<'_, Routines>,
+) -> AppResult<()> {
+    routines.set_paused(&id, paused).await
+}
+
+/// Listen to the hosts that fire schedules, and take what they left.
+#[tauri::command]
+pub async fn sync_routines(routines: State<'_, Routines>) -> AppResult<()> {
+    routines.sync_all().await;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn list_routine_results(
     routine_id: String,

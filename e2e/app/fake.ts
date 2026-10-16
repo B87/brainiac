@@ -46,6 +46,7 @@ import type {
   ReviewDrafts,
   Routine,
   RoutineOverview,
+  RoutineSchedule,
   RunEvent,
   RunStatementRequest,
   SaveDbConnectionRequest,
@@ -54,6 +55,7 @@ import type {
   SaveNamedSecretRequest,
   SaveQueryRequest,
   SaveReviewDraftRequest,
+  ScheduleWhen,
   SearchHit,
   SecretsOverview,
   Settings,
@@ -1187,6 +1189,44 @@ export class FakeBackend {
   /** A test makes the next Share fail with this sentence. */
   shareFailure: string | null = null;
   routines: Routine[] = [];
+  /** Schedules by routine: what the user set, and what the host says. */
+  schedules = new Map<
+    string,
+    {
+      when: ScheduleWhen;
+      approved: boolean;
+      paused: boolean;
+      changed: string[];
+      overdue: boolean;
+    }
+  >();
+  /** The next time the fake host says it fires, in the host's own time. */
+  hostNextFire = "2026-10-14T07:00:00+02:00";
+  scheduleView(routineId: string): RoutineSchedule | null {
+    const s = this.schedules.get(routineId);
+    if (!s) return null;
+    const state = !s.approved
+      ? "needs_approval"
+      : s.paused
+        ? "paused"
+        : s.overdue
+          ? "overdue"
+          : "active";
+    return {
+      when: s.when,
+      state,
+      notice: null,
+      changed: s.changed,
+      next_fire: s.approved && !s.paused ? this.hostNextFire : null,
+      synced_at: new Date().toISOString(),
+      code_commit: s.approved
+        ? "3f9c41e1a2b0c7d8e9f0a1b2c3d4e5f6a7b8c9d0"
+        : null,
+      code_at: s.approved ? new Date().toISOString() : null,
+      error: null,
+      month_cost_micros: 410_000,
+    };
+  }
   briefingResults: BriefingResult[] = [];
   /** The agent finished a briefing's run: Ready with a finding and a proposal, or Failed. */
   finishBriefing(id: string, how: "findings" | "failed") {
@@ -3026,6 +3066,7 @@ export class FakeBackend {
             routine,
             repository_name: "parser",
             host_name: routine.host_id === "" ? "This Mac" : "runner.example",
+            schedule: this.scheduleView(routine.id),
             latest:
               [...this.briefingResults]
                 .reverse()
@@ -3052,10 +3093,58 @@ export class FakeBackend {
           previous_results: r.previous_results,
           version: (found?.version ?? 0) + 1,
         };
+        const schedule = found && this.schedules.get(found.id);
+        if (found && schedule?.approved && found.prompt !== saved.prompt) {
+          schedule.approved = false;
+          schedule.changed = ["the prompt"];
+        }
         if (found) Object.assign(found, saved);
         else this.routines.push(saved);
         return saved;
       }
+      case "set_routine_schedule": {
+        const r = args.request as { routine_id: string; when: ScheduleWhen };
+        const routine = this.routines.find((b) => b.id === r.routine_id);
+        if (!routine) throw new Error("no such routine");
+        if (routine.host_id === "")
+          throw {
+            code: "VALIDATION",
+            message:
+              "A schedule runs on a run host, not on this Mac, which sleeps. Choose a host for the routine first.",
+          };
+        const found = this.schedules.get(r.routine_id);
+        this.schedules.set(r.routine_id, {
+          when: r.when,
+          approved: false,
+          paused: found?.paused ?? false,
+          changed: found ? ["the schedule"] : ["a new schedule"],
+          overdue: false,
+        });
+        return null;
+      }
+      case "approve_routine_schedule": {
+        const s = this.schedules.get(String(args.id));
+        if (!s) throw new Error("no schedule");
+        s.approved = true;
+        s.changed = [];
+        return null;
+      }
+      case "pause_routine": {
+        const s = this.schedules.get(String(args.id));
+        if (!s) throw new Error("no schedule");
+        if (!args.paused && !s.approved)
+          throw {
+            code: "VALIDATION",
+            message: "Approve the schedule before it runs again.",
+          };
+        s.paused = args.paused === true;
+        return null;
+      }
+      case "remove_routine_schedule":
+        this.schedules.delete(String(args.id));
+        return null;
+      case "sync_routines":
+        return null;
       case "list_routine_results":
         return [...this.briefingResults]
           .reverse()
@@ -3077,6 +3166,8 @@ export class FakeBackend {
           started_at: new Date().toISOString(),
           finished_at: null,
           duration_secs: null,
+          cost_micros: null,
+          cost_currency: null,
         };
         this.briefingResults.push(result);
         const routine = this.routines.find((b) => b.id === args.id);

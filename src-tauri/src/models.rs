@@ -5142,6 +5142,11 @@ pub struct BriefingResult {
     pub started_at: String,
     pub finished_at: Option<String>,
     pub duration_secs: Option<u32>,
+    /// What the agent reported the run cost, in millionths of a unit of
+    /// `cost_currency`; none when it reported nothing.
+    #[ts(type = "number | null")]
+    pub cost_micros: Option<i64>,
+    pub cost_currency: Option<String>,
 }
 
 /// A routine and its latest result, for Today.
@@ -5153,4 +5158,80 @@ pub struct RoutineOverview {
     /// "This Mac" or the run host's name.
     pub host_name: String,
     pub latest: Option<BriefingResult>,
+    /// The schedule, when the routine has one.
+    pub schedule: Option<RoutineSchedule>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ScheduleDaysKind {
+    Daily,
+    Weekdays,
+    /// On `weekday`.
+    Weekly,
+}
+
+/// When a routine fires on its host, in the host's local time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ScheduleWhen {
+    pub days: ScheduleDaysKind,
+    /// 0 is Monday, 6 is Sunday; only for `weekly`.
+    pub weekday: u8,
+    /// "HH:MM".
+    pub time: String,
+    /// Start a missed run when the host is back, once.
+    pub late_start: bool,
+    /// A run's cost ceiling in millionths of a US dollar.
+    #[ts(type = "number")]
+    pub cost_ceiling_micros: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ScheduleState {
+    /// The host fires it.
+    Active,
+    Paused,
+    /// Something it depends on changed since it was approved; it is off.
+    NeedsApproval,
+    /// The host has not been heard from since a run was due.
+    Overdue,
+    /// The host cannot be reached now; nothing is known to be missed.
+    Unreachable,
+}
+
+/// A routine's schedule and what is known of the host's side of it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RoutineSchedule {
+    pub when: ScheduleWhen,
+    pub state: ScheduleState,
+    /// Why it is paused or off, in words.
+    pub notice: Option<String>,
+    /// What changed since it was approved (`needs_approval`).
+    pub changed: Vec<String>,
+    /// The next time the host fires it, RFC 3339 with the host's offset.
+    pub next_fire: Option<String>,
+    /// When the host last answered.
+    pub synced_at: Option<String>,
+    /// The commit of the code on the host, and when it was sent.
+    pub code_commit: Option<String>,
+    pub code_at: Option<String>,
+    /// The last sync's problem, when the host could not be reached.
+    pub error: Option<String>,
+    /// What this month's briefings cost, as the agent reported, in millionths
+    /// of a US dollar.
+    #[ts(type = "number")]
+    pub month_cost_micros: i64,
+}
+
+/// Add or replace a routine's schedule. It stays off until approved.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SetScheduleRequest {
+    pub routine_id: String,
+    pub when: ScheduleWhen,
 }

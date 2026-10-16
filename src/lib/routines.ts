@@ -1,11 +1,19 @@
-import type { BriefingResult, RoutineOverview } from "./ipc";
+import type { BriefingResult, RoutineOverview, ScheduleWhen } from "./ipc";
 
 /**
  * What a routine's row says (docs/design/routines-ux.md): the words come from
  * the latest briefing, and a run that left none is "No briefing", never
  * "Nothing found". Order puts what needs the user first.
  */
-export type RoutineStateKey = "working" | "failed" | "ready" | "never";
+export type RoutineStateKey =
+  | "working"
+  | "failed"
+  | "approval"
+  | "overdue"
+  | "unreachable"
+  | "paused"
+  | "ready"
+  | "never";
 export type Tone = "ok" | "warn" | "bad" | "work" | "idle";
 
 export type RoutineState = {
@@ -30,11 +38,25 @@ export function resultWord(r: BriefingResult): string {
 
 export function routineState(item: RoutineOverview): RoutineState {
   const r = item.latest;
-  if (!r) return { key: "never", word: "Not run yet", tone: "idle", order: 5 };
-  if (r.state === "working")
+  const schedule = item.schedule;
+  if (r?.state === "working")
     return { key: "working", word: "Working", tone: "work", order: 1 };
-  if (r.state === "failed")
+  if (schedule?.state === "needs_approval")
+    return { key: "approval", word: "Needs approval", tone: "warn", order: 0 };
+  if (schedule?.state === "overdue")
+    return { key: "overdue", word: "Overdue", tone: "bad", order: 0 };
+  if (r?.state === "failed")
     return { key: "failed", word: "No briefing", tone: "bad", order: 0 };
+  if (schedule?.state === "paused")
+    return { key: "paused", word: "Paused", tone: "idle", order: 4 };
+  if (schedule?.state === "unreachable")
+    return {
+      key: "unreachable",
+      word: "Host unreachable",
+      tone: "warn",
+      order: 2,
+    };
+  if (!r) return { key: "never", word: "Not run yet", tone: "idle", order: 5 };
   return {
     key: "ready",
     word: resultWord(r),
@@ -43,9 +65,12 @@ export function routineState(item: RoutineOverview): RoutineState {
   };
 }
 
-/** A failed latest briefing needs the user; the badge counts these. */
+/**
+ * What needs the user: a latest briefing that failed, a schedule waiting for
+ * approval, one that is overdue. The sidebar's badge counts these.
+ */
 export function routineNeedsYou(item: RoutineOverview): boolean {
-  return routineState(item).key === "failed";
+  return ["failed", "approval", "overdue"].includes(routineState(item).key);
 }
 
 /** Needs-you first, then working, then by name. */
@@ -64,8 +89,9 @@ export function sortRoutines(items: RoutineOverview[]): RoutineOverview[] {
  */
 export function inTodayDigest(item: RoutineOverview, today: string): boolean {
   const r = item.latest;
+  if (routineNeedsYou(item)) return true;
   if (!r) return false;
-  if (r.state === "working" || r.state === "failed") return true;
+  if (r.state === "working") return true;
   return localDay(r.started_at) === today;
 }
 
@@ -73,4 +99,43 @@ function localDay(iso: string): string {
   const d = new Date(iso);
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+const DAYS = [
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+  "Sunday",
+];
+
+/** "Weekdays at 07:00", "Weekly on Friday at 16:00". The host's time. */
+export function scheduleWords(when: ScheduleWhen): string {
+  const day =
+    when.days === "daily"
+      ? "Daily"
+      : when.days === "weekdays"
+        ? "Weekdays"
+        : `Weekly on ${DAYS[when.weekday] ?? "?"}`;
+  return `${day} at ${when.time}`;
+}
+
+/**
+ * A time the host sent, as the host's own clock showed it ("Wed 07:00"): the
+ * text of an RFC 3339 time is already in the host's local time, so it is read
+ * rather than converted to this Mac's.
+ */
+export function hostTime(rfc3339: string | null): string | null {
+  const m = rfc3339?.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}:\d{2})/);
+  if (!m) return null;
+  const day = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])).getDay();
+  const names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  return `${names[day]} ${m[4]}`;
+}
+
+/** Millionths of a US dollar as "$0.41". */
+export function usd(micros: number): string {
+  return `$${(micros / 1_000_000).toFixed(2)}`;
 }

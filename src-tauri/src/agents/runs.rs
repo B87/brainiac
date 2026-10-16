@@ -273,7 +273,25 @@ impl AgentRunService {
         }
     }
 
+    /// Reach a host's controller through this runtime instead of over SSH.
+    /// For tests, which run a controller in their own process.
+    pub fn use_runtime_for_host(&self, host_id: &str, runtime: Arc<RunRuntime>) {
+        self.test_runtimes
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(format!("host:{host_id}"), runtime);
+    }
+
     async fn runtime_for(&self, host_id: &str) -> AppResult<Arc<RunRuntime>> {
+        if let Some(runtime) = self
+            .test_runtimes
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&format!("host:{host_id}"))
+            .cloned()
+        {
+            return Ok(runtime);
+        }
         if host_id.is_empty() || host_id == super::hosts::LOCAL_ID {
             return Ok(Arc::clone(&self.runtime));
         }
@@ -1752,6 +1770,97 @@ impl AgentRunService {
     /// An explain run's file, read from its agent's container.
     pub async fn read_explanation(&self, run_id: &str) -> AppResult<Option<String>> {
         self.rt(run_id).await?.read_explanation(run_id).await
+    }
+
+    /// The model credential a profile's runs start with, read here. A
+    /// routine's schedule seals a copy on its host.
+    pub async fn model_credential(&self, profile: &AgentProfile) -> AppResult<Credential> {
+        self.credential(profile).await
+    }
+
+    /// The controller of a host ("" is this Mac).
+    pub async fn runtime_of(&self, host_id: &str) -> AppResult<Arc<RunRuntime>> {
+        self.runtime_for(host_id).await
+    }
+
+    /// Export a repository's commit as the code a schedule starts from, under
+    /// its own key, and return the bundle's path.
+    pub async fn export_code(
+        &self,
+        repository_id: &str,
+        commit: &str,
+        key: &str,
+    ) -> AppResult<PathBuf> {
+        let (_, root) = self.repositories.locate(repository_id).await?;
+        Ok(self
+            .artifacts
+            .export(repository_id, &root, commit, key)
+            .await?
+            .bundle)
+    }
+
+    /// Take a run the host's schedule started into Runs, so it is listed,
+    /// followed, and kept or removed like any other. A run already known is
+    /// left as it is.
+    pub async fn adopt_routine_run(
+        self: &Arc<Self>,
+        routine: &crate::models::Routine,
+        run_id: &str,
+        start_commit: &str,
+    ) -> AppResult<()> {
+        if self.row(run_id).await.is_ok() {
+            return Ok(());
+        }
+        let settings = self.settings.get().await?;
+        let profile = settings
+            .profiles
+            .iter()
+            .find(|p| p.id == routine.profile_id)
+            .cloned()
+            .ok_or_else(|| AppError::validation("The routine's agent no longer exists."))?;
+        let host = settings
+            .hosts
+            .iter()
+            .find(|h| h.id == routine.host_id)
+            .cloned()
+            .ok_or_else(|| AppError::validation("The routine's host no longer exists."))?;
+        let image = settings::image_for(&profile, &host);
+        let (name, _) = self.repositories.locate(&routine.repository_id).await?;
+        let host_secrets = self.settings.profile_secret_names(&profile.id).await?;
+        let row = RunRow::new(store::NewRun {
+            id: run_id.to_string(),
+            repository_id: routine.repository_id.clone(),
+            repository_name: name,
+            title: routine.name.clone(),
+            start_commit: start_commit.to_string(),
+            start_subject: String::new(),
+            profile_id: profile.id.clone(),
+            agent: profile.agent,
+            provider: profile.provider,
+            payment: profile.payment,
+            credential_source: "the host's sealed copy of the key".to_string(),
+            host_id: host.id.clone(),
+            host_name: host.name.clone(),
+            engine_socket: "/var/run/docker.sock".to_string(),
+            engine_name: host.engine_name.clone().unwrap_or_else(|| "Docker".into()),
+            image_name: image.as_ref().map(|i| i.name.clone()).unwrap_or_default(),
+            image_id: image.map(|i| i.id).unwrap_or_default(),
+            permissions: RunPermissions::Act,
+            time_limit_minutes: routine.time_limit_minutes,
+            cpus: profile.cpus,
+            memory_mib: profile.memory_mib,
+            workspace_gib: profile.workspace_gib,
+            model: profile.model.clone(),
+            explain: false,
+            host_secrets,
+            routine_id: Some(routine.id.clone()),
+        });
+        self.history
+            .call(move |conn| store::insert(conn, &row))
+            .await?;
+        self.emit(run_id, false);
+        self.spawn_sync(run_id);
+        Ok(())
     }
 
     /// A briefing run's file, read from its agent's container.

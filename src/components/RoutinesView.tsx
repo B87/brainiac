@@ -7,7 +7,14 @@ import {
   type RepositorySummary,
   type RoutineOverview,
 } from "../lib/ipc";
-import { resultWord, routineState, sortRoutines } from "../lib/routines";
+import {
+  hostTime,
+  resultWord,
+  routineState,
+  scheduleWords,
+  sortRoutines,
+  usd,
+} from "../lib/routines";
 import RoutinePage, { type RoutineTab } from "./RoutinePage";
 import StatePill from "./StatePill";
 
@@ -125,6 +132,7 @@ export default function RoutinesView({
             <div className="routine-row bg-panel py-1.5 text-[11px] uppercase tracking-wider text-muted">
               <span>Name</span>
               <span className="routine-opt">Runs on</span>
+              <span className="routine-opt2">Schedule</span>
               <span>Last briefing</span>
               <span>Status</span>
               <span className="routine-opt text-right">Cost</span>
@@ -152,6 +160,18 @@ export default function RoutinesView({
                       <span className="routine-opt truncate">
                         {hostName(i)}
                       </span>
+                      <span className="routine-opt2 min-w-0">
+                        <span className="block truncate">
+                          {i.schedule
+                            ? scheduleWords(i.schedule.when)
+                            : "Not scheduled"}
+                        </span>
+                        {i.schedule?.state === "active" && (
+                          <span className="block truncate text-[12px] text-muted">
+                            next {hostTime(i.schedule.next_fire) ?? "…"}
+                          </span>
+                        )}
+                      </span>
                       <span className="min-w-0">
                         <span className="block truncate">
                           {i.latest ? resultWord(i.latest) : "—"}
@@ -173,7 +193,10 @@ export default function RoutinesView({
                         )}
                       </span>
                       <span className="routine-opt mono text-right text-muted">
-                        —
+                        {i.latest?.cost_micros != null &&
+                        i.latest.cost_currency === "USD"
+                          ? usd(i.latest.cost_micros)
+                          : "—"}
                       </span>
                     </button>
                   </li>
@@ -197,6 +220,16 @@ export default function RoutinesView({
                 <dd className="m-0">{current.repository_name}</dd>
                 <dt className="text-muted">Runs on</dt>
                 <dd className="m-0">{hostName(current)}</dd>
+                <dt className="text-muted">Schedule</dt>
+                <dd className="m-0">
+                  {current.schedule
+                    ? `${scheduleWords(current.schedule.when)}${
+                        current.schedule.state === "active"
+                          ? `, next ${hostTime(current.schedule.next_fire) ?? "…"}`
+                          : ""
+                      }`
+                    : "Not scheduled"}
+                </dd>
                 <dt className="text-muted">Limit</dt>
                 <dd className="m-0">
                   {durationLabel(current.routine.time_limit_minutes)}

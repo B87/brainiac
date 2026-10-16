@@ -1,6 +1,6 @@
 # Design: routines, the experience
 
-Proposal, 16 Oct 2026. It reworks where routines live and how they look; it adds no feature beyond those already planned in [`scheduled-runs.md`](scheduled-runs.md) (Run now, schedules, approval, missed and overdue, cost and pause, the Today card, Save as note, Create task, memory and earlier results). Anything that would be new is in *Open questions*, not in the design.
+Proposal, 16 Oct 2026; steps 1 to 3 built 16 and 17 Oct 2026. It reworks where routines live and how they look; it adds no feature beyond those already planned in [`scheduled-runs.md`](scheduled-runs.md) (Run now, schedules, approval, missed and overdue, cost and pause, the Today card, Save as note, Create task, memory and earlier results). Anything that would be new is in *Open questions*, not in the design.
 
 ## Terminology (decided 16 Oct 2026)
 

@@ -702,6 +702,80 @@ test("A routine is added in Routines, Run Now starts it, its checked briefing of
   await expect(page.getByTitle("Routines that need you")).toHaveText("1");
 });
 
+test("A routine on a run host gets a schedule that is off until approved, is turned off by a change, and shows on the host's page", async ({
+  page,
+}) => {
+  await openSettings(page, "Agents");
+  const dialog = await addHost(page);
+  await dialog
+    .getByRole("button", { name: "Trust This Key and Install" })
+    .click();
+  await page.evaluate(() => window.fake.endJob("host-1", "succeeded"));
+  await page.evaluate(() => {
+    window.fake.readyProfile("claude-code", ["host-1"]);
+  });
+  await page.getByRole("button", { name: "Back", exact: true }).click();
+  const nav = page.getByRole("navigation", {
+    name: "Repositories and workspaces",
+  });
+
+  // A routine on this Mac cannot be scheduled; on the host it can.
+  await nav.getByRole("button", { name: "Routines" }).click();
+  await page.getByRole("button", { name: "New Routine…" }).first().click();
+  const form = page.getByRole("form", { name: "New routine" });
+  await form.getByLabel("Name", { exact: true }).fill("Morning check");
+  await form.getByLabel("Prompt").fill("Check production errors.");
+  await form.getByLabel("Runs on").selectOption({ label: "runner.example" });
+  await form.getByRole("button", { name: "Create Routine" }).click();
+  await page.getByRole("tab", { name: "Schedule" }).click();
+  await page.getByRole("button", { name: "Add a schedule…" }).click();
+  await page.getByLabel("Time", { exact: true }).fill("07:00");
+  await page.getByRole("button", { name: "Save schedule…" }).click();
+
+  // Saved, but off until approved; the dialog lists what it may do.
+  const approve = page.getByRole("dialog", { name: "Approve schedule" });
+  await expect(approve).toContainText("The agent's key");
+  await expect(approve).toContainText("unrestricted");
+  await expect(approve).toContainText("Weekdays at 07:00");
+  await approve.getByRole("button", { name: "Later" }).click();
+  await expect(
+    page.getByText("Needs approval", { exact: true }).first(),
+  ).toBeVisible();
+  await expect(page.getByTitle("Routines that need you")).toHaveText("1");
+  await page
+    .getByRole("button", { name: "Review and approve…" })
+    .last()
+    .click();
+  await page
+    .getByRole("dialog", { name: "Approve schedule" })
+    .getByRole("button", { name: "Approve and Enable" })
+    .click();
+  expect((await calls(page, "approve_routine_schedule")).length).toBe(1);
+  await expect(page.getByText("Wed 07:00")).toBeVisible();
+  await expect(page.getByTitle("Routines that need you")).toHaveCount(0);
+
+  // A new prompt is not what it was approved for: off again, and said so.
+  await page.getByRole("tab", { name: "Definition" }).click();
+  await page
+    .getByLabel("Prompt")
+    .fill("Check production errors and the database.");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(
+    page.getByText("the prompt changed since it was approved"),
+  ).toBeVisible();
+  await expect(page.getByTitle("Routines that need you")).toHaveText("1");
+
+  // The host's page lists it, with Pause all.
+  await nav.getByRole("button", { name: "Today" }).click();
+  await expect(page.getByRole("region", { name: "Routines" })).toContainText(
+    "Needs approval",
+  );
+  await openSettings(page, "Agents");
+  await page.getByRole("button", { name: /^runner\.example,/ }).click();
+  await expect(page.getByText("Schedules on this host")).toBeVisible();
+  await expect(page.getByText("Morning check")).toBeVisible();
+});
+
 test("Settings → Agents lists four agents, and OpenCode · OpenRouter's page saves its key and model", async ({
   page,
 }) => {
