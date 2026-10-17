@@ -16,7 +16,7 @@ import AddHostPage from "./AddHostPage";
 import Dialog from "./Dialog";
 import { HostPill } from "./HostJobView";
 import { LocalHostPage, RemoteHostPage } from "./RunHostPage";
-import { Hint, Lede } from "./SettingsPanes";
+import { Hint, PageTitle } from "./SettingsPanes";
 
 /** What needs the user sorts first, then what is busy, then the rest. */
 const ORDER: Record<HostTone, number> = {
@@ -94,12 +94,17 @@ export default function RunHostsPane({
       .catch((e) => setError(errorMessage(e)));
 
   if (!settings) {
-    return error ? (
-      <div role="alert" className="text-[12.5px] text-conflict">
-        {error}
-      </div>
-    ) : (
-      <Hint>Loading…</Hint>
+    return (
+      <>
+        {!hostId && <PageTitle title="Run Hosts" />}
+        {error ? (
+          <div role="alert" className="text-[12.5px] text-conflict">
+            {error}
+          </div>
+        ) : (
+          <Hint>Loading…</Hint>
+        )}
+      </>
     );
   }
 
@@ -195,20 +200,25 @@ export default function RunHostsPane({
 
   return (
     <>
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <Lede>
-          Where runs execute: this Mac's Docker engine, and Linux machines that
-          stay on, so routines run while this Mac sleeps. Sorted with what needs
-          you first.
-        </Lede>
-        <button
-          type="button"
-          className="btn btn-sm btn-primary"
-          onClick={() => setAdding({})}
-        >
-          Add Host…
-        </button>
-      </div>
+      <PageTitle
+        title="Run Hosts"
+        actions={
+          // With no remote host yet, the panel below offers it.
+          remote.length > 0 && (
+            <button
+              type="button"
+              className="btn btn-sm btn-primary"
+              onClick={() => setAdding({})}
+            >
+              Add Host…
+            </button>
+          )
+        }
+      >
+        Where runs execute: this Mac's Docker engine, and Linux machines that
+        stay on, so routines run while this Mac sleeps. Sorted with what needs
+        you first.
+      </PageTitle>
       {errorLine}
       <div className="overflow-x-auto rounded-[10px] border bg-app">
         <table aria-label="Run hosts" className="w-full border-collapse">
@@ -284,33 +294,48 @@ export default function RunHostsPane({
       {remote.length === 0 && (
         <section
           aria-label="Run routines while your Mac sleeps"
-          className="flex flex-col gap-2 rounded-[10px] border bg-app px-4 py-3.5"
+          className="flex flex-wrap items-start gap-x-10 gap-y-4 rounded-[10px] border bg-app px-8 py-7"
         >
-          <h3 className="m-0 text-[14px] font-semibold">
-            Run routines while your Mac sleeps
-          </h3>
-          <p className="m-0 text-[12.5px] text-fg-2">
-            A run host is a Linux machine that stays on. A routine on it fires
-            at its time with this Mac closed, and Brainiac collects the briefing
-            when it next opens. You will need:
-          </p>
-          <ul className="m-0 flex list-disc flex-col gap-1 pl-5 text-[12.5px] text-fg-2">
-            <li>A Linux machine you can reach with ssh</li>
-            <li>Docker running on it</li>
-            <li>systemd 256 or newer, to keep secrets sealed</li>
-          </ul>
-          <Hint>
-            No root login: Brainiac installs its run controller as a service
-            with the sudo actions you approve, and keeps no private key.
-          </Hint>
-          <div>
-            <button
-              type="button"
-              className="btn btn-sm btn-primary"
-              onClick={() => setAdding({})}
-            >
-              Add Host…
-            </button>
+          <div className="flex min-w-70 flex-[1.2] flex-col gap-3">
+            <h2 className="m-0 text-[18px] font-semibold">
+              Run routines while your Mac sleeps
+            </h2>
+            <p className="m-0 text-[13px] text-fg-2">
+              A run host is a Linux machine that stays on. A routine on it fires
+              at its time with this Mac closed, and Brainiac collects the
+              briefing when it next opens. Without one, routines run only when
+              you choose Run Now.
+            </p>
+            <div>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => setAdding({})}
+              >
+                Add Host…
+              </button>
+            </div>
+          </div>
+          <div className="flex min-w-60 flex-1 flex-col gap-2 rounded-[10px] border bg-header px-4 py-3.5 text-[12.5px]">
+            <h3 className="m-0 text-[13px] font-semibold">You will need</h3>
+            <ul className="m-0 flex list-none flex-col gap-1.5 p-0 text-fg-2">
+              {[
+                "A Linux machine you can reach with ssh",
+                "Docker running on it",
+                "systemd 256 or newer, to keep secrets sealed",
+              ].map((need) => (
+                <li key={need} className="flex gap-2">
+                  <span aria-hidden="true" className="text-clean">
+                    ✓
+                  </span>
+                  {need}
+                </li>
+              ))}
+            </ul>
+            <Hint>
+              No root login: Brainiac installs its run controller as a service
+              with the sudo actions you approve, and keeps no private key.
+            </Hint>
           </div>
         </section>
       )}

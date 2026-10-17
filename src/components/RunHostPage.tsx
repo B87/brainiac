@@ -29,61 +29,37 @@ import HostHealthCard, { healthPill, useHostHealth } from "./HostHealthGroup";
 import HostJobView, { HostPill } from "./HostJobView";
 import HostSchedulesGroup from "./HostSchedulesGroup";
 import HostSecretsGroup from "./HostSecretsGroup";
-import { Card, Group, Hint } from "./SettingsPanes";
+import { Card, Group, Hint, PageTitle } from "./SettingsPanes";
 
 /**
- * Agents › Run hosts › a host, or Agents › a profile: where the breadcrumb
- * goes back to.
+ * A host page's title row: "Run hosts ›", the host's name and one state,
+ * with its actions on the right and what the page is for underneath.
  */
-export function Breadcrumb({
-  name,
-  root = "Agents",
-  onBack,
-}: {
-  name: string;
-  /** The Settings page the page is in: "Agents" or "Run hosts". */
-  root?: string;
-  onBack: () => void;
-}) {
-  return (
-    <nav aria-label="Breadcrumb" className="text-[12px] text-muted">
-      <button
-        type="button"
-        className="text-link hover:underline"
-        onClick={onBack}
-      >
-        {root}
-      </button>{" "}
-      › {name}
-    </nav>
-  );
-}
-
 function PageHeader({
   host,
   subtitle,
   actions,
   pill,
+  onBack,
 }: {
   host: AgentHost;
   subtitle: ReactNode;
   actions?: ReactNode;
   /** What the pill says; the host's setup state unless given. */
   pill?: { label: string; tone: HostTone };
+  onBack: () => void;
 }) {
   const jobs = useHostJobsContext();
   const state = pill ?? hostState(host, jobs[host.id]);
   return (
-    <header className="flex flex-wrap items-start justify-between gap-4">
-      <div className="flex min-w-0 flex-col gap-1">
-        <div className="flex flex-wrap items-center gap-2.5">
-          <h2 className="m-0 text-[19px] font-semibold">{host.name}</h2>
-          <HostPill label={state.label} tone={state.tone} />
-        </div>
-        <span className="text-[12.5px] text-muted">{subtitle}</span>
-      </div>
-      {actions && <div className="flex flex-wrap gap-2">{actions}</div>}
-    </header>
+    <PageTitle
+      title={host.name}
+      crumb={{ label: "Run hosts", onBack }}
+      pill={<HostPill label={state.label} tone={state.tone} />}
+      actions={actions}
+    >
+      {subtitle}
+    </PageTitle>
   );
 }
 
@@ -459,9 +435,9 @@ export function RemoteHostPage({
 
   return (
     <div className="flex flex-col gap-5">
-      <Breadcrumb name={host.name} root="Run hosts" onBack={onBack} />
       <PageHeader
         host={host}
+        onBack={onBack}
         pill={pill}
         subtitle="The machine only. What runs here, with what access, is set on each routine or run."
         actions={
@@ -554,7 +530,9 @@ export function RemoteHostPage({
         </Banner>
       )}
 
-      {job && <HostJobView job={job} />}
+      {/* A job that succeeded says so once, in the window; the rows below
+          show what it changed. One that failed or stopped stays, with its log. */}
+      {job && job.state !== "succeeded" && <HostJobView job={job} />}
 
       {host.approved && host.installed && <HostMissing host={host} />}
 
@@ -941,9 +919,9 @@ export function LocalHostPage({
 
   return (
     <div className="flex flex-col gap-5">
-      <Breadcrumb name="This Mac" root="Run hosts" onBack={onBack} />
       <PageHeader
         host={host}
+        onBack={onBack}
         subtitle="Runs pause while this Mac sleeps; when it wakes, a run past its time limit is stopped."
       />
 

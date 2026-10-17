@@ -9,7 +9,7 @@ import {
   onCodeSharingChanged,
   subscribe,
 } from "../lib/ipc";
-import { Hint, Lede } from "./SettingsPanes";
+import { Hint, PageTitle } from "./SettingsPanes";
 
 const PROVIDER: Record<AgentProvider, string> = {
   anthropic: "Anthropic",
@@ -62,12 +62,12 @@ export default function CodeSharingPane() {
 
   return (
     <>
-      <Lede>
+      <PageTitle title="Code Sharing">
         Before a run or an explanation first sends a repository's code to a
         provider, Brainiac asks whether it may, for that repository or for every
         repository in one of its workspaces. A repository's own answer wins over
         its workspaces', and a No from any workspace wins over a Yes.
-      </Lede>
+      </PageTitle>
       {error && (
         <div role="alert" className="text-[12.5px] text-conflict">
           {error}

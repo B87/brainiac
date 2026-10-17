@@ -9,7 +9,7 @@ import {
 import { sourceLabel } from "../lib/secrets";
 import AgentProfilePage from "./AgentProfilePage";
 import { HostPill } from "./HostJobView";
-import { Group, Hint, Lede } from "./SettingsPanes";
+import { Hint, PageTitle } from "./SettingsPanes";
 
 /**
  * Settings → Agents (SPEC.md, Agent runs — v0.5): the agents, each an agent
@@ -64,13 +64,25 @@ export default function AgentRunsPane({
     }
   };
 
+  const title = (
+    <PageTitle title="Agents">
+      An agent is the AI a run uses and who pays for it: an engine, the provider
+      its code and prompts go to, its key, model, and defaults. Where a run goes
+      and what it can reach are chosen by the run or routine.
+    </PageTitle>
+  );
   if (!settings) {
-    return error ? (
-      <div role="alert" className="text-[12.5px] text-conflict">
-        {error}
-      </div>
-    ) : (
-      <Hint>Loading…</Hint>
+    return (
+      <>
+        {!profileId && title}
+        {error ? (
+          <div role="alert" className="text-[12.5px] text-conflict">
+            {error}
+          </div>
+        ) : (
+          <Hint>Loading…</Hint>
+        )}
+      </>
     );
   }
 
@@ -101,23 +113,13 @@ export default function AgentRunsPane({
 
   return (
     <>
-      <Lede>
-        An agent is the AI a run uses and who pays for it. Where a run goes and
-        what it can reach are chosen by the run or routine.
-      </Lede>
+      {title}
       {errorLine}
-
-      <Group label="Agents">
-        <Hint>
-          An agent and the provider its code and prompts go to, each with its
-          own key, model, and defaults.
-        </Hint>
-        <ul aria-label="Agents" className="settings-group m-0 list-none p-0">
-          {settings.profiles.map((p) => (
-            <ProfileRow key={p.id} profile={p} onOpen={() => onProfile(p.id)} />
-          ))}
-        </ul>
-      </Group>
+      <ul aria-label="Agents" className="settings-group m-0 list-none p-0">
+        {settings.profiles.map((p) => (
+          <ProfileRow key={p.id} profile={p} onOpen={() => onProfile(p.id)} />
+        ))}
+      </ul>
     </>
   );
 }

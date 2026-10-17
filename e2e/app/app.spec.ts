@@ -589,7 +589,10 @@ test("Settings → Agents chooses This Mac's engine on its page and saves a past
   await openSettings(page, "Run Hosts");
   const breadcrumb = page.getByRole("navigation", { name: "Breadcrumb" });
   await page.getByRole("button", { name: /^This Mac,/ }).click();
-  await expect(breadcrumb).toContainText("Run hosts › This Mac");
+  await expect(breadcrumb).toContainText("Run hosts");
+  await expect(
+    page.getByRole("heading", { name: "This Mac", level: 1 }),
+  ).toBeVisible();
   await expect(page.getByText("Choose where runs execute.")).toBeVisible();
   await page.getByRole("radio", { name: /OrbStack/ }).check();
   expect((await calls(page, "choose_agent_engine")).at(-1)).toEqual({
@@ -606,7 +609,10 @@ test("Settings → Agents chooses This Mac's engine on its page and saves a past
   await openSettings(page, "Agents");
 
   await page.getByRole("button", { name: /^Claude Code,/ }).click();
-  await expect(breadcrumb).toHaveText("Agents › Claude Code");
+  await expect(breadcrumb).toHaveText("Agents›");
+  await expect(
+    page.getByRole("heading", { name: "Claude Code", level: 1 }),
+  ).toBeVisible();
   await page.getByRole("button", { name: "Add…" }).click();
   const key = "sk-ant-api03-test-key-for-the-fake-backend-only";
   await page
@@ -845,8 +851,11 @@ test("Settings → Agents lists four agents, and OpenCode · OpenRouter's page s
     await expect(agents.getByRole("button", { name })).toBeVisible();
   await agents.getByRole("button", { name: /^OpenCode · OpenRouter,/ }).click();
   await expect(page.getByRole("navigation", { name: "Breadcrumb" })).toHaveText(
-    "Agents › OpenCode · OpenRouter",
+    "Agents›",
   );
+  await expect(
+    page.getByRole("heading", { name: "OpenCode · OpenRouter", level: 1 }),
+  ).toBeVisible();
   await expect(
     page
       .getByRole("listitem")

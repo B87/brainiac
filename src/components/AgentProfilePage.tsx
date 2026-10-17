@@ -34,9 +34,8 @@ import {
 } from "../lib/secrets";
 import { parseInRange, requestSettings } from "../lib/settings";
 import { HostPill } from "./HostJobView";
-import { Breadcrumb } from "./RunHostPage";
 import SecretSourceFields from "./SecretSourceFields";
-import { CommitField, Group, Hint } from "./SettingsPanes";
+import { CommitField, Group, Hint, PageTitle } from "./SettingsPanes";
 
 /**
  * Agents › a profile (SPEC.md, Settings → Agents): how one agent and model
@@ -68,34 +67,33 @@ export default function AgentProfilePage({
 
   return (
     <div className="flex flex-col gap-5">
-      <Breadcrumb name={name} onBack={onBack} />
-      <header className="flex min-w-0 flex-col gap-1">
-        <div className="flex flex-wrap items-center gap-2.5">
-          <h2 className="m-0 text-[19px] font-semibold">{name}</h2>
-          {profile.missing.length === 0 ? (
+      <PageTitle
+        title={name}
+        crumb={{ label: "Agents", onBack }}
+        pill={
+          profile.missing.length === 0 ? (
             <HostPill label="Ready" tone="ready" />
           ) : (
             <HostPill label="Not ready" tone="attention" />
-          )}
-        </div>
-        <span className="text-[12.5px] text-muted">
-          Sends code to {destinationLabel(profile)}.{" "}
-          {tested.length > 0 ? "Tested on " : "Not tested on any host yet."}
-          {tested.map((h, i) => (
-            <span key={h.id}>
-              {i > 0 && ", "}
-              <button
-                type="button"
-                className="text-link hover:underline"
-                onClick={() => onHost(h.id)}
-              >
-                {h.name}
-              </button>
-            </span>
-          ))}
-          {tested.length > 0 && "."}
-        </span>
-      </header>
+          )
+        }
+      >
+        Sends code to {destinationLabel(profile)}.{" "}
+        {tested.length > 0 ? "Tested on " : "Not tested on any host yet."}
+        {tested.map((h, i) => (
+          <span key={h.id}>
+            {i > 0 && ", "}
+            <button
+              type="button"
+              className="text-link hover:underline"
+              onClick={() => onHost(h.id)}
+            >
+              {h.name}
+            </button>
+          </span>
+        ))}
+        {tested.length > 0 && "."}
+      </PageTitle>
 
       {profile.credential.needs_approval && (
         <div className="settings-group">

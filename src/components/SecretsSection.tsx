@@ -10,6 +10,7 @@ import {
 } from "../lib/ipc";
 import { commandPreview, sourceLabel, stateLabel } from "../lib/secrets";
 import NamedSecretForm from "./NamedSecretForm";
+import { PageTitle } from "./SettingsPanes";
 
 const ownerKey = (o: CredentialOwner) =>
   o.kind === "forge_account"
@@ -57,6 +58,22 @@ export default function SecretsSection() {
 
   return (
     <div className="flex flex-col gap-2">
+      <PageTitle
+        title="Secrets"
+        actions={
+          <button
+            type="button"
+            className="btn btn-sm btn-primary"
+            onClick={() => setEditing(null)}
+          >
+            Add Secret…
+          </button>
+        }
+      >
+        Every credential Brainiac knows, where each comes from, and every host a
+        copy went to. Change an account's or a connection's source where it is
+        entered: in Accounts, or in the connection's Edit Connection….
+      </PageTitle>
       {overview && (
         <p className="m-0 text-[12.5px] text-fg-2">
           Store: <span className="font-medium">{overview.store}</span>, items{" "}
@@ -70,23 +87,14 @@ export default function SecretsSection() {
         </div>
       )}
       <section aria-label="Access for runs" className="flex flex-col gap-2">
-        <div className="flex flex-wrap items-end justify-between gap-2">
-          <span className="flex flex-col">
-            <h3 className="m-0 text-[13px] font-semibold">Access for runs</h3>
-            <span className="text-[12px] text-muted">
-              Tokens and keys of your own. A run or routine chooses them under
-              Access; a run host gets a sealed copy when one of them first needs
-              it there.
-            </span>
+        <span className="mt-2 flex flex-col">
+          <h2 className="m-0 text-[13px] font-semibold">Access for runs</h2>
+          <span className="text-[12px] text-muted">
+            Tokens and keys of your own. A run or routine chooses them under
+            Access; a run host gets a sealed copy when one of them first needs
+            it there.
           </span>
-          <button
-            type="button"
-            className="btn btn-sm"
-            onClick={() => setEditing(null)}
-          >
-            Add Secret…
-          </button>
-        </div>
+        </span>
         {editing !== undefined && (
           <NamedSecretForm
             key={editing?.id ?? "new"}
@@ -214,9 +222,9 @@ export default function SecretsSection() {
         aria-label="Accounts and database passwords"
         className="flex flex-col gap-2"
       >
-        <h3 className="m-0 mt-2 text-[13px] font-semibold">
+        <h2 className="m-0 mt-2 text-[13px] font-semibold">
           Accounts, databases and agents
-        </h3>
+        </h2>
         {others.length === 0 && overview && (
           <p className="m-0 text-[12.5px] text-muted">
             No account or connection has a secret yet.

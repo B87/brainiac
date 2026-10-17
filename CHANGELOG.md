@@ -11,6 +11,8 @@ into the release's section.
 
 ## [Unreleased]
 
+- Settings' Runs pages use the window's width, with their title and main action at the top, so the hosts and secrets tables fit and a host's page shows its machine and health side by side. A host's page no longer keeps the steps of a job that succeeded.
+
 - Settings → Code Sharing can allow or block a provider for an existing repository or every repository in a workspace before starting a run.
 
 - Settings has a Runs heading with Agents, Run Hosts (a table of hosts with what each needs next), Secrets (a table, with Test), Code Sharing and MCP (formerly Agent Access). A host's page is the machine only: whether it answers, what it has and lacks with each action, its health, the routines it fires and what it holds. Adding a host is a page in steps, with what Install checks beside them. A routine's definition shows what scheduling it on its host needs; approving states the facts in a table and follows the host's preparation step by step.

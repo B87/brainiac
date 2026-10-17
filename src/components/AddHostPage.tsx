@@ -5,7 +5,7 @@ import {
   errorMessage,
   ipc,
 } from "../lib/ipc";
-import { Breadcrumb } from "./RunHostPage";
+import { PageTitle } from "./SettingsPanes";
 
 const STEPS = ["Address", "Trust its key", "Install the run controller"];
 
@@ -115,10 +115,10 @@ export default function AddHostPage({
   const shownName = name.trim() || host.trim() || "The host";
 
   const addressFields = (
-    <div className="grid grid-cols-[1fr_1fr_1fr_80px] gap-3">
+    <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.6fr)_72px] gap-3">
       <Field label="Name" hint="How Brainiac shows it; the host by default.">
         <input
-          className="field"
+          className="field w-full"
           aria-label="Host name"
           value={name}
           placeholder={host.trim() || "build-01"}
@@ -128,7 +128,7 @@ export default function AddHostPage({
       </Field>
       <Field label="SSH user" hint="Can run sudo without a password.">
         <input
-          className="field"
+          className="field w-full"
           aria-label="SSH user"
           value={user}
           autoCapitalize="off"
@@ -139,7 +139,7 @@ export default function AddHostPage({
       </Field>
       <Field label="Host">
         <input
-          className="field"
+          className="field w-full"
           aria-label="SSH host"
           value={host}
           autoCapitalize="off"
@@ -150,7 +150,7 @@ export default function AddHostPage({
       </Field>
       <Field label="Port">
         <input
-          className="field"
+          className="field w-full"
           aria-label="SSH port"
           value={port}
           inputMode="numeric"
@@ -163,15 +163,11 @@ export default function AddHostPage({
 
   return (
     <section aria-label={title} className="flex flex-col gap-4 text-[12.5px]">
-      <Breadcrumb name={title} root="Run hosts" onBack={onBack} />
-      <header className="flex flex-col gap-1">
-        <h2 className="m-0 text-[19px] font-semibold">{title}</h2>
-        <span className="text-fg-2">
-          {existing
-            ? "The key this host presents now, to compare with what it shows for itself."
-            : "A Linux machine that stays on, so routines run with your Mac asleep."}
-        </span>
-      </header>
+      <PageTitle title={title} crumb={{ label: "Run hosts", onBack }}>
+        {existing
+          ? "The key this host presents now, to compare with what it shows for itself."
+          : "A Linux machine that stays on, so routines run with your Mac asleep."}
+      </PageTitle>
 
       <ol
         aria-label="Steps"
@@ -289,7 +285,7 @@ export default function AddHostPage({
               hint="Optional: an absolute path. Otherwise your SSH agent and configuration choose the key."
             >
               <input
-                className="field mono"
+                className="field mono w-full"
                 aria-label="Identity file"
                 value={identity}
                 placeholder="~/.ssh/id_ed25519"
@@ -384,7 +380,7 @@ function Field({
 }) {
   return (
     // biome-ignore lint/a11y/noLabelWithoutControl: the input is the child
-    <label className="flex flex-col gap-1">
+    <label className="flex min-w-0 flex-col gap-1">
       <span className="text-[12px] font-medium">{label}</span>
       {children}
       {hint && <span className="text-[11.5px] text-muted">{hint}</span>}
