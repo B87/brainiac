@@ -1017,6 +1017,8 @@ export class FakeBackend {
         job.kind === "setup" ||
         (job.kind === "prepare" && !host.image?.current)
       ) {
+        // A new image ID: a test passed on the old one no longer matches.
+        host.tests = host.tests.map((t) => ({ ...t, current: false }));
         host.image = {
           name: "brainiac-agents:4d1e",
           id: "sha256:4d1e",
@@ -1029,16 +1031,28 @@ export class FakeBackend {
       if (job.kind === "test" || job.kind === "setup" || job.kind === "prepare")
         for (const id of job.profile_ids) this.passTest(host, id);
     }
-    // The schedules approved on this host go there once it is prepared.
-    if (job.kind === "prepare")
-      for (const [routineId, sched] of this.schedules) {
-        const routine = this.routines.find((r) => r.id === routineId);
-        if (!sched.preparing || routine?.host_id !== hostId) continue;
-        sched.preparing = false;
-        sched.approved = state === "succeeded";
-      }
     this.refreshAgents();
     this.emit("agent_host_job", this.hostJobs[hostId]);
+    // The schedules waiting on this host, as `finish_preparing`: one that is
+    // ready goes there; one whose agent this job did not prepare gets a
+    // preparation of its own; one this job failed to prepare stays off.
+    for (const [routineId, sched] of this.schedules) {
+      const routine = this.routines.find((r) => r.id === routineId);
+      if (!sched.preparing || !routine || routine.host_id !== hostId) continue;
+      if (!this.needsPreparing(host, routine)) {
+        sched.preparing = false;
+        sched.approved = true;
+        continue;
+      }
+      const ours =
+        job.kind === "prepare" && job.profile_ids.includes(routine.profile_id);
+      if (!ours) {
+        this.startHostJob(hostId, "prepare", routine.profile_id);
+        return;
+      }
+      sched.preparing = false;
+      sched.notice = `${host.name} could not be prepared: ${this.hostJobs[hostId].error ?? "it is not ready yet."} Approve again to retry.`;
+    }
   }
   /** Settings → Agents: nothing set up yet, OrbStack running. */
   hostKey = "SHA256:preview";
@@ -1097,6 +1111,15 @@ export class FakeBackend {
     for (const h of this.agentSettings.hosts)
       h.missing = hostMissing(h, this.agentSettings.engine_socket);
   }
+  /** As `needs_preparing`: what approving a routine on its host still needs. */
+  needsPreparing(host: AgentHost, routine: Routine): boolean {
+    return (
+      host.upgrade_available ||
+      !host.image?.current ||
+      (routine.tools && !host.tools_image?.current) ||
+      !host.tests.some((t) => t.profile_id === routine.profile_id && t.current)
+    );
+  }
   /** A host job, as `HostJobService::start` begins it. */
   startHostJob(
     hostId: string,
@@ -1105,6 +1128,11 @@ export class FakeBackend {
   ): HostJob {
     const host = this.agentSettings.hosts.find((h) => h.id === hostId);
     if (!host) throw { code: "NOT_FOUND", message: "That host is not saved." };
+    if (this.hostJobs[hostId]?.state === "running")
+      throw {
+        code: "CONFLICT",
+        message: `${host.name} already has a job running.`,
+      };
     const install = [
       `Reach ${host.name}`,
       "Build the run controller for linux/amd64",
@@ -1119,14 +1147,12 @@ export class FakeBackend {
     ];
     // Test is of one profile; setup tests each profile that is ready.
     this.refreshAgents();
-    // A routine's approval tests its agent when no test there matches.
+    // A routine's approval always carries its agent: the job tests it
+    // after the image, unless a test still matches then.
     const tested = this.agentSettings.profiles.filter((p) =>
-      kind === "test"
+      kind === "test" || kind === "prepare"
         ? p.id === profileId
-        : kind === "prepare"
-          ? p.id === profileId &&
-            !host.tests.some((t) => t.profile_id === p.id && t.current)
-          : kind === "setup" && p.missing.length === 0,
+        : kind === "setup" && p.missing.length === 0,
     );
     const tests = tested.length
       ? tested.map((p) => `Test ${fakeProfileName(p)}`)
@@ -1288,6 +1314,8 @@ export class FakeBackend {
       overdue: boolean;
       /** Approved, waiting for the host's preparation job. */
       preparing?: boolean;
+      /** Why the last approval did not turn it on. */
+      notice?: string | null;
     }
   >();
   /** What each host fires for no routine of this Mac, by host ID. */
@@ -1309,7 +1337,7 @@ export class FakeBackend {
     return {
       when: s.when,
       state,
-      notice: null,
+      notice: s.notice ?? null,
       changed: s.changed,
       next_fire: s.approved && !s.paused ? this.hostNextFire : null,
       synced_at: new Date().toISOString(),
@@ -3207,18 +3235,12 @@ export class FakeBackend {
         const host = this.agentSettings.hosts.find(
           (h) => h.id === routine?.host_id,
         );
-        const needs =
-          host &&
-          routine &&
-          (host.upgrade_available ||
-            !host.image?.current ||
-            (routine.tools && !host.tools_image?.current) ||
-            !host.tests.some(
-              (t) => t.profile_id === routine.profile_id && t.current,
-            ));
-        if (host && routine && needs) {
+        s.notice = null;
+        if (host && routine && this.needsPreparing(host, routine)) {
           s.preparing = true;
-          this.startHostJob(host.id, "prepare", routine.profile_id);
+          // A job already running: this one waits for it, as `approve`.
+          if (this.hostJobs[host.id]?.state !== "running")
+            this.startHostJob(host.id, "prepare", routine.profile_id);
           return null;
         }
         s.approved = true;

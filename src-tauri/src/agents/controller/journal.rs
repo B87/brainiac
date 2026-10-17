@@ -192,14 +192,43 @@ impl Redactor {
     /// service account key) each long line too, since an agent that prints
     /// part of it still shows the part. Exact matching is a mitigation, not
     /// a guarantee against a transformed copy.
+    ///
+    /// A value that is JSON (a service account key) is also read as JSON:
+    /// its strings are what a tool prints decoded (`jq -r .private_key`
+    /// prints the PEM with real line breaks, which the file holds as `\n`),
+    /// so each long line of each string counts too.
     pub fn register_secret(&mut self, value: &str, name: &str) {
         self.register(value, name);
         if value.contains('\n') {
-            for line in value.lines().map(str::trim) {
-                if line.len() >= 24 {
-                    self.register(line, name);
+            self.register_lines(value, name);
+        }
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(value) {
+            self.register_strings(&json, name);
+        }
+    }
+
+    fn register_lines(&mut self, text: &str, name: &str) {
+        for line in text.lines().map(str::trim) {
+            if line.len() >= 24 {
+                self.register(line, name);
+            }
+        }
+    }
+
+    fn register_strings(&mut self, value: &serde_json::Value, name: &str) {
+        match value {
+            serde_json::Value::String(s) => self.register_lines(s, name),
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    self.register_strings(item, name);
                 }
             }
+            serde_json::Value::Object(fields) => {
+                for item in fields.values() {
+                    self.register_strings(item, name);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -304,6 +333,23 @@ pub fn journal_path(run_dir: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_service_account_key_printed_decoded_is_still_taken_out() {
+        let pem_line = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7";
+        let key = serde_json::json!({
+            "type": "service_account",
+            "private_key": format!("-----BEGIN PRIVATE KEY-----\n{pem_line}\n-----END PRIVATE KEY-----\n"),
+        })
+        .to_string();
+        let mut redactor = Redactor::new();
+        redactor.register_secret(&key, "GOOGLE_APPLICATION_CREDENTIALS");
+        // What `jq -r .private_key` prints: real line breaks, no escapes.
+        let mut printed =
+            format!("-----BEGIN PRIVATE KEY-----\n{pem_line}\n-----END PRIVATE KEY-----");
+        redactor.redact(&mut printed);
+        assert!(!printed.contains(pem_line), "{printed}");
+    }
+
     #[test]
     fn a_result_file_loses_the_secrets_it_quotes_even_escaped_in_json() {
         let key = "{\n  \"type\": \"service_account\",\n  \"private_key\": \"MIIEvQIBADANBgkqhkiG9w0BAQEFAASC\"\n}";

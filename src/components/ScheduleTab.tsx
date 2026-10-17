@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { durationLabel, profileName, providerName } from "../lib/agentRuns";
 import { relativeTime } from "../lib/format";
-import { currentStep, useHostJobsContext } from "../lib/hostJobs";
+import { currentStep, jobTitle, useHostJobsContext } from "../lib/hostJobs";
 import {
   type AgentHost,
   type AgentProfile,
@@ -12,6 +12,7 @@ import {
   ipc,
   type NamedSecret,
   type RoutineOverview,
+  type RoutineSchedule,
   type ScheduleWhen,
 } from "../lib/ipc";
 import { hostTime, scheduleWords, usd } from "../lib/routines";
@@ -431,6 +432,8 @@ function ApproveDialog({
         hostName={hostName}
         job={job}
         sent={sent}
+        routineId={routine.id}
+        profileId={routine.profile_id}
         onClose={onApproved}
       />
     );
@@ -605,51 +608,91 @@ type Shown = {
 
 /**
  * Preparing the host, followed here: what the approval already sent, the
- * host job's steps as they run, then the schedule turned on. Closing it
- * changes nothing; the routine's Schedule tab shows the same.
+ * host job's steps as they run, then the schedule turned on. Whether it is
+ * on is the routine's schedule's answer, read again until it leaves
+ * Preparing, never the job's: the approval can still fail after the job,
+ * and the job shown can be another one the host had to finish first.
+ * Closing it changes nothing; the routine's Schedule tab shows the same.
  */
 function PreparingDialog({
   hostName,
   job,
   sent,
+  routineId,
+  profileId,
   onClose,
 }: {
   hostName: string;
   job: HostJob | undefined;
   sent: string[];
+  routineId: string;
+  profileId: string;
   onClose: () => void;
 }) {
-  const ended = job && job.state !== "running";
-  const succeeded = job?.state === "succeeded";
+  const [schedule, setSchedule] = useState<RoutineSchedule | null>(null);
+  const settled = schedule !== null && schedule.state !== "preparing";
+  useEffect(() => {
+    if (settled) return;
+    let alive = true;
+    const read = () =>
+      ipc
+        .listRoutines()
+        .then((all) => {
+          const found = all.find((i) => i.routine.id === routineId);
+          if (alive && found?.schedule) setSchedule(found.schedule);
+        })
+        .catch(() => {});
+    void read();
+    const timer = setInterval(read, 2000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [routineId, settled]);
+  const on =
+    settled && (schedule.state === "active" || schedule.state === "paused");
+  const off = settled && !on;
+  // This routine's preparation, or another job the host finishes first.
+  const ours = job?.kind === "prepare" && job.profile_ids.includes(profileId);
   const shown: Shown[] = [
     ...sent.map((title) => ({ title, state: "done" as const, detail: "" })),
-    ...(job?.steps ?? []).map((s) => ({
-      title: s.title,
-      state: s.state,
-      detail:
-        s.state === "skipped"
-          ? s.detail
-          : s.state === "failed"
-            ? (job?.error ?? s.detail)
-            : (s.progress ?? ""),
-    })),
+    ...(ours
+      ? job.steps.map((st) => ({
+          title: st.title,
+          state: st.state,
+          detail:
+            st.state === "skipped"
+              ? st.detail
+              : st.state === "failed"
+                ? (job.error ?? st.detail)
+                : (st.progress ?? ""),
+        }))
+      : job?.state === "running"
+        ? [
+            {
+              title: `Waiting for ${hostName} to finish: ${jobTitle(job)}`,
+              state: "running" as const,
+              detail: "This routine's preparation starts after it.",
+            },
+          ]
+        : []),
     {
       title: "Agent's key sealed, code sent, and schedule turned on",
-      state: succeeded ? "done" : "waiting",
-      detail: "",
+      state: on ? "done" : off ? "failed" : "waiting",
+      detail: off ? (schedule?.notice ?? "") : "",
     },
   ];
   const done = shown.filter(
-    (s) => s.state === "done" || s.state === "skipped",
+    (st) => st.state === "done" || st.state === "skipped",
   ).length;
   return (
     <Dialog
       title={
-        ended
-          ? succeeded
-            ? `${hostName} is prepared`
-            : `Preparing ${hostName} did not finish`
-          : `Preparing ${hostName} · ${done} of ${shown.length}`
+        on
+          ? `${hostName} is prepared`
+          : off
+            ? `Preparing ${hostName} did not finish`
+            : `Preparing ${hostName} · ${done} of ${shown.length}`
       }
       width={600}
       onClose={onClose}
@@ -659,24 +702,24 @@ function PreparingDialog({
           className="btn btn-sm btn-primary"
           onClick={onClose}
         >
-          {ended ? "Done" : "Close"}
+          {settled ? "Done" : "Close"}
         </button>
       }
     >
       <p className="m-0 mb-3 text-muted">
-        {succeeded
+        {on
           ? `The schedule is on ${hostName}.`
-          : ended
-            ? "The schedule stays off; the step says what to do. Nothing that was already sent is undone. Approve again to retry."
+          : off
+            ? "The schedule stays off; the last step says why. Nothing that was already sent is undone. Approve again to retry."
             : `You can close this. If ${hostName} stops answering, it picks up where it was when it is back.`}
       </p>
       <ol className="m-0 flex list-none flex-col p-0">
-        {shown.map((s, i) => (
+        {shown.map((st, i) => (
           <li
-            key={s.title}
+            key={st.title}
             className="flex items-start gap-2.5 border-b py-2 last:border-b-0"
           >
-            {s.state === "waiting" ? (
+            {st.state === "waiting" ? (
               <span
                 aria-hidden="true"
                 className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-control text-[10px] font-semibold text-muted"
@@ -684,24 +727,24 @@ function PreparingDialog({
                 {i + 1}
               </span>
             ) : (
-              <StepIcon state={s.state} />
+              <StepIcon state={st.state} />
             )}
             <span className="flex min-w-0 flex-col">
-              <span className={s.state === "waiting" ? "text-fg-2" : ""}>
-                {s.title}
+              <span className={st.state === "waiting" ? "text-fg-2" : ""}>
+                {st.title}
               </span>
-              {s.detail && (
+              {st.detail && (
                 <span
-                  className={`text-[12px] ${s.state === "failed" ? "text-conflict" : "text-muted"}`}
+                  className={`text-[12px] ${st.state === "failed" ? "text-conflict" : "text-muted"}`}
                 >
-                  {s.detail}
+                  {st.detail}
                 </span>
               )}
             </span>
           </li>
         ))}
       </ol>
-      {!ended && (
+      {!settled && (
         <p className="m-0 mt-3 text-[12px] text-muted">
           If a step fails, the schedule stays off and the step says what to do.
           Nothing that was already sent is undone.

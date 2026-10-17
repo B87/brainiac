@@ -5258,10 +5258,11 @@ pub enum ScheduleState {
     Preparing,
 }
 
-/// A schedule a run host fires that this Mac has no routine for: one made by
-/// another Mac using the same host, or by this one before an older backup
-/// was restored. Brainiac leaves it on the host and lists it on the host's
-/// page, where only the user removes it (docs/design/routines-ux.md).
+/// A schedule a run host fires for no routine of this Mac on that host: one
+/// made by another Mac using the same host, or by this one before an older
+/// backup was restored, which Brainiac leaves there; or this Mac's own after
+/// it moved, until a sync stops it. The host's page lists each, and only the
+/// user removes one (docs/design/routines-ux.md).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct HostScheduleOnly {
@@ -5274,6 +5275,10 @@ pub struct HostScheduleOnly {
     pub next_fire: Option<String>,
     /// Briefings it left that no Mac has taken; removing it deletes them.
     pub results_waiting: u32,
+    /// A routine of this Mac that no longer runs on this host (it moved, or
+    /// its schedule here went): the next sync takes what it left and stops
+    /// it, unless that could not be done.
+    pub mine: bool,
 }
 
 /// A routine's schedule and what is known of the host's side of it.

@@ -433,9 +433,12 @@ export function RemoteHostPage({
                 className="btn btn-sm btn-primary"
                 disabled={busy}
                 onClick={() =>
+                  // A test, or a routine's preparation, is again of its agent.
                   void start(
                     job.kind,
-                    job.kind === "test" ? job.profile_ids[0] : undefined,
+                    job.kind === "test" || job.kind === "prepare"
+                      ? job.profile_ids[0]
+                      : undefined,
                   )
                 }
               >

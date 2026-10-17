@@ -614,3 +614,93 @@ async fn a_schedule_unknown_to_this_mac_stays_on_the_host_until_removed() {
     assert!(left.is_empty());
     assert!(!on_host(&h.runtime.schedules().await.unwrap().0));
 }
+
+/// A Brainiac update that changes the image: the host's image is not current
+/// but the agent's test still names its ID. Building the image makes that
+/// test stale, so the preparation must test the agent after it anyway.
+#[tokio::test]
+async fn a_preparation_that_rebuilds_the_image_tests_the_agent_after_it() {
+    let h = Harness::new().await;
+    h.core
+        .call(|conn| {
+            conn.execute(
+                "UPDATE agent_hosts SET image_recipe = 'an older recipe' WHERE id = ?1",
+                [HOST],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let routine = h.routine().await;
+    h.routines
+        .set_schedule(SetScheduleRequest {
+            routine_id: routine.id.clone(),
+            when: h.when(30),
+        })
+        .await
+        .unwrap();
+    h.routines.approve(&routine.id).await.unwrap();
+
+    let job = h
+        .jobs
+        .list()
+        .into_iter()
+        .find(|j| j.host_id == HOST)
+        .expect("approval prepares the host");
+    assert_eq!(job.kind, HostJobKind::Prepare);
+    assert_eq!(job.profile_ids, vec![CLAUDE_CODE.to_string()]);
+    assert!(
+        job.steps.iter().any(|s| s.title == "Test Claude Code"),
+        "{:?}",
+        job.steps
+    );
+}
+
+/// A routine that moved to another host is this Mac's: the host it left
+/// stops firing it at its next sync, and does not list it as another Mac's.
+#[tokio::test]
+async fn the_host_a_routine_left_stops_firing_it() {
+    let h = Harness::new().await;
+    let routine = h.routine().await;
+    h.routines
+        .set_schedule(SetScheduleRequest {
+            routine_id: routine.id.clone(),
+            when: h.when(30),
+        })
+        .await
+        .unwrap();
+    h.routines.approve(&routine.id).await.unwrap();
+    let on_host = |statuses: &[brainiac_lib::agents::controller::protocol::ScheduleStatus]| {
+        statuses.iter().any(|s| s.spec.routine_id == routine.id)
+    };
+    assert!(on_host(&h.runtime.schedules().await.unwrap().0));
+
+    // It now runs on another host.
+    let id = routine.id.clone();
+    h.core
+        .call(move |conn| {
+            conn.execute_batch(
+                "INSERT INTO machines (id, name, ssh_user, ssh_host, ssh_port, fingerprint,
+                   created_at, updated_at)
+                 VALUES ('m2', 'second.example', 'brainiac', 'second.example', 22, 'SHA256:y',
+                   '2026-10-05T00:00:00Z', '2026-10-05T00:00:00Z');
+                 INSERT INTO agent_hosts (id, kind, machine_id, created_at, updated_at)
+                 VALUES ('host-2', 'ssh', 'm2', '2026-10-05T00:00:00Z', '2026-10-05T00:00:00Z');",
+            )?;
+            conn.execute("UPDATE routines SET host_id = 'host-2' WHERE id = ?1", [id])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    h.routines.sync_host(HOST).await.unwrap();
+    assert!(
+        !on_host(&h.runtime.schedules().await.unwrap().0),
+        "the host it left must stop firing it"
+    );
+    assert!(h
+        .routines
+        .host_schedules_only(HOST)
+        .await
+        .unwrap()
+        .is_empty());
+}

@@ -747,6 +747,7 @@ test("A host's page lists a schedule that is not this Mac's, and removes it only
         enabled: true,
         next_fire: "2026-10-14T02:00:00+02:00",
         results_waiting: 2,
+        mine: false,
       },
     ];
   });
@@ -773,6 +774,64 @@ test("A host's page lists a schedule that is not this Mac's, and removes it only
     routineId: "elsewhere-1",
   });
   await expect(other).toBeHidden();
+});
+
+test("An approval that waits for another job prepares its own agent after it, and says the schedule is on only when it is", async ({
+  page,
+}) => {
+  await openSettings(page, "Run Hosts");
+  const dialog = await addHost(page);
+  await dialog
+    .getByRole("button", { name: "It Matches: Trust This Key and Install" })
+    .click();
+  await page.evaluate(() => {
+    window.fake.endJob("host-1", "succeeded");
+    window.fake.readyProfile("claude-code");
+    window.fake.readyProfile("opencode-anthropic");
+  });
+  await page.getByRole("button", { name: "Back", exact: true }).click();
+
+  const nav = page.getByRole("navigation", {
+    name: "Repositories and workspaces",
+  });
+  await nav.getByRole("button", { name: "Routines" }).click();
+  await page.getByRole("button", { name: "New Routine…" }).first().click();
+  const form = page.getByRole("form", { name: "New routine" });
+  await form.getByLabel("Name", { exact: true }).fill("Morning check");
+  await form.getByLabel("Prompt").fill("Check production errors.");
+  await form.getByLabel("Runs on").selectOption({ label: "runner.example" });
+  await form.getByLabel("Start from").fill("main");
+  await form.getByRole("button", { name: "Create Routine" }).click();
+  await page.getByRole("tab", { name: "Schedule" }).click();
+  await page.getByRole("button", { name: "Add a schedule…" }).click();
+  await page.getByRole("button", { name: "Save schedule…" }).click();
+
+  // Another agent's test is running on the host when the routine is approved.
+  await page.evaluate(() =>
+    window.fake.startHostJob("host-1", "test", "opencode-anthropic"),
+  );
+  const approve = page.getByRole("dialog", { name: /^Approve “/ });
+  await approve
+    .getByRole("button", { name: "Approve and Prepare runner.example" })
+    .click();
+  const preparing = page.getByRole("dialog", {
+    name: /^Preparing runner\.example/,
+  });
+  await expect(preparing).toContainText(
+    "Waiting for runner.example to finish: Testing",
+  );
+  // That test passing is not this schedule being on.
+  await page.evaluate(() => window.fake.endJob("host-1", "succeeded"));
+  await expect(preparing).toContainText("Test Claude Code");
+  await expect(preparing).not.toContainText("The schedule is on");
+
+  // Its own preparation fails: the schedule stays off, and says why.
+  await page.evaluate(() => window.fake.endJob("host-1", "failed"));
+  const failed = page.getByRole("dialog", {
+    name: "Preparing runner.example did not finish",
+  });
+  await expect(failed).toContainText("could not be prepared");
+  await failed.getByRole("button", { name: "Done" }).click();
 });
 
 test("A routine chooses its access and tools, and New Access… adds a secret and ticks it", async ({

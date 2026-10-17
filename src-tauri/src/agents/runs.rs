@@ -1818,9 +1818,12 @@ impl AgentRunService {
     /// Take a run the host's schedule started into Runs, so it is listed,
     /// followed, and kept or removed like any other. A run already known is
     /// left as it is.
+    /// `host_id` is the host the run is on, which is the routine's own
+    /// unless it moved since.
     pub async fn adopt_routine_run(
         self: &Arc<Self>,
         routine: &crate::models::Routine,
+        host_id: &str,
         run_id: &str,
         start_commit: &str,
     ) -> AppResult<()> {
@@ -1837,9 +1840,9 @@ impl AgentRunService {
         let host = settings
             .hosts
             .iter()
-            .find(|h| h.id == routine.host_id)
+            .find(|h| h.id == host_id)
             .cloned()
-            .ok_or_else(|| AppError::validation("The routine's host no longer exists."))?;
+            .ok_or_else(|| AppError::validation("The run's host no longer exists."))?;
         let image = settings::image_for(routine.tools, &host);
         let (name, _) = self.repositories.locate(&routine.repository_id).await?;
         let host_secrets = self.settings.secret_names(&routine.secret_ids).await?;

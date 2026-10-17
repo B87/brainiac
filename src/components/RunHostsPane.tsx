@@ -166,6 +166,9 @@ export default function RunHostsPane({
       <>
         {errorLine}
         <RemoteHostPage
+          // A page per host: its health, confirmations and errors do not
+          // carry over to the next host opened.
+          key={open.id}
           host={open}
           profiles={settings.profiles}
           onBack={() => onHost(null)}

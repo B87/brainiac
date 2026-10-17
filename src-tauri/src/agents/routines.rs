@@ -181,6 +181,14 @@ impl RoutineService {
             return Err(AppError::validation("Choose a repository and an agent."));
         }
         let memory = clean(&request.memory, MAX_MEMORY);
+        // The host it ran on before, if it is moving: that host still has
+        // its schedule until it is told.
+        let before = match &request.id {
+            Some(id) => self.routine(id).await.ok().map(|r| r.host_id),
+            None => None,
+        };
+        // `request` moves into the database call below; this is kept.
+        let new_host = request.host_id.clone();
         let mut secret_ids = request.secret_ids.clone();
         secret_ids.sort();
         secret_ids.dedup();
@@ -270,6 +278,17 @@ impl RoutineService {
             .await?;
         // A change to what a schedule was approved for turns it off on the host.
         self.after_change(&saved).await;
+        // The host it left takes what it ran there home and stops firing it
+        // (the sync's sweep); a host that cannot be reached now is swept at
+        // its next sync, and its page lists the schedule meanwhile.
+        if let Some(old) = before.filter(|h| !h.is_empty() && *h != new_host) {
+            let service = Arc::clone(self);
+            tokio::spawn(async move {
+                if let Err(e) = service.sync_host(&old).await {
+                    tracing::info!(host = %old, error = %e, "the host a routine left was not told");
+                }
+            });
+        }
         self.routine(&saved).await
     }
 

@@ -355,14 +355,54 @@ impl RoutineService {
         Ok(())
     }
 
-    /// What `host_id` fires that this Mac has no routine for, read from the
-    /// host now when it answers, else as its last sync found.
+    /// The routines of this Mac scheduled on `host_id`.
+    async fn scheduled_on(&self, host_id: &str) -> AppResult<Vec<String>> {
+        let host = host_id.to_string();
+        self.core
+            .call(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT id FROM routines WHERE host_id = ?1 AND schedule_days IS NOT NULL",
+                )?;
+                let rows = stmt.query_map(params![host], |r| r.get::<_, String>(0))?;
+                Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+            })
+            .await
+    }
+
+    /// What `host_id` fires for no routine of this Mac there, read from the
+    /// host now (without changing anything there, so opening a page costs
+    /// one request), or as the last sync found when it does not answer.
     pub async fn host_schedules_only(
         self: &Arc<Self>,
         host_id: &str,
     ) -> AppResult<Vec<HostScheduleOnly>> {
-        let _ = self.sync_host(host_id).await;
-        Ok(self.only_on_host(host_id))
+        let read = async {
+            let runtime = self.runs.runtime_of(host_id).await?;
+            let (statuses, _) = runtime.schedules().await?;
+            let ids = self.scheduled_on(host_id).await?;
+            let mut only = Vec::new();
+            for status in statuses
+                .iter()
+                .filter(|s| !ids.contains(&s.spec.routine_id))
+            {
+                match self.routine(&status.spec.routine_id).await {
+                    Ok(_) => only.push(only_entry(status, true)),
+                    Err(e) if e.code == ErrorCode::NotFound => only.push(only_entry(status, false)),
+                    Err(_) => {}
+                }
+            }
+            AppResult::Ok(only)
+        };
+        match read.await {
+            Ok(only) => {
+                self.only_on_host
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .insert(host_id.to_string(), only.clone());
+                Ok(only)
+            }
+            Err(_) => Ok(self.only_on_host(host_id)),
+        }
     }
 
     fn only_on_host(&self, host_id: &str) -> Vec<HostScheduleOnly> {
@@ -374,28 +414,40 @@ impl RoutineService {
             .unwrap_or_default()
     }
 
-    /// The user removes a schedule the host fires for no routine of this
-    /// Mac: the host forgets it, its copy of the code, and the briefings
-    /// waiting there. A routine of this Mac is removed from its own page.
+    /// The user removes a schedule the host fires for no routine of this Mac
+    /// there: the host forgets it, its copy of the code, and the briefings
+    /// waiting there. One of this Mac's routines that moved has what it left
+    /// taken first, when the host gives it. A routine scheduled on this host
+    /// is removed from its own page.
     pub async fn remove_host_schedule_only(
         self: &Arc<Self>,
         host_id: &str,
         routine_id: &str,
     ) -> AppResult<Vec<HostScheduleOnly>> {
-        match self.routine(routine_id).await {
-            Ok(_) => {
-                return Err(AppError::validation(
-                    "That routine is this Mac's: remove its schedule on its own page.",
-                ))
+        let mine = match self.routine(routine_id).await {
+            Ok(routine) => {
+                if routine.host_id == host_id && self.sched(routine_id).await?.scheduled() {
+                    return Err(AppError::validation(
+                        "That routine is scheduled on this host: remove its schedule on its own page.",
+                    ));
+                }
+                Some(routine)
             }
-            Err(e) if e.code == ErrorCode::NotFound => {}
+            Err(e) if e.code == ErrorCode::NotFound => None,
             Err(e) => return Err(e),
-        }
+        };
         let _one = self.syncing.lock().await;
         let runtime =
             self.runs.runtime_of(host_id).await.map_err(|e| {
                 host_down(&e, "The schedule is still there and still runs on the host")
             })?;
+        if let Some(routine) = &mine {
+            if let Ok((statuses, _)) = runtime.schedules().await {
+                if let Some(status) = statuses.iter().find(|s| s.spec.routine_id == routine_id) {
+                    let _ = self.import(routine, host_id, &runtime, status).await;
+                }
+            }
+        }
         runtime
             .delete_schedule(routine_id)
             .await
@@ -596,20 +648,44 @@ impl RoutineService {
             return;
         };
         for id in ids {
-            let _one = self.syncing.lock().await;
-            let result = async {
+            let one = self.syncing.lock().await;
+            // `Ok(true)`: a preparation for this routine started; the rest
+            // wait for it.
+            let result: AppResult<bool> = async {
                 let routine = self.routine(&id).await?;
                 let s = self.sched(&id).await?;
                 if !s.preparing {
-                    return Ok(());
+                    return Ok(false);
                 }
                 let host = self.host_of(&routine).await?;
                 if needs_preparing(&host, &routine) {
-                    let why = self
+                    let last = self
                         .jobs
                         .list()
                         .into_iter()
-                        .find(|j| j.host_id == routine.host_id)
+                        .find(|j| j.host_id == routine.host_id);
+                    let ours = last.as_ref().is_some_and(|j| {
+                        j.kind == crate::models::HostJobKind::Prepare
+                            && j.profile_ids.contains(&routine.profile_id)
+                    });
+                    if !ours {
+                        // What ran was another's (a test, a build, another
+                        // routine's agent): prepare for this one now.
+                        return match self
+                            .jobs
+                            .start(
+                                &routine.host_id,
+                                crate::models::HostJobKind::Prepare,
+                                Some(routine.profile_id.clone()),
+                            )
+                            .await
+                        {
+                            Ok(_) => Ok(true),
+                            Err(e) if e.code == ErrorCode::Conflict => Ok(true),
+                            Err(e) => Err(e),
+                        };
+                    }
+                    let why = last
                         .and_then(|j| j.error)
                         .unwrap_or_else(|| "it is not ready yet.".into());
                     let stop = if why.ends_with('.') { "" } else { "." };
@@ -619,11 +695,20 @@ impl RoutineService {
                     )));
                 }
                 let runtime = self.runs.runtime_of(&routine.host_id).await?;
-                self.send_approved(&routine, &s, &runtime).await
+                self.send_approved(&routine, &s, &runtime).await?;
+                Ok(false)
             }
             .await;
-            if let Err(e) = result {
-                let _ = self.set_preparing(&id, false, Some(e.message)).await;
+            drop(one);
+            match result {
+                Ok(true) => {
+                    self.wait_prepared(host_id);
+                    return;
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    let _ = self.set_preparing(&id, false, Some(e.message)).await;
+                }
             }
         }
     }
@@ -853,6 +938,16 @@ impl RoutineService {
                 return;
             }
         };
+        // Every installed host too: one a routine moved away from may still
+        // fire it, and only a sync of that host stops it.
+        let mut hosts = hosts;
+        if let Ok(settings) = self.agent_settings.get().await {
+            for h in settings.hosts {
+                if h.kind == "ssh" && h.installed && h.approved && !hosts.contains(&h.id) {
+                    hosts.push(h.id);
+                }
+            }
+        }
         for host in hosts {
             // An approval that waited for the host, left by a quit or a restart.
             self.finish_preparing(&host).await;
@@ -867,18 +962,7 @@ impl RoutineService {
     pub async fn sync_host(self: &Arc<Self>, host_id: &str) -> AppResult<()> {
         // One conversation with a host at a time.
         let _one = self.syncing.lock().await;
-        let ids: Vec<String> = {
-            let host = host_id.to_string();
-            self.core
-                .call(move |conn| {
-                    let mut stmt = conn.prepare(
-                        "SELECT id FROM routines WHERE host_id = ?1 AND schedule_days IS NOT NULL",
-                    )?;
-                    let rows = stmt.query_map(params![host], |r| r.get::<_, String>(0))?;
-                    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-                })
-                .await?
-        };
+        let ids = self.scheduled_on(host_id).await?;
         let runtime = match self.runs.runtime_of(host_id).await {
             Ok(runtime) => runtime,
             Err(e) => {
@@ -904,30 +988,28 @@ impl RoutineService {
             }
         };
         // What the host fires for no routine of this host here. A routine
-        // this Mac has that moved to another host is ours: what it left
-        // comes home, then it stops here. One this Mac has never had (another
-        // Mac's, or one from after the backup this Mac was restored from)
-        // stays, results and all, and the host's page lists it for the user
-        // to remove.
+        // this Mac has that moved (or whose schedule here went) is ours: what
+        // it left comes home, then it stops here; if either cannot be done,
+        // it is listed so the user can stop it. One this Mac has never had
+        // (another Mac's, or one from after the backup this Mac was restored
+        // from) stays, results and all, and is listed for the user to remove.
         let mut only = Vec::new();
-        for status in &statuses {
-            let routine_id = &status.spec.routine_id;
-            if ids.contains(routine_id) {
-                continue;
-            }
-            match self.routine(routine_id).await {
+        for status in statuses
+            .iter()
+            .filter(|s| !ids.contains(&s.spec.routine_id))
+        {
+            match self.routine(&status.spec.routine_id).await {
                 Ok(moved) => {
-                    if self.import(&moved, &runtime, status).await.is_ok() {
-                        let _ = runtime.delete_schedule(routine_id).await;
+                    let stopped = self.import(&moved, host_id, &runtime, status).await.is_ok()
+                        && runtime
+                            .delete_schedule(&status.spec.routine_id)
+                            .await
+                            .is_ok();
+                    if !stopped {
+                        only.push(only_entry(status, true));
                     }
                 }
-                Err(e) if e.code == ErrorCode::NotFound => only.push(HostScheduleOnly {
-                    routine_id: routine_id.clone(),
-                    name: status.spec.name.clone(),
-                    enabled: status.spec.enabled,
-                    next_fire: status.next_fire.clone(),
-                    results_waiting: status.results.len() as u32,
-                }),
+                Err(e) if e.code == ErrorCode::NotFound => only.push(only_entry(status, false)),
                 Err(_) => {}
             }
         }
@@ -971,7 +1053,8 @@ impl RoutineService {
             }
             return Ok(());
         };
-        self.import(routine, runtime, status).await?;
+        self.import(routine, &routine.host_id, runtime, status)
+            .await?;
         let (id, next, now, commit, at) = (
             routine.id.clone(),
             status.next_fire.clone(),
@@ -1027,9 +1110,12 @@ impl RoutineService {
 
     /// Take the briefings the host has not yet given: each becomes a result,
     /// its run joins Runs, and the host is told it was taken.
+    /// `host_id` is the host the status came from: the routine's, unless it
+    /// moved since.
     async fn import(
         self: &Arc<Self>,
         routine: &Routine,
+        host_id: &str,
         runtime: &RunRuntime,
         status: &ScheduleStatus,
     ) -> AppResult<()> {
@@ -1038,7 +1124,7 @@ impl RoutineService {
         // The host sends a few at a time; keep asking while it has more.
         for _ in 0..8 {
             let more = self
-                .import_batch(routine, runtime, &batch, &start_commit)
+                .import_batch(routine, host_id, runtime, &batch, &start_commit)
                 .await?
                 >= RESULTS_PER_ANSWER;
             if !more {
@@ -1057,6 +1143,7 @@ impl RoutineService {
     async fn import_batch(
         self: &Arc<Self>,
         routine: &Routine,
+        host_id: &str,
         runtime: &RunRuntime,
         status: &ScheduleStatus,
         start_commit: &str,
@@ -1068,7 +1155,7 @@ impl RoutineService {
                 // still a briefing worth keeping.
                 if let Err(e) = self
                     .runs
-                    .adopt_routine_run(routine, run_id, start_commit)
+                    .adopt_routine_run(routine, host_id, run_id, start_commit)
                     .await
                 {
                     tracing::warn!(run = %run_id, error = %e, "a scheduled run was not listed");
@@ -1275,6 +1362,19 @@ fn host_down(error: &AppError, consequence: &str) -> AppError {
 /// A host must be prepared before a schedule can be sent to it: its helper
 /// is older than this Brainiac, or the image the routine's runs use is not
 /// built as this Brainiac would build it.
+/// A host's schedule as the host's page lists it when it is no routine of
+/// this Mac there.
+fn only_entry(status: &ScheduleStatus, mine: bool) -> HostScheduleOnly {
+    HostScheduleOnly {
+        routine_id: status.spec.routine_id.clone(),
+        name: status.spec.name.clone(),
+        enabled: status.spec.enabled,
+        next_fire: status.next_fire.clone(),
+        results_waiting: status.results.iter().filter(|r| !r.acked).count() as u32,
+        mine,
+    }
+}
+
 fn needs_preparing(host: &AgentHost, routine: &Routine) -> bool {
     let current = |i: &Option<crate::models::AgentImage>| i.as_ref().is_some_and(|i| i.current);
     host.upgrade_available

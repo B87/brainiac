@@ -623,9 +623,12 @@ impl HostJobService {
                 .filter(|p| p.missing.is_empty())
                 .collect(),
             // A routine's approval: its agent is tested here unless a test
-            // still matches, so the schedule can start runs of it.
+            // still matches after the image, so the schedule can start runs
+            // of it.
+            // Always carried, even when a test still matches now: building
+            // the image makes it stale, and `run` decides after the build.
             HostJobKind::Prepare => match profile_id {
-                Some(id) if !tested_here(&host, &id) => {
+                Some(id) => {
                     let profile = profiles
                         .into_iter()
                         .find(|p| p.id == id)

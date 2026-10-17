@@ -63,8 +63,13 @@ export default function HostSchedulesGroup({ host }: { host: AgentHost }) {
     }
   };
 
+  // What Pause all reaches: approved and sent, not waiting for approval or
+  // for the host to be prepared.
   const approved = (items ?? []).filter(
-    (i) => i.schedule && i.schedule.state !== "needs_approval",
+    (i) =>
+      i.schedule &&
+      i.schedule.state !== "needs_approval" &&
+      i.schedule.state !== "preparing",
   );
   const allPaused =
     approved.length > 0 &&
@@ -72,12 +77,17 @@ export default function HostSchedulesGroup({ host }: { host: AgentHost }) {
   const toggleAll = async () => {
     setBusy(true);
     setError(null);
+    // Each one is tried; the first refusal is shown, the others still go.
+    let first: string | null = null;
     try {
       for (const i of approved) {
-        await ipc.pauseRoutine(i.routine.id, !allPaused);
+        try {
+          await ipc.pauseRoutine(i.routine.id, !allPaused);
+        } catch (e) {
+          first ??= `${i.routine.name}: ${errorMessage(e)}`;
+        }
       }
-    } catch (e) {
-      setError(errorMessage(e));
+      if (first) setError(first);
     } finally {
       setBusy(false);
       void load();
@@ -143,8 +153,9 @@ export default function HostSchedulesGroup({ host }: { host: AgentHost }) {
           <span className="flex min-w-55 flex-1 flex-col gap-0.5">
             <span className="font-medium">{o.name}</span>
             <span className="text-[12px] text-muted">
-              Not a routine of this Mac: another Mac's, or one this Mac made
-              before it was restored from an older backup.{" "}
+              {o.mine
+                ? "This Mac's routine, which no longer runs here: Brainiac takes what it left and stops it at the next sync, or remove it now."
+                : "Not a routine of this Mac: another Mac's, or one this Mac made before it was restored from an older backup."}{" "}
               {o.enabled
                 ? `It still fires${o.next_fire ? `, next ${hostTime(o.next_fire) ?? "…"}` : ""}.`
                 : "It is off."}

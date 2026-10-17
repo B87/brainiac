@@ -43,7 +43,12 @@ export default function AgentHostTests({
     let ended = false;
     for (const host of hosts) {
       const job = jobs[host.id];
-      if (job?.kind !== "test") continue;
+      // Its own test, or a routine's preparation that tested it.
+      if (
+        job?.kind !== "test" &&
+        !(job?.kind === "prepare" && job.profile_ids.includes(profile.id))
+      )
+        continue;
       const key = `${job.id}:${job.state}`;
       const was = before.current[host.id];
       if (was?.startsWith(`${job.id}:running`) && job.state !== "running")
@@ -51,7 +56,7 @@ export default function AgentHostTests({
       before.current[host.id] = key;
     }
     if (ended) onChanged();
-  }, [jobs, hosts, onChanged]);
+  }, [jobs, hosts, onChanged, profile.id]);
 
   const testRemote = async (host: AgentHost) => {
     setError(null);
@@ -83,8 +88,10 @@ export default function AgentHostTests({
           const local = host.kind === "local";
           const job = jobs[host.id];
           const busy = !local && job?.state === "running";
+          // A test of this agent: its own, or a routine's preparation's.
           const mine =
-            job?.kind === "test" && job.profile_ids[0] === profile.id;
+            (job?.kind === "test" || job?.kind === "prepare") &&
+            job.profile_ids.includes(profile.id);
           const testing = local ? localTesting : busy && mine;
           const failed =
             !local &&
@@ -107,7 +114,7 @@ export default function AgentHostTests({
           const line = testing
             ? local
               ? "Testing: a short run that sends a prompt, cancels, and collects…"
-              : `Testing · ${job?.steps[currentStep(job)]?.title ?? ""}`
+              : `${job?.kind === "prepare" ? "Preparing for a routine, then testing" : "Testing"} · ${job?.steps[currentStep(job)]?.title ?? ""}`
             : busy
               ? `${host.name} is busy with another job`
               : state.kind === "passed"
@@ -165,7 +172,9 @@ export default function AgentHostTests({
               </div>
               {failed && (
                 <span className="text-[12px] text-conflict">
-                  The last test did not pass
+                  {job.kind === "prepare"
+                    ? "A routine's preparation of this host did not finish"
+                    : "The last test did not pass"}
                   {job.error ? `: ${job.error}` : "."} Its log is on the host's
                   page.
                 </span>
