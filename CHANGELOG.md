@@ -11,6 +11,8 @@ into the release's section.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-17
+
 - Routines are saved runs that check something and leave a short report, a briefing. Run Now starts one; the Routines section lists them, each has its own page, and Today shows the ones with news.
 - A routine keeps a memory that the agent and you can edit, and is shown its earlier briefings.
 - A routine on a run host can have a schedule: once you approve it, the host runs it at its time with this Mac off or asleep, and Brainiac takes the briefing when it next reaches the host. The Schedule tab shows the host's time and time zone beside the time you set.
@@ -235,7 +237,8 @@ First public build: a read-only Git viewer and multi-repository tracker for macO
 - The Branches tab is a placeholder.
 - Not signed with an Apple Developer certificate; the first launch needs right-click > Open (see the README).
 
-[Unreleased]: https://github.com/B87/brainiac/compare/v0.6.4...HEAD
+[Unreleased]: https://github.com/B87/brainiac/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/B87/brainiac/compare/v0.6.4...v0.7.0
 [0.6.4]: https://github.com/B87/brainiac/compare/v0.6.3...v0.6.4
 [0.6.3]: https://github.com/B87/brainiac/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/B87/brainiac/compare/v0.6.1...v0.6.2
