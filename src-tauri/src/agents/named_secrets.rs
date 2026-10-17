@@ -422,24 +422,7 @@ impl NamedSecretService {
         // in between sending the value and recording that it was sent.
         let _gate = self.credentials.gate(&credential_owner(id)).await;
         let secret = self.get(id).await?;
-        if secret.credential_source == SecretSource::None {
-            return Err(AppError::validation("This secret has no source yet."));
-        }
-        let lease = match self.credentials.resolve(&Self::binding(&secret)).await? {
-            Resolution::Secret(lease) => lease,
-            Resolution::NoCredential | Resolution::InputRequired => {
-                return Err(AppError::new(
-                    ErrorCode::Unauthenticated,
-                    "This secret has no value to share.",
-                ))
-            }
-        };
-        let revision = lease.revision();
-        let value = String::from_utf8(lease.bytes().expose().to_vec())
-            .map_err(|_| AppError::validation("The secret is not text."))?;
-        // A source may end its output with a newline; a value does not.
-        let value = value.trim_end_matches(['\n', '\r']).to_string();
-        check_value(&value)?;
+        let (value, revision) = self.read_value(&secret).await?;
         let kept = runtime
             .put_secret(&secret.env_name, value, secret.as_file)
             .await;
@@ -561,6 +544,54 @@ impl NamedSecretService {
                     .collect(),
             })
             .collect())
+    }
+
+    /// Read a secret's value here, from its source (with any unlock prompt),
+    /// and its credential revision. The caller holds the secret's gate.
+    async fn read_value(&self, secret: &NamedSecret) -> AppResult<(String, i64)> {
+        if secret.credential_source == SecretSource::None {
+            return Err(AppError::validation(format!(
+                "{} has no source yet.",
+                secret.env_name
+            )));
+        }
+        let lease = match self.credentials.resolve(&Self::binding(secret)).await? {
+            Resolution::Secret(lease) => lease,
+            Resolution::NoCredential | Resolution::InputRequired => {
+                return Err(AppError::new(
+                    ErrorCode::Unauthenticated,
+                    format!("{} has no value to give.", secret.env_name),
+                ))
+            }
+        };
+        let revision = lease.revision();
+        let value = String::from_utf8(lease.bytes().expose().to_vec())
+            .map_err(|_| AppError::validation("The secret is not text."))?;
+        // A source may end its output with a newline; a value does not.
+        let value = value.trim_end_matches(['\n', '\r']).to_string();
+        check_value(&value)?;
+        Ok((value, revision))
+    }
+
+    /// The values of these secrets, read here, for a run on this Mac: its
+    /// controller keeps no sealed copies, so each value goes to the run once,
+    /// with the model's credential, and is never stored.
+    pub async fn values(
+        &self,
+        ids: &[String],
+    ) -> AppResult<Vec<super::controller::protocol::ExtraSecret>> {
+        let mut out = Vec::new();
+        for id in ids {
+            let _gate = self.credentials.gate(&credential_owner(id)).await;
+            let secret = self.get(id).await?;
+            let (value, _) = self.read_value(&secret).await?;
+            out.push(super::controller::protocol::ExtraSecret {
+                name: secret.env_name.clone(),
+                value,
+                file: secret.as_file,
+            });
+        }
+        Ok(out)
     }
 
     /// **Remove from host**: the host forgets the secret, then so does the ledger.

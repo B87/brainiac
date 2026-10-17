@@ -480,8 +480,8 @@ async fn a_routines_access_goes_to_its_host_with_the_approval() {
     assert_eq!(usage[0].routines, ["Morning check"]);
     assert_eq!(usage[0].copies.len(), 1);
 
-    // A routine with access needs a run host: this Mac keeps no secrets.
-    let refused = h
+    // A routine on this Mac may have access too: its runs read the values here.
+    let local = h
         .routines
         .save(SaveRoutineRequest {
             id: None,
@@ -498,6 +498,7 @@ async fn a_routines_access_goes_to_its_host_with_the_approval() {
             memory: String::new(),
             previous_results: 3,
         })
-        .await;
-    assert!(refused.is_err());
+        .await
+        .unwrap();
+    assert_eq!(local.secret_ids, vec![secret.id.clone()]);
 }

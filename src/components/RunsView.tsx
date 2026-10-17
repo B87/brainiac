@@ -1389,7 +1389,11 @@ function RunDetails({
       {run.host_secrets.length > 0 && (
         <Fact label="Secrets">
           <span className="mono break-all">{run.host_secrets.join(", ")}</span>
-          <Note>From the host's sealed copies; the agent could read them.</Note>
+          <Note>
+            {run.host_id === "local"
+              ? "Read on this Mac when the run started; the agent could read them."
+              : "From the host's sealed copies; the agent could read them."}
+          </Note>
         </Fact>
       )}
       <div className="mt-1 flex flex-col gap-1.5 border-t pt-3">

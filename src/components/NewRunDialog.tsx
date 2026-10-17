@@ -29,6 +29,7 @@ import {
   type CodeSharingQuestion,
   errorMessage,
   ipc,
+  type NamedSecret,
   type RunPermissions,
   type RunStartPreview,
 } from "../lib/ipc";
@@ -218,9 +219,17 @@ export default function NewRunDialog({
     setTools(last.tools === true);
   }, [hostKey]);
   const held = useHostCopies(hostKey);
-  const secretNames = (held?.rows ?? [])
-    .filter((r) => secretIds.includes(r.secret_id))
-    .map((r) => r.env_name);
+  // The chosen secrets' names, from the list (a host's answer has them too).
+  const [named, setNamed] = useState<NamedSecret[]>([]);
+  useEffect(() => {
+    ipc
+      .listNamedSecrets()
+      .then(setNamed)
+      .catch(() => {});
+  }, []);
+  const secretNames = named
+    .filter((n) => secretIds.includes(n.id))
+    .map((n) => n.env_name);
   const sending = toSend(secretIds, held);
   const agent = profile?.agent ?? "claude_code";
   const ends = new Date(Date.now() + timeLimit * 60_000).toLocaleTimeString(
@@ -786,10 +795,12 @@ export default function NewRunDialog({
           </Disclosure>
           {secretNames.length > 0 && (
             <Disclosure icon={<KeyIcon size={15} />}>
-              This run gets {secretNames.join(", ")} from {hostName}'s sealed
-              copies. The agent can read{" "}
-              {secretNames.length === 1 ? "it" : "them"}, and so can the
-              repository's code.
+              This run gets {secretNames.join(", ")}
+              {remote
+                ? ` from ${hostName}'s sealed copies.`
+                : ", read on this Mac when it starts and never stored."}{" "}
+              The agent can read {secretNames.length === 1 ? "it" : "them"}, and
+              so can the repository's code.
               {sending.length > 0 && (
                 <strong>
                   {" "}

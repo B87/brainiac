@@ -105,6 +105,7 @@ struct Harness {
     settings: Arc<AgentSettingsService>,
     sharing: Arc<CodeSharingService>,
     core: Db,
+    named: Arc<brainiac_lib::agents::named_secrets::NamedSecretService>,
     events: Arc<Mutex<Vec<AgentRunChangedEvent>>>,
     start: String,
 }
@@ -176,7 +177,7 @@ impl Harness {
                 history,
                 Arc::clone(&settings),
                 Arc::clone(&sharing),
-                credentials,
+                Arc::clone(&credentials),
                 artifacts,
                 Arc::new(RunRuntime::attach(
                     StateDir::new(tmp.path().join("c")),
@@ -187,6 +188,12 @@ impl Harness {
             ),
             settings,
             sharing,
+            named: Arc::new(
+                brainiac_lib::agents::named_secrets::NamedSecretService::new(
+                    core.clone(),
+                    Arc::clone(&credentials),
+                ),
+            ),
             core: core.clone(),
             events,
             tmp,
@@ -1125,4 +1132,51 @@ async fn events_mirrored_again_after_a_crash_are_kept_once() {
     assert_eq!(std::fs::read_to_string(&trace).unwrap(), doubled);
     let events = reopened.events(&run.id, 0).await.unwrap().events;
     assert_eq!(seqs(&events), (1..=count as u64).collect::<Vec<_>>());
+}
+
+#[tokio::test]
+async fn a_run_on_this_mac_gets_its_secrets_read_here_and_sent_once() {
+    const SENTRY: &str = "sntrys_ExampleSentryTokenForTests0123456789";
+    let h = Harness::new().await;
+    h.runs.set_named(Arc::clone(&h.named));
+    let secret = h
+        .named
+        .save(brainiac_lib::models::SaveNamedSecretRequest {
+            id: None,
+            expected_version: 0,
+            label: "Sentry".into(),
+            env_name: "SENTRY_TOKEN".into(),
+            as_file: false,
+            note: String::new(),
+            source: SecretSource::Store,
+            secret: Some(SENTRY.into()),
+        })
+        .await
+        .unwrap();
+    let run = h
+        .runs
+        .start(StartRunRequest {
+            routine: None,
+            repository_id: "repo-1".into(),
+            start_commit: h.start.clone(),
+            prompt: "echo-extra".into(),
+            permissions: RunPermissions::Act,
+            time_limit_minutes: 60,
+            cpus: 2,
+            memory_mib: 3072,
+            workspace_gib: 20,
+            model: String::new(),
+            host_id: String::new(),
+            profile_id: CLAUDE_CODE.into(),
+            secret_ids: vec![secret.id.clone()],
+            tools: false,
+        })
+        .await
+        .unwrap();
+    // The run lists the name it was given, never the value.
+    assert_eq!(run.host_secrets, ["SENTRY_TOKEN"]);
+    h.wait(&run.id, "the first turn ends", idle).await;
+    let frames = h.engine.get().frames.clone();
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0]["extra"]["SENTRY_TOKEN"], SENTRY);
 }

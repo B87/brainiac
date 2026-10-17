@@ -111,6 +111,11 @@ export default function AccessPicker({
                     {s.label} · {s.as_file ? "a file" : "a value"}
                   </span>
                 </label>
+                {on && !hostId && (
+                  <span className="text-[12px] text-muted">
+                    Read on this Mac at each start
+                  </span>
+                )}
                 {on && hostId && held && (
                   <span className="text-[12px] text-muted">
                     {state === "shared"
@@ -149,17 +154,10 @@ export default function AccessPicker({
           New Access…
         </button>
       </div>
-      {chosen.length > 0 && !hostId ? (
-        <span className="text-[12px] text-conflict">
-          Secrets reach a run only on a Linux run host, which keeps them sealed.
-          Choose a run host, or clear these.
-        </span>
-      ) : (
-        <span className="text-[12px] text-muted">
-          A run can print any secret it holds, and its network is not
-          restricted: give it tokens that can read and nothing more.
-        </span>
-      )}
+      <span className="text-[12px] text-muted">
+        A run can print any secret it holds, and its network is not restricted:
+        give it tokens that can read and nothing more.
+      </span>
     </div>
   );
 }

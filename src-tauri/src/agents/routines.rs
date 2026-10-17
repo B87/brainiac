@@ -180,11 +180,6 @@ impl RoutineService {
         let mut secret_ids = request.secret_ids.clone();
         secret_ids.sort();
         secret_ids.dedup();
-        if !secret_ids.is_empty() && request.host_id.is_empty() {
-            return Err(AppError::validation(
-                "Secrets reach a run only on a Linux run host. Choose a host, or clear the access.",
-            ));
-        }
         // Each must exist; the names are what a run asks its host for.
         self.agent_settings.secret_names(&secret_ids).await?;
         if request.previous_results > MAX_PREVIOUS {
@@ -402,8 +397,9 @@ impl RoutineService {
             .call(move |conn| earlier_results(conn, &id, count))
             .await?;
         // The routine's access goes to its host first: Run now was the
-        // user's go-ahead, and the routine's page lists what it sends.
-        if !routine.secret_ids.is_empty() {
+        // user's go-ahead, and the routine's page lists what it sends. On
+        // this Mac the run reads the values itself.
+        if !routine.secret_ids.is_empty() && !routine.host_id.is_empty() {
             let runtime = self.runs.runtime_of(&routine.host_id).await?;
             self.named
                 .ensure_on_host(&routine.secret_ids, &routine.host_id, &runtime)

@@ -153,6 +153,8 @@ pub struct AgentRunService {
     runtime: Arc<RunRuntime>,
     /// Remote hosts, when the app has them. Tests leave this empty.
     hosts: Mutex<Option<Arc<super::hosts::AgentHostService>>>,
+    /// Named secrets, read for a run on this Mac. Tests may leave it empty.
+    named: Mutex<Option<Arc<super::named_secrets::NamedSecretService>>>,
     /// Whether each remote host answered last. This Mac uses `connected`.
     links: Mutex<HashMap<String, bool>>,
     /// A test run's controller, when it is not this Mac's.
@@ -196,6 +198,7 @@ impl AgentRunService {
             artifacts,
             runtime,
             hosts: Mutex::new(None),
+            named: Mutex::new(None),
             links: Mutex::new(HashMap::new()),
             test_runtimes: Mutex::new(HashMap::new()),
             repositories,
@@ -454,6 +457,11 @@ impl AgentRunService {
         *self.hosts.lock().unwrap_or_else(|p| p.into_inner()) = Some(hosts);
     }
 
+    /// Named secrets, read here for a run on this Mac.
+    pub fn set_named(&self, named: Arc<super::named_secrets::NamedSecretService>) {
+        *self.named.lock().unwrap_or_else(|p| p.into_inner()) = Some(named);
+    }
+
     /// New run, **Start run**: refuse what Settings still lacks, copy the
     /// start, read the credential, hand the run to the controller.
     pub async fn start(self: &Arc<Self>, request: StartRunRequest) -> AppResult<AgentRun> {
@@ -482,12 +490,6 @@ impl AgentRunService {
             )));
         }
         let host_secrets = self.settings.secret_names(&request.secret_ids).await?;
-        // Secrets are sealed by a Linux host's controller; this Mac has none.
-        if !remote && !host_secrets.is_empty() {
-            return Err(AppError::validation(
-                "Secrets reach a run only on a Linux run host, which keeps them sealed. Choose a run host, or clear the run's access.",
-            ));
-        }
         // The repository's answer for this provider, before anything is
         // copied; New run asked when there was none.
         self.sharing
@@ -548,6 +550,20 @@ impl AgentRunService {
         // The credential is read on the Mac, after everything that could be
         // refused, and goes once to the controller.
         let credential = self.credential(&profile).await?;
+        // A run host opens its own sealed copies by name. This Mac keeps
+        // none: each value is read here and goes to the run once, beside the
+        // credential, never stored.
+        let local_secrets = if !remote && !request.secret_ids.is_empty() {
+            let named = self
+                .named
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()
+                .ok_or_else(|| AppError::dependency("Named secrets are not available."))?;
+            named.values(&request.secret_ids).await?
+        } else {
+            Vec::new()
+        };
         let title = request
             .routine
             .as_ref()
@@ -604,8 +620,8 @@ impl AgentRunService {
             provider: profile.provider,
             model,
             known_concepts: None,
-            secrets: Vec::new(),
-            host_secrets,
+            secrets: local_secrets,
+            host_secrets: if remote { host_secrets } else { Vec::new() },
             routine_id: None,
         };
         self.begin(row, start, host_id, request.repository_id.clone(), root)

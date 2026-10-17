@@ -11,7 +11,7 @@ into the release's section.
 
 ## [Unreleased]
 
-- A run or a routine now chooses its own secrets and tools (Access and Tools), instead of the agent. Approving a routine sends the secrets its host lacks and prepares the host: it upgrades the host's helper and builds its image when needed, then turns the schedule on. Settings → Secrets shows which routines use each secret and which hosts hold a copy.
+- A run or a routine now chooses its own secrets and tools (Access and Tools), instead of the agent. Approving a routine sends the secrets its host lacks and prepares the host: it upgrades the host's helper and builds its image when needed, then turns the schedule on. Settings → Secrets shows which routines use each secret and which hosts hold a copy. A run on this Mac can use secrets too: they are read when it starts and never stored.
 
 - A secret of your own can be given to a run as a file instead of a value, for tools that read a key file such as a Google service account key; its variable holds the file's path. Upgrade the host's controller to share one.
 

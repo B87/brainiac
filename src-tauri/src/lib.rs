@@ -257,6 +257,7 @@ pub fn run() {
                 run_emitter,
             );
             runs.set_hosts(Arc::clone(&agent_hosts));
+            runs.set_named(Arc::clone(&named_secrets));
             app.manage(Arc::clone(&runs));
             let explain_runs = Arc::clone(&runs);
             let explain_agent_settings = Arc::clone(&agent_settings);
