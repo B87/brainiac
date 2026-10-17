@@ -10,6 +10,7 @@ export type SettingsSection =
   | "secrets"
   | "agents"
   | "runs"
+  | "hosts"
   | "sharing"
   | "backup"
   | "explain-agent"
@@ -17,7 +18,7 @@ export type SettingsSection =
   | "explain-stored";
 
 /** Which heading of Settings' sidebar a section is listed under. */
-export type SettingsGroup = "settings" | "explanations";
+export type SettingsGroup = "settings" | "runs" | "explanations";
 
 export const SECTIONS: {
   id: SettingsSection;
@@ -30,12 +31,15 @@ export const SECTIONS: {
   { id: "databases", label: "Databases" },
   { id: "terminal", label: "Terminal" },
   { id: "accounts", label: "Accounts" },
-  { id: "secrets", label: "Secrets" },
-  { id: "agents", label: "Agent Access" },
-  { id: "runs", label: "Agents" },
-  // Whether a repository's code may be sent (SPEC.md, section 13).
-  { id: "sharing", label: "Code Sharing" },
   { id: "backup", label: "Backup" },
+  // Runs (docs/design/routines-ux.md): who does a run, where, with what.
+  { id: "runs", label: "Agents", group: "runs" },
+  { id: "hosts", label: "Run Hosts", group: "runs" },
+  { id: "secrets", label: "Secrets", group: "runs" },
+  // Whether a repository's code may be sent (SPEC.md, section 13).
+  { id: "sharing", label: "Code Sharing", group: "runs" },
+  // The MCP server: agents outside Brainiac using it (SPEC.md, section 9).
+  { id: "agents", label: "MCP", group: "runs" },
   // Settings → Explanations, one page each (SPEC.md, section 14).
   { id: "explain-agent", label: "Agent and Depth", group: "explanations" },
   { id: "explain-concepts", label: "Concepts You Know", group: "explanations" },

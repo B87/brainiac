@@ -30,6 +30,7 @@ import {
   SlidersIcon,
   TerminalIcon,
 } from "./icons";
+import RunHostsPane from "./RunHostsPane";
 import {
   AccountsPane,
   AgentsPane,
@@ -52,6 +53,7 @@ const ICONS: Record<SettingsSection, ReactNode> = {
   secrets: <KeyIcon size={16} />,
   agents: <TerminalIcon size={16} />,
   runs: <PlayIcon size={16} />,
+  hosts: <BoxIcon size={16} />,
   sharing: <LockIcon size={16} />,
   backup: <ArchiveIcon size={16} />,
   "explain-agent": <BulbIcon size={16} />,
@@ -62,6 +64,7 @@ const ICONS: Record<SettingsSection, ReactNode> = {
 /** The sidebar's headings, in order. */
 const GROUPS: { id: SettingsGroup; label: string }[] = [
   { id: "settings", label: "Settings" },
+  { id: "runs", label: "Runs" },
   { id: "explanations", label: "Explanations" },
 ];
 
@@ -268,11 +271,17 @@ export default function SettingsPage({
             )}
             {section === "runs" && (
               <AgentRunsPane
-                hostId={host ?? null}
                 onHost={onHost}
                 profileId={profile ?? null}
                 onProfile={onProfile}
+              />
+            )}
+            {section === "hosts" && (
+              <RunHostsPane
+                hostId={host ?? null}
+                onHost={onHost}
                 onOpenRun={onOpenRun}
+                onSecrets={() => onSection("secrets")}
               />
             )}
             {section === "explain-agent" && (

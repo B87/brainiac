@@ -1011,6 +1011,15 @@ pub async fn named_secret_usage(
     named.usage().await
 }
 
+/// Settings → Secrets, **Test**: the length of the value, never the value.
+#[tauri::command]
+pub async fn test_named_secret(
+    id: String,
+    named: State<'_, NamedSecrets>,
+) -> AppResult<crate::models::NamedSecretTest> {
+    named.test(&id).await
+}
+
 /// New run, **Send and start**: the run's access goes to its host first, then
 /// the run starts. The dialog listed what goes.
 #[tauri::command]

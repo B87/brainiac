@@ -393,7 +393,8 @@ export default function App() {
       setPaletteOpen(false);
       setView((v) => ({
         kind: "settings",
-        section,
+        // A host's page lives in Run hosts.
+        section: host && section === "runs" ? "hosts" : section,
         back: v.kind === "settings" ? v.back : v,
         host,
         profile,
@@ -876,12 +877,18 @@ export default function App() {
             }
             host={view.host}
             onHost={(host) =>
-              setView({ ...view, host: host ?? undefined, profile: undefined })
+              setView({
+                ...view,
+                section: "hosts",
+                host: host ?? undefined,
+                profile: undefined,
+              })
             }
             profile={view.profile}
             onProfile={(profile) =>
               setView({
                 ...view,
+                section: "runs",
                 profile: profile ?? undefined,
                 host: undefined,
               })

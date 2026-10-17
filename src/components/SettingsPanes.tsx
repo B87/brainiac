@@ -51,6 +51,32 @@ export function Group({
   );
 }
 
+/**
+ * A card on a host's page (SPEC.md, Remote hosts, A host's page): a titled
+ * box whose rows are `.settings-row`s, with actions in its header.
+ */
+export function Card({
+  title,
+  actions,
+  children,
+  className = "",
+}: {
+  title: string;
+  actions?: ReactNode;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <section aria-label={title} className={`settings-group ${className}`}>
+      <div className="flex min-h-11 items-center gap-3 px-3.5 py-2">
+        <h3 className="m-0 flex-1 text-[13px] font-semibold">{title}</h3>
+        {actions}
+      </div>
+      <div className="flex flex-col border-line-soft border-t">{children}</div>
+    </section>
+  );
+}
+
 export function Hint({ children, id }: { children: ReactNode; id?: string }) {
   return (
     <span id={id} className="text-[12px] text-muted">

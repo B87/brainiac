@@ -311,6 +311,7 @@ export default function RoutinePage({
           repositories={repositories}
           onSaved={() => onChanged()}
           onError={onError}
+          onSchedule={() => onTab("schedule")}
         />
       )}
     </div>

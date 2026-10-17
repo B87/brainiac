@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
-import { durationLabel, providerName } from "../lib/agentRuns";
+import { durationLabel, profileName, providerName } from "../lib/agentRuns";
 import { relativeTime } from "../lib/format";
 import { currentStep, useHostJobsContext } from "../lib/hostJobs";
 import {
   type AgentHost,
   type AgentSettings,
   errorMessage,
+  type HostJob,
+  type HostJobStep,
   ipc,
   type NamedSecret,
   type RoutineOverview,
@@ -14,6 +16,7 @@ import {
 import { hostTime, scheduleWords, usd } from "../lib/routines";
 import { toSend, useHostCopies } from "./AccessPicker";
 import Dialog from "./Dialog";
+import { StepIcon } from "./HostJobView";
 
 const WEEKDAYS = [
   "Monday",
@@ -374,8 +377,10 @@ export default function ScheduleTab({
 }
 
 /**
- * What unattended runs may do, once, before the schedule is turned on. The
- * same list as New run's "Before you start", for a run with nobody there.
+ * Approve “routine” on host (docs/design/routines-ux.md): what unattended
+ * runs may do, as facts, once, before the schedule is turned on. Approving
+ * sends the secrets the host lacks, and when the host needs an upgrade or an
+ * image, prepares it and follows that here until the schedule is on.
  */
 function ApproveDialog({
   item,
@@ -394,6 +399,8 @@ function ApproveDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [readOnly, setReadOnly] = useState(false);
+  // What the approval sent before the host's job began, as done steps.
+  const [sent, setSent] = useState<string[] | null>(null);
   useEffect(() => {
     let alive = true;
     Promise.all([ipc.getAgentSettings(), ipc.listNamedSecrets()])
@@ -411,13 +418,52 @@ function ApproveDialog({
   const sending = toSend(routine.secret_ids, held);
   const profile = settings?.profiles.find((p) => p.id === routine.profile_id);
   const host = settings?.hosts.find((h) => h.id === routine.host_id);
+  const hostName = host?.name ?? item.host_name;
   // What approving does to the host before the schedule can go there.
   const prepare = host ? preparation(host, routine.tools) : [];
   const confirmed = sending.length === 0 || readOnly;
+  const job = useHostJobsContext()[routine.host_id];
+
+  if (sent) {
+    return (
+      <PreparingDialog
+        hostName={hostName}
+        job={job}
+        sent={sent}
+        onClose={onApproved}
+      />
+    );
+  }
+
+  const approve = () => {
+    setBusy(true);
+    setError(null);
+    ipc
+      .approveRoutineSchedule(routine.id)
+      .then(() => {
+        // A host being prepared: follow it here; else done.
+        if (prepare.length > 0) {
+          setSent(
+            secrets
+              .filter((n) => sending.includes(n.env_name))
+              .map(
+                (n) =>
+                  `${n.env_name} sent, as a ${n.as_file ? "file" : "value"}`,
+              ),
+          );
+          setBusy(false);
+        } else onApproved();
+      })
+      .catch((e) => {
+        setError(errorMessage(e));
+        setBusy(false);
+      });
+  };
+
   return (
     <Dialog
-      title="Approve schedule"
-      width={600}
+      title={`Approve “${routine.name}” on ${hostName}`}
+      width={640}
       onClose={onClose}
       footer={
         <>
@@ -427,110 +473,238 @@ function ApproveDialog({
             </span>
           )}
           <button type="button" className="btn btn-sm" onClick={onClose}>
-            Later
+            Cancel
           </button>
           <button
             type="button"
             className="btn btn-sm btn-primary"
             disabled={busy || !profile || !confirmed}
-            onClick={() => {
-              setBusy(true);
-              setError(null);
-              ipc
-                .approveRoutineSchedule(routine.id)
-                .then(onApproved)
-                .catch((e) => {
-                  setError(errorMessage(e));
-                  setBusy(false);
-                });
-            }}
+            onClick={approve}
           >
             {prepare.length > 0
-              ? `Approve and Prepare ${host?.name ?? "the Host"}`
+              ? `Approve and Prepare ${hostName}`
               : "Approve and Enable"}
           </button>
         </>
       }
     >
-      <p className="m-0 mb-2 text-muted">
-        {routine.name} will run on its own, with nobody to ask. It may do the
-        following. Changing any of it turns the schedule off until you approve
-        it again.
+      <p className="m-0 mb-3 text-muted">
+        {scheduleWords(draft)} {hostName} time, with your Mac asleep and no one
+        to ask. Changing any of this turns the schedule off until you approve it
+        again.
       </p>
-      <ul className="m-0 flex flex-col gap-1.5 pl-5">
-        <li>
-          <strong>Code:</strong> {item.repository_name}, the {routine.start}{" "}
-          commit, sent to{" "}
-          <strong>{profile ? providerName(profile.provider) : "…"}</strong>. The
-          host runs the commit this Mac last sent it.
-        </li>
-        <li>
-          <strong>Prompt:</strong> "{routine.prompt.slice(0, 120)}
-          {routine.prompt.length > 120 ? "…" : ""}"
-        </li>
-        <li>
-          <strong>Host:</strong> {host?.name ?? item.host_name},{" "}
-          {scheduleWords(draft)} in its time.
-        </li>
-        <li>
-          <strong>The agent's key:</strong> a copy is kept sealed on the host,
-          so it can start the run with no Mac. Anyone who administers the host
-          can use it.
-        </li>
-        <li>
-          <strong>Network:</strong> unrestricted. A run can reach any site.
-        </li>
-        <li>
-          <strong>Access:</strong>{" "}
-          {secrets.length === 0
-            ? "none."
-            : secrets.map((n, i) => (
-                <span key={n.id}>
-                  {i > 0 && ", "}
-                  <code className="mono">{n.env_name}</code>{" "}
-                  <span className="text-muted">
-                    ({n.as_file ? "a file" : "a value"}
-                    {sending.includes(n.env_name)
-                      ? `, sent to ${host?.name ?? "the host"} now`
-                      : held
-                        ? ", already there"
-                        : ""}
-                    )
-                  </span>
+      <dl className="m-0 flex flex-col rounded-lg border">
+        <Fact label="Code">
+          <code className="mono">{routine.start}</code> of{" "}
+          {item.repository_name}, sent to{" "}
+          {profile ? providerName(profile.provider) : "…"}. The host runs the
+          commit this Mac last sent it.
+        </Fact>
+        <Fact label="Agent's key">
+          {profile
+            ? `${profileName(profile)} · ${profile.payment === "claude_plan" ? "Claude plan" : "API key"}`
+            : "…"}
+          , sealed on {hostName}, so it can start the run with no Mac. Anyone
+          who administers the host can use it.
+        </Fact>
+        <Fact label="Access">
+          {secrets.length === 0 ? (
+            "None."
+          ) : (
+            <span className="flex flex-col gap-1">
+              {secrets.map((n) => (
+                <span key={n.id} className="flex items-center gap-2">
+                  <code className="mono">{n.env_name}</code>
+                  {sending.includes(n.env_name) ? (
+                    <span className="state-pill" data-tone="amber">
+                      new · {n.as_file ? "a file" : "a value"}
+                    </span>
+                  ) : held ? (
+                    <span className="state-pill" data-tone="green">
+                      already there
+                    </span>
+                  ) : (
+                    <span className="state-pill" data-tone="dashed">
+                      {n.as_file ? "a file" : "a value"}
+                    </span>
+                  )}
                 </span>
               ))}
-          {routine.tools &&
-            " Python and the Google Cloud CLI are in its image."}
-        </li>
-        {prepare.length > 0 && (
-          <li>
-            <strong>Host changes:</strong> {prepare.join(", and ")}. The
-            schedule goes to {host?.name} when that is done; you can close this
-            meanwhile.
-          </li>
-        )}
-        <li>
-          <strong>Limits:</strong> {durationLabel(routine.time_limit_minutes)}{" "}
-          and a {usd(draft.cost_ceiling_micros)} cost ceiling, checked after
+            </span>
+          )}
+          {routine.tools && (
+            <span className="block text-muted">
+              Python and the Google Cloud CLI in its image.
+            </span>
+          )}
+        </Fact>
+        <Fact label="Host changes">
+          {prepare.length > 0
+            ? `${capitalize(prepare.join(", and "))}. The schedule goes to ${hostName} when that is done; you can close this meanwhile.`
+            : "None."}
+        </Fact>
+        <Fact label="Network">
+          Not restricted: a run can send what it holds anywhere.
+        </Fact>
+        <Fact label="Limits">
+          {durationLabel(routine.time_limit_minutes)} per run; a run over{" "}
+          {usd(draft.cost_ceiling_micros)} pauses the schedule, checked after
           each run.
-        </li>
-        <li>
-          <strong>Writes:</strong> none outside its own container. It only
-          proposes tasks, notes and issues, which wait for you.
-        </li>
-      </ul>
+        </Fact>
+        <Fact label="Writes">
+          None outside its own container. It only proposes tasks, notes and
+          issues, which wait for you.
+        </Fact>
+      </dl>
       {sending.length > 0 && (
-        <label className="mt-3 flex items-start gap-2 rounded-md bg-panel px-3 py-2">
+        <label
+          className="run-card mt-3 flex-row items-start gap-2.5"
+          data-tone="amber"
+        >
           <input
             type="checkbox"
+            className="mt-0.5"
             checked={readOnly}
             onChange={(e) => setReadOnly(e.target.checked)}
           />
           <span>
             {sending.join(", ")} can read and nothing more. Brainiac cannot
-            check what a token allows, and a run can print it.
+            check this, and a run can print it.
           </span>
         </label>
+      )}
+    </Dialog>
+  );
+}
+
+function Fact({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex gap-3 border-b px-3 py-2 last:border-b-0">
+      <dt className="w-24 shrink-0 text-[12.5px] text-muted">{label}</dt>
+      <dd className="m-0 min-w-0 flex-1">{children}</dd>
+    </div>
+  );
+}
+
+function capitalize(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+type Shown = {
+  title: string;
+  state: HostJobStep["state"];
+  detail: string;
+};
+
+/**
+ * Preparing the host, followed here: what the approval already sent, the
+ * host job's steps as they run, then the schedule turned on. Closing it
+ * changes nothing; the routine's Schedule tab shows the same.
+ */
+function PreparingDialog({
+  hostName,
+  job,
+  sent,
+  onClose,
+}: {
+  hostName: string;
+  job: HostJob | undefined;
+  sent: string[];
+  onClose: () => void;
+}) {
+  const ended = job && job.state !== "running";
+  const succeeded = job?.state === "succeeded";
+  const shown: Shown[] = [
+    ...sent.map((title) => ({ title, state: "done" as const, detail: "" })),
+    ...(job?.steps ?? []).map((s) => ({
+      title: s.title,
+      state: s.state,
+      detail:
+        s.state === "skipped"
+          ? s.detail
+          : s.state === "failed"
+            ? (job?.error ?? s.detail)
+            : (s.progress ?? ""),
+    })),
+    {
+      title: "Agent's key sealed, code sent, and schedule turned on",
+      state: succeeded ? "done" : "waiting",
+      detail: "",
+    },
+  ];
+  const done = shown.filter(
+    (s) => s.state === "done" || s.state === "skipped",
+  ).length;
+  return (
+    <Dialog
+      title={
+        ended
+          ? succeeded
+            ? `${hostName} is prepared`
+            : `Preparing ${hostName} did not finish`
+          : `Preparing ${hostName} · ${done} of ${shown.length}`
+      }
+      width={600}
+      onClose={onClose}
+      footer={
+        <button
+          type="button"
+          className="btn btn-sm btn-primary"
+          onClick={onClose}
+        >
+          {ended ? "Done" : "Close"}
+        </button>
+      }
+    >
+      <p className="m-0 mb-3 text-muted">
+        {succeeded
+          ? `The schedule is on ${hostName}.`
+          : ended
+            ? "The schedule stays off; the step says what to do. Nothing that was already sent is undone. Approve again to retry."
+            : `You can close this. If ${hostName} stops answering, it picks up where it was when it is back.`}
+      </p>
+      <ol className="m-0 flex list-none flex-col p-0">
+        {shown.map((s, i) => (
+          <li
+            key={s.title}
+            className="flex items-start gap-2.5 border-b py-2 last:border-b-0"
+          >
+            {s.state === "waiting" ? (
+              <span
+                aria-hidden="true"
+                className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-control text-[10px] font-semibold text-muted"
+              >
+                {i + 1}
+              </span>
+            ) : (
+              <StepIcon state={s.state} />
+            )}
+            <span className="flex min-w-0 flex-col">
+              <span className={s.state === "waiting" ? "text-fg-2" : ""}>
+                {s.title}
+              </span>
+              {s.detail && (
+                <span
+                  className={`text-[12px] ${s.state === "failed" ? "text-conflict" : "text-muted"}`}
+                >
+                  {s.detail}
+                </span>
+              )}
+            </span>
+          </li>
+        ))}
+      </ol>
+      {!ended && (
+        <p className="m-0 mt-3 text-[12px] text-muted">
+          If a step fails, the schedule stays off and the step says what to do.
+          Nothing that was already sent is undone.
+        </p>
       )}
     </Dialog>
   );
@@ -577,10 +751,14 @@ function preparation(host: AgentHost, tools: boolean): string[] {
   const steps: string[] = [];
   if (host.upgrade_available)
     steps.push(
-      `upgrade its Brainiac helper${host.available_build ? ` to ${host.available_build}` : ""}`,
+      `upgrade its run controller${host.available_build ? ` to ${host.available_build}` : ""}`,
     );
   const built = (i: AgentHost["image"]) => !!i?.current;
   if (!built(host.image) || (tools && !built(host.tools_image)))
-    steps.push("build its image with Python and the Google Cloud CLI");
+    steps.push(
+      tools
+        ? "build its image with Python and the Google Cloud CLI"
+        : "build its image",
+    );
   return steps;
 }

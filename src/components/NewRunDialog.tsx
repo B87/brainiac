@@ -659,6 +659,7 @@ export default function NewRunDialog({
             chosen={secretIds}
             onChange={setSecretIds}
             sentWith="Start"
+            chips
           />
           <label className="flex items-center gap-2 text-[12.5px]">
             <input

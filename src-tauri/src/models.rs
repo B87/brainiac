@@ -4260,6 +4260,15 @@ pub struct NamedSecretUsage {
     pub copies: Vec<SecretCopy>,
 }
 
+/// **Test** of a named secret's source: how much it printed and how long it
+/// took. Never the value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct NamedSecretTest {
+    pub chars: u32,
+    pub millis: u32,
+}
+
 /// One host's copy of a named secret.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]

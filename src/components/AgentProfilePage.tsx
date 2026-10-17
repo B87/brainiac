@@ -12,6 +12,7 @@ import {
   paymentLabel,
   paymentsOffered,
   profileName,
+  runMissing,
   settingsRequest,
   TIME_LIMITS,
 } from "../lib/agentRuns";
@@ -160,7 +161,7 @@ export default function AgentProfilePage({
         </Group>
       )}
 
-      <Group label="Pay with">
+      <Group label="Key and who pays">
         <CredentialSection
           profile={profile}
           planOffered={settings.plan_offered}
@@ -300,6 +301,41 @@ export default function AgentProfilePage({
             width={70}
           />
         </div>
+      </Group>
+
+      <Group label="Where it can run">
+        <ul className="settings-group m-0 list-none p-0">
+          {settings.hosts.map((h) => {
+            // The agent's own gaps are listed above; this says what the host lacks.
+            const first =
+              profile.missing.length > 0
+                ? "Not ready: see above"
+                : runMissing(profile, h)[0];
+            return (
+              <li key={h.id} className="settings-row">
+                <span className="min-w-0 flex-1">{h.name}</span>
+                {first ? (
+                  <span className="min-w-0 flex-[2] truncate text-[12px] text-dirty">
+                    {first}
+                  </span>
+                ) : (
+                  <HostPill label="Ready" tone="ready" />
+                )}
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() => onHost(h.id)}
+                >
+                  Open Host
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+        <Hint>
+          What a host lacks is fixed on its page; approving a routine there does
+          most of it for you.
+        </Hint>
       </Group>
 
       <UsedBy profileId={profile.id} />

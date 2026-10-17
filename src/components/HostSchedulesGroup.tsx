@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { currentStep, useHostJobsContext } from "../lib/hostJobs";
 import {
   type AgentHost,
   errorMessage,
@@ -6,18 +7,20 @@ import {
   type RoutineOverview,
 } from "../lib/ipc";
 import { hostTime, routineState, scheduleWords } from "../lib/routines";
-import { Group, Hint } from "./SettingsPanes";
+import { Card, Hint } from "./SettingsPanes";
 import StatePill from "./StatePill";
 
 /**
- * Schedules on a run host (docs/design/routines-ux.md): each routine the host
+ * Routines on a run host (docs/design/routines-ux.md): each routine the host
  * fires, with its next time and state, and Pause all. A host that cannot be
- * reached shows its schedules as overdue or unreachable, not as fine.
+ * reached shows its schedules as overdue or unreachable, not as fine; one
+ * being prepared says which step the host is at.
  */
 export default function HostSchedulesGroup({ host }: { host: AgentHost }) {
   const [items, setItems] = useState<RoutineOverview[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const job = useHostJobsContext()[host.id];
   const load = useCallback(async () => {
     try {
       const all = await ipc.listRoutines();
@@ -54,57 +57,65 @@ export default function HostSchedulesGroup({ host }: { host: AgentHost }) {
   };
 
   return (
-    <Group label="Schedules on this host">
-      <div className="settings-group flex flex-col">
-        {items?.length === 0 && (
-          <div className="settings-row text-[12.5px] text-muted">
-            No schedules here. A routine's Schedule tab sets one.
-          </div>
-        )}
-        {items?.map((i) => {
-          const st = routineState(i);
-          return (
-            <div
-              key={i.routine.id}
-              className="settings-row flex-wrap items-center gap-x-3 gap-y-1"
-            >
-              <span className="min-w-0 flex-1 truncate font-medium">
-                {i.routine.name}{" "}
-                <span className="font-normal text-muted">
-                  {i.schedule ? scheduleWords(i.schedule.when) : ""}
-                  {i.schedule?.state === "active" &&
-                    ` · next ${hostTime(i.schedule.next_fire) ?? "…"}`}
-                </span>
-              </span>
-              <StatePill tone={st.tone}>{st.word}</StatePill>
-            </div>
-          );
-        })}
-        {error && (
-          <div
-            className="settings-row text-[12.5px] text-conflict"
-            role="alert"
+    <Card
+      title="Routines on this host"
+      actions={
+        approved.length > 0 && (
+          <button
+            type="button"
+            className="btn btn-sm"
+            disabled={busy}
+            onClick={() => void toggleAll()}
           >
-            {error}
+            {allPaused ? "Resume All" : "Pause All"}
+          </button>
+        )
+      }
+    >
+      {items?.length === 0 && (
+        <div className="settings-row text-[12.5px] text-muted">
+          None. A routine's Schedule tab puts one here; {host.name} then fires
+          it at its time, with this Mac off or asleep, and keeps what it leaves
+          until Brainiac next reaches it.
+        </div>
+      )}
+      {items?.map((i) => {
+        const st = routineState(i);
+        // While the host is prepared for it, the step it is at.
+        const step =
+          st.key === "preparing" && job?.state === "running"
+            ? job.steps[currentStep(job)]
+            : null;
+        const word = step
+          ? `Preparing · ${step.progress ?? step.title}`
+          : st.word;
+        return (
+          <div
+            key={i.routine.id}
+            className="settings-row flex-wrap items-center gap-x-3 gap-y-1"
+          >
+            <span className="min-w-0 flex-1 truncate font-medium">
+              {i.routine.name}
+            </span>
+            <span className="text-[12.5px] text-muted">
+              {i.schedule ? scheduleWords(i.schedule.when) : ""}
+              {i.schedule?.state === "active" &&
+                ` · next ${hostTime(i.schedule.next_fire) ?? "…"}`}
+            </span>
+            <StatePill tone={st.tone}>{word}</StatePill>
           </div>
-        )}
-        {approved.length > 0 && (
-          <div className="settings-row">
-            <button
-              type="button"
-              className="btn btn-sm"
-              disabled={busy}
-              onClick={() => void toggleAll()}
-            >
-              {allPaused ? "Resume All" : "Pause All"}
-            </button>
-          </div>
-        )}
-      </div>
-      <Hint>
-        {host.name} fires these at their time, with this Mac off or asleep, and
-        keeps what they leave until Brainiac next reaches it.
-      </Hint>
-    </Group>
+        );
+      })}
+      {error && (
+        <div className="settings-row text-[12.5px] text-conflict" role="alert">
+          {error}
+        </div>
+      )}
+      {!items && !error && (
+        <div className="settings-row">
+          <Hint>Loading…</Hint>
+        </div>
+      )}
+    </Card>
   );
 }

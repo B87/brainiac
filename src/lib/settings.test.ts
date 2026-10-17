@@ -40,8 +40,9 @@ describe("parseInRange", () => {
 });
 
 it("labels sections", () => {
-  expect(sectionLabel("agents")).toBe("Agent Access");
+  expect(sectionLabel("agents")).toBe("MCP");
   expect(sectionLabel("runs")).toBe("Agents");
+  expect(sectionLabel("hosts")).toBe("Run Hosts");
 });
 
 describe("editorPreset", () => {

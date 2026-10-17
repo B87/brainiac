@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { relativeTime } from "../lib/format";
 import {
+  type AgentProvider,
+  type AppSnapshot,
   type CodeAnswer,
   errorMessage,
   ipc,
@@ -9,7 +11,7 @@ import {
 } from "../lib/ipc";
 import { Hint, Lede } from "./SettingsPanes";
 
-const PROVIDER: Record<string, string> = {
+const PROVIDER: Record<AgentProvider, string> = {
   anthropic: "Anthropic",
   openai: "OpenAI",
   openrouter: "OpenRouter",
@@ -22,6 +24,10 @@ const PROVIDER: Record<string, string> = {
  */
 export default function CodeSharingPane() {
   const [answers, setAnswers] = useState<CodeAnswer[] | null>(null);
+  const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null);
+  const [target, setTarget] = useState("");
+  const [provider, setProvider] = useState<AgentProvider>("anthropic");
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(
@@ -33,17 +39,24 @@ export default function CodeSharingPane() {
     [],
   );
   useEffect(() => {
+    void ipc
+      .getAppSnapshot()
+      .then(setSnapshot)
+      .catch((e) => setError(errorMessage(e)));
     void load();
     return subscribe(onCodeSharingChanged(() => void load()));
   }, [load]);
 
   const act = async (what: () => Promise<unknown>) => {
+    setSaving(true);
     try {
       await what();
       setError(null);
       await load();
     } catch (e) {
       setError(errorMessage(e));
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -61,12 +74,83 @@ export default function CodeSharingPane() {
         </div>
       )}
       <div className="settings-group">
+        <div className="settings-row flex-wrap">
+          <label className="flex min-w-55 flex-1 flex-col gap-1">
+            <span className="font-medium">Repository or workspace</span>
+            <select
+              className="field"
+              value={target}
+              disabled={!snapshot || saving}
+              onChange={(e) => setTarget(e.target.value)}
+            >
+              <option value="">Choose a repository or workspace…</option>
+              <optgroup label="Repositories">
+                {snapshot?.repositories.map((r) => (
+                  <option key={r.id} value={`repository:${r.id}`}>
+                    {r.name} · {r.display_path}
+                  </option>
+                ))}
+              </optgroup>
+              <optgroup label="Workspaces">
+                {snapshot?.workspaces.map((w) => (
+                  <option key={w.id} value={`workspace:${w.id}`}>
+                    Every repository in {w.name}
+                  </option>
+                ))}
+              </optgroup>
+            </select>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="font-medium">Provider</span>
+            <select
+              className="field"
+              value={provider}
+              disabled={saving}
+              onChange={(e) => setProvider(e.target.value as AgentProvider)}
+            >
+              {Object.entries(PROVIDER).map(([id, name]) => (
+                <option key={id} value={id}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          </label>
+          {[true, false].map((allowed) => (
+            <button
+              key={String(allowed)}
+              type="button"
+              className="btn btn-sm"
+              disabled={!target || saving}
+              onClick={() => {
+                const workspace = target.startsWith("workspace:");
+                const id = target.slice(target.indexOf(":") + 1);
+                void act(() =>
+                  ipc.answerCodeSharing({
+                    repository_id: workspace ? "" : id,
+                    workspace_id: workspace ? id : null,
+                    provider,
+                    allowed,
+                  }),
+                );
+              }}
+            >
+              {allowed ? "Allow" : "Don’t allow"}
+            </button>
+          ))}
+        </div>
+      </div>
+      <Hint>
+        A workspace answer covers its current and future repositories. A
+        repository’s own answer takes priority. Changing an answer controls
+        future runs and explanations.
+      </Hint>
+      <div className="settings-group">
         {answers === null && !error && (
           <div className="settings-row text-muted">Loading…</div>
         )}
         {answers?.length === 0 && (
           <div className="settings-row text-muted">
-            No repository asked yet. The first run or Explain in each asks.
+            No answers saved yet. Choose a repository or workspace above.
           </div>
         )}
         {answers?.map((a) => (
@@ -83,7 +167,7 @@ export default function CodeSharingPane() {
                     : "a removed repository")}
               </span>
               <Hint>
-                {a.allowed ? "Sent" : "Never sent"} to{" "}
+                {a.allowed ? "Allowed to send" : "Not allowed to send"} to{" "}
                 {PROVIDER[a.provider] ?? a.provider} ·{" "}
                 {relativeTime(a.answered_at)}
               </Hint>
@@ -91,6 +175,7 @@ export default function CodeSharingPane() {
             <select
               className="field"
               aria-label={`Answer for ${a.scope_name ?? a.scope_id}`}
+              disabled={saving}
               value={a.allowed ? "yes" : "no"}
               onChange={(e) =>
                 void act(() =>
@@ -109,7 +194,8 @@ export default function CodeSharingPane() {
             <button
               type="button"
               className="btn btn-sm btn-ghost"
-              title="Ask again at the next run or Explain"
+              disabled={saving}
+              title="Remove this answer; workspace answers still apply"
               onClick={() =>
                 void act(() =>
                   ipc.forgetCodeSharingAnswer(a.scope, a.scope_id, a.provider),

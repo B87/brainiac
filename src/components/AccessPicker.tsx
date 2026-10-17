@@ -51,6 +51,7 @@ export default function AccessPicker({
   chosen,
   onChange,
   sentWith,
+  chips = false,
 }: {
   /** Empty: this Mac, which keeps no secrets. */
   hostId: string;
@@ -59,6 +60,8 @@ export default function AccessPicker({
   onChange: (ids: string[]) => void;
   /** "the approval" or "Start": when a secret the host lacks goes there. */
   sentWith: string;
+  /** Toggle chips (New run) instead of a list of checkboxes. */
+  chips?: boolean;
 }) {
   const [secrets, setSecrets] = useState<NamedSecret[] | null>(null);
   const [adding, setAdding] = useState(false);
@@ -89,6 +92,25 @@ export default function AccessPicker({
         <span className="text-muted">
           No secrets yet. A run gets none unless you add one here.
         </span>
+      ) : chips ? (
+        <div className="flex flex-wrap gap-1.5">
+          {secrets.map((s) => {
+            const on = chosen.includes(s.id);
+            return (
+              <button
+                key={s.id}
+                type="button"
+                aria-pressed={on}
+                title={`${s.label} · ${s.as_file ? "a file" : "a value"}`}
+                className={`mono rounded-full border px-2.5 py-0.5 text-[12px] ${on ? "border-accent bg-accent/15" : "text-fg-2"}`}
+                onClick={() => toggle(s.id, !on)}
+              >
+                {on ? "✓ " : "+ "}
+                {s.env_name}
+              </button>
+            );
+          })}
+        </div>
       ) : (
         <ul className="m-0 flex list-none flex-col gap-1 p-0">
           {secrets.map((s) => {

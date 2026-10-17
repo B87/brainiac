@@ -608,6 +608,7 @@ pub fn run() {
             commands::create_briefing_task,
             commands::create_briefing_note,
             commands::named_secret_usage,
+            commands::test_named_secret,
             commands::send_run_secrets,
             commands::get_agent_host_job_log,
             commands::remove_agent_host,

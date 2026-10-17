@@ -14,7 +14,7 @@ import {
   type HostSecrets,
   ipc,
 } from "../lib/ipc";
-import { Group, Hint } from "./SettingsPanes";
+import { Card, Hint } from "./SettingsPanes";
 
 const TONE_CLASS = {
   ok: "text-fg-2",
@@ -24,13 +24,22 @@ const TONE_CLASS = {
 } as const;
 
 /**
- * Secrets on a run host (docs/design/scheduled-runs.md): each named secret
- * from Settings → Secrets, whether the host has a copy, and Share and Remove.
+ * Held here (docs/design/scheduled-runs.md): the named secrets from
+ * Settings → Secrets the host holds or was sent, as one line when all is
+ * well and a row each otherwise, with Send Again and Remove from Host.
  * Opening it asks the host what it holds; it never asks for a value, and the
  * host never returns one. A copy does not follow a change made here until it
- * is shared again.
+ * is shared again. Nothing is shared from here: a routine's approval or a
+ * run's start sends what it needs.
  */
-export default function HostSecretsGroup({ host }: { host: AgentHost }) {
+export default function HostSecretsGroup({
+  host,
+  onSecrets,
+}: {
+  host: AgentHost;
+  /** Opens Settings › Secrets, where each copy is listed with its secret. */
+  onSecrets?: () => void;
+}) {
   const [state, setState] = useState<HostSecrets | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -89,108 +98,111 @@ export default function HostSecretsGroup({ host }: { host: AgentHost }) {
     }
   };
 
-  // Only what the host holds or was sent: a secret goes to a host with a
-  // routine's approval or a run's start, never from this page.
+  // Only what the host holds or was sent.
   const rows = state?.rows.filter((r) => r.state !== "not_shared") ?? [];
+  const sealed = rows.filter((r) => r.state === "shared").length;
+  const attention = rows.length - sealed + (state?.only_on_host.length ?? 0);
+  const summary = !state
+    ? "Asking the host…"
+    : rows.length === 0 && state.only_on_host.length === 0
+      ? "No secrets yet. One comes here with a routine's approval or a run's start."
+      : [
+          sealed > 0 &&
+            `${sealed} ${sealed === 1 ? "secret" : "secrets"} sealed`,
+          attention > 0 &&
+            `${attention} ${attention === 1 ? "needs" : "need"} attention`,
+        ]
+          .filter(Boolean)
+          .join(" · ");
+
   return (
-    <Group label="Secrets held here">
-      <div className="settings-group flex flex-col">
-        {state && rows.length === 0 && state.only_on_host.length === 0 && (
-          <div className="settings-row text-[12.5px] text-muted">
-            None. A secret comes here when a routine that uses it is approved on
-            this host, or a run with it starts here.
-          </div>
-        )}
-        {rows.map((row) => (
-          <fieldset
-            key={row.secret_id}
-            className="settings-row m-0 flex min-w-0 flex-col items-stretch gap-1 border-0"
-            aria-label={row.label}
+    <Card
+      title="Held here"
+      actions={
+        onSecrets && (
+          <button
+            type="button"
+            className="btn btn-sm btn-ghost text-link"
+            onClick={onSecrets}
           >
-            <div className="flex items-center gap-2">
-              <span className="min-w-0 flex-1 truncate font-medium">
-                {row.label}{" "}
-                <span className="mono text-[12px] font-normal text-muted">
-                  {row.env_name}
-                </span>
-              </span>
-              <span
-                className={`text-[12px] ${TONE_CLASS[stateTone(row.state)]}`}
-              >
-                {stateText(row.state)}
-                {row.shared_at &&
-                  row.state !== "not_shared" &&
-                  row.state !== "failed" &&
-                  ` · ${relativeTime(row.shared_at)}`}
-              </span>
-              {row.state !== "shared" && (
-                <button
-                  type="button"
-                  className="btn btn-sm"
-                  disabled={busy !== null}
-                  onClick={() => void act(row, ipc.shareSecretWithHost)}
-                >
-                  {busy === row.secret_id ? "Working…" : shareLabel(row.state)}
-                </button>
-              )}
-              {removable(row.state) && (
-                <button
-                  type="button"
-                  className="btn btn-sm"
-                  disabled={busy !== null}
-                  onClick={() => void act(row, ipc.removeSecretFromHost)}
-                >
-                  Remove from Host
-                </button>
-              )}
-            </div>
-            <Hint>{stateHelp(row)}</Hint>
-          </fieldset>
-        ))}
-        {state?.only_on_host.map((s) => (
-          <div key={s.name} className="settings-row text-[12.5px]">
-            <span className="mono min-w-0 flex-1">{s.name}</span>
-            <Hint>
-              Held by the host, but not a secret in Settings → Secrets.
-            </Hint>
-            <button
-              type="button"
-              className="btn btn-sm"
-              disabled={busy !== null}
-              onClick={() => void removeUnlisted(s.name)}
-            >
-              Remove from Host
-            </button>
-          </div>
-        ))}
-        {state?.problem && (
-          <div
-            className="settings-row text-[12.5px] text-conflict"
-            role="alert"
-          >
-            {state.problem} Brainiac can only show what it sent.
-          </div>
-        )}
-        {error && (
-          <div
-            className="settings-row text-[12.5px] text-conflict"
-            role="alert"
-          >
-            {error}
-          </div>
-        )}
-        {!state && !error && (
-          <div className="settings-row text-[12px] text-muted">
-            Asking the host…
-          </div>
-        )}
+            See in Secrets
+          </button>
+        )
+      }
+    >
+      <div className="settings-row">
+        <span className="min-w-0 flex-1 text-[12.5px]">{summary}</span>
+        <Hint>
+          Sealed so only the host's controller can open them. Anyone who
+          administers {host.name} can still reach what a run uses.
+        </Hint>
       </div>
-      <Hint>
-        The host keeps a sealed copy that only its controller can open, so a run
-        started on {host.name} can use it without this Mac. Anyone with access
-        to the host or its administrator account can still reach what a run
-        uses: give runs tokens that can read and nothing more.
-      </Hint>
-    </Group>
+      {rows.map((row) => (
+        <fieldset
+          key={row.secret_id}
+          className="settings-row m-0 flex min-w-0 flex-col items-stretch gap-1 border-0"
+          aria-label={row.label}
+        >
+          <div className="flex items-center gap-2">
+            <span className="min-w-0 flex-1 truncate text-[12.5px]">
+              <span className="mono">{row.env_name}</span>{" "}
+              <span className="text-muted">{row.label}</span>
+            </span>
+            <span className={`text-[12px] ${TONE_CLASS[stateTone(row.state)]}`}>
+              {stateText(row.state)}
+              {row.shared_at &&
+                row.state !== "not_shared" &&
+                row.state !== "failed" &&
+                ` · ${relativeTime(row.shared_at)}`}
+            </span>
+            {row.state !== "shared" && (
+              <button
+                type="button"
+                className="btn btn-sm"
+                disabled={busy !== null}
+                onClick={() => void act(row, ipc.shareSecretWithHost)}
+              >
+                {busy === row.secret_id ? "Working…" : shareLabel(row.state)}
+              </button>
+            )}
+            {removable(row.state) && (
+              <button
+                type="button"
+                className="btn btn-sm"
+                disabled={busy !== null}
+                onClick={() => void act(row, ipc.removeSecretFromHost)}
+              >
+                Remove from Host
+              </button>
+            )}
+          </div>
+          {row.state !== "shared" && <Hint>{stateHelp(row)}</Hint>}
+        </fieldset>
+      ))}
+      {state?.only_on_host.map((s) => (
+        <div key={s.name} className="settings-row text-[12.5px]">
+          <span className="mono min-w-0 flex-1">{s.name}</span>
+          <Hint>Held by the host, but not a secret in Settings → Secrets.</Hint>
+          <button
+            type="button"
+            className="btn btn-sm"
+            disabled={busy !== null}
+            onClick={() => void removeUnlisted(s.name)}
+          >
+            Remove from Host
+          </button>
+        </div>
+      ))}
+      {state?.problem && (
+        <div className="settings-row text-[12.5px] text-conflict" role="alert">
+          {state.problem} Brainiac can only show what it sent.
+        </div>
+      )}
+      {error && (
+        <div className="settings-row text-[12.5px] text-conflict" role="alert">
+          {error}
+        </div>
+      )}
+    </Card>
   );
 }

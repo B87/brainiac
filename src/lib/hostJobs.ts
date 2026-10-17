@@ -324,3 +324,28 @@ export function shortFingerprint(fingerprint: string): string {
     ? `${kind}${value.slice(0, 8)}…${value.slice(-8)}`
     : fingerprint;
 }
+
+/**
+ * What to do next on a host, for the Run hosts table: the job going on, or
+ * the first thing it lacks; `null` when nothing does.
+ */
+export function hostNextStep(
+  host: AgentHost,
+  job: HostJob | undefined,
+): string | null {
+  if (job?.state === "running") {
+    const step = job.steps[currentStep(job)];
+    return `${jobTitle(job)}${step ? `: ${step.title}` : ""}`;
+  }
+  if (job && (job.state === "failed" || job.state === "interrupted"))
+    return "Open it to see what failed and try again";
+  if (host.kind === "ssh" && !host.approved) return "Confirm its key";
+  if (host.kind === "ssh" && !host.installed) return "Install, build and test";
+  if (host.upgrade_available)
+    return "Upgrade the run controller (a routine's approval does it too)";
+  if (!host.image) return "Build the image";
+  if (!host.image.current) return "Rebuild the image";
+  if (host.missing.length > 0) return host.missing[0];
+  if (!testedProfiles(host)) return "Test an agent there";
+  return null;
+}

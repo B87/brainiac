@@ -11,6 +11,10 @@ into the release's section.
 
 ## [Unreleased]
 
+- Settings → Code Sharing can allow or block a provider for an existing repository or every repository in a workspace before starting a run.
+
+- Settings has a Runs heading with Agents, Run Hosts (a table of hosts with what each needs next), Secrets (a table, with Test), Code Sharing and MCP (formerly Agent Access). A host's page is the machine only: whether it answers, what it has and lacks with each action, its health, the routines it fires and what it holds. Adding a host is a page in steps, with what Install checks beside them. A routine's definition shows what scheduling it on its host needs; approving states the facts in a table and follows the host's preparation step by step.
+
 - A run or a routine now chooses its own secrets and tools (Access and Tools), instead of the agent. Approving a routine sends the secrets its host lacks and prepares the host: it upgrades the host's helper and builds its image when needed, then turns the schedule on. Settings → Secrets shows which routines use each secret and which hosts hold a copy. A run on this Mac can use secrets too: they are read when it starts and never stored.
 
 - A secret of your own can be given to a run as a file instead of a value, for tools that read a key file such as a Google service account key; its variable holds the file's path. Upgrade the host's controller to share one.

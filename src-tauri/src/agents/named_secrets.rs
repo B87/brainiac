@@ -573,6 +573,22 @@ impl NamedSecretService {
         Ok((value, revision))
     }
 
+    /// **Test**: read the value as a run would, and say only how long it is
+    /// and how long reading it took, so a source that waits or prints the
+    /// wrong thing shows before a run needs it.
+    pub async fn test(&self, id: &str) -> AppResult<crate::models::NamedSecretTest> {
+        let _gate = self.credentials.gate(&credential_owner(id)).await;
+        let secret = self.get(id).await?;
+        // A test reads the source again, not a value kept from earlier.
+        self.credentials.invalidate(&credential_owner(id));
+        let started = std::time::Instant::now();
+        let (value, _) = self.read_value(&secret).await?;
+        Ok(crate::models::NamedSecretTest {
+            chars: value.chars().count() as u32,
+            millis: started.elapsed().as_millis().min(u128::from(u32::MAX)) as u32,
+        })
+    }
+
     /// The values of these secrets, read here, for a run on this Mac: its
     /// controller keeps no sealed copies, so each value goes to the run once,
     /// with the model's credential, and is never stored.

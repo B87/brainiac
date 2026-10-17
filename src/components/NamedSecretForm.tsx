@@ -120,42 +120,32 @@ export default function NamedSecretForm({
           traffic goes (PATH, NODE_*, GIT_*, *_PROXY …) are refused.
         </span>
       </label>
-      <label className="flex items-start gap-2" htmlFor={`${id}-file`}>
-        <input
-          id={`${id}-file`}
-          type="checkbox"
-          className="mt-[3px]"
-          checked={asFile}
-          onChange={(e) => setAsFile(e.target.checked)}
-        />
-        <span className="flex flex-col gap-0.5">
-          <span className="text-[12px] font-medium text-fg-2">
-            Give a run a file, not the value
-          </span>
-          <span className="text-[11.5px] text-muted">
-            The variable then holds the path of a file with the value, kept in
-            memory for that run. For tools that read a key file, such as{" "}
-            <span className="mono">GOOGLE_APPLICATION_CREDENTIALS</span> and a
-            service account key. Change it only while the secret is not on a
-            host.
-          </span>
+      <div className="flex flex-col gap-1">
+        <span id={`${id}-source`} className="text-[12px] font-medium text-fg-2">
+          Value comes from
         </span>
-      </label>
-      <label className="flex flex-col gap-1" htmlFor={`${id}-source`}>
-        <span className="text-[12px] font-medium text-fg-2">Value from</span>
-        <select
-          id={`${id}-source`}
-          className="text-input"
-          value={source.kind}
-          onChange={(e) =>
-            setSource({ ...source, kind: e.target.value as SourceKind })
-          }
+        <fieldset
+          className="seg m-0 self-start border-0"
+          aria-labelledby={`${id}-source`}
         >
-          <option value="store">The Keychain</option>
-          <option value="environment">An environment variable</option>
-          <option value="command">A command</option>
-        </select>
-      </label>
+          {(
+            [
+              ["store", "Paste (Keychain)"],
+              ["environment", "Environment"],
+              ["command", "A command"],
+            ] as [SourceKind, string][]
+          ).map(([kind, text]) => (
+            <button
+              key={kind}
+              type="button"
+              aria-pressed={source.kind === kind}
+              onClick={() => setSource({ ...source, kind })}
+            >
+              {text}
+            </button>
+          ))}
+        </fieldset>
+      </div>
       {source.kind === "store" && (
         <label className="flex flex-col gap-1" htmlFor={`${id}-value`}>
           <span className="text-[12px] font-medium text-fg-2">Value</span>
@@ -173,6 +163,36 @@ export default function NamedSecretForm({
         </label>
       )}
       <SecretSourceFields draft={source} onChange={setSource} what="value" />
+      <div className="flex flex-col gap-1">
+        <span id={`${id}-as`} className="text-[12px] font-medium text-fg-2">
+          Delivered to a run as
+        </span>
+        <fieldset
+          className="seg m-0 self-start border-0"
+          aria-labelledby={`${id}-as`}
+        >
+          <button
+            type="button"
+            aria-pressed={!asFile}
+            onClick={() => setAsFile(false)}
+          >
+            A value
+          </button>
+          <button
+            type="button"
+            aria-pressed={asFile}
+            onClick={() => setAsFile(true)}
+          >
+            A file
+          </button>
+        </fieldset>
+        <span className="text-[11.5px] text-muted">
+          {asFile
+            ? "The variable holds the path of a file with the value, kept in memory for the run: for key files such as GOOGLE_APPLICATION_CREDENTIALS."
+            : "The variable holds the value itself: for tokens."}{" "}
+          Change it only while no host holds a copy.
+        </span>
+      </div>
       <label className="flex flex-col gap-1" htmlFor={`${id}-note`}>
         <span className="text-[12px] font-medium text-fg-2">
           Note (what it can do)

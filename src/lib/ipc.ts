@@ -99,6 +99,7 @@ import type { MergeOptions } from "./generated/MergeOptions";
 import type { MergeOutcome } from "./generated/MergeOutcome";
 import type { MergeRequest } from "./generated/MergeRequest";
 import type { NamedSecret } from "./generated/NamedSecret";
+import type { NamedSecretTest } from "./generated/NamedSecretTest";
 import type { NamedSecretUsage } from "./generated/NamedSecretUsage";
 import type { NoteChangedEvent } from "./generated/NoteChangedEvent";
 import type { NoteContent } from "./generated/NoteContent";
@@ -741,6 +742,9 @@ export const ipc = {
     invoke<HostSecrets>("remove_secret_from_host", { id, hostId }),
   /** Settings → Secrets: the routines using each secret and its copies on hosts. */
   namedSecretUsage: () => invoke<NamedSecretUsage[]>("named_secret_usage"),
+  /** Settings → Secrets, Test: the value's length, never the value. */
+  testNamedSecret: (id: string) =>
+    invoke<NamedSecretTest>("test_named_secret", { id }),
   /** New run: send the run's access its host lacks, before Start. */
   sendRunSecrets: (hostId: string, secretIds: string[]) =>
     invoke<void>("send_run_secrets", { hostId, secretIds }),
