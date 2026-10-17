@@ -596,8 +596,8 @@ test("A routine chooses its access and tools, and New Access… adds a secret an
   await expect(
     form.getByRole("checkbox", { name: /SENTRY_TOKEN/ }),
   ).toBeChecked();
-  // This Mac keeps no secrets: the form says so before saving.
-  await expect(form).toContainText("only on a Linux run host");
+  // On this Mac the value is read at each start.
+  await expect(form).toContainText("Read on this Mac at each start");
 
   await form.getByLabel("Tools").check();
   await form.getByRole("button", { name: "Create Routine" }).click();
