@@ -10,9 +10,10 @@ if [[ -z "$tag" ]]; then
   exit 2
 fi
 assets=$(gh release view "$tag" --json assets --jq '.assets[].name')
-for pattern in '^latest\.json$' '\.app\.tar\.gz$' '\.app\.tar\.gz\.sig$' '\.dmg$'; do
+for pattern in '^latest\.json$' '\.app\.tar\.gz$' '\.app\.tar\.gz\.sig$' '\.dmg$' \
+  '^brainiac-runner-linux-amd64$' '^brainiac-runner-linux-arm64$'; do
   if ! grep -qE "$pattern" <<<"$assets"; then
-    echo "release $tag is missing an asset matching $pattern; was the build signed?" >&2
+    echo "release $tag is missing an asset matching $pattern; did every build job finish and sign?" >&2
     exit 1
   fi
 done

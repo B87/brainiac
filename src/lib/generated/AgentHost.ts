@@ -59,7 +59,12 @@ controller_build: string | null, protocol: number | null, controller_installed_a
  */
 upgrade_available: boolean, 
 /**
- * The build this Brainiac would install, short; `None` when it cannot
- * build one (not run from a checkout).
+ * The build this Brainiac would install, short (a released Brainiac's
+ * version, such as `v0.7.1`); `None` when it has none to install.
  */
-available_build: string | null, version: number, };
+available_build: string | null, 
+/**
+ * This Brainiac downloads the controller its release built, rather than
+ * building it from a checkout in Docker.
+ */
+controller_from_release: boolean, version: number, };

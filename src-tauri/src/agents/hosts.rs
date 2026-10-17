@@ -217,15 +217,24 @@ impl AgentHostService {
         // a run started while it compiles.
         let _deploying = self.begin_deploy(id);
 
-        job.retitle(
-            at + BUILD,
-            format!("Build the run controller for {platform}"),
-            if runner_binary::emulated(&uname) {
-                format!("On this Mac, in Docker, imitating an {uname} processor. The first build after a Brainiac update takes many minutes.")
-            } else {
-                "On this Mac, in Docker. The first build after a Brainiac update takes a few minutes.".to_string()
-            },
-        );
+        let released = runner_binary::from_release();
+        if released {
+            job.retitle(
+                at + BUILD,
+                format!("Download the run controller for {platform}"),
+                "From this version's release on GitHub, checked against the SHA-256 this Brainiac was released with.".to_string(),
+            );
+        } else {
+            job.retitle(
+                at + BUILD,
+                format!("Build the run controller for {platform}"),
+                if runner_binary::emulated(&uname) {
+                    format!("On this Mac, in Docker, imitating an {uname} processor. The first build after a Brainiac update takes many minutes.")
+                } else {
+                    "On this Mac, in Docker. The first build after a Brainiac update takes a few minutes.".to_string()
+                },
+            );
+        }
         job.begin(at + BUILD);
         let mut compiled = 0usize;
         let progress = job.clone();
@@ -247,10 +256,15 @@ impl AgentHostService {
                 .await?;
         job.finish(
             at + BUILD,
-            Some(if built.reused {
-                "Already built by this Brainiac: reused".to_string()
-            } else {
-                "Built on this Mac, in Docker, and kept for the next host".to_string()
+            Some(match (built.reused, released) {
+                (true, true) => "Already downloaded by this Brainiac: reused".to_string(),
+                (true, false) => "Already built by this Brainiac: reused".to_string(),
+                (false, true) => {
+                    "Downloaded, SHA-256 matches, and kept for the next host".to_string()
+                }
+                (false, false) => {
+                    "Built on this Mac, in Docker, and kept for the next host".to_string()
+                }
             }),
         );
         let binary = built.path;
@@ -1003,6 +1017,7 @@ pub fn list(conn: &Connection) -> AppResult<Vec<AgentHost>> {
     )?;
     let recipe = image::recipe();
     let available = runner_binary::current_build();
+    let from_release = runner_binary::from_release();
     let rows = stmt.query_map([LOCAL_NAME], |r| {
         let id: String = r.get(0)?;
         let kind: String = r.get(1)?;
@@ -1104,6 +1119,7 @@ pub fn list(conn: &Connection) -> AppResult<Vec<AgentHost>> {
             } else {
                 None
             },
+            controller_from_release: kind_is_ssh && from_release,
             version: r.get(17)?,
         })
     })?;

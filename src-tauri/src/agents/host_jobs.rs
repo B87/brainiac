@@ -70,8 +70,8 @@ pub fn install_steps(name: &str, user: &str) -> Vec<HostJobStep> {
             &format!("SSH as {user}, sudo without a password, and its processor"),
         ),
         step(
-            "Build the run controller".into(),
-            "On this Mac, in Docker. Reused when this Brainiac already built it.",
+            "Get the run controller".into(),
+            "Built from a checkout on this Mac, or downloaded from this version's release. Reused when this Brainiac already has it.",
         ),
         step(
             format!("Copy it to {name} and check its SHA-256"),

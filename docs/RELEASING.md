@@ -11,11 +11,16 @@ update themselves. This page is the whole process, including the one-time setup.
    `## [Unreleased]` section of `CHANGELOG.md` into `## [X.Y.Z] - <date>`,
    updates the comparison links, commits, tags `vX.Y.Z` and pushes.
 2. `.github/workflows/release.yml` wakes on the tag, checks that the tag and
-   `Cargo.toml` agree, builds a universal macOS bundle, signs the updater artifact,
-   and opens a **draft** release containing:
+   `Cargo.toml` agree, builds the Linux run controller for amd64 and arm64,
+   builds a universal macOS bundle that carries those controllers' SHA-256,
+   signs the updater artifact, and opens a **draft** release containing:
    - `Brainiac_X.Y.Z_universal.dmg` for people installing by hand,
    - `Brainiac.app.tar.gz` and `Brainiac.app.tar.gz.sig` for the in-app updater,
-   - `latest.json`, the manifest the updater reads.
+   - `latest.json`, the manifest the updater reads,
+   - `brainiac-runner-linux-amd64` and `brainiac-runner-linux-arm64`, the run
+     controllers this version's app installs on a run host. The app downloads
+     only the one whose SHA-256 it was built with, so a replaced file is
+     refused, and it can download them only once the release is published.
    The release notes are the matching section of `CHANGELOG.md`.
 3. You download the DMG from the draft, try it, then run
    `scripts/publish-release.sh vX.Y.Z`. Publishing is the moment
@@ -105,7 +110,7 @@ starts signing and notarizing automatically:
 4. Open the draft (`gh release view vX.Y.Z --web`), download the DMG, install
    it over your current copy and use it for a minute.
 5. Publish: `scripts/publish-release.sh vX.Y.Z`. The script refuses if any of
-   the updater assets are missing.
+   the updater assets or run controllers are missing.
 6. Pick Brainiac > Check for Updates… in an older installed build to confirm the
    update is offered, installs, and relaunches.
 

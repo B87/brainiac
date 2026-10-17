@@ -45,6 +45,7 @@ const host: AgentHost = {
   controller_installed_at: "2026-10-04T10:00:00Z",
   upgrade_available: false,
   available_build: "a1f3c9e",
+  controller_from_release: false,
   version: 1,
 };
 

@@ -3557,9 +3557,12 @@ pub struct AgentHost {
     pub controller_installed_at: Option<String>,
     /// This Brainiac builds a different controller than the installed one.
     pub upgrade_available: bool,
-    /// The build this Brainiac would install, short; `None` when it cannot
-    /// build one (not run from a checkout).
+    /// The build this Brainiac would install, short (a released Brainiac's
+    /// version, such as `v0.7.1`); `None` when it has none to install.
     pub available_build: Option<String>,
+    /// This Brainiac downloads the controller its release built, rather than
+    /// building it from a checkout in Docker.
+    pub controller_from_release: bool,
     #[ts(type = "number")]
     pub version: i64,
 }

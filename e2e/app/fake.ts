@@ -939,6 +939,7 @@ function agentHost(fields: Partial<AgentHost>): AgentHost {
     controller_installed_at: null,
     upgrade_available: false,
     available_build: null,
+    controller_from_release: false,
     version: 1,
     ...fields,
   };
