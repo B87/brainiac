@@ -11,6 +11,8 @@ into the release's section.
 
 ## [Unreleased]
 
+- Approving a routine tests its agent on the host when it has not passed there with the current key and image, so a schedule no longer waits for you to press Test.
+
 - An agent is tested from its own page, on each host under Where it can run. A host's page lists the agents tested there, each opening its agent.
 
 - Settings' Runs pages use the window's width, with their title and main action at the top, so the hosts and secrets tables fit and a host's page shows its machine and health side by side. A host's page no longer keeps the steps of a job that succeeded.

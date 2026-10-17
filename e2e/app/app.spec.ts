@@ -675,6 +675,61 @@ test("An agent's page tests it on a run host, and the host lists the agents test
   ).toBeVisible();
 });
 
+test("Approving a routine tests its agent on the host first when no test there matches", async ({
+  page,
+}) => {
+  await openSettings(page, "Run Hosts");
+  const dialog = await addHost(page);
+  await dialog
+    .getByRole("button", { name: "It Matches: Trust This Key and Install" })
+    .click();
+  // Set up before the agent had its key: nothing was tested there.
+  await page.evaluate(() => {
+    window.fake.endJob("host-1", "succeeded");
+    window.fake.readyProfile("claude-code");
+  });
+  await page.getByRole("button", { name: "Back", exact: true }).click();
+
+  const nav = page.getByRole("navigation", {
+    name: "Repositories and workspaces",
+  });
+  await nav.getByRole("button", { name: "Routines" }).click();
+  await page.getByRole("button", { name: "New Routine…" }).first().click();
+  const form = page.getByRole("form", { name: "New routine" });
+  await form.getByLabel("Name", { exact: true }).fill("Morning check");
+  await form.getByLabel("Prompt").fill("Check production errors.");
+  await form.getByLabel("Runs on").selectOption({ label: "runner.example" });
+  await form.getByLabel("Start from").fill("main");
+  // The test is something approval does, not something to fix first.
+  await expect(
+    page.getByRole("complementary", { name: "To schedule it" }),
+  ).toContainText("Claude Code's test on runner.example");
+  await form.getByRole("button", { name: "Create Routine" }).click();
+  await page.getByRole("tab", { name: "Schedule" }).click();
+  await page.getByRole("button", { name: "Add a schedule…" }).click();
+  await page.getByRole("button", { name: "Save schedule…" }).click();
+
+  const approve = page.getByRole("dialog", { name: /^Approve “/ });
+  await expect(approve).toContainText("Test Claude Code there.");
+  await approve
+    .getByRole("button", { name: "Approve and Prepare runner.example" })
+    .click();
+  expect(await calls(page, "approve_routine_schedule")).toHaveLength(1);
+  const preparing = page.getByRole("dialog", {
+    name: /^Preparing runner\.example/,
+  });
+  await expect(preparing).toContainText("Test Claude Code");
+  await page.evaluate(() => window.fake.endJob("host-1", "succeeded"));
+  const prepared = page.getByRole("dialog", {
+    name: "runner.example is prepared",
+  });
+  await expect(prepared).toContainText("The schedule is on runner.example.");
+  await prepared.getByRole("button", { name: "Done" }).click();
+  await expect(
+    page.getByText("Approved. Changing the prompt", { exact: false }),
+  ).toBeVisible();
+});
+
 test("A routine chooses its access and tools, and New Access… adds a secret and ticks it", async ({
   page,
 }) => {

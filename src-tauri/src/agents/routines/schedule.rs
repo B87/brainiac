@@ -423,12 +423,16 @@ impl RoutineService {
                 .await?;
         }
         let host = self.host_of(&routine).await?;
-        if needs_preparing(&host, routine.tools) {
+        if needs_preparing(&host, &routine) {
             self.set_preparing(id, true, None).await?;
             drop(one);
             match self
                 .jobs
-                .start(&routine.host_id, crate::models::HostJobKind::Prepare, None)
+                .start(
+                    &routine.host_id,
+                    crate::models::HostJobKind::Prepare,
+                    Some(routine.profile_id.clone()),
+                )
                 .await
             {
                 Ok(_) => {}
@@ -549,16 +553,17 @@ impl RoutineService {
                     return Ok(());
                 }
                 let host = self.host_of(&routine).await?;
-                if needs_preparing(&host, routine.tools) {
+                if needs_preparing(&host, &routine) {
                     let why = self
                         .jobs
                         .list()
                         .into_iter()
                         .find(|j| j.host_id == routine.host_id)
                         .and_then(|j| j.error)
-                        .unwrap_or_else(|| "it is not ready yet".into());
+                        .unwrap_or_else(|| "it is not ready yet.".into());
+                    let stop = if why.ends_with('.') { "" } else { "." };
                     return Err(AppError::dependency(format!(
-                        "{} could not be prepared: {why} Approve again to retry.",
+                        "{} could not be prepared: {why}{stop} Approve again to retry.",
                         host.name
                     )));
                 }
@@ -1193,7 +1198,10 @@ fn host_down(error: &AppError, consequence: &str) -> AppError {
 /// A host must be prepared before a schedule can be sent to it: its helper
 /// is older than this Brainiac, or the image the routine's runs use is not
 /// built as this Brainiac would build it.
-fn needs_preparing(host: &AgentHost, tools: bool) -> bool {
+fn needs_preparing(host: &AgentHost, routine: &Routine) -> bool {
     let current = |i: &Option<crate::models::AgentImage>| i.as_ref().is_some_and(|i| i.current);
-    host.upgrade_available || !current(&host.image) || (tools && !current(&host.tools_image))
+    host.upgrade_available
+        || !current(&host.image)
+        || (routine.tools && !current(&host.tools_image))
+        || !crate::agents::host_jobs::tested_here(host, &routine.profile_id)
 }

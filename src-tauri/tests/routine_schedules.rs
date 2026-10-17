@@ -24,7 +24,7 @@ use brainiac_lib::db::Stores;
 use brainiac_lib::git::GitService;
 use brainiac_lib::machines::MachineService;
 use brainiac_lib::models::{
-    AgentPayment, AgentProvider, AnswerCodeSharingRequest, BriefingState, Routine,
+    AgentPayment, AgentProvider, AnswerCodeSharingRequest, BriefingState, HostJobKind, Routine,
     SaveAgentCredentialRequest, SaveNamedSecretRequest, SaveRoutineRequest, ScheduleDaysKind,
     ScheduleState, ScheduleWhen, SecretSource, SetScheduleRequest, Settings,
 };
@@ -46,6 +46,9 @@ struct Harness {
     runs: Arc<AgentRunService>,
     routines: Arc<RoutineService>,
     named: Arc<NamedSecretService>,
+    jobs: Arc<HostJobService>,
+    /// The core database, to change what the host has passed.
+    core: brainiac_lib::db::Db,
     _server: tokio::task::JoinHandle<()>,
     _tmp: tempfile::TempDir,
 }
@@ -111,6 +114,25 @@ impl Harness {
             })
             .await
             .unwrap();
+        // The agent passed its test on the host with this key and image, so
+        // approval has nothing to prepare there.
+        let revision = settings
+            .profile(CLAUDE_CODE)
+            .await
+            .unwrap()
+            .credential
+            .revision;
+        core.call(move |conn| {
+            conn.execute(
+                "INSERT OR REPLACE INTO agent_tests (host_id, profile_id, passed_at,
+                   credential_revision, image_id, engine_socket)
+                 VALUES (?1, ?2, '2026-10-05T00:00:00Z', ?3, 'sha256:abc', NULL)",
+                rusqlite::params![HOST, CLAUDE_CODE, revision],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
 
         let engine = FakeEngine::default();
         engine.get().volumes = tmp.path().join("volumes");
@@ -185,12 +207,12 @@ impl Harness {
             Arc::new(|_, _| {}),
         ));
         let routines = RoutineService::new(
-            core,
+            core.clone(),
             history,
             Arc::clone(&runs),
             settings,
             Arc::clone(&named),
-            jobs,
+            Arc::clone(&jobs),
             changes,
         );
         Harness {
@@ -200,6 +222,8 @@ impl Harness {
             runs,
             routines,
             named,
+            jobs,
+            core,
             _server: server,
             _tmp: tmp,
         }
@@ -501,4 +525,42 @@ async fn a_routines_access_goes_to_its_host_with_the_approval() {
         .await
         .unwrap();
     assert_eq!(local.secret_ids, vec![secret.id.clone()]);
+}
+
+/// Approving a routine whose agent has no test on its host that still
+/// matches prepares the host with that test, instead of leaving it to the
+/// user; the schedule waits for it.
+#[tokio::test]
+async fn approval_tests_the_agent_when_the_host_has_no_current_test() {
+    let h = Harness::new().await;
+    h.core
+        .call(|conn| {
+            conn.execute("DELETE FROM agent_tests", [])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let routine = h.routine().await;
+    h.routines
+        .set_schedule(SetScheduleRequest {
+            routine_id: routine.id.clone(),
+            when: h.when(30),
+        })
+        .await
+        .unwrap();
+    h.routines.approve(&routine.id).await.unwrap();
+
+    let job = h
+        .jobs
+        .list()
+        .into_iter()
+        .find(|j| j.host_id == HOST)
+        .expect("approval prepares the host");
+    assert_eq!(job.kind, HostJobKind::Prepare);
+    assert_eq!(job.profile_ids, vec![CLAUDE_CODE.to_string()]);
+    assert!(
+        job.steps.iter().any(|s| s.title == "Test Claude Code"),
+        "{:?}",
+        job.steps
+    );
 }

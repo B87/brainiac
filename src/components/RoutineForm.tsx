@@ -369,6 +369,16 @@ function Readiness({
         text: tools ? "Image with Python and gcloud" : "The image",
         detail: "Built at approval, about 4 minutes",
       });
+    // Approval tests the agent there when no test of it still matches.
+    const test = host.tests.find((t) => t.profile_id === profile.id);
+    if (profile.missing.length === 0 && !test?.current)
+      lines.push({
+        mark: "auto",
+        text: `${profileName(profile)}'s test on ${host.name}`,
+        detail: test
+          ? "Run again at approval: the key, the image, or the engine changed"
+          : "Run at approval, about a minute",
+      });
     if (secretIds.length > 0)
       lines.push(
         sending.length > 0
@@ -389,8 +399,11 @@ function Readiness({
                 detail: "Sent at approval if the host lacks them",
               },
       );
+    // The image and the test are what approval does; the rest is yours.
     for (const b of blocked.filter(
-      (m) => !/image|Python/.test(m) && !profile.missing.includes(m),
+      (m) =>
+        !/image|Python|^Pass a test of |^Test .* again:/.test(m) &&
+        !profile.missing.includes(m),
     ))
       lines.push({ mark: "fix", text: "Only you can fix this", detail: b });
   }

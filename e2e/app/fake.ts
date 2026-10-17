@@ -1011,7 +1011,11 @@ export class FakeBackend {
         host.upgrade_available = false;
         host.emergency_stop = `ssh -p ${host.ssh_port} ${host.ssh_user}@${host.ssh_host} sudo -n -u brainiac /usr/local/bin/brainiac-runner emergency-stop --state /var/lib/brainiac-runner`;
       }
-      if (job.kind === "build_image" || job.kind === "setup") {
+      if (
+        job.kind === "build_image" ||
+        job.kind === "setup" ||
+        (job.kind === "prepare" && !host.image?.current)
+      ) {
         host.image = {
           name: "brainiac-agents:4d1e",
           id: "sha256:4d1e",
@@ -1021,9 +1025,17 @@ export class FakeBackend {
         host.loop_devices = true;
         host.engine_name = "Docker 27.3";
       }
-      if (job.kind === "test" || job.kind === "setup")
+      if (job.kind === "test" || job.kind === "setup" || job.kind === "prepare")
         for (const id of job.profile_ids) this.passTest(host, id);
     }
+    // The schedules approved on this host go there once it is prepared.
+    if (job.kind === "prepare")
+      for (const [routineId, sched] of this.schedules) {
+        const routine = this.routines.find((r) => r.id === routineId);
+        if (!sched.preparing || routine?.host_id !== hostId) continue;
+        sched.preparing = false;
+        sched.approved = state === "succeeded";
+      }
     this.refreshAgents();
     this.emit("agent_host_job", this.hostJobs[hostId]);
   }
@@ -1083,6 +1095,83 @@ export class FakeBackend {
     for (const p of this.agentSettings.profiles) p.missing = profileMissing(p);
     for (const h of this.agentSettings.hosts)
       h.missing = hostMissing(h, this.agentSettings.engine_socket);
+  }
+  /** A host job, as `HostJobService::start` begins it. */
+  startHostJob(
+    hostId: string,
+    kind: HostJob["kind"],
+    profileId?: string,
+  ): HostJob {
+    const host = this.agentSettings.hosts.find((h) => h.id === hostId);
+    if (!host) throw { code: "NOT_FOUND", message: "That host is not saved." };
+    const install = [
+      `Reach ${host.name}`,
+      "Build the run controller for linux/amd64",
+      `Copy it to ${host.name} and check its SHA-256`,
+      `Wait until no run is live on ${host.name}`,
+      "Install the program and its service",
+      "Check that it answers",
+    ];
+    const image = [
+      `Build the image on ${host.name}`,
+      "Check its Docker engine",
+    ];
+    // Test is of one profile; setup tests each profile that is ready.
+    this.refreshAgents();
+    // A routine's approval tests its agent when no test there matches.
+    const tested = this.agentSettings.profiles.filter((p) =>
+      kind === "test"
+        ? p.id === profileId
+        : kind === "prepare"
+          ? p.id === profileId &&
+            !host.tests.some((t) => t.profile_id === p.id && t.current)
+          : kind === "setup" && p.missing.length === 0,
+    );
+    const tests = tested.length
+      ? tested.map((p) => `Test ${fakeProfileName(p)}`)
+      : ["Test a run"];
+    const titles =
+      kind === "build_image"
+        ? image
+        : kind === "test"
+          ? tests
+          : kind === "setup"
+            ? [...install, ...image, ...tests]
+            : kind === "prepare"
+              ? [...install, ...image, ...(tested.length ? tests : [])]
+              : install;
+    const now = new Date().toISOString();
+    const job: HostJob = {
+      id: `job-${Object.keys(this.hostJobs).length + 1}`,
+      host_id: host.id,
+      host_name: host.name,
+      kind,
+      state: "running",
+      started_at: now,
+      ended_at: null,
+      steps: titles.map((title, i) => ({
+        title,
+        detail: "",
+        state: i === 0 ? "done" : i === 1 ? "running" : "waiting",
+        started_at: i < 2 ? now : null,
+        ended_at: i === 0 ? now : null,
+        progress: i === 1 ? "214 crates compiled" : null,
+      })),
+      log_tail: [
+        "   Compiling tokio-util v0.7.16",
+        "   Compiling bollard v0.19.2",
+      ],
+      error: null,
+      error_details: null,
+      cancellable: kind !== "build_image" && kind !== "test",
+      from_build: host.controller_build,
+      to_build:
+        kind === "build_image" || kind === "test" ? null : host.available_build,
+      profile_ids: tested.map((p) => p.id),
+    };
+    this.hostJobs[host.id] = job;
+    this.later("agent_host_job", job);
+    return job;
   }
   /** A passed test of a profile on a host, current. */
   passTest(host: AgentHost, profileId: string) {
@@ -1196,6 +1285,8 @@ export class FakeBackend {
       paused: boolean;
       changed: string[];
       overdue: boolean;
+      /** Approved, waiting for the host's preparation job. */
+      preparing?: boolean;
     }
   >();
   /** The next time the fake host says it fires, in the host's own time. */
@@ -1203,13 +1294,15 @@ export class FakeBackend {
   scheduleView(routineId: string): RoutineSchedule | null {
     const s = this.schedules.get(routineId);
     if (!s) return null;
-    const state = !s.approved
-      ? "needs_approval"
-      : s.paused
-        ? "paused"
-        : s.overdue
-          ? "overdue"
-          : "active";
+    const state = s.preparing
+      ? "preparing"
+      : !s.approved
+        ? "needs_approval"
+        : s.paused
+          ? "paused"
+          : s.overdue
+            ? "overdue"
+            : "active";
     return {
       when: s.when,
       state,
@@ -2104,76 +2197,12 @@ export class FakeBackend {
         this.refreshAgents();
         return saved;
       }
-      case "start_agent_host_job": {
-        const host = this.agentSettings.hosts.find((h) => h.id === args.id);
-        if (!host)
-          throw { code: "NOT_FOUND", message: "That host is not saved." };
-        const kind = args.kind as HostJob["kind"];
-        const install = [
-          `Reach ${host.name}`,
-          "Build the run controller for linux/amd64",
-          `Copy it to ${host.name} and check its SHA-256`,
-          `Wait until no run is live on ${host.name}`,
-          "Install the program and its service",
-          "Check that it answers",
-        ];
-        const image = [
-          `Build the image on ${host.name}`,
-          "Check its Docker engine",
-        ];
-        // Test is of one profile; setup tests each profile that is ready.
-        this.refreshAgents();
-        const tested = this.agentSettings.profiles.filter((p) =>
-          kind === "test"
-            ? p.id === args.profileId
-            : kind === "setup" && p.missing.length === 0,
+      case "start_agent_host_job":
+        return this.startHostJob(
+          String(args.id),
+          args.kind as HostJob["kind"],
+          args.profileId as string | undefined,
         );
-        const tests = tested.length
-          ? tested.map((p) => `Test ${fakeProfileName(p)}`)
-          : ["Test a run"];
-        const titles =
-          kind === "build_image"
-            ? image
-            : kind === "test"
-              ? tests
-              : kind === "setup"
-                ? [...install, ...image, ...tests]
-                : install;
-        const now = new Date().toISOString();
-        const job: HostJob = {
-          id: `job-${Object.keys(this.hostJobs).length + 1}`,
-          host_id: host.id,
-          host_name: host.name,
-          kind,
-          state: "running",
-          started_at: now,
-          ended_at: null,
-          steps: titles.map((title, i) => ({
-            title,
-            detail: "",
-            state: i === 0 ? "done" : i === 1 ? "running" : "waiting",
-            started_at: i < 2 ? now : null,
-            ended_at: i === 0 ? now : null,
-            progress: i === 1 ? "214 crates compiled" : null,
-          })),
-          log_tail: [
-            "   Compiling tokio-util v0.7.16",
-            "   Compiling bollard v0.19.2",
-          ],
-          error: null,
-          error_details: null,
-          cancellable: kind !== "build_image" && kind !== "test",
-          from_build: host.controller_build,
-          to_build:
-            kind === "build_image" || kind === "test"
-              ? null
-              : host.available_build,
-          profile_ids: tested.map((p) => p.id),
-        };
-        this.hostJobs[host.id] = job;
-        this.later("agent_host_job", job);
-        return job;
-      }
       case "cancel_agent_host_job": {
         const job = this.hostJobs[args.id as string];
         if (!job?.cancellable)
@@ -3169,8 +3198,27 @@ export class FakeBackend {
         const routine = this.routines.find((r) => r.id === args.id);
         for (const id of routine?.secret_ids ?? [])
           this.sendCopy(routine?.host_id ?? "", id);
-        s.approved = true;
         s.changed = [];
+        // As `needs_preparing`: an older controller, no current image, or
+        // no current test of the routine's agent there.
+        const host = this.agentSettings.hosts.find(
+          (h) => h.id === routine?.host_id,
+        );
+        const needs =
+          host &&
+          routine &&
+          (host.upgrade_available ||
+            !host.image?.current ||
+            (routine.tools && !host.tools_image?.current) ||
+            !host.tests.some(
+              (t) => t.profile_id === routine.profile_id && t.current,
+            ));
+        if (host && routine && needs) {
+          s.preparing = true;
+          this.startHostJob(host.id, "prepare", routine.profile_id);
+          return null;
+        }
+        s.approved = true;
         return null;
       }
       case "pause_routine": {

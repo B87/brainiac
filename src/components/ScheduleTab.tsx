@@ -4,6 +4,7 @@ import { relativeTime } from "../lib/format";
 import { currentStep, useHostJobsContext } from "../lib/hostJobs";
 import {
   type AgentHost,
+  type AgentProfile,
   type AgentSettings,
   errorMessage,
   type HostJob,
@@ -420,7 +421,7 @@ function ApproveDialog({
   const host = settings?.hosts.find((h) => h.id === routine.host_id);
   const hostName = host?.name ?? item.host_name;
   // What approving does to the host before the schedule can go there.
-  const prepare = host ? preparation(host, routine.tools) : [];
+  const prepare = host ? preparation(host, routine.tools, profile) : [];
   const confirmed = sending.length === 0 || readOnly;
   const job = useHostJobsContext()[routine.host_id];
 
@@ -746,8 +747,15 @@ function Hint({ children }: { children: React.ReactNode }) {
   return <span className="text-[12px] text-muted">{children}</span>;
 }
 
-/** What preparing the host for a routine does, in words; empty when ready. */
-function preparation(host: AgentHost, tools: boolean): string[] {
+/**
+ * What preparing the host for a routine does, in words, in the order the
+ * job does it; empty when the host is ready (`needs_preparing`).
+ */
+function preparation(
+  host: AgentHost,
+  tools: boolean,
+  profile: AgentProfile | undefined,
+): string[] {
   const steps: string[] = [];
   if (host.upgrade_available)
     steps.push(
@@ -760,5 +768,11 @@ function preparation(host: AgentHost, tools: boolean): string[] {
         ? "build its image with Python and the Google Cloud CLI"
         : "build its image",
     );
+  // A schedule starts runs of an agent that passed its test there.
+  if (
+    profile &&
+    !host.tests.some((t) => t.profile_id === profile.id && t.current)
+  )
+    steps.push(`test ${profileName(profile)} there`);
   return steps;
 }
