@@ -11,6 +11,8 @@ into the release's section.
 
 ## [Unreleased]
 
+- A routine is no longer shown as Host unreachable because its host missed one check; it is once the host misses two in a row.
+- A scheduled run its host was starting when the host's run controller stopped is started again if it is still on time; otherwise its briefing says it did not start, instead of the run going missing.
 - A routine moved to another host stops firing on the host it left, and what it ran there is listed as run there.
 
 - A secret a run was given is taken out of its briefing or explanation too, not only its conversation. A host's page lists a schedule it fires for another Mac, or from before a restore, and keeps it until you remove it; before, Brainiac deleted it with the briefings waiting there.

@@ -57,6 +57,9 @@ pub struct RoutineService {
     driving: Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
     /// Why a routine's host could not be reached or told, by routine ID.
     sync_errors: Mutex<HashMap<String, String>>,
+    /// When each host first did not answer a look at its schedules, since it
+    /// last answered; a host that answers leaves this list.
+    unanswered_since: Mutex<HashMap<String, chrono::DateTime<chrono::Utc>>>,
     /// One conversation with the hosts about schedules at a time.
     syncing: tokio::sync::Mutex<()>,
     /// What each host fires that this Mac has no routine for, as its last
@@ -84,6 +87,7 @@ impl RoutineService {
             run_events,
             driving: Mutex::new(HashMap::new()),
             sync_errors: Mutex::new(HashMap::new()),
+            unanswered_since: Mutex::new(HashMap::new()),
             syncing: tokio::sync::Mutex::new(()),
             only_on_host: Mutex::new(HashMap::new()),
         })

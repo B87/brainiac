@@ -56,6 +56,17 @@ pub(super) struct ScheduleRecord {
     /// result was taken and pruned is not counted as one that left none.
     #[serde(default)]
     pub followed: Vec<String>,
+    /// The run being started for a slot the cursor has passed: saved with the
+    /// cursor before the start and cleared after it, so a controller stopped
+    /// in between starts it again or says it did not start.
+    #[serde(default)]
+    pub firing: Option<Firing>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct Firing {
+    pub slot: String,
+    pub run_id: String,
 }
 
 impl ScheduleRecord {
@@ -295,6 +306,7 @@ impl<W: Workloads> Controller<W> {
                 cursor: since.to_rfc3339(),
                 results: Vec::new(),
                 followed: Vec::new(),
+                firing: None,
             });
         // A new schedule counts from when it was approved. One turned back on
         // (resumed, or approved again) counts from now: the time it was off is
@@ -455,8 +467,10 @@ impl<W: Workloads> Controller<W> {
     async fn fire_due(self: &Arc<Self>) {
         let at = Local::now();
         // Decide under the lock, act outside it.
-        let mut to_fire: Vec<(String, DateTime<Local>)> = Vec::new();
+        let mut to_fire: Vec<(String, DateTime<Local>, String)> = Vec::new();
         let mut changed: Vec<ScheduleRecord> = Vec::new();
+        // Runs a start left halfway did start: the slot each was for.
+        let mut started_for: Vec<(String, String)> = Vec::new();
         {
             let mut schedules = self.schedules();
             let persist_cursor = schedules
@@ -476,10 +490,44 @@ impl<W: Workloads> Controller<W> {
                 })
                 .collect();
             for record in schedules.records.values_mut() {
-                if !record.spec.enabled {
-                    continue;
+                let mut fired = live.contains(&record.spec.routine_id);
+                // A start left halfway, by a stop or a look cut short. The
+                // run's own record is written first thing when it starts, so
+                // without one it did not.
+                let mut resumed = false;
+                if let Some(left) = record.firing.take() {
+                    resumed = true;
+                    let started = self.state.run_dir(&left.run_id).join("run.json").is_file();
+                    let slot = parse_stamp(&left.slot).unwrap_or(at);
+                    let may_start = at - slot <= GRACE || record.spec.late_start;
+                    if started {
+                        // Followed like any run of this schedule, for its slot.
+                        started_for.push((left.run_id, slot.to_rfc3339()));
+                    } else if record.spec.enabled && !fired && may_start {
+                        fired = true;
+                        let run_id = uuid::Uuid::new_v4().to_string();
+                        record.firing = Some(Firing {
+                            slot: slot.to_rfc3339(),
+                            run_id: run_id.clone(),
+                        });
+                        to_fire.push((record.spec.routine_id.clone(), slot, run_id));
+                    } else {
+                        record.results.insert(
+                            0,
+                            failure(
+                                slot,
+                                None,
+                                "The host's run controller stopped while it was starting this run, so it did not start.",
+                            ),
+                        );
+                        prune(&mut record.results);
+                    }
                 }
-                let Some(time) = parse_time(&record.spec.time) else {
+                let Some(time) = parse_time(&record.spec.time).filter(|_| record.spec.enabled)
+                else {
+                    if resumed {
+                        changed.push(record.clone());
+                    }
                     continue;
                 };
                 // After a very long outage the newest slots count, not the oldest.
@@ -489,21 +537,25 @@ impl<W: Workloads> Controller<W> {
                 let slots = slots_in(record.spec.days, time, after, at);
                 record.cursor = at.to_rfc3339();
                 if slots.is_empty() {
-                    if persist_cursor {
+                    if persist_cursor || resumed {
                         changed.push(record.clone());
                     }
                     continue;
                 }
-                let mut fired = live.contains(&record.spec.routine_id);
                 let newest = slots.len() - 1;
-                let mut missed = 0usize;
                 for (i, slot) in slots.iter().enumerate() {
                     let age = at - *slot;
                     let on_time = age <= GRACE;
                     let late = record.spec.late_start && i == newest && !on_time;
                     if (on_time || late) && !fired {
                         fired = true;
-                        to_fire.push((record.spec.routine_id.clone(), *slot));
+                        // Saved with the cursor, before the run starts.
+                        let run_id = uuid::Uuid::new_v4().to_string();
+                        record.firing = Some(Firing {
+                            slot: slot.to_rfc3339(),
+                            run_id: run_id.clone(),
+                        });
+                        to_fire.push((record.spec.routine_id.clone(), *slot, run_id));
                     } else if on_time || late {
                         record.results.insert(
                             0,
@@ -514,25 +566,40 @@ impl<W: Workloads> Controller<W> {
                             ),
                         );
                     } else if slots.len() - i <= MAX_MISSED {
-                        missed += 1;
                         record.results.insert(0, missed_result(*slot));
                     }
                 }
-                let _ = missed;
                 prune(&mut record.results);
                 changed.push(record.clone());
             }
+            schedules.slots.extend(started_for);
         }
         for record in &changed {
             self.save_record(record);
         }
-        for (routine_id, slot) in to_fire {
-            self.fire(&routine_id, slot).await;
+        for (routine_id, slot, run_id) in to_fire {
+            self.fire(&routine_id, slot, &run_id).await;
+            self.end_firing(&routine_id, &run_id);
+        }
+    }
+
+    /// The start for a slot is over, started or not: the record no longer
+    /// needs to remember it.
+    fn end_firing(&self, routine_id: &str, run_id: &str) {
+        let mut schedules = self.schedules();
+        let Some(record) = schedules.records.get_mut(routine_id) else {
+            return;
+        };
+        if record.firing.as_ref().is_some_and(|f| f.run_id == run_id) {
+            record.firing = None;
+            let record = record.clone();
+            drop(schedules);
+            self.save_record(&record);
         }
     }
 
     /// Start the routine's run for this slot, or record why it did not.
-    async fn fire(self: &Arc<Self>, routine_id: &str, slot: DateTime<Local>) {
+    async fn fire(self: &Arc<Self>, routine_id: &str, slot: DateTime<Local>, run_id: &str) {
         let snapshot = {
             let schedules = self.schedules();
             schedules.records.get(routine_id).map(|r| {
@@ -547,9 +614,8 @@ impl<W: Workloads> Controller<W> {
         let Some((spec, memory, commit, earlier)) = snapshot else {
             return;
         };
-        let run_id = uuid::Uuid::new_v4().to_string();
         let started = self
-            .begin_scheduled(&run_id, &spec, &memory, commit, &earlier)
+            .begin_scheduled(run_id, &spec, &memory, commit, &earlier)
             .await;
         if let Err(e) = started {
             tracing::warn!(routine = routine_id, error = %e, "a scheduled run did not start");
@@ -561,8 +627,12 @@ impl<W: Workloads> Controller<W> {
         }
         // The result is recorded when the run ends; remember which slot it was for.
         let mut schedules = self.schedules();
-        schedules.driving.insert(run_id.clone(), Drive::default());
-        schedules.slots.insert(run_id, slot.to_rfc3339());
+        schedules
+            .driving
+            .insert(run_id.to_string(), Drive::default());
+        schedules
+            .slots
+            .insert(run_id.to_string(), slot.to_rfc3339());
     }
 
     async fn begin_scheduled(
@@ -998,6 +1068,7 @@ mod tests {
             cursor: "2026-10-01T00:00:00+00:00".into(),
             results: Vec::new(),
             followed: Vec::new(),
+            firing: None,
         };
         let mut r = missed_result(local(2026, 10, 1, 7, 0));
         r.run_id = Some("run-1".into());

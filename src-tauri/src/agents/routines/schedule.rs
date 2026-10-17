@@ -28,6 +28,9 @@ use crate::models::{
 /// A run is overdue when it was due this long ago and the host has not been
 /// heard from since.
 const OVERDUE_AFTER_MINUTES: i64 = 30;
+/// A host is shown as unreachable once it has not answered for this long:
+/// the second of the looks five minutes apart, not the first.
+const UNREACHABLE_AFTER: chrono::Duration = chrono::Duration::minutes(4);
 
 /// A routine's schedule columns.
 #[derive(Debug, Clone)]
@@ -966,27 +969,21 @@ impl RoutineService {
         let runtime = match self.runs.runtime_of(host_id).await {
             Ok(runtime) => runtime,
             Err(e) => {
-                for id in &ids {
-                    self.set_error(
-                        id,
-                        Some(format!("The host cannot be reached: {}", e.message)),
-                    );
-                }
+                self.not_answered(host_id, &ids, &e);
                 return Err(e);
             }
         };
         let (statuses, _host_now) = match runtime.schedules().await {
             Ok(answer) => answer,
             Err(e) => {
-                for id in &ids {
-                    self.set_error(
-                        id,
-                        Some(format!("The host cannot be reached: {}", e.message)),
-                    );
-                }
+                self.not_answered(host_id, &ids, &e);
                 return Err(e);
             }
         };
+        self.unanswered_since
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(host_id);
         // What the host fires for no routine of this host here. A routine
         // this Mac has that moved (or whose schedule here went) is ours: what
         // it left comes home, then it stops here; if either cannot be done,
@@ -1029,6 +1026,37 @@ impl RoutineService {
             }
         }
         Ok(())
+    }
+
+    /// A host that did not answer. Its routines say it cannot be reached only
+    /// once it has been silent for two looks in a row, so one dropped
+    /// connection does not mark every routine there.
+    fn not_answered(&self, host_id: &str, ids: &[String], error: &AppError) {
+        let now = Utc::now();
+        let first = *self
+            .unanswered_since
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .entry(host_id.to_string())
+            .or_insert(now);
+        if now - first < UNREACHABLE_AFTER {
+            return;
+        }
+        for id in ids {
+            self.set_error(
+                id,
+                Some(format!("The host cannot be reached: {}", error.message)),
+            );
+        }
+    }
+
+    /// Count a host as silent since `at`, as if the looks before had not been
+    /// answered. For tests, which cannot wait for them.
+    pub fn host_silent_since(&self, host_id: &str, at: DateTime<Utc>) {
+        self.unanswered_since
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(host_id.to_string(), at);
     }
 
     async fn sync_one(

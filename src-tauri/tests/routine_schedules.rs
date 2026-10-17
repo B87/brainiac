@@ -704,3 +704,54 @@ async fn the_host_a_routine_left_stops_firing_it() {
         .unwrap()
         .is_empty());
 }
+
+/// One look a host does not answer (a dropped connection, a Wi-Fi switch)
+/// does not mark its routines; a host silent for the next look too does, and
+/// one that answers starts the count again.
+#[tokio::test]
+async fn a_host_is_unreachable_only_after_missing_two_looks() {
+    let h = Harness::new().await;
+    let routine = h.routine().await;
+    h.routines
+        .set_schedule(SetScheduleRequest {
+            routine_id: routine.id.clone(),
+            when: h.when(30),
+        })
+        .await
+        .unwrap();
+    h.routines.approve(&routine.id).await.unwrap();
+    h.routines.sync_host(HOST).await.unwrap();
+    assert_eq!(h.schedule(&routine).await.state, ScheduleState::Active);
+
+    // A controller nobody serves: every call to it fails.
+    let gone = tempfile::tempdir().unwrap();
+    let silent = Arc::new(RunRuntime::attach(
+        StateDir::new(gone.path().join("c")),
+        gone.path().join("c").join("runner.sock"),
+    ));
+    h.runs.use_runtime_for_host(HOST, Arc::clone(&silent));
+    assert!(h.routines.sync_host(HOST).await.is_err());
+    let after_one = h.schedule(&routine).await;
+    assert_eq!(after_one.state, ScheduleState::Active, "{after_one:?}");
+    assert!(after_one.error.is_none());
+
+    // Five minutes later, still silent.
+    h.routines
+        .host_silent_since(HOST, chrono::Utc::now() - Span::minutes(5));
+    assert!(h.routines.sync_host(HOST).await.is_err());
+    let after_two = h.schedule(&routine).await;
+    assert_eq!(after_two.state, ScheduleState::Unreachable);
+    assert!(after_two
+        .error
+        .as_deref()
+        .unwrap()
+        .contains("cannot be reached"));
+
+    // It answers: the routine is fine again, and the next miss is a first one.
+    h.runs.use_runtime_for_host(HOST, Arc::clone(&h.runtime));
+    h.routines.sync_host(HOST).await.unwrap();
+    assert_eq!(h.schedule(&routine).await.state, ScheduleState::Active);
+    h.runs.use_runtime_for_host(HOST, silent);
+    assert!(h.routines.sync_host(HOST).await.is_err());
+    assert_eq!(h.schedule(&routine).await.state, ScheduleState::Active);
+}

@@ -35,7 +35,14 @@ struct Harness {
 
 impl Harness {
     async fn new() -> Harness {
+        Harness::seeded(|_| {}).await
+    }
+
+    /// A controller started on a state folder `seed` wrote to first, as one
+    /// restarted after a stop finds it.
+    async fn seeded(seed: impl FnOnce(&std::path::Path)) -> Harness {
         let tmp = tempfile::tempdir().unwrap();
+        seed(&tmp.path().join("controller"));
         let state = StateDir::new(tmp.path().join("controller"));
         let socket = tmp.path().join("controller").join("runner.sock");
         let config = Config {
@@ -69,28 +76,7 @@ impl Harness {
 
     /// A schedule due `ago_secs` seconds ago (rounded down to the minute), counted from `since_secs` ago.
     fn spec(&self, ago_secs: i64, late_start: bool) -> ScheduleSpec {
-        let slot = Local::now() - chrono::Duration::seconds(ago_secs);
-        ScheduleSpec {
-            routine_id: ROUTINE.into(),
-            name: "Morning check".into(),
-            days: ScheduleDays::Daily,
-            time: slot.format("%H:%M").to_string(),
-            late_start,
-            enabled: true,
-            profile_id: "claude-code".into(),
-            credential_key: CredentialKey::AnthropicApiKey,
-            agent: AgentKind::ClaudeCode,
-            provider: AgentProvider::Anthropic,
-            model: String::new(),
-            image: "brainiac-agents:test".into(),
-            cpus: 2,
-            memory_mib: 2048,
-            workspace_gib: 1,
-            time_limit_secs: 600,
-            host_secrets: Vec::new(),
-            prompt: "Check production.".into(),
-            previous_results: 2,
-        }
+        spec_due(ago_secs, late_start)
     }
 
     async fn send_code(&self) {
@@ -141,6 +127,32 @@ impl Harness {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         panic!("the schedule never left a result");
+    }
+}
+
+/// A schedule due `ago_secs` seconds ago, to the minute.
+fn spec_due(ago_secs: i64, late_start: bool) -> ScheduleSpec {
+    let slot = Local::now() - chrono::Duration::seconds(ago_secs);
+    ScheduleSpec {
+        routine_id: ROUTINE.into(),
+        name: "Morning check".into(),
+        days: ScheduleDays::Daily,
+        time: slot.format("%H:%M").to_string(),
+        late_start,
+        enabled: true,
+        profile_id: "claude-code".into(),
+        credential_key: CredentialKey::AnthropicApiKey,
+        agent: AgentKind::ClaudeCode,
+        provider: AgentProvider::Anthropic,
+        model: String::new(),
+        image: "brainiac-agents:test".into(),
+        cpus: 2,
+        memory_mib: 2048,
+        workspace_gib: 1,
+        time_limit_secs: 600,
+        host_secrets: Vec::new(),
+        prompt: "Check production.".into(),
+        previous_results: 2,
     }
 }
 
@@ -296,4 +308,84 @@ async fn resuming_does_not_owe_the_time_it_was_off_and_the_agents_key_cannot_be_
     h.send_code().await;
     h.put(h.spec(70, false), 600).await;
     assert!(!h.status().await.credential);
+}
+
+/// A schedule's record as a controller stopped halfway through starting a
+/// run for the slot `slot_ago_secs` ago leaves it: the cursor past the slot,
+/// and the run it was starting named, with no run of that name.
+fn left_mid_start(dir: &std::path::Path, slot_ago_secs: i64, late_start: bool) {
+    let slot = Local::now() - chrono::Duration::seconds(slot_ago_secs);
+    let record = serde_json::json!({
+        "spec": spec_due(slot_ago_secs, late_start),
+        "memory": "",
+        "memory_updated_at": null,
+        "bundle_commit": null,
+        "bundle_at": null,
+        "cursor": Local::now().to_rfc3339(),
+        "results": [],
+        "followed": [],
+        "firing": {
+            "slot": slot.to_rfc3339(),
+            "run_id": "99999999-8888-7777-6666-555555555555"
+        }
+    });
+    let schedules = dir.join("schedules");
+    std::fs::create_dir_all(&schedules).unwrap();
+    std::fs::write(
+        schedules.join(format!("{ROUTINE}.json")),
+        serde_json::to_vec(&record).unwrap(),
+    )
+    .unwrap();
+}
+
+/// What the controller saved about the start it was making.
+fn firing_on_disk(h: &Harness) -> serde_json::Value {
+    let path = h
+        .tmp
+        .path()
+        .join("controller")
+        .join("schedules")
+        .join(format!("{ROUTINE}.json"));
+    let record: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    record["firing"].clone()
+}
+
+#[tokio::test]
+async fn a_start_a_stop_cut_short_is_tried_again_while_it_is_on_time() {
+    // Stopped 70 seconds after the slot, before the run's record was written.
+    let h = Harness::seeded(|dir| left_mid_start(dir, 70, false)).await;
+    let status = h.first_result().await;
+    // Tried again for that slot: it fails here only because this host has no
+    // code yet, which is the start's own reason, not a lost slot.
+    let result = &status.results[0];
+    assert_eq!(result.state, ScheduledState::Failed, "{result:?}");
+    assert!(
+        result
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("no copy of the code"),
+        "{result:?}"
+    );
+    assert_eq!(status.results.len(), 1);
+    assert!(firing_on_disk(&h).is_null());
+}
+
+#[tokio::test]
+async fn a_start_a_stop_cut_short_too_long_ago_says_it_did_not_start() {
+    // Three hours later, and the schedule does not start late.
+    let h = Harness::seeded(|dir| left_mid_start(dir, 3 * 3600, false)).await;
+    let status = h.first_result().await;
+    let result = &status.results[0];
+    assert_eq!(result.state, ScheduledState::Failed, "{result:?}");
+    assert!(
+        result
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("stopped while it was starting"),
+        "{result:?}"
+    );
+    assert!(status.live_run.is_none());
+    assert!(firing_on_disk(&h).is_null());
 }
