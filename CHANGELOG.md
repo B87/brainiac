@@ -11,6 +11,8 @@ into the release's section.
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-18
+
 - Brainiac installed from a release can set up and upgrade a run host: it downloads the host's run controller from its own release instead of needing a copy of the source code and a build in Docker.
 
 ## [0.7.0] - 2026-10-17
@@ -239,7 +241,8 @@ First public build: a read-only Git viewer and multi-repository tracker for macO
 - The Branches tab is a placeholder.
 - Not signed with an Apple Developer certificate; the first launch needs right-click > Open (see the README).
 
-[Unreleased]: https://github.com/B87/brainiac/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/B87/brainiac/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/B87/brainiac/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/B87/brainiac/compare/v0.6.4...v0.7.0
 [0.6.4]: https://github.com/B87/brainiac/compare/v0.6.3...v0.6.4
 [0.6.3]: https://github.com/B87/brainiac/compare/v0.6.2...v0.6.3
