@@ -255,7 +255,7 @@ export default function SettingsPage({
           <div
             className={
               titled
-                ? "flex max-w-275 flex-col gap-4 px-8 pt-2 pb-8"
+                ? "mx-auto flex w-full max-w-275 flex-col gap-4 px-8 pt-2 pb-8"
                 : wide
                   ? "flex flex-col gap-3 px-6 pb-8"
                   : "mx-auto flex max-w-160 flex-col gap-5 px-6 pt-5 pb-8"
@@ -289,7 +289,7 @@ export default function SettingsPage({
             {section === "secrets" && <SecretsPane />}
             {section === "agents" && (
               // Prose and switches: kept to a readable width.
-              <div className="flex max-w-160 flex-col gap-5">
+              <div className="mx-auto flex w-full max-w-160 flex-col gap-5">
                 <AgentsPane settings={shown} save={save} />
               </div>
             )}
