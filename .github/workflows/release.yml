@@ -28,8 +28,14 @@ jobs:
           - arch: arm64
             os: ubuntu-24.04-arm
     runs-on: ${{ matrix.os }}
+    # The build runs crates' build scripts: give it no token that can write,
+    # and leave none in the checkout it mounts. Artifacts use their own token.
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Build brainiac-runner for linux/${{ matrix.arch }}
         run: |
           mkdir -p out
