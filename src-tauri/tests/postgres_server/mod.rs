@@ -173,6 +173,40 @@ impl PgServer {
             .arg("-c")
             .arg(sql));
     }
+
+    /// The first value a query returns, as text.
+    pub fn psql_value(&self, sql: &str) -> String {
+        let out = Command::new("psql")
+            .env("PGPASSWORD", PASSWORD)
+            .args(["-h", "127.0.0.1", "-U", USER, "-d", "postgres", "-At"])
+            .arg("-p")
+            .arg(self.port.to_string())
+            .arg("-c")
+            .arg(sql)
+            .output()
+            .expect("psql runs");
+        assert!(out.status.success(), "psql failed: {sql}");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// End the sessions `filter` matches (a condition on `pg_stat_activity`)
+    /// and wait until the server has let them go: ending one is a signal the
+    /// server acts on in its own time, which a fixed wait can fall short of.
+    pub fn end_sessions(&self, filter: &str) {
+        self.psql(&format!(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE {filter}"
+        ));
+        for _ in 0..100 {
+            let left = self.psql_value(&format!(
+                "SELECT count(*) FROM pg_stat_activity WHERE {filter}"
+            ));
+            if left == "0" {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!("the sessions did not end: {filter}");
+    }
 }
 
 impl Drop for PgServer {

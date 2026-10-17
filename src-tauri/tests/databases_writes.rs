@@ -269,8 +269,7 @@ async fn manual_transactions_stay_open_until_commit_or_roll_back() {
 
     // A lost connection says the server rolled the transaction back.
     run(&h, "m", &c.id, "insert into t values (4)", RunMode::Manual).await;
-    server.psql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = 'Brainiac' AND state = 'idle in transaction'");
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    server.end_sessions("application_name = 'Brainiac' AND state = 'idle in transaction'");
     let runs = run(&h, "m", &c.id, "insert into t values (5)", RunMode::Manual).await;
     let (reason, message) = failed(&runs[0]);
     assert_eq!(reason, DbFailureReason::Connection);

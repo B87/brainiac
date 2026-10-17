@@ -375,8 +375,7 @@ async fn each_tab_has_its_own_session_and_reconnects_when_it_is_lost() {
     assert_ne!(first_cell(&b[0]), Cell::Text("other".into()));
     assert!(!a[0].reconnected);
 
-    server.psql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = 'Brainiac'");
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    server.end_sessions("application_name = 'Brainiac'");
     let again = run("a", "show search_path").await.unwrap();
     // The statement ran on a new session, which lost the tab's `SET`.
     assert!(again[0].reconnected);
