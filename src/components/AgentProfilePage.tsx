@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 import {
   credentialWord,
   dayLabel,
@@ -12,7 +12,6 @@ import {
   paymentLabel,
   paymentsOffered,
   profileName,
-  runMissing,
   settingsRequest,
   TIME_LIMITS,
 } from "../lib/agentRuns";
@@ -33,6 +32,7 @@ import {
   sourceOf,
 } from "../lib/secrets";
 import { parseInRange, requestSettings } from "../lib/settings";
+import AgentHostTests from "./AgentHostTests";
 import { HostPill } from "./HostJobView";
 import SecretSourceFields from "./SecretSourceFields";
 import { CommitField, Group, Hint, PageTitle } from "./SettingsPanes";
@@ -59,6 +59,10 @@ export default function AgentProfilePage({
   onHost: (hostId: string) => void;
 }) {
   const name = profileName(profile);
+  // A test that ended: read the hosts' results again.
+  const reload = useCallback(() => {
+    void act(() => ipc.getAgentSettings());
+  }, [act]);
   const save = (patch: Partial<SaveAgentSettingsRequest>) =>
     act(() => ipc.saveAgentSettings(settingsRequest(profile, patch)));
   const tested = settings.hosts.filter((h) =>
@@ -301,40 +305,12 @@ export default function AgentProfilePage({
         </div>
       </Group>
 
-      <Group label="Where it can run">
-        <ul className="settings-group m-0 list-none p-0">
-          {settings.hosts.map((h) => {
-            // The agent's own gaps are listed above; this says what the host lacks.
-            const first =
-              profile.missing.length > 0
-                ? "Not ready: see above"
-                : runMissing(profile, h)[0];
-            return (
-              <li key={h.id} className="settings-row">
-                <span className="min-w-0 flex-1">{h.name}</span>
-                {first ? (
-                  <span className="min-w-0 flex-[2] truncate text-[12px] text-dirty">
-                    {first}
-                  </span>
-                ) : (
-                  <HostPill label="Ready" tone="ready" />
-                )}
-                <button
-                  type="button"
-                  className="btn btn-sm"
-                  onClick={() => onHost(h.id)}
-                >
-                  Open Host
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-        <Hint>
-          What a host lacks is fixed on its page; approving a routine there does
-          most of it for you.
-        </Hint>
-      </Group>
+      <AgentHostTests
+        profile={profile}
+        hosts={settings.hosts}
+        onHost={onHost}
+        onChanged={reload}
+      />
 
       <UsedBy profileId={profile.id} />
     </div>

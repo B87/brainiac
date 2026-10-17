@@ -599,12 +599,18 @@ test("Settings → Agents chooses This Mac's engine on its page and saves a past
     socket: "/Users/someone/.orbstack/run/docker.sock",
   });
   await expect(page.getByText("Choose where runs execute.")).toBeHidden();
-  // A test line per agent; one without its key cannot be tested yet.
+  // The host says which agents passed here; Test is on each agent's page.
   await expect(
-    page.getByText("OpenCode · OpenRouter · not tested"),
-  ).toBeVisible();
+    page.getByRole("listitem", { name: "Agents tested here" }),
+  ).toContainText("None yet.");
+  await expect(page.getByRole("button", { name: /^Test / })).toHaveCount(0);
+  await openSettings(page, "Agents");
+  await page.getByRole("button", { name: /^OpenCode · OpenRouter,/ }).click();
+  // One without its key cannot be tested yet.
   await expect(
-    page.getByRole("button", { name: "Test OpenCode · OpenRouter" }),
+    page.getByRole("button", {
+      name: "Test OpenCode · OpenRouter on This Mac",
+    }),
   ).toBeDisabled();
   await openSettings(page, "Agents");
 
@@ -628,6 +634,45 @@ test("Settings → Agents chooses This Mac's engine on its page and saves a past
   });
   await expect(page.getByText("API key · Keychain")).toBeVisible();
   await expect(page.getByText(key)).toBeHidden();
+});
+
+test("An agent's page tests it on a run host, and the host lists the agents tested there", async ({
+  page,
+}) => {
+  await openSettings(page, "Run Hosts");
+  const dialog = await addHost(page);
+  await dialog
+    .getByRole("button", { name: "It Matches: Trust This Key and Install" })
+    .click();
+  await page.evaluate(() => {
+    window.fake.endJob("host-1", "succeeded");
+    window.fake.readyProfile("claude-code");
+  });
+
+  await openSettings(page, "Agents");
+  await page.getByRole("button", { name: /^Claude Code,/ }).click();
+  const row = page.getByRole("listitem", { name: "runner.example" });
+  await expect(row).toContainText("Not tested here");
+  await row
+    .getByRole("button", { name: "Test Claude Code on runner.example" })
+    .click();
+  expect((await calls(page, "start_agent_host_job")).at(-1)).toMatchObject({
+    id: "host-1",
+    kind: "test",
+    profileId: "claude-code",
+  });
+  await expect(row).toContainText("Testing");
+  await page.evaluate(() => window.fake.endJob("host-1", "succeeded"));
+  await expect(row).toContainText("Test passed");
+
+  // The host's page names it, and the name opens the agent.
+  await row.getByRole("button", { name: "Open Host" }).click();
+  const tested = page.getByRole("listitem", { name: "Agents tested here" });
+  await expect(tested).toContainText("Claude Code");
+  await tested.getByRole("button", { name: "Claude Code" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Claude Code", level: 1 }),
+  ).toBeVisible();
 });
 
 test("A routine chooses its access and tools, and New Access… adds a secret and ticks it", async ({

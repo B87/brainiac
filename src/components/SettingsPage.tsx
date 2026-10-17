@@ -306,6 +306,7 @@ export default function SettingsPage({
                 onHost={onHost}
                 onOpenRun={onOpenRun}
                 onSecrets={() => onSection("secrets")}
+                onAgent={onProfile}
               />
             )}
             {section === "explain-agent" && (

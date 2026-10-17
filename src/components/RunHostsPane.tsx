@@ -38,6 +38,7 @@ export default function RunHostsPane({
   onHost,
   onOpenRun,
   onSecrets,
+  onAgent,
 }: {
   /** The host whose page is open, or none. */
   hostId: string | null;
@@ -45,6 +46,8 @@ export default function RunHostsPane({
   onOpenRun?: (runId: string) => void;
   /** Opens Settings › Secrets, where each copy on a host is listed. */
   onSecrets?: () => void;
+  /** Opens an agent's page (Settings › Agents), where its tests are run. */
+  onAgent?: (profileId: string) => void;
 }) {
   const [settings, setSettings] = useState<AgentSettings | null>(null);
   const [routines, setRoutines] = useState<RoutineOverview[]>([]);
@@ -152,6 +155,7 @@ export default function RunHostsPane({
           onViewDockerfile={showDockerfile}
           onSettings={setSettings}
           onError={setError}
+          onAgent={onAgent}
         />
         {dialogs}
       </>
@@ -170,6 +174,7 @@ export default function RunHostsPane({
           onViewDockerfile={showDockerfile}
           onOpenRun={onOpenRun}
           onSecrets={onSecrets}
+          onAgent={onAgent}
         />
         {dialogs}
       </>

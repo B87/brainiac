@@ -19,7 +19,6 @@ import {
   type AgentProfile,
   type AgentRun,
   type AgentSettings,
-  type AgentTestResult,
   errorMessage,
   type HostJobKind,
   ipc,
@@ -237,98 +236,56 @@ function ImageRow({
 }
 
 /**
- * One test line per profile on a host: passed, to run again, not run, or
- * what the profile lacks first (SPEC.md, Settings → Agents, Test).
+ * Which agents passed their test here (SPEC.md, Settings → Agents, Test):
+ * one line, each name opening that agent's page, where Test is. A test is
+ * of an agent, so it is run from the agent; the host only says what it can
+ * take.
  */
-function ProfileTests({
+function TestedAgents({
   host,
   profiles,
-  disabled,
-  testing,
-  onTest,
-  result,
+  onAgent,
 }: {
   host: AgentHost;
   profiles: AgentProfile[];
-  /** Nothing can be tested now: the host is busy or not ready. */
-  disabled: boolean;
-  /** The profile being tested now, if any. */
-  testing?: string | null;
-  onTest: (profileId: string) => void;
-  /** This Mac's last test, under its profile's line. */
-  result?: { profileId: string; result: AgentTestResult } | null;
+  onAgent?: (profileId: string) => void;
 }) {
+  const passed = profiles.filter(
+    (p) => profileTestState(p, host).kind === "passed",
+  );
+  const rest = profiles.length - passed.length;
   return (
-    <>
-      {profiles.map((profile) => {
-        const name = profileName(profile);
-        const state = profileTestState(profile, host);
-        const title =
-          state.kind === "passed"
-            ? `${name} · test passed ${dayLabel(state.at)}`
-            : state.kind === "stale"
-              ? `${name} · test to run again`
-              : `${name} · not tested`;
-        const detail =
-          state.kind === "passed"
-            ? "With this token or key, image, and engine."
-            : state.kind === "stale"
-              ? `Passed ${dayLabel(state.at)}, before the token or key, the image, or the engine changed.`
-              : state.kind === "blocked"
-                ? state.reason
-                : "Runs of it start here once it passes.";
-        const shown = result?.profileId === profile.id ? result.result : null;
-        return (
-          <li
-            key={profile.id}
-            className="settings-row flex-col items-stretch gap-2"
-          >
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-              <Check done={state.kind === "passed"} />
-              <span className="flex min-w-55 flex-1 flex-col gap-0.5">
-                <span className="font-medium">{title}</span>
-                <Hint>{detail}</Hint>
-              </span>
-              <button
-                type="button"
-                className="btn btn-sm"
-                aria-label={`Test ${name}`}
-                disabled={disabled || state.kind === "blocked" || !!testing}
-                onClick={() => onTest(profile.id)}
-              >
-                {testing === profile.id
-                  ? "Testing…"
-                  : state.kind === "passed" || state.kind === "stale"
-                    ? "Test Again"
-                    : "Test"}
-              </button>
-            </div>
-            {shown && (
-              <div className="flex flex-col gap-1 pl-8">
-                {shown.steps.map((step) => (
-                  <div key={step.name} className="flex gap-2 text-[12.5px]">
-                    <span
-                      className={step.passed ? "text-added" : "text-conflict"}
-                    >
-                      {step.passed ? "✓" : "✕"}
-                    </span>
-                    <span>{step.name}</span>
-                    {step.detail && (
-                      <span className="truncate text-muted">{step.detail}</span>
-                    )}
-                  </div>
-                ))}
-                <Hint>
-                  {shown.passed
-                    ? `Passed at ${dayLabel(shown.tested_at)}.`
-                    : `The test did not pass; runs of ${name} cannot start here yet.`}
-                </Hint>
-              </div>
-            )}
-          </li>
-        );
-      })}
-    </>
+    <SetupRow
+      done={passed.length > 0}
+      label="Agents tested here"
+      title="Agents tested here"
+      detail={
+        <>
+          {passed.length === 0 && "None yet. "}
+          {passed.map((p, i) => (
+            <span key={p.id}>
+              {i > 0 && ", "}
+              {onAgent ? (
+                <button
+                  type="button"
+                  className="text-link hover:underline"
+                  onClick={() => onAgent(p.id)}
+                >
+                  {profileName(p)}
+                </button>
+              ) : (
+                profileName(p)
+              )}
+            </span>
+          ))}
+          {passed.length > 0 && rest > 0 && " · "}
+          {rest > 0 &&
+            `${rest} ${rest === 1 ? "agent" : "agents"} not tested here. `}
+          A run of an agent starts here once its test passes; Test is on the
+          agent's page, in Agents.
+        </>
+      }
+    />
   );
 }
 
@@ -355,6 +312,7 @@ export function RemoteHostPage({
   onViewDockerfile,
   onOpenRun,
   onSecrets,
+  onAgent,
 }: {
   host: AgentHost;
   profiles: AgentProfile[];
@@ -365,6 +323,8 @@ export function RemoteHostPage({
   onViewDockerfile: () => void;
   onOpenRun?: (runId: string) => void;
   onSecrets?: () => void;
+  /** Opens an agent's page, where its test on this host is run. */
+  onAgent?: (profileId: string) => void;
 }) {
   const jobs = useHostJobsContext();
   const job = jobs[host.id];
@@ -671,24 +631,8 @@ export function RemoteHostPage({
                 {host.image ? "Rebuild" : "Build Image"}
               </button>
             </ImageRow>
-            <ProfileTests
-              host={host}
-              profiles={profiles}
-              disabled={
-                blocked || !host.image?.current || host.missing.length > 0
-              }
-              testing={
-                running && job?.kind === "test" ? job.profile_ids[0] : null
-              }
-              onTest={(profileId) => void start("test", profileId)}
-            />
+            <TestedAgents host={host} profiles={profiles} onAgent={onAgent} />
           </ol>
-          <div className="settings-row">
-            <Hint>
-              A test starts a short run, sends a prompt, cancels, and collects.
-              It is the first time that token or key goes to {host.name}.
-            </Hint>
-          </div>
         </Card>
         {settled && (
           <HostHealthCard
@@ -842,6 +786,7 @@ export function LocalHostPage({
   onViewDockerfile,
   onSettings,
   onError,
+  onAgent,
 }: {
   host: AgentHost;
   settings: AgentSettings;
@@ -851,19 +796,14 @@ export function LocalHostPage({
   onViewDockerfile: () => void;
   onSettings: (settings: AgentSettings) => void;
   onError: (message: string | null) => void;
+  /** Opens an agent's page, where its test on this Mac is run. */
+  onAgent?: (profileId: string) => void;
 }) {
   const [engines, setEngines] = useState<AgentEngine[] | null>(null);
   const [controller, setController] = useState<RunControllerStatus | null>(
     null,
   );
   const [building, setBuilding] = useState(false);
-  /** The profile being tested, and the last test's result under its line. */
-  const [testing, setTesting] = useState<string | null>(null);
-  const [testResult, setTestResult] = useState<{
-    profileId: string;
-    result: AgentTestResult;
-  } | null>(null);
-
   const loadEngines = useCallback(() => {
     setEngines(null);
     ipc
@@ -901,22 +841,6 @@ export function LocalHostPage({
       setBuilding(false);
     }
   };
-  /** Test: minutes when a wrong token is retried; the page stays usable. */
-  const runTest = async (profileId: string) => {
-    setTesting(profileId);
-    onError(null);
-    setTestResult(null);
-    try {
-      const result = await ipc.testAgentSetup(profileId);
-      setTestResult({ profileId, result });
-      onSettings(await ipc.getAgentSettings());
-    } catch (e) {
-      onError(errorMessage(e));
-    } finally {
-      setTesting(null);
-    }
-  };
-
   return (
     <div className="flex flex-col gap-5">
       <PageHeader
@@ -990,21 +914,12 @@ export function LocalHostPage({
               {building ? "Building…" : host.image ? "Rebuild" : "Build Image"}
             </button>
           </ImageRow>
-          <ProfileTests
+          <TestedAgents
             host={host}
             profiles={settings.profiles}
-            disabled={busy || building || host.missing.length > 0}
-            testing={testing}
-            onTest={(profileId) => void runTest(profileId)}
-            result={testResult}
+            onAgent={onAgent}
           />
         </ol>
-        <Hint>
-          A test starts a short run, sends a prompt, cancels, and collects. A
-          run of an agent cannot start until its test passes for this token or
-          key, image, and engine. A wrong token or key can take a few minutes to
-          be refused: the agent retries it first.
-        </Hint>
       </Group>
     </div>
   );

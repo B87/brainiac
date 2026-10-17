@@ -346,6 +346,6 @@ export function hostNextStep(
   if (!host.image) return "Build the image";
   if (!host.image.current) return "Rebuild the image";
   if (host.missing.length > 0) return host.missing[0];
-  if (!testedProfiles(host)) return "Test an agent there";
+  if (!testedProfiles(host)) return "Test an agent there, from its page";
   return null;
 }
