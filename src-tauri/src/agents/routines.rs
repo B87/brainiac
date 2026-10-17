@@ -59,6 +59,9 @@ pub struct RoutineService {
     sync_errors: Mutex<HashMap<String, String>>,
     /// One conversation with the hosts about schedules at a time.
     syncing: tokio::sync::Mutex<()>,
+    /// What each host fires that this Mac has no routine for, as its last
+    /// sync found; listed on the host's page, never removed on its own.
+    only_on_host: Mutex<HashMap<String, Vec<crate::models::HostScheduleOnly>>>,
 }
 
 impl RoutineService {
@@ -82,6 +85,7 @@ impl RoutineService {
             driving: Mutex::new(HashMap::new()),
             sync_errors: Mutex::new(HashMap::new()),
             syncing: tokio::sync::Mutex::new(()),
+            only_on_host: Mutex::new(HashMap::new()),
         })
     }
 

@@ -848,6 +848,28 @@ pub async fn remove_routine_schedule(id: String, routines: State<'_, Routines>) 
     routines.remove_schedule(&id).await
 }
 
+/// What a run host fires that this Mac has no routine for (Run hosts › a
+/// host, Routines on this host).
+#[tauri::command]
+pub async fn host_schedules_only(
+    host_id: String,
+    routines: State<'_, Routines>,
+) -> AppResult<Vec<crate::models::HostScheduleOnly>> {
+    routines.host_schedules_only(&host_id).await
+}
+
+/// Remove, on the user's word, a schedule a host fires for no routine here.
+#[tauri::command]
+pub async fn remove_host_schedule_only(
+    host_id: String,
+    routine_id: String,
+    routines: State<'_, Routines>,
+) -> AppResult<Vec<crate::models::HostScheduleOnly>> {
+    routines
+        .remove_host_schedule_only(&host_id, &routine_id)
+        .await
+}
+
 /// Approve the schedule as it is: the host gets the agent's key and the code.
 #[tauri::command]
 pub async fn approve_routine_schedule(id: String, routines: State<'_, Routines>) -> AppResult<()> {

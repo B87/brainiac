@@ -27,6 +27,7 @@ import type {
   HealthSample,
   HostHealth,
   HostJob,
+  HostScheduleOnly,
   HostSecretRow,
   HostSecrets,
   ListPullRequestsRequest,
@@ -1289,6 +1290,8 @@ export class FakeBackend {
       preparing?: boolean;
     }
   >();
+  /** What each host fires for no routine of this Mac, by host ID. */
+  hostSchedulesOnly: Record<string, HostScheduleOnly[]> = {};
   /** The next time the fake host says it fires, in the host's own time. */
   hostNextFire = "2026-10-14T07:00:00+02:00";
   scheduleView(routineId: string): RoutineSchedule | null {
@@ -3231,6 +3234,15 @@ export class FakeBackend {
           };
         s.paused = args.paused === true;
         return null;
+      }
+      case "host_schedules_only":
+        return this.hostSchedulesOnly[String(args.hostId)] ?? [];
+      case "remove_host_schedule_only": {
+        const hostId = String(args.hostId);
+        this.hostSchedulesOnly[hostId] = (
+          this.hostSchedulesOnly[hostId] ?? []
+        ).filter((o) => o.routine_id !== args.routineId);
+        return this.hostSchedulesOnly[hostId];
       }
       case "remove_routine_schedule":
         this.schedules.delete(String(args.id));

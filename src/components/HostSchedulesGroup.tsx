@@ -3,6 +3,7 @@ import { currentStep, useHostJobsContext } from "../lib/hostJobs";
 import {
   type AgentHost,
   errorMessage,
+  type HostScheduleOnly,
   ipc,
   type RoutineOverview,
 } from "../lib/ipc";
@@ -18,6 +19,10 @@ import StatePill from "./StatePill";
  */
 export default function HostSchedulesGroup({ host }: { host: AgentHost }) {
   const [items, setItems] = useState<RoutineOverview[] | null>(null);
+  /** What the host fires for no routine of this Mac. */
+  const [only, setOnly] = useState<HostScheduleOnly[]>([]);
+  /** The one whose removal is being confirmed. */
+  const [removing, setRemoving] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const job = useHostJobsContext()[host.id];
@@ -34,6 +39,29 @@ export default function HostSchedulesGroup({ host }: { host: AgentHost }) {
   useEffect(() => {
     void load();
   }, [load]);
+  // Asks the host, so it comes after the routines and may take a moment.
+  useEffect(() => {
+    let alive = true;
+    ipc
+      .hostSchedulesOnly(host.id)
+      .then((list) => alive && setOnly(list))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [host.id]);
+  const removeOnly = async (routineId: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      setOnly(await ipc.removeHostScheduleOnly(host.id, routineId));
+      setRemoving(null);
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const approved = (items ?? []).filter(
     (i) => i.schedule && i.schedule.state !== "needs_approval",
@@ -72,7 +100,7 @@ export default function HostSchedulesGroup({ host }: { host: AgentHost }) {
         )
       }
     >
-      {items?.length === 0 && (
+      {items?.length === 0 && only.length === 0 && (
         <div className="settings-row text-[12.5px] text-muted">
           None. A routine's Schedule tab puts one here; {host.name} then fires
           it at its time, with this Mac off or asleep, and keeps what it leaves
@@ -106,6 +134,54 @@ export default function HostSchedulesGroup({ host }: { host: AgentHost }) {
           </div>
         );
       })}
+      {only.map((o) => (
+        <fieldset
+          key={o.routine_id}
+          aria-label={`${o.name}, not a routine of this Mac`}
+          className="settings-row m-0 flex-wrap items-center gap-x-3 gap-y-1 border-0"
+        >
+          <span className="flex min-w-55 flex-1 flex-col gap-0.5">
+            <span className="font-medium">{o.name}</span>
+            <span className="text-[12px] text-muted">
+              Not a routine of this Mac: another Mac's, or one this Mac made
+              before it was restored from an older backup.{" "}
+              {o.enabled
+                ? `It still fires${o.next_fire ? `, next ${hostTime(o.next_fire) ?? "…"}` : ""}.`
+                : "It is off."}
+              {o.results_waiting > 0 &&
+                ` ${o.results_waiting} ${o.results_waiting === 1 ? "briefing waits" : "briefings wait"} there.`}
+            </span>
+          </span>
+          {removing === o.routine_id ? (
+            <span className="flex gap-2">
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={() => setRemoving(null)}
+              >
+                Keep It
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm text-conflict"
+                disabled={busy}
+                onClick={() => void removeOnly(o.routine_id)}
+              >
+                Remove{o.results_waiting > 0 ? " With Its Briefings" : ""}
+              </button>
+            </span>
+          ) : (
+            <button
+              type="button"
+              className="btn btn-sm"
+              disabled={busy}
+              onClick={() => setRemoving(o.routine_id)}
+            >
+              Remove from Host…
+            </button>
+          )}
+        </fieldset>
+      ))}
       {error && (
         <div className="settings-row text-[12.5px] text-conflict" role="alert">
           {error}

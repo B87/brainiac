@@ -598,6 +598,8 @@ pub fn run() {
             commands::list_routine_results,
             commands::set_routine_schedule,
             commands::remove_routine_schedule,
+            commands::host_schedules_only,
+            commands::remove_host_schedule_only,
             commands::approve_routine_schedule,
             commands::pause_routine,
             commands::sync_routines,

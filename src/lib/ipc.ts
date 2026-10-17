@@ -88,6 +88,7 @@ import type { HistoryEntry } from "./generated/HistoryEntry";
 import type { HostHealth } from "./generated/HostHealth";
 import type { HostJob } from "./generated/HostJob";
 import type { HostJobKind } from "./generated/HostJobKind";
+import type { HostScheduleOnly } from "./generated/HostScheduleOnly";
 import type { HostSecrets } from "./generated/HostSecrets";
 import type { IndexStatus } from "./generated/IndexStatus";
 import type { ListCommitsRequest } from "./generated/ListCommitsRequest";
@@ -280,6 +281,7 @@ export type { HostJobKind } from "./generated/HostJobKind";
 export type { HostJobState } from "./generated/HostJobState";
 export type { HostJobStep } from "./generated/HostJobStep";
 export type { HostJobStepState } from "./generated/HostJobStepState";
+export type { HostScheduleOnly } from "./generated/HostScheduleOnly";
 export type { HostSecretRow } from "./generated/HostSecretRow";
 export type { HostSecretState } from "./generated/HostSecretState";
 export type { HostSecrets } from "./generated/HostSecrets";
@@ -713,6 +715,14 @@ export const ipc = {
     invoke<void>("set_routine_schedule", { request }),
   removeRoutineSchedule: (id: string) =>
     invoke<void>("remove_routine_schedule", { id }),
+  /** What a run host fires that this Mac has no routine for. */
+  hostSchedulesOnly: (hostId: string) =>
+    invoke<HostScheduleOnly[]>("host_schedules_only", { hostId }),
+  removeHostScheduleOnly: (hostId: string, routineId: string) =>
+    invoke<HostScheduleOnly[]>("remove_host_schedule_only", {
+      hostId,
+      routineId,
+    }),
   approveRoutineSchedule: (id: string) =>
     invoke<void>("approve_routine_schedule", { id }),
   pauseRoutine: (id: string, paused: boolean) =>

@@ -21,8 +21,8 @@ use crate::agents::runtime::RunRuntime;
 use crate::agents::settings::{credential_key, image_for};
 use crate::models::{
     now_rfc3339, AgentHost, AgentProfile, AppError, AppResult, BriefingFinding, BriefingResult,
-    BriefingState, ErrorCode, Routine, RoutineSchedule, ScheduleDaysKind, ScheduleState,
-    ScheduleWhen, SetScheduleRequest,
+    BriefingState, ErrorCode, HostScheduleOnly, Routine, RoutineSchedule, ScheduleDaysKind,
+    ScheduleState, ScheduleWhen, SetScheduleRequest,
 };
 
 /// A run is overdue when it was due this long ago and the host has not been
@@ -353,6 +353,57 @@ impl RoutineService {
             .await?;
         self.after_change(&routine.id).await;
         Ok(())
+    }
+
+    /// What `host_id` fires that this Mac has no routine for, read from the
+    /// host now when it answers, else as its last sync found.
+    pub async fn host_schedules_only(
+        self: &Arc<Self>,
+        host_id: &str,
+    ) -> AppResult<Vec<HostScheduleOnly>> {
+        let _ = self.sync_host(host_id).await;
+        Ok(self.only_on_host(host_id))
+    }
+
+    fn only_on_host(&self, host_id: &str) -> Vec<HostScheduleOnly> {
+        self.only_on_host
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(host_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// The user removes a schedule the host fires for no routine of this
+    /// Mac: the host forgets it, its copy of the code, and the briefings
+    /// waiting there. A routine of this Mac is removed from its own page.
+    pub async fn remove_host_schedule_only(
+        self: &Arc<Self>,
+        host_id: &str,
+        routine_id: &str,
+    ) -> AppResult<Vec<HostScheduleOnly>> {
+        match self.routine(routine_id).await {
+            Ok(_) => {
+                return Err(AppError::validation(
+                    "That routine is this Mac's: remove its schedule on its own page.",
+                ))
+            }
+            Err(e) if e.code == ErrorCode::NotFound => {}
+            Err(e) => return Err(e),
+        }
+        let _one = self.syncing.lock().await;
+        let runtime =
+            self.runs.runtime_of(host_id).await.map_err(|e| {
+                host_down(&e, "The schedule is still there and still runs on the host")
+            })?;
+        runtime
+            .delete_schedule(routine_id)
+            .await
+            .map_err(|e| host_down(&e, "The schedule is still there and still runs on the host"))?;
+        let mut all = self.only_on_host.lock().unwrap_or_else(|p| p.into_inner());
+        let list = all.entry(host_id.to_string()).or_default();
+        list.retain(|s| s.routine_id != routine_id);
+        Ok(list.clone())
     }
 
     /// Remove the schedule here and on the host.
@@ -852,12 +903,38 @@ impl RoutineService {
                 return Err(e);
             }
         };
-        // A schedule the host has for a routine that is gone must not go on firing.
+        // What the host fires for no routine of this host here. A routine
+        // this Mac has that moved to another host is ours: what it left
+        // comes home, then it stops here. One this Mac has never had (another
+        // Mac's, or one from after the backup this Mac was restored from)
+        // stays, results and all, and the host's page lists it for the user
+        // to remove.
+        let mut only = Vec::new();
         for status in &statuses {
-            if !ids.contains(&status.spec.routine_id) {
-                let _ = runtime.delete_schedule(&status.spec.routine_id).await;
+            let routine_id = &status.spec.routine_id;
+            if ids.contains(routine_id) {
+                continue;
+            }
+            match self.routine(routine_id).await {
+                Ok(moved) => {
+                    if self.import(&moved, &runtime, status).await.is_ok() {
+                        let _ = runtime.delete_schedule(routine_id).await;
+                    }
+                }
+                Err(e) if e.code == ErrorCode::NotFound => only.push(HostScheduleOnly {
+                    routine_id: routine_id.clone(),
+                    name: status.spec.name.clone(),
+                    enabled: status.spec.enabled,
+                    next_fire: status.next_fire.clone(),
+                    results_waiting: status.results.len() as u32,
+                }),
+                Err(_) => {}
             }
         }
+        self.only_on_host
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(host_id.to_string(), only);
         for id in ids {
             let (Ok(routine), Ok(s)) = (self.routine(&id).await, self.sched(&id).await) else {
                 continue;

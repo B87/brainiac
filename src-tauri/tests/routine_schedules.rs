@@ -564,3 +564,53 @@ async fn approval_tests_the_agent_when_the_host_has_no_current_test() {
         job.steps
     );
 }
+
+/// A schedule the host fires for a routine this Mac has never had (another
+/// Mac's, or one made after the backup this Mac was restored from) is kept,
+/// with what it left, and listed; only the user removes it.
+#[tokio::test]
+async fn a_schedule_unknown_to_this_mac_stays_on_the_host_until_removed() {
+    let h = Harness::new().await;
+    let routine = h.routine().await;
+    h.routines
+        .set_schedule(SetScheduleRequest {
+            routine_id: routine.id.clone(),
+            when: h.when(30),
+        })
+        .await
+        .unwrap();
+    h.routines.approve(&routine.id).await.unwrap();
+    let on_host = |statuses: &[brainiac_lib::agents::controller::protocol::ScheduleStatus]| {
+        statuses.iter().any(|s| s.spec.routine_id == routine.id)
+    };
+    assert!(on_host(&h.runtime.schedules().await.unwrap().0));
+
+    // This Mac forgets the routine, as an older backup would.
+    let id = routine.id.clone();
+    h.core
+        .call(move |conn| {
+            conn.execute("DELETE FROM routines WHERE id = ?1", [id])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    h.routines.sync_host(HOST).await.unwrap();
+    assert!(
+        on_host(&h.runtime.schedules().await.unwrap().0),
+        "a sync must not remove a schedule this Mac does not know"
+    );
+    let only = h.routines.host_schedules_only(HOST).await.unwrap();
+    assert_eq!(only.len(), 1, "{only:?}");
+    assert_eq!(only[0].routine_id, routine.id);
+    assert_eq!(only[0].name, "Morning check");
+    assert!(only[0].enabled);
+
+    // The user removes it.
+    let left = h
+        .routines
+        .remove_host_schedule_only(HOST, &routine.id)
+        .await
+        .unwrap();
+    assert!(left.is_empty());
+    assert!(!on_host(&h.runtime.schedules().await.unwrap().0));
+}

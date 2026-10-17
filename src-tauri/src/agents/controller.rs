@@ -1385,9 +1385,15 @@ impl<W: Workloads> Controller<W> {
 
     /// An explain run's file, from its agent's container, while the session
     /// waits for a prompt or after it stopped and before Discard.
+    ///
+    /// The values the run was given are taken out first, as from its
+    /// journal: an agent that wrote its key, or a secret's file, into the
+    /// result would otherwise put it into Today, a note, or MCP. The run's
+    /// redactor is there while its session is open, which is when a result
+    /// is read.
     async fn read_result_file(&self, run_id: &str, path: &str) -> AppResult<Option<String>> {
         let run = self.run(run_id)?;
-        let (socket, container) = {
+        let (socket, container, redactor) = {
             let inner = run.lock();
             if inner.launching {
                 return Err(conflict("The run is still starting."));
@@ -1395,18 +1401,28 @@ impl<W: Workloads> Controller<W> {
             let Some(container) = inner.record.container_id.clone() else {
                 return Err(conflict("The run has no container to read from."));
             };
-            (inner.record.engine_socket.clone(), container)
+            (
+                inner.record.engine_socket.clone(),
+                container,
+                inner.redactor.clone(),
+            )
         };
         let bytes = self
             .workloads
             .read_file(&socket, &container, path, MAX_EXPLANATION_BYTES)
             .await?;
-        bytes
+        let text = bytes
             .map(|b| {
                 String::from_utf8(b)
                     .map_err(|_| AppError::validation("The result file is not UTF-8."))
             })
-            .transpose()
+            .transpose()?;
+        Ok(text.map(|mut text| {
+            if let Some(redactor) = &redactor {
+                redactor.redact_json(&mut text);
+            }
+            text
+        }))
     }
 
     async fn discard(&self, run_id: &str, fallback_image: Option<String>) -> AppResult<()> {

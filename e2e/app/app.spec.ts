@@ -730,6 +730,51 @@ test("Approving a routine tests its agent on the host first when no test there m
   ).toBeVisible();
 });
 
+test("A host's page lists a schedule that is not this Mac's, and removes it only when asked", async ({
+  page,
+}) => {
+  await openSettings(page, "Run Hosts");
+  const dialog = await addHost(page);
+  await dialog
+    .getByRole("button", { name: "It Matches: Trust This Key and Install" })
+    .click();
+  await page.evaluate(() => {
+    window.fake.endJob("host-1", "succeeded");
+    window.fake.hostSchedulesOnly["host-1"] = [
+      {
+        routine_id: "elsewhere-1",
+        name: "Nightly report",
+        enabled: true,
+        next_fire: "2026-10-14T02:00:00+02:00",
+        results_waiting: 2,
+      },
+    ];
+  });
+  await page
+    .getByRole("navigation", { name: "Breadcrumb" })
+    .getByRole("button", { name: "Run hosts" })
+    .click();
+  await page.getByRole("button", { name: /^runner\.example,/ }).click();
+
+  const other = page.getByRole("group", {
+    name: "Nightly report, not a routine of this Mac",
+  });
+  await expect(other).toContainText("It still fires");
+  await expect(other).toContainText("2 briefings wait there.");
+  await other.getByRole("button", { name: "Remove from Host…" }).click();
+  await other.getByRole("button", { name: "Keep It" }).click();
+  expect(await calls(page, "remove_host_schedule_only")).toHaveLength(0);
+  await other.getByRole("button", { name: "Remove from Host…" }).click();
+  await other
+    .getByRole("button", { name: "Remove With Its Briefings" })
+    .click();
+  expect((await calls(page, "remove_host_schedule_only")).at(-1)).toEqual({
+    hostId: "host-1",
+    routineId: "elsewhere-1",
+  });
+  await expect(other).toBeHidden();
+});
+
 test("A routine chooses its access and tools, and New Access… adds a secret and ticks it", async ({
   page,
 }) => {

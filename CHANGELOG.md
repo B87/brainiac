@@ -11,6 +11,8 @@ into the release's section.
 
 ## [Unreleased]
 
+- A secret a run was given is taken out of its briefing or explanation too, not only its conversation. A host's page lists a schedule it fires for another Mac, or from before a restore, and keeps it until you remove it; before, Brainiac deleted it with the briefings waiting there.
+
 - Approving a routine tests its agent on the host when it has not passed there with the current key and image, so a schedule no longer waits for you to press Test.
 
 - An agent is tested from its own page, on each host under Where it can run. A host's page lists the agents tested there, each opening its agent.
