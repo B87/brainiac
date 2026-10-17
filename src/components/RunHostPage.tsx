@@ -517,11 +517,13 @@ export function RemoteHostPage({
                 You can leave Settings or close this window. The job goes on,
                 and Brainiac tells you when it ends.
               </li>
-              <li>
-                {host.controller_from_release
-                  ? "The run controller is the one this version of Brainiac was released with, downloaded once from GitHub and checked against the SHA-256 the app carries."
-                  : "The first build after a Brainiac update compiles the Linux run controller on this Mac, in Docker, imitating the host's processor when it differs. Brainiac keeps that build's cache, so later builds recompile only what changed."}
-              </li>
+              {host.available_build && (
+                <li>
+                  {host.controller_from_release
+                    ? "The run controller is the one this version of Brainiac was released with, downloaded once from GitHub and checked against the SHA-256 the app carries."
+                    : "The first build after a Brainiac update compiles the Linux run controller on this Mac, in Docker, imitating the host's processor when it differs. Brainiac keeps that build's cache, so later builds recompile only what changed."}
+                </li>
+              )}
             </ul>
           </Group>
         )}
@@ -571,7 +573,7 @@ export function RemoteHostPage({
               }
               detail={
                 host.upgrade_available
-                  ? `Older than this Brainiac, which ${host.controller_from_release ? "brings" : "builds"} ${host.available_build ?? "a newer one"}. The next approval of a routine here upgrades it, or do it now; upgrading restarts the controller, so it waits while a run is live${
+                  ? `Not the one this Brainiac ${host.controller_from_release ? "brings" : "builds"}${host.available_build ? ` (${host.available_build})` : ""}. The next approval of a routine here upgrades it, or do it now; upgrading restarts the controller, so it waits while a run is live${
                       live.length > 0
                         ? `: ${live.length === 1 ? `“${live[0].title}” is live` : `${live.length} runs are live`} there now`
                         : ""

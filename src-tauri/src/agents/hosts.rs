@@ -267,8 +267,11 @@ impl AgentHostService {
                 }
             }),
         );
+        // For a released Brainiac this is the digest it carries, not one read
+        // from the cached file again, so the host's copy is checked against
+        // the signed app.
         let binary = built.path;
-        let digest = runner_binary::file_digest(&binary)?;
+        let digest = built.sha256;
         job.check_cancelled()?;
 
         job.begin(at + COPY);
@@ -281,7 +284,7 @@ impl AgentHostService {
         if !digest_matches(&uploaded, &digest) {
             remove_upload(&target).await;
             return Err(AppError::dependency(format!(
-                "The copy on {name} did not match the program Brainiac built. The copy was deleted; nothing was installed or restarted."
+                "The copy on {name} did not match the program Brainiac built or downloaded. The copy was deleted; nothing was installed or restarted."
             ))
             .with_details(format!(
                 "expected {digest}  brainiac-runner\n{name}: {}",
@@ -362,7 +365,7 @@ impl AgentHostService {
             )
             .await;
             return Err(AppError::dependency(format!(
-                "The program installed on {name} did not match the one Brainiac built, so it was removed."
+                "The program installed on {name} did not match the one Brainiac built or downloaded, so it was removed."
             ))
             .with_details(format!(
                 "expected {digest}  brainiac-runner\n{name}: {}",

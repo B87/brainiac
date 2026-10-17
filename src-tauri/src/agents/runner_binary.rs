@@ -31,12 +31,20 @@ pub fn platform(uname: &str) -> AppResult<&'static str> {
 #[derive(Debug)]
 pub struct Built {
     pub path: PathBuf,
-    /// It was already in the cache: nothing was compiled.
+    /// It was already in the cache: nothing was compiled or downloaded.
     pub reused: bool,
+    /// The SHA-256 the copy on a host must have, hex: the one this Brainiac
+    /// was released with, or a checkout's build's own.
+    pub sha256: String,
 }
 
-/// Where the release workflow publishes each version's controllers.
-const RELEASES: &str = "https://github.com/B87/brainiac/releases/download";
+/// The repository whose releases hold the controllers: the one the release
+/// workflow ran in (GitHub sets `GITHUB_REPOSITORY`), so a fork's app
+/// downloads its own.
+const REPOSITORY: &str = match option_env!("GITHUB_REPOSITORY") {
+    Some(repository) => repository,
+    None => "B87/brainiac",
+};
 
 /// The SHA-256 of each controller the release workflow built for this
 /// version, set when it builds the app (.github/workflows/release.yml).
@@ -71,7 +79,7 @@ pub fn from_release() -> bool {
 /// The URL of this version's controller for `platform` on its release.
 fn release_url(platform: &str) -> String {
     format!(
-        "{RELEASES}/v{}/{}",
+        "https://github.com/{REPOSITORY}/releases/download/v{}/{}",
         env!("CARGO_PKG_VERSION"),
         asset_name(platform)
     )
@@ -97,8 +105,12 @@ pub async fn ensure(
     std::fs::create_dir_all(cache_dir)?;
     let root = match source_root() {
         Ok(root) => root,
-        Err(_) => {
-            let digest = released_digest(platform).ok_or_else(no_controller)?;
+        Err(_) if from_release() => {
+            let digest = released_digest(platform).ok_or_else(|| {
+                AppError::dependency(format!(
+                    "This release of Brainiac has no run controller for {platform}."
+                ))
+            })?;
             let cached = cache_dir.join(format!(
                 "{}-v{}",
                 asset_name(platform),
@@ -106,6 +118,7 @@ pub async fn ensure(
             ));
             return download(&release_url(platform), digest, &cached, on_line, cancel).await;
         }
+        Err(e) => return Err(e),
     };
     let digest = current_build().ok_or_else(no_controller)?;
     let cached = cache_dir.join(format!(
@@ -113,16 +126,14 @@ pub async fn ensure(
         platform.replace('/', "-"),
         &digest[..16]
     ));
-    if cached.is_file() {
-        return Ok(Built {
-            path: cached,
-            reused: true,
-        });
+    let reused = cached.is_file();
+    if !reused {
+        build(&root, platform, &cached, on_line, cancel).await?;
     }
-    build(&root, platform, &cached, on_line, cancel).await?;
     Ok(Built {
+        sha256: file_digest(&cached)?,
         path: cached,
-        reused: false,
+        reused,
     })
 }
 
@@ -190,31 +201,50 @@ fn no_controller() -> AppError {
     )
 }
 
+fn cancelled() -> AppError {
+    AppError::new(ErrorCode::Cancelled, "Cancelled.")
+}
+
+/// Resolves once `cancel` is `true`; never, once its sender is dropped,
+/// because nothing can cancel any more.
+async fn until_cancelled(cancel: &mut watch::Receiver<bool>) {
+    if cancel.wait_for(|c| *c).await.is_err() {
+        std::future::pending::<()>().await;
+    }
+}
+
 /// How long a download may go without any bytes arriving.
 const DOWNLOAD_STALL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Far above any controller (about 15 MB): a download past it is stopped.
+const DOWNLOAD_LIMIT: u64 = 256 * 1024 * 1024;
 
 /// Downloads `url` to `dest` unless a file with `sha256` is already there,
 /// and keeps it only when its SHA-256 is `sha256`. A `true` on `cancel`
 /// stops it and removes the part written.
-pub async fn download(
+async fn download(
     url: &str,
     sha256: &str,
     dest: &Path,
     on_line: &mut (dyn FnMut(&str) + Send),
     mut cancel: watch::Receiver<bool>,
 ) -> AppResult<Built> {
+    let sha256 = sha256.to_ascii_lowercase();
     if dest.is_file() {
-        if file_digest(dest)?.eq_ignore_ascii_case(sha256) {
+        if file_digest(dest)? == sha256 {
             return Ok(Built {
                 path: dest.to_path_buf(),
                 reused: true,
+                sha256,
             });
         }
         // Not the program this Brainiac was released with: fetch it again.
-        std::fs::remove_file(dest)?;
-    }
-    if *cancel.borrow() {
-        return Err(AppError::new(ErrorCode::Cancelled, "Cancelled."));
+        // Another host's install may have removed it a moment before.
+        if let Err(e) = std::fs::remove_file(dest) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                return Err(e.into());
+            }
+        }
     }
     let unreachable = |e: reqwest::Error| {
         AppError::dependency("Brainiac could not download the run controller.")
@@ -227,7 +257,10 @@ pub async fn download(
         .build()
         .map_err(unreachable)?;
     on_line(&format!("GET {url}"));
-    let mut response = client.get(url).send().await.map_err(unreachable)?;
+    let response = tokio::select! {
+        response = client.get(url).send() => response.map_err(unreachable)?,
+        _ = until_cancelled(&mut cancel) => return Err(cancelled()),
+    };
     if !response.status().is_success() {
         return Err(AppError::dependency(format!(
             "The run controller for this Brainiac could not be downloaded ({}).",
@@ -239,54 +272,30 @@ pub async fn download(
     }
     let parent = dest.parent().unwrap_or(Path::new("/tmp"));
     let part = parent.join(format!("download-{}", uuid::Uuid::new_v4().simple()));
-    let mut file = tokio::fs::File::create(&part).await?;
-    let mut hasher = Sha256::new();
-    let mut size = 0u64;
-    // A dropped sender cannot cancel any more; then only the body is awaited.
-    let mut listening = true;
-    loop {
-        let chunk = tokio::select! {
-            chunk = response.chunk() => chunk,
-            changed = cancel.changed(), if listening => {
-                if changed.is_err() {
-                    listening = false;
-                } else if *cancel.borrow() {
-                    drop(file);
-                    let _ = std::fs::remove_file(&part);
-                    return Err(AppError::new(ErrorCode::Cancelled, "Cancelled."));
-                }
-                continue;
-            }
-        };
-        match chunk {
-            Ok(Some(bytes)) => {
-                hasher.update(&bytes);
-                size += bytes.len() as u64;
-                if let Err(e) = file.write_all(&bytes).await {
-                    drop(file);
-                    let _ = std::fs::remove_file(&part);
-                    return Err(e.into());
-                }
-            }
-            Ok(None) => break,
-            Err(e) => {
-                drop(file);
-                let _ = std::fs::remove_file(&part);
-                return Err(unreachable(e));
-            }
+    let (got, size) = match receive(response, &part, &mut cancel).await {
+        Ok(received) => received,
+        Err(mut e) => {
+            let _ = std::fs::remove_file(&part);
+            e.details = Some(match e.details {
+                Some(details) => format!("{url}\n{details}"),
+                None => url.to_string(),
+            });
+            return Err(e);
         }
-    }
-    file.flush().await?;
-    drop(file);
-    let got = hex(&hasher.finalize());
-    if !got.eq_ignore_ascii_case(sha256) {
+    };
+    if got != sha256 {
         let _ = std::fs::remove_file(&part);
         return Err(AppError::dependency(
             "The downloaded run controller is not the one this Brainiac was released with. It was deleted; nothing was installed.",
         )
         .with_details(format!("{url}\nexpected SHA-256 {sha256}\ndownloaded {got}")));
     }
-    std::fs::rename(&part, dest)?;
+    // A rename onto an existing file replaces it in one step, so a host
+    // copying the cached program meanwhile reads the whole of one of them.
+    if let Err(e) = std::fs::rename(&part, dest) {
+        let _ = std::fs::remove_file(&part);
+        return Err(e.into());
+    }
     on_line(&format!(
         "{:.1} MB, SHA-256 {}",
         size as f64 / 1_000_000.0,
@@ -295,7 +304,40 @@ pub async fn download(
     Ok(Built {
         path: dest.to_path_buf(),
         reused: false,
+        sha256,
     })
+}
+
+/// Writes `response`'s body to `part`, returning its SHA-256 and size. The
+/// caller removes `part` when this fails.
+async fn receive(
+    mut response: reqwest::Response,
+    part: &Path,
+    cancel: &mut watch::Receiver<bool>,
+) -> AppResult<(String, u64)> {
+    let mut file = tokio::fs::File::create(part).await?;
+    let mut hasher = Sha256::new();
+    let mut size = 0u64;
+    loop {
+        let chunk = tokio::select! {
+            chunk = response.chunk() => chunk.map_err(|e| {
+                AppError::dependency("Brainiac could not download the run controller.")
+                    .with_details(e.to_string())
+            })?,
+            _ = until_cancelled(cancel) => return Err(cancelled()),
+        };
+        let Some(bytes) = chunk else { break };
+        size += bytes.len() as u64;
+        if size > DOWNLOAD_LIMIT {
+            return Err(AppError::dependency(
+                "The run controller's download was far larger than any controller, so it was stopped.",
+            ));
+        }
+        hasher.update(&bytes);
+        file.write_all(&bytes).await?;
+    }
+    file.flush().await?;
+    Ok((hex(&hasher.finalize()), size))
 }
 
 fn source_digest(root: &Path) -> AppResult<String> {
@@ -592,11 +634,25 @@ mod tests {
 
     /// Answers each of `answers` (status, body) to one connection, in order.
     async fn serve(answers: Vec<(u16, &'static [u8])>) -> String {
+        serve_with(
+            answers
+                .into_iter()
+                .map(|(s, b)| (s, vec![], b, false))
+                .collect(),
+        )
+        .await
+    }
+
+    /// One answer: status, extra headers, body, and whether to stall after
+    /// the head instead of sending the body.
+    type Answer = (u16, Vec<String>, &'static [u8], bool);
+
+    async fn serve_with(answers: Vec<Answer>) -> String {
         use tokio::io::AsyncReadExt;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         tokio::spawn(async move {
-            for (status, body) in answers {
+            for (status, headers, body, stall) in answers {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let mut head = Vec::new();
                 let mut buf = [0u8; 1024];
@@ -607,11 +663,21 @@ mod tests {
                     }
                     head.extend_from_slice(&buf[..n]);
                 }
-                let response = format!(
-                    "HTTP/1.1 {status} X\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                let mut response = format!(
+                    "HTTP/1.1 {status} X\r\ncontent-length: {}\r\nconnection: close\r\n",
                     body.len()
                 );
+                for header in headers {
+                    response.push_str(&format!("{header}\r\n"));
+                }
+                response.push_str("\r\n");
                 socket.write_all(response.as_bytes()).await.unwrap();
+                if stall {
+                    socket.write_all(&body[..1]).await.unwrap();
+                    // Holds the connection open with the body unfinished.
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                    continue;
+                }
                 socket.write_all(body).await.unwrap();
             }
         });
@@ -704,6 +770,53 @@ mod tests {
             .unwrap_err();
         assert!(error.message.contains("could not be downloaded (404"));
         assert!(error.details.unwrap().contains("published"));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_download_follows_the_release_redirect() {
+        // GitHub answers a release asset with a redirect to its storage.
+        let program: &[u8] = b"\x7fELF the released controller";
+        let storage = serve(vec![(200, program)]).await;
+        let release = serve_with(vec![(
+            302,
+            vec![format!("location: {storage}/object")],
+            b"",
+            false,
+        )])
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("brainiac-runner-linux-amd64-v1");
+        let (_cancel, signal) = watch::channel(false);
+        let built = download(
+            &format!("{release}/a"),
+            &sha(program),
+            &dest,
+            &mut |_| {},
+            signal,
+        )
+        .await
+        .unwrap();
+        assert_eq!(built.sha256, sha(program));
+        assert_eq!(std::fs::read(&dest).unwrap(), program);
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_download_stops_at_once_and_leaves_nothing() {
+        let base = serve_with(vec![(200, vec![], b"\x7fELF a long body", true)]).await;
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("brainiac-runner-linux-amd64-v1");
+        let (cancel, signal) = watch::channel(false);
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            let _ = cancel.send(true);
+        });
+        let started = std::time::Instant::now();
+        let error = download(&format!("{base}/a"), &sha(b"x"), &dest, &mut |_| {}, signal)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Cancelled);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 }

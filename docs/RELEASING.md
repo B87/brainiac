@@ -110,9 +110,13 @@ starts signing and notarizing automatically:
 4. Open the draft (`gh release view vX.Y.Z --web`), download the DMG, install
    it over your current copy and use it for a minute.
 5. Publish: `scripts/publish-release.sh vX.Y.Z`. The script refuses if any of
-   the updater assets or run controllers are missing.
+   the updater assets or run controllers are missing, or if a run controller's
+   SHA-256 is not the one compiled into the app.
 6. Pick Brainiac > Check for Updates… in an older installed build to confirm the
    update is offered, installs, and relaunches.
+7. On a run host's page, choose Upgrade (or Install on a new host) in the
+   updated app. A draft's run controllers cannot be downloaded, so this is the
+   first time the released app's download of them is exercised.
 
 Pre-releases work the same way with a tag like `v0.2.0-beta.1`. They are marked
 as pre-release on GitHub and are not served from `releases/latest`, so regular
