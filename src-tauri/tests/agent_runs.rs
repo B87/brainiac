@@ -401,7 +401,13 @@ async fn a_run_is_started_followed_finished_collected_and_reviewed() {
     assert_eq!(run.model, "sonnet");
     assert_eq!(run.model_used.as_deref(), Some("claude-sonnet-4-5"));
 
-    // The journal is mirrored to the Mac, filtered, in order.
+    // The journal is mirrored to the Mac, filtered, in order. The run turns
+    // idle from the controller's status, before the mirror catches up.
+    h.wait_events(&run.id, "the first turn's end", |b| {
+        matches!(b, RunEventBody::TurnEnded { .. })
+    })
+    .await;
+    let run = h.runs.get(&run.id).await.unwrap();
     let page = h.runs.events(&run.id, 0).await.unwrap();
     let kinds: Vec<&str> = page
         .events
