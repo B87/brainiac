@@ -138,6 +138,40 @@ export function hostTime(rfc3339: string | null): string | null {
   return `${names[day]} ${m[4]}`;
 }
 
+/** "UTC+2", "UTC−3:30", "UTC". */
+export function utcOffsetWords(minutes: number): string {
+  if (minutes === 0) return "UTC";
+  const sign = minutes > 0 ? "+" : "−";
+  const h = Math.floor(Math.abs(minutes) / 60);
+  const m = Math.abs(minutes) % 60;
+  return `UTC${sign}${h}${m ? `:${String(m).padStart(2, "0")}` : ""}`;
+}
+
+/**
+ * Where a host's clock stands, for the hint beside a schedule's time: "It is
+ * 17:23 on vegeta now (UTC), 2 hours behind this Mac." `now` is this Mac's
+ * time; the host's is worked out from its offset, so it does not go stale.
+ */
+export function hostClockWords(
+  hostName: string,
+  offsetMinutes: number,
+  now: Date = new Date(),
+): string {
+  const there = new Date(now.getTime() + offsetMinutes * 60_000);
+  const hhmm = `${String(there.getUTCHours()).padStart(2, "0")}:${String(there.getUTCMinutes()).padStart(2, "0")}`;
+  // getTimezoneOffset is UTC minus local time, in minutes.
+  const diff = offsetMinutes + now.getTimezoneOffset();
+  const hours = Math.abs(diff) / 60;
+  const span = Number.isInteger(hours)
+    ? `${hours} ${hours === 1 ? "hour" : "hours"}`
+    : `${Math.floor(hours)}:${String(Math.abs(diff) % 60).padStart(2, "0")} hours`;
+  const relation =
+    diff === 0
+      ? "the same time as this Mac"
+      : `${span} ${diff > 0 ? "ahead of" : "behind"} this Mac`;
+  return `It is ${hhmm} on ${hostName} now (${utcOffsetWords(offsetMinutes)}), ${relation}.`;
+}
+
 /** Millionths of a US dollar as "$0.41". */
 export function usd(micros: number): string {
   return `$${(micros / 1_000_000).toFixed(2)}`;

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { BriefingResult, RoutineOverview, RoutineSchedule } from "./ipc";
 import {
+  hostClockWords,
   hostTime,
   inTodayDigest,
   resultWord,
@@ -9,6 +10,7 @@ import {
   scheduleWords,
   sortRoutines,
   usd,
+  utcOffsetWords,
 } from "./routines";
 
 function result(over: Partial<BriefingResult>): BriefingResult {
@@ -197,5 +199,34 @@ describe("a routine's schedule", () => {
     expect(hostTime("2026-10-14T07:00:00-09:00")).toBe("Wed 07:00");
     expect(hostTime(null)).toBeNull();
     expect(usd(410_000)).toBe("$0.41");
+  });
+});
+
+describe("a host's clock beside a schedule's time", () => {
+  const now = new Date(Date.UTC(2026, 9, 17, 17, 23));
+  // This Mac's offset from UTC, whatever machine runs the test.
+  const mac = -now.getTimezoneOffset();
+
+  it("names the host's time and zone", () => {
+    expect(hostClockWords("vegeta", 120, now)).toMatch(
+      /^It is 19:23 on vegeta now \(UTC\+2\), /,
+    );
+    expect(hostClockWords("vegeta", 0, now)).toMatch(/17:23 .*\(UTC\)/);
+    expect(utcOffsetWords(-210)).toBe("UTC−3:30");
+  });
+
+  it("says how far it is from this Mac", () => {
+    expect(hostClockWords("h", mac, now)).toMatch(
+      /the same time as this Mac\.$/,
+    );
+    expect(hostClockWords("h", mac - 120, now)).toMatch(
+      /2 hours behind this Mac\.$/,
+    );
+    expect(hostClockWords("h", mac + 60, now)).toMatch(
+      /1 hour ahead of this Mac\.$/,
+    );
+    expect(hostClockWords("h", mac + 330, now)).toMatch(
+      /5:30 hours ahead of this Mac\.$/,
+    );
   });
 });

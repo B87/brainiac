@@ -755,3 +755,28 @@ async fn a_host_is_unreachable_only_after_missing_two_looks() {
     assert!(h.routines.sync_host(HOST).await.is_err());
     assert_eq!(h.schedule(&routine).await.state, ScheduleState::Active);
 }
+
+/// The Schedule tab shows the host's clock, since a schedule's time is the
+/// host's: read from the host, and as it last answered when it is silent.
+#[tokio::test]
+async fn a_hosts_clock_is_read_and_kept_when_it_goes_quiet() {
+    let h = Harness::new().await;
+    let clock = h.routines.host_clock(HOST).await.unwrap();
+    // The controller runs in this process, so its zone is this machine's.
+    assert_eq!(
+        clock.utc_offset_minutes,
+        Local::now().offset().local_minus_utc() / 60
+    );
+    assert!(chrono::DateTime::parse_from_rfc3339(&clock.now).is_ok());
+
+    let gone = tempfile::tempdir().unwrap();
+    h.runs.use_runtime_for_host(
+        HOST,
+        Arc::new(RunRuntime::attach(
+            StateDir::new(gone.path().join("c")),
+            gone.path().join("c").join("runner.sock"),
+        )),
+    );
+    assert_eq!(h.routines.host_clock(HOST).await.unwrap(), clock);
+    assert!(h.routines.host_clock("host-never-seen").await.is_err());
+}

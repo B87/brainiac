@@ -599,6 +599,7 @@ pub fn run() {
             commands::set_routine_schedule,
             commands::remove_routine_schedule,
             commands::host_schedules_only,
+            commands::host_clock,
             commands::remove_host_schedule_only,
             commands::approve_routine_schedule,
             commands::pause_routine,

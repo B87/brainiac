@@ -5258,6 +5258,17 @@ pub enum ScheduleState {
     Preparing,
 }
 
+/// A run host's clock as it last answered: a schedule's time is in the host's
+/// own time zone, so the Schedule tab shows it beside the time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct HostClock {
+    /// The host's time when it answered, RFC 3339 with its offset.
+    pub now: String,
+    /// The host's offset from UTC, in minutes (120 for CEST).
+    pub utc_offset_minutes: i32,
+}
+
 /// A schedule a run host fires for no routine of this Mac on that host: one
 /// made by another Mac using the same host, or by this one before an older
 /// backup was restored, which Brainiac leaves there; or this Mac's own after

@@ -707,10 +707,13 @@ test("Approving a routine tests its agent on the host first when no test there m
   await form.getByRole("button", { name: "Create Routine" }).click();
   await page.getByRole("tab", { name: "Schedule" }).click();
   await page.getByRole("button", { name: "Add a schedule…" }).click();
+  // The time is the host's, and the host says what its clock is.
+  await expect(page.getByText(/on runner\.example now \(UTC\)/)).toBeVisible();
   await page.getByRole("button", { name: "Save schedule…" }).click();
 
   const approve = page.getByRole("dialog", { name: /^Approve “/ });
   await expect(approve).toContainText("Test Claude Code there.");
+  await expect(approve).toContainText("runner.example time (UTC)");
   await approve
     .getByRole("button", { name: "Approve and Prepare runner.example" })
     .click();

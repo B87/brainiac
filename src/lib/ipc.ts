@@ -85,6 +85,7 @@ import type { HealthSnapshot } from "./generated/HealthSnapshot";
 import type { HealthStatement } from "./generated/HealthStatement";
 import type { HealthTable } from "./generated/HealthTable";
 import type { HistoryEntry } from "./generated/HistoryEntry";
+import type { HostClock } from "./generated/HostClock";
 import type { HostHealth } from "./generated/HostHealth";
 import type { HostJob } from "./generated/HostJob";
 import type { HostJobKind } from "./generated/HostJobKind";
@@ -275,6 +276,7 @@ export type { ForgeSource } from "./generated/ForgeSource";
 export type { ForgeTarget } from "./generated/ForgeTarget";
 export type { ForgeTokenKind } from "./generated/ForgeTokenKind";
 export type { ForgeUser } from "./generated/ForgeUser";
+export type { HostClock } from "./generated/HostClock";
 export type { HostHealth } from "./generated/HostHealth";
 export type { HostJob } from "./generated/HostJob";
 export type { HostJobKind } from "./generated/HostJobKind";
@@ -716,6 +718,7 @@ export const ipc = {
   removeRoutineSchedule: (id: string) =>
     invoke<void>("remove_routine_schedule", { id }),
   /** What a run host fires that this Mac has no routine for. */
+  hostClock: (hostId: string) => invoke<HostClock>("host_clock", { hostId }),
   hostSchedulesOnly: (hostId: string) =>
     invoke<HostScheduleOnly[]>("host_schedules_only", { hostId }),
   removeHostScheduleOnly: (hostId: string, routineId: string) =>

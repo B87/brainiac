@@ -21,8 +21,8 @@ use crate::agents::runtime::RunRuntime;
 use crate::agents::settings::{credential_key, image_for};
 use crate::models::{
     now_rfc3339, AgentHost, AgentProfile, AppError, AppResult, BriefingFinding, BriefingResult,
-    BriefingState, ErrorCode, HostScheduleOnly, Routine, RoutineSchedule, ScheduleDaysKind,
-    ScheduleState, ScheduleWhen, SetScheduleRequest,
+    BriefingState, ErrorCode, HostClock, HostScheduleOnly, Routine, RoutineSchedule,
+    ScheduleDaysKind, ScheduleState, ScheduleWhen, SetScheduleRequest,
 };
 
 /// A run is overdue when it was due this long ago and the host has not been
@@ -973,13 +973,14 @@ impl RoutineService {
                 return Err(e);
             }
         };
-        let (statuses, _host_now) = match runtime.schedules().await {
+        let (statuses, host_now) = match runtime.schedules().await {
             Ok(answer) => answer,
             Err(e) => {
                 self.not_answered(host_id, &ids, &e);
                 return Err(e);
             }
         };
+        self.note_clock(host_id, &host_now);
         self.unanswered_since
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -1048,6 +1049,44 @@ impl RoutineService {
                 Some(format!("The host cannot be reached: {}", error.message)),
             );
         }
+    }
+
+    /// A host's clock, which a schedule's time is read in: asked of the host,
+    /// or as it last answered when it cannot be reached now.
+    pub async fn host_clock(&self, host_id: &str) -> AppResult<HostClock> {
+        let asked = async {
+            let runtime = self.runs.runtime_of(host_id).await?;
+            runtime.schedules().await
+        }
+        .await;
+        match asked {
+            Ok((_, now)) => {
+                self.note_clock(host_id, &now);
+            }
+            Err(e) => tracing::info!(host = %host_id, error = %e, "a host's clock was not read"),
+        }
+        self.clocks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(host_id)
+            .cloned()
+            .ok_or_else(|| AppError::dependency("The host's time is not known yet."))
+    }
+
+    fn note_clock(&self, host_id: &str, now: &str) {
+        let Ok(at) = DateTime::parse_from_rfc3339(now) else {
+            return;
+        };
+        self.clocks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(
+                host_id.to_string(),
+                HostClock {
+                    now: now.to_string(),
+                    utc_offset_minutes: at.offset().local_minus_utc() / 60,
+                },
+            );
     }
 
     /// Count a host as silent since `at`, as if the looks before had not been

@@ -11,6 +11,7 @@ into the release's section.
 
 ## [Unreleased]
 
+- A routine's Schedule tab shows the run host's time now and its time zone beside the time you set, and warns when it differs from your Mac's; the approval names the zone too.
 - A routine is no longer shown as Host unreachable because its host missed one check; it is once the host misses two in a row.
 - A scheduled run its host was starting when the host's run controller stopped is started again if it is still on time; otherwise its briefing says it did not start, instead of the run going missing.
 - A routine moved to another host stops firing on the host it left, and what it ran there is listed as run there.

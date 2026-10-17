@@ -3257,6 +3257,9 @@ export class FakeBackend {
         s.paused = args.paused === true;
         return null;
       }
+      case "host_clock":
+        // A host on UTC, as a fresh Linux server is.
+        return { now: new Date().toISOString(), utc_offset_minutes: 0 };
       case "host_schedules_only":
         return this.hostSchedulesOnly[String(args.hostId)] ?? [];
       case "remove_host_schedule_only": {

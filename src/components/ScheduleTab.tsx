@@ -7,6 +7,7 @@ import {
   type AgentProfile,
   type AgentSettings,
   errorMessage,
+  type HostClock,
   type HostJob,
   type HostJobStep,
   ipc,
@@ -15,7 +16,13 @@ import {
   type RoutineSchedule,
   type ScheduleWhen,
 } from "../lib/ipc";
-import { hostTime, scheduleWords, usd } from "../lib/routines";
+import {
+  hostClockWords,
+  hostTime,
+  scheduleWords,
+  usd,
+  utcOffsetWords,
+} from "../lib/routines";
 import { toSend, useHostCopies } from "./AccessPicker";
 import Dialog from "./Dialog";
 import { StepIcon } from "./HostJobView";
@@ -37,6 +44,38 @@ const NEW_SCHEDULE: ScheduleWhen = {
   late_start: false,
   cost_ceiling_micros: 1_000_000,
 };
+
+/**
+ * A run host's clock, asked when the tab opens: a schedule's time is in the
+ * host's own time zone, which need not be this Mac's. Drawn again each
+ * half minute so the time shown moves.
+ */
+function useHostClock(hostId: string): HostClock | null {
+  const [clock, setClock] = useState<HostClock | null>(null);
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!hostId) return;
+    let alive = true;
+    ipc
+      .hostClock(hostId)
+      .then((c) => alive && setClock(c))
+      .catch(() => {});
+    const timer = window.setInterval(() => setTick((t) => t + 1), 30_000);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, [hostId]);
+  return clock;
+}
+
+/** Whether a host's clock is in another zone than this Mac's. */
+function otherZone(clock: HostClock | null): boolean {
+  return (
+    clock !== null &&
+    clock.utc_offset_minutes !== -new Date().getTimezoneOffset()
+  );
+}
 
 /**
  * A routine's Schedule tab (docs/design/routines-ux.md, Schedules): when the
@@ -63,6 +102,7 @@ export default function ScheduleTab({
   // The host's job while it is prepared for this schedule.
   const job = useHostJobsContext()[routine.host_id];
   const remote = routine.host_id !== "";
+  const clock = useHostClock(routine.host_id);
   // What the host runs must not depend on what is checked out here.
   const moving = routine.start.trim().toUpperCase() === "HEAD";
 
@@ -164,7 +204,12 @@ export default function ScheduleTab({
             />
           </div>
           <Hint>
-            In the host's time. The host fires it; this Mac can be asleep.
+            <span className={otherZone(clock) ? "text-dirty" : undefined}>
+              {clock
+                ? `In ${item.host_name}'s time. ${hostClockWords(item.host_name, clock.utc_offset_minutes)}`
+                : `In ${item.host_name}'s time zone, which may not be this Mac's.`}
+            </span>{" "}
+            The host fires it; this Mac can be asleep.
           </Hint>
         </Row>
         <Row label="If the host was down at the time">
@@ -425,6 +470,7 @@ function ApproveDialog({
   const prepare = host ? preparation(host, routine.tools, profile) : [];
   const confirmed = sending.length === 0 || readOnly;
   const job = useHostJobsContext()[routine.host_id];
+  const clock = useHostClock(routine.host_id);
 
   if (sent) {
     return (
@@ -493,9 +539,13 @@ function ApproveDialog({
       }
     >
       <p className="m-0 mb-3 text-muted">
-        {scheduleWords(draft)} {hostName} time, with your Mac asleep and no one
-        to ask. Changing any of this turns the schedule off until you approve it
-        again.
+        {scheduleWords(draft)} {hostName} time
+        {clock ? ` (${utcOffsetWords(clock.utc_offset_minutes)})` : ""}, with
+        your Mac asleep and no one to ask.{" "}
+        {otherZone(clock) &&
+          clock &&
+          `${hostClockWords(hostName, clock.utc_offset_minutes)} `}
+        Changing any of this turns the schedule off until you approve it again.
       </p>
       <dl className="m-0 flex flex-col rounded-lg border">
         <Fact label="Code">

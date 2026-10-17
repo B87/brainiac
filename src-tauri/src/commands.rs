@@ -858,6 +858,15 @@ pub async fn host_schedules_only(
     routines.host_schedules_only(&host_id).await
 }
 
+/// A run host's clock, which its schedules' times are in.
+#[tauri::command]
+pub async fn host_clock(
+    host_id: String,
+    routines: State<'_, Routines>,
+) -> AppResult<crate::models::HostClock> {
+    routines.host_clock(&host_id).await
+}
+
 /// Remove, on the user's word, a schedule a host fires for no routine here.
 #[tauri::command]
 pub async fn remove_host_schedule_only(
