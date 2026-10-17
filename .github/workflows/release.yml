@@ -1,10 +1,12 @@
 name: Release
 
-# Runs when scripts/release.sh pushes a `vX.Y.Z` tag. Builds a universal macOS
-# bundle, signs the updater artifact with the minisign key from the repository
-# secrets, and opens a DRAFT GitHub release holding the .dmg, the
-# .app.tar.gz + .sig pair used by the in-app updater, and latest.json.
-# Publish the draft with scripts/publish-release.sh once you have checked it.
+# Runs when scripts/release.sh pushes a `vX.Y.Z` tag. Builds the Linux run
+# controller for each processor a run host may have, then a universal macOS
+# bundle that carries those controllers' SHA-256, signs the updater artifact
+# with the minisign key from the repository secrets, and opens a DRAFT GitHub
+# release holding the .dmg, the .app.tar.gz + .sig pair used by the in-app
+# updater, latest.json, and the two controllers. Publish the draft with
+# scripts/publish-release.sh once you have checked it.
 
 on:
   push:
@@ -14,7 +16,40 @@ permissions:
   contents: write
 
 jobs:
+  runner:
+    # The program a run host gets (src-tauri/src/agents/runner_binary.rs),
+    # built as a checkout builds it on a Mac: in the rust:1.88 image, so it
+    # needs the same glibc on the host. Each processor builds natively.
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            os: ubuntu-24.04
+          - arch: arm64
+            os: ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
+    # The build runs crates' build scripts: give it no token that can write,
+    # and leave none in the checkout it mounts. Artifacts use their own token.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build brainiac-runner for linux/${{ matrix.arch }}
+        run: |
+          mkdir -p out
+          docker run --rm -v "$PWD:/src" -v "$PWD/out:/out" -w /src/src-tauri rust:1.88 \
+            bash -c "cargo build --locked --release --no-default-features --features runner --bin brainiac-runner --target-dir /tmp/target && cp /tmp/target/release/brainiac-runner /out/brainiac-runner-linux-${{ matrix.arch }}"
+          file out/brainiac-runner-linux-${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: runner-${{ matrix.arch }}
+          path: out/brainiac-runner-linux-${{ matrix.arch }}
+          if-no-files-found: error
+
   build:
+    needs: runner
     # The app still runs on macOS 13: tauri.conf.json sets the minimum
     # version, whatever macOS builds it.
     runs-on: macos-26
@@ -79,6 +114,23 @@ jobs:
             echo "APPLE_TEAM_ID=${{ secrets.APPLE_TEAM_ID }}"
           } >> "$GITHUB_ENV"
 
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: runner-*
+          path: runner
+          merge-multiple: true
+
+      # Compiled into the app, which downloads only a controller with this
+      # digest from this release.
+      - name: Record the run controllers' SHA-256 for the app
+        run: |
+          for arch in amd64 arm64; do
+            digest=$(shasum -a 256 "runner/brainiac-runner-linux-$arch" | cut -d' ' -f1)
+            upper=$(tr '[:lower:]' '[:upper:]' <<<"$arch")
+            echo "BRAINIAC_RUNNER_SHA256_LINUX_$upper=$digest" >> "$GITHUB_ENV"
+            echo "linux/$arch $digest"
+          done
+
       - name: Build, sign and upload to a draft release
         uses: tauri-apps/tauri-action@v1
         env:
@@ -95,3 +147,8 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}
           uploadUpdaterJson: true
           args: --target universal-apple-darwin
+
+      - name: Add the run controllers to the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$GITHUB_REF_NAME" runner/brainiac-runner-linux-amd64 runner/brainiac-runner-linux-arm64 --clobber

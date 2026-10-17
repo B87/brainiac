@@ -11,6 +11,8 @@ into the release's section.
 
 ## [Unreleased]
 
+- Brainiac installed from a release can set up and upgrade a run host: it downloads the host's run controller from its own release instead of needing a copy of the source code and a build in Docker.
+
 ## [0.7.0] - 2026-10-17
 
 - Routines are saved runs that check something and leave a short report, a briefing. Run Now starts one; the Routines section lists them, each has its own page, and Today shows the ones with news.
