@@ -584,5 +584,16 @@ pub fn fake_creds(dir: &std::path::Path) -> PathBuf {
     )
     .unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // On Linux a test thread that forks while this file is being written
+    // holds it open for writing until its child execs, and running the
+    // script then fails with "Text file busy". Wait until it runs.
+    for _ in 0..100 {
+        match std::process::Command::new(&path).arg("probe").status() {
+            Err(e) if e.raw_os_error() == Some(26) => {
+                std::thread::sleep(std::time::Duration::from_millis(20))
+            }
+            _ => break,
+        }
+    }
     path
 }
