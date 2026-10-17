@@ -411,11 +411,69 @@ async function openSettings(page: Page, section: string) {
   ).toBeVisible();
 }
 
+test("Code Sharing grants and revokes repository and workspace access without a run", async ({
+  page,
+}) => {
+  await openSettings(page, "Code Sharing");
+  const allow = page.getByRole("button", { name: "Allow", exact: true });
+  await expect(allow).toBeDisabled();
+  await page
+    .getByLabel("Repository or workspace")
+    .selectOption("repository:repo-1");
+  await page
+    .getByRole("combobox", { name: "Provider", exact: true })
+    .selectOption("openai");
+  await allow.click();
+  const repositoryAnswer = page
+    .locator(".settings-row")
+    .filter({ has: page.getByLabel("Answer for parser", { exact: true }) });
+  await expect(repositoryAnswer).toContainText("Allowed to send to OpenAI");
+  expect((await calls(page, "answer_code_sharing")).at(-1)).toEqual({
+    request: {
+      repository_id: "repo-1",
+      workspace_id: null,
+      provider: "openai",
+      allowed: true,
+    },
+  });
+  await repositoryAnswer.getByRole("combobox").selectOption("no");
+  await expect(repositoryAnswer).toContainText("Not allowed to send to OpenAI");
+  await page
+    .getByLabel("Repository or workspace")
+    .selectOption("workspace:ws-1");
+  await page
+    .getByRole("combobox", { name: "Provider", exact: true })
+    .selectOption("anthropic");
+  await page.getByRole("button", { name: "Don’t allow", exact: true }).click();
+  const workspaceAnswer = page
+    .locator(".settings-row")
+    .filter({ has: page.getByLabel("Answer for Team", { exact: true }) });
+  await expect(workspaceAnswer).toContainText(
+    "Not allowed to send to Anthropic",
+  );
+  expect((await calls(page, "answer_code_sharing")).at(-1)).toEqual({
+    request: {
+      repository_id: "",
+      workspace_id: "ws-1",
+      provider: "anthropic",
+      allowed: false,
+    },
+  });
+  await allow.click();
+  await expect(workspaceAnswer).toContainText("Allowed to send to Anthropic");
+  await workspaceAnswer.getByRole("button", { name: "Ask again" }).click();
+  await expect(workspaceAnswer).toHaveCount(0);
+  await expect(repositoryAnswer).toBeVisible();
+  expect(await calls(page, "start_agent_run")).toEqual([]);
+});
+
 test("Settings → Explanations has a page for each part", async ({ page }) => {
   await openSettings(page, "Agent and Depth");
   await expect(page.getByText("Brief, Claude Code's model")).toBeVisible();
   await openSettings(page, "Code Sharing");
-  await expect(page.getByText("No repository asked yet.")).toBeVisible();
+  await expect(
+    page.getByText("No answers saved yet.", { exact: false }),
+  ).toBeVisible();
   await openSettings(page, "Concepts You Know");
   await expect(page.getByText("· 3", { exact: true })).toBeVisible();
   await page.getByLabel("Filter concepts").fill("serde");
@@ -528,27 +586,39 @@ test("Settings shows the vault and turns note IDs off", async ({ page }) => {
 test("Settings → Agents chooses This Mac's engine on its page and saves a pasted key, never showing it again", async ({
   page,
 }) => {
-  await openSettings(page, "Agents");
+  await openSettings(page, "Run Hosts");
   const breadcrumb = page.getByRole("navigation", { name: "Breadcrumb" });
   await page.getByRole("button", { name: /^This Mac,/ }).click();
-  await expect(breadcrumb).toContainText("Run hosts › This Mac");
+  await expect(breadcrumb).toContainText("Run hosts");
+  await expect(
+    page.getByRole("heading", { name: "This Mac", level: 1 }),
+  ).toBeVisible();
   await expect(page.getByText("Choose where runs execute.")).toBeVisible();
   await page.getByRole("radio", { name: /OrbStack/ }).check();
   expect((await calls(page, "choose_agent_engine")).at(-1)).toEqual({
     socket: "/Users/someone/.orbstack/run/docker.sock",
   });
   await expect(page.getByText("Choose where runs execute.")).toBeHidden();
-  // A test line per agent; one without its key cannot be tested yet.
+  // The host says which agents passed here; Test is on each agent's page.
   await expect(
-    page.getByText("OpenCode · OpenRouter · not tested"),
-  ).toBeVisible();
+    page.getByRole("listitem", { name: "Agents tested here" }),
+  ).toContainText("None yet.");
+  await expect(page.getByRole("button", { name: /^Test / })).toHaveCount(0);
+  await openSettings(page, "Agents");
+  await page.getByRole("button", { name: /^OpenCode · OpenRouter,/ }).click();
+  // One without its key cannot be tested yet.
   await expect(
-    page.getByRole("button", { name: "Test OpenCode · OpenRouter" }),
+    page.getByRole("button", {
+      name: "Test OpenCode · OpenRouter on This Mac",
+    }),
   ).toBeDisabled();
-  await breadcrumb.getByRole("button", { name: "Agents" }).click();
+  await openSettings(page, "Agents");
 
   await page.getByRole("button", { name: /^Claude Code,/ }).click();
-  await expect(breadcrumb).toHaveText("Agents › Claude Code");
+  await expect(breadcrumb).toHaveText("Agents›");
+  await expect(
+    page.getByRole("heading", { name: "Claude Code", level: 1 }),
+  ).toBeVisible();
   await page.getByRole("button", { name: "Add…" }).click();
   const key = "sk-ant-api03-test-key-for-the-fake-backend-only";
   await page
@@ -566,6 +636,414 @@ test("Settings → Agents chooses This Mac's engine on its page and saves a past
   await expect(page.getByText(key)).toBeHidden();
 });
 
+test("An agent's page tests it on a run host, and the host lists the agents tested there", async ({
+  page,
+}) => {
+  await openSettings(page, "Run Hosts");
+  const dialog = await addHost(page);
+  await dialog
+    .getByRole("button", { name: "It Matches: Trust This Key and Install" })
+    .click();
+  await page.evaluate(() => {
+    window.fake.endJob("host-1", "succeeded");
+    window.fake.readyProfile("claude-code");
+  });
+
+  await openSettings(page, "Agents");
+  await page.getByRole("button", { name: /^Claude Code,/ }).click();
+  const row = page.getByRole("listitem", { name: "runner.example" });
+  await expect(row).toContainText("Not tested here");
+  await row
+    .getByRole("button", { name: "Test Claude Code on runner.example" })
+    .click();
+  expect((await calls(page, "start_agent_host_job")).at(-1)).toMatchObject({
+    id: "host-1",
+    kind: "test",
+    profileId: "claude-code",
+  });
+  await expect(row).toContainText("Testing");
+  await page.evaluate(() => window.fake.endJob("host-1", "succeeded"));
+  await expect(row).toContainText("Test passed");
+
+  // The host's page names it, and the name opens the agent.
+  await row.getByRole("button", { name: "Open Host" }).click();
+  const tested = page.getByRole("listitem", { name: "Agents tested here" });
+  await expect(tested).toContainText("Claude Code");
+  await tested.getByRole("button", { name: "Claude Code" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Claude Code", level: 1 }),
+  ).toBeVisible();
+});
+
+test("Approving a routine tests its agent on the host first when no test there matches", async ({
+  page,
+}) => {
+  await openSettings(page, "Run Hosts");
+  const dialog = await addHost(page);
+  await dialog
+    .getByRole("button", { name: "It Matches: Trust This Key and Install" })
+    .click();
+  // Set up before the agent had its key: nothing was tested there.
+  await page.evaluate(() => {
+    window.fake.endJob("host-1", "succeeded");
+    window.fake.readyProfile("claude-code");
+  });
+  await page.getByRole("button", { name: "Back", exact: true }).click();
+
+  const nav = page.getByRole("navigation", {
+    name: "Repositories and workspaces",
+  });
+  await nav.getByRole("button", { name: "Routines" }).click();
+  await page.getByRole("button", { name: "New Routine…" }).first().click();
+  const form = page.getByRole("form", { name: "New routine" });
+  await form.getByLabel("Name", { exact: true }).fill("Morning check");
+  await form.getByLabel("Prompt").fill("Check production errors.");
+  await form.getByLabel("Runs on").selectOption({ label: "runner.example" });
+  await form.getByLabel("Start from").fill("main");
+  // The test is something approval does, not something to fix first.
+  await expect(
+    page.getByRole("complementary", { name: "To schedule it" }),
+  ).toContainText("Claude Code's test on runner.example");
+  await form.getByRole("button", { name: "Create Routine" }).click();
+  await page.getByRole("tab", { name: "Schedule" }).click();
+  await page.getByRole("button", { name: "Add a schedule…" }).click();
+  // The time is the host's, and the host says what its clock is.
+  await expect(page.getByText(/on runner\.example now \(UTC\)/)).toBeVisible();
+  await page.getByRole("button", { name: "Save schedule…" }).click();
+
+  const approve = page.getByRole("dialog", { name: /^Approve “/ });
+  await expect(approve).toContainText("Test Claude Code there.");
+  await expect(approve).toContainText("runner.example time (UTC)");
+  await approve
+    .getByRole("button", { name: "Approve and Prepare runner.example" })
+    .click();
+  expect(await calls(page, "approve_routine_schedule")).toHaveLength(1);
+  const preparing = page.getByRole("dialog", {
+    name: /^Preparing runner\.example/,
+  });
+  await expect(preparing).toContainText("Test Claude Code");
+  await page.evaluate(() => window.fake.endJob("host-1", "succeeded"));
+  const prepared = page.getByRole("dialog", {
+    name: "runner.example is prepared",
+  });
+  await expect(prepared).toContainText("The schedule is on runner.example.");
+  await prepared.getByRole("button", { name: "Done" }).click();
+  await expect(
+    page.getByText("Approved. Changing the prompt", { exact: false }),
+  ).toBeVisible();
+});
+
+test("A host's page lists a schedule that is not this Mac's, and removes it only when asked", async ({
+  page,
+}) => {
+  await openSettings(page, "Run Hosts");
+  const dialog = await addHost(page);
+  await dialog
+    .getByRole("button", { name: "It Matches: Trust This Key and Install" })
+    .click();
+  await page.evaluate(() => {
+    window.fake.endJob("host-1", "succeeded");
+    window.fake.hostSchedulesOnly["host-1"] = [
+      {
+        routine_id: "elsewhere-1",
+        name: "Nightly report",
+        enabled: true,
+        next_fire: "2026-10-14T02:00:00+02:00",
+        results_waiting: 2,
+        mine: false,
+      },
+    ];
+  });
+  await page
+    .getByRole("navigation", { name: "Breadcrumb" })
+    .getByRole("button", { name: "Run hosts" })
+    .click();
+  await page.getByRole("button", { name: /^runner\.example,/ }).click();
+
+  const other = page.getByRole("group", {
+    name: "Nightly report, not a routine of this Mac",
+  });
+  await expect(other).toContainText("It still fires");
+  await expect(other).toContainText("2 briefings wait there.");
+  await other.getByRole("button", { name: "Remove from Host…" }).click();
+  await other.getByRole("button", { name: "Keep It" }).click();
+  expect(await calls(page, "remove_host_schedule_only")).toHaveLength(0);
+  await other.getByRole("button", { name: "Remove from Host…" }).click();
+  await other
+    .getByRole("button", { name: "Remove With Its Briefings" })
+    .click();
+  expect((await calls(page, "remove_host_schedule_only")).at(-1)).toEqual({
+    hostId: "host-1",
+    routineId: "elsewhere-1",
+  });
+  await expect(other).toBeHidden();
+});
+
+test("An approval that waits for another job prepares its own agent after it, and says the schedule is on only when it is", async ({
+  page,
+}) => {
+  await openSettings(page, "Run Hosts");
+  const dialog = await addHost(page);
+  await dialog
+    .getByRole("button", { name: "It Matches: Trust This Key and Install" })
+    .click();
+  await page.evaluate(() => {
+    window.fake.endJob("host-1", "succeeded");
+    window.fake.readyProfile("claude-code");
+    window.fake.readyProfile("opencode-anthropic");
+  });
+  await page.getByRole("button", { name: "Back", exact: true }).click();
+
+  const nav = page.getByRole("navigation", {
+    name: "Repositories and workspaces",
+  });
+  await nav.getByRole("button", { name: "Routines" }).click();
+  await page.getByRole("button", { name: "New Routine…" }).first().click();
+  const form = page.getByRole("form", { name: "New routine" });
+  await form.getByLabel("Name", { exact: true }).fill("Morning check");
+  await form.getByLabel("Prompt").fill("Check production errors.");
+  await form.getByLabel("Runs on").selectOption({ label: "runner.example" });
+  await form.getByLabel("Start from").fill("main");
+  await form.getByRole("button", { name: "Create Routine" }).click();
+  await page.getByRole("tab", { name: "Schedule" }).click();
+  await page.getByRole("button", { name: "Add a schedule…" }).click();
+  await page.getByRole("button", { name: "Save schedule…" }).click();
+
+  // Another agent's test is running on the host when the routine is approved.
+  await page.evaluate(() =>
+    window.fake.startHostJob("host-1", "test", "opencode-anthropic"),
+  );
+  const approve = page.getByRole("dialog", { name: /^Approve “/ });
+  await approve
+    .getByRole("button", { name: "Approve and Prepare runner.example" })
+    .click();
+  const preparing = page.getByRole("dialog", {
+    name: /^Preparing runner\.example/,
+  });
+  await expect(preparing).toContainText(
+    "Waiting for runner.example to finish: Testing",
+  );
+  // That test passing is not this schedule being on.
+  await page.evaluate(() => window.fake.endJob("host-1", "succeeded"));
+  await expect(preparing).toContainText("Test Claude Code");
+  await expect(preparing).not.toContainText("The schedule is on");
+
+  // Its own preparation fails: the schedule stays off, and says why.
+  await page.evaluate(() => window.fake.endJob("host-1", "failed"));
+  const failed = page.getByRole("dialog", {
+    name: "Preparing runner.example did not finish",
+  });
+  await expect(failed).toContainText("could not be prepared");
+  await failed.getByRole("button", { name: "Done" }).click();
+});
+
+test("A routine chooses its access and tools, and New Access… adds a secret and ticks it", async ({
+  page,
+}) => {
+  await page.evaluate(() => {
+    window.fake.readyThisMac();
+    window.fake.readyProfile("claude-code", ["local"]);
+  });
+  const nav = page.getByRole("navigation", {
+    name: "Repositories and workspaces",
+  });
+  await nav.getByRole("button", { name: "Routines" }).click();
+  await page.getByRole("button", { name: "New Routine…" }).first().click();
+  const form = page.getByRole("form", { name: "New routine" });
+  await form.getByLabel("Name", { exact: true }).fill("Staging check");
+  await form.getByLabel("Prompt").fill("Check staging.");
+
+  await form.getByRole("button", { name: "New Access…" }).click();
+  const secret = page.getByRole("form", { name: "Add secret" });
+  await secret.getByLabel("Name", { exact: true }).fill("Sentry token");
+  await secret.getByLabel("Variable a run sees it as").fill("SENTRY_TOKEN");
+  await secret
+    .getByLabel("Value", { exact: true })
+    .fill("sntrys_example_token");
+  await secret.getByRole("button", { name: "Save" }).click();
+  // Saving the secret does not save the routine, and ticks it.
+  await expect(secret).toBeHidden();
+  expect(await calls(page, "save_routine")).toHaveLength(0);
+  await expect(
+    form.getByRole("checkbox", { name: /SENTRY_TOKEN/ }),
+  ).toBeChecked();
+  // On this Mac the value is read at each start.
+  await expect(form).toContainText("Read on this Mac at each start");
+
+  await form.getByLabel("Tools").check();
+  await form.getByRole("button", { name: "Create Routine" }).click();
+  expect((await calls(page, "save_routine")).at(-1)).toMatchObject({
+    request: { secret_ids: ["named-1"], tools: true },
+  });
+});
+
+test("A routine is added in Routines, Run Now starts it, its checked briefing offers a task and a note, and Today shows a line for it", async ({
+  page,
+}) => {
+  await page.evaluate(() => {
+    window.fake.readyThisMac();
+    window.fake.readyProfile("claude-code", ["local"]);
+  });
+  const nav = page.getByRole("navigation", {
+    name: "Repositories and workspaces",
+  });
+  await nav.getByRole("button", { name: "Routines" }).click();
+  await expect(page.getByText("A routine is a run that checks")).toBeVisible();
+
+  // New Routine…: a page with the definition, not a dialog.
+  await page.getByRole("button", { name: "New Routine…" }).first().click();
+  const form = page.getByRole("form", { name: "New routine" });
+  await form.getByLabel("Name", { exact: true }).fill("Morning check");
+  await form.getByLabel("Prompt").fill("Check production errors.");
+  await form.getByLabel("Notes for the next run").fill("Ignore SENTRY-9.");
+  await form.getByRole("button", { name: "Create Routine" }).click();
+  expect((await calls(page, "save_routine")).at(-1)).toMatchObject({
+    request: { memory: "Ignore SENTRY-9.", previous_results: 3 },
+  });
+  const header = page.getByRole("heading", { name: "Morning check" });
+  await expect(header).toBeVisible();
+  await expect(page.getByText("Not run yet.")).toBeVisible();
+  await expect(page.getByText("The network is unrestricted.")).toBeVisible();
+
+  // Run Now: working, then the checked briefing.
+  await page.getByRole("button", { name: "Run Now" }).click();
+  await expect(page.getByText("Running since")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Running…" })).toBeDisabled();
+  await page.evaluate(() => {
+    const r = window.fake.briefingResults[0];
+    window.fake.finishBriefing(r.id, "findings");
+  });
+  await expect(page.getByText("One new error in checkout.")).toBeVisible({
+    timeout: 8000,
+  });
+  await expect(page.getByText("TypeError in checkout")).toBeVisible();
+
+  // A task is made once; a note proposal is saved once; an issue is copied.
+  await page.getByRole("button", { name: "Create Task" }).click();
+  await expect(page.getByText("Task created")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Create Task" })).toHaveCount(
+    0,
+  );
+  await expect(page.getByRole("button", { name: "Copy" })).toBeVisible();
+  await page.getByRole("button", { name: "Save as Note" }).first().click();
+  expect((await calls(page, "create_briefing_note")).at(-1)).toMatchObject({
+    proposalKey: "note-1",
+  });
+
+  // History lists the briefings; Runs tags the run and links back.
+  await nav.getByRole("button", { name: "Routines" }).click();
+  await page
+    .getByRole("button", { name: /Morning check/ })
+    .first()
+    .dblclick();
+  await page.getByRole("tab", { name: "History" }).click();
+  await expect(page.getByRole("list", { name: "Briefings" })).toBeVisible();
+  await nav.getByRole("button", { name: "Runs" }).click();
+  await expect(
+    page.getByText("Routine", { exact: true }).first(),
+  ).toBeVisible();
+
+  // Today: one line, opening the routine's page. A run that left no
+  // briefing is "No briefing", never "nothing found".
+  await nav.getByRole("button", { name: "Today" }).click();
+  const digest = page.getByRole("region", { name: "Routines" });
+  await expect(digest).toContainText("Morning check");
+  await expect(digest).toContainText("1 finding");
+  await nav.getByRole("button", { name: "Routines" }).click();
+  await page
+    .getByRole("button", { name: /Morning check/ })
+    .first()
+    .click();
+  await page.getByRole("button", { name: "Run Now" }).click();
+  await page.evaluate(() => {
+    const r = window.fake.briefingResults[1];
+    window.fake.finishBriefing(r.id, "failed");
+  });
+  await expect(
+    page.getByText("No briefing", { exact: true }).first(),
+  ).toBeVisible({
+    timeout: 8000,
+  });
+  await expect(page.getByText("Nothing found")).toHaveCount(0);
+  await expect(page.getByTitle("Routines that need you")).toHaveText("1");
+});
+
+test("A routine on a run host gets a schedule that is off until approved, is turned off by a change, and shows on the host's page", async ({
+  page,
+}) => {
+  await openSettings(page, "Run Hosts");
+  const dialog = await addHost(page);
+  await dialog
+    .getByRole("button", { name: "Trust This Key and Install" })
+    .click();
+  await page.evaluate(() => window.fake.endJob("host-1", "succeeded"));
+  await page.evaluate(() => {
+    window.fake.readyProfile("claude-code", ["host-1"]);
+  });
+  await page.getByRole("button", { name: "Back", exact: true }).click();
+  const nav = page.getByRole("navigation", {
+    name: "Repositories and workspaces",
+  });
+
+  // A routine on this Mac cannot be scheduled; on the host it can.
+  await nav.getByRole("button", { name: "Routines" }).click();
+  await page.getByRole("button", { name: "New Routine…" }).first().click();
+  const form = page.getByRole("form", { name: "New routine" });
+  await form.getByLabel("Name", { exact: true }).fill("Morning check");
+  await form.getByLabel("Prompt").fill("Check production errors.");
+  await form.getByLabel("Runs on").selectOption({ label: "runner.example" });
+  // A schedule needs a branch, not HEAD.
+  await form.getByLabel("Start from").fill("main");
+  await form.getByRole("button", { name: "Create Routine" }).click();
+  await page.getByRole("tab", { name: "Schedule" }).click();
+  await page.getByRole("button", { name: "Add a schedule…" }).click();
+  await page.getByLabel("Time", { exact: true }).fill("07:00");
+  await page.getByRole("button", { name: "Save schedule…" }).click();
+
+  // Saved, but off until approved; the dialog lists what it may do.
+  const approve = page.getByRole("dialog", { name: /^Approve “/ });
+  await expect(approve).toContainText("Agent's key");
+  await expect(approve).toContainText("Not restricted");
+  await expect(approve).toContainText("Weekdays at 07:00");
+  await approve.getByRole("button", { name: "Cancel" }).click();
+  await expect(
+    page.getByText("Needs approval", { exact: true }).first(),
+  ).toBeVisible();
+  await expect(page.getByTitle("Routines that need you")).toHaveText("1");
+  await page
+    .getByRole("button", { name: "Review and approve…" })
+    .last()
+    .click();
+  await page
+    .getByRole("dialog", { name: /^Approve “/ })
+    .getByRole("button", { name: "Approve and Enable" })
+    .click();
+  expect((await calls(page, "approve_routine_schedule")).length).toBe(1);
+  await expect(page.getByText("Wed 07:00")).toBeVisible();
+  await expect(page.getByTitle("Routines that need you")).toHaveCount(0);
+
+  // A new prompt is not what it was approved for: off again, and said so.
+  await page.getByRole("tab", { name: "Definition" }).click();
+  await page
+    .getByLabel("Prompt")
+    .fill("Check production errors and the database.");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(
+    page.getByText("the prompt changed since it was approved"),
+  ).toBeVisible();
+  await expect(page.getByTitle("Routines that need you")).toHaveText("1");
+
+  // The host's page lists it, with Pause all.
+  await nav.getByRole("button", { name: "Today" }).click();
+  await expect(page.getByRole("region", { name: "Routines" })).toContainText(
+    "Needs approval",
+  );
+  await openSettings(page, "Run Hosts");
+  await page.getByRole("button", { name: /^runner\.example,/ }).click();
+  await expect(page.getByText("Routines on this host")).toBeVisible();
+  await expect(page.getByText("Morning check")).toBeVisible();
+});
+
 test("Settings → Agents lists four agents, and OpenCode · OpenRouter's page saves its key and model", async ({
   page,
 }) => {
@@ -580,9 +1058,16 @@ test("Settings → Agents lists four agents, and OpenCode · OpenRouter's page s
     await expect(agents.getByRole("button", { name })).toBeVisible();
   await agents.getByRole("button", { name: /^OpenCode · OpenRouter,/ }).click();
   await expect(page.getByRole("navigation", { name: "Breadcrumb" })).toHaveText(
-    "Agents › OpenCode · OpenRouter",
+    "Agents›",
   );
-  await expect(page.getByText("Add an OpenRouter API key.")).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "OpenCode · OpenRouter", level: 1 }),
+  ).toBeVisible();
+  await expect(
+    page
+      .getByRole("listitem")
+      .filter({ hasText: /^Add an OpenRouter API key\.$/ }),
+  ).toBeVisible();
 
   await page.getByRole("button", { name: "Add…" }).click();
   const key = "sk-or-v1-test-key-for-the-fake-backend-only";
@@ -597,7 +1082,11 @@ test("Settings → Agents lists four agents, and OpenCode · OpenRouter's page s
     },
   });
   await expect(page.getByText("API key · Keychain")).toBeVisible();
-  await expect(page.getByText("Add an OpenRouter API key.")).toBeHidden();
+  await expect(
+    page
+      .getByRole("listitem")
+      .filter({ hasText: /^Add an OpenRouter API key\.$/ }),
+  ).toBeHidden();
 
   await expect(
     page.getByText(/Runs send code to OpenRouter, with an API key/),
@@ -681,10 +1170,10 @@ test("New run offers an OpenCode agent once it is ready on This Mac, and needs i
   await expect(page.getByText(/OpenCode on This Mac/).first()).toBeVisible();
 });
 
-/** Add host…: the address, the key, then Trust this key and install. */
+/** Add host…: the address, the key, then It matches: trust this key and install. */
 async function addHost(page: Page) {
-  await page.getByRole("button", { name: "Add Host…" }).click();
-  const dialog = page.getByRole("dialog", { name: "Add host" });
+  await page.getByRole("button", { name: "Add Host…" }).first().click();
+  const dialog = page.getByRole("region", { name: "Add a host" });
   await dialog.getByLabel("SSH user").fill("ada");
   await dialog.getByLabel("SSH host").fill("runner.example");
   await dialog.getByRole("button", { name: "Show Host Key" }).click();
@@ -696,7 +1185,7 @@ async function addHost(page: Page) {
 test("Add host trusts the key and follows its setup as steps, and New run waits for it", async ({
   page,
 }) => {
-  await openSettings(page, "Agents");
+  await openSettings(page, "Run Hosts");
   const dialog = await addHost(page);
   await dialog
     .getByRole("button", { name: "Trust This Key and Install" })
@@ -706,7 +1195,7 @@ test("Add host trusts the key and follows its setup as steps, and New run waits 
     kind: "setup",
   });
 
-  // The dialog closes on the host's page, where the job shows its steps.
+  // The page gives way to the host's page, where the job shows its steps.
   await expect(dialog).toBeHidden();
   const job = page.getByRole("region", { name: "Setting up" });
   await expect(
@@ -778,10 +1267,54 @@ test("Add host trusts the key and follows its setup as steps, and New run waits 
   );
 });
 
+test("New run picks the run's access, sends what the host lacks before it starts, and the run lists it", async ({
+  page,
+}) => {
+  await openSettings(page, "Run Hosts");
+  const dialog = await addHost(page);
+  await dialog
+    .getByRole("button", { name: "Trust This Key and Install" })
+    .click();
+  await page.evaluate(() => window.fake.endJob("host-1", "succeeded"));
+  await page.evaluate(() => {
+    window.fake.readyProfile("claude-code", ["host-1"]);
+  });
+
+  await openSettings(page, "Secrets");
+  await page.getByRole("button", { name: "Add Secret…" }).click();
+  const form = page.getByRole("form", { name: "Add secret" });
+  await form.getByLabel("Name", { exact: true }).fill("Sentry token");
+  await form.getByLabel("Variable a run sees it as").fill("SENTRY_TOKEN");
+  await form.getByLabel("Value", { exact: true }).fill("sntrys_example_token");
+  await form.getByRole("button", { name: "Save" }).click();
+
+  await page.evaluate(() => window.emitEvent("menu", { id: "palette" }));
+  await page
+    .getByRole("dialog", { name: "Search and switch" })
+    .getByRole("button", { name: "New Run…" })
+    .click();
+  const newRun = page.getByRole("dialog", { name: "New run" });
+  await newRun.getByRole("button", { name: "runner.example · remote" }).click();
+  await newRun.getByRole("button", { name: /SENTRY_TOKEN/ }).click();
+  await expect(newRun).toContainText("This run gets SENTRY_TOKEN");
+  await expect(newRun).toContainText("Starting sends SENTRY_TOKEN to");
+
+  await newRun
+    .getByPlaceholder("What should the agent do?")
+    .fill("Check production");
+  await newRun.getByRole("button", { name: "Allow and start" }).click();
+  await expect(newRun).toBeHidden();
+  expect((await calls(page, "send_run_secrets")).at(-1)).toMatchObject({
+    hostId: "host-1",
+    secretIds: ["named-1"],
+  });
+  await expect(page.getByText("From the host's sealed copies")).toBeVisible();
+});
+
 test("An upgrade can be cancelled before it installs, and a failed one says where and offers Try again", async ({
   page,
 }) => {
-  await openSettings(page, "Agents");
+  await openSettings(page, "Run Hosts");
   const dialog = await addHost(page);
   await dialog
     .getByRole("button", { name: "Trust This Key and Install" })
@@ -800,10 +1333,8 @@ test("An upgrade can be cancelled before it installs, and a failed one says wher
     .click();
   await page.getByRole("button", { name: /^runner\.example,/ }).click();
 
-  const offer = page.getByRole("region", {
-    name: "An upgrade of the run controller is available",
-  });
-  await expect(offer).toContainText("build a1f3c9e");
+  const offer = page.getByRole("listitem", { name: "Run controller" });
+  await expect(offer).toContainText("a1f3c9e");
   await expect(offer).toContainText("7c2e51a");
   await offer.getByRole("button", { name: "Upgrade" }).click();
   await expect(
@@ -832,8 +1363,165 @@ test("An upgrade can be cancelled before it installs, and a failed one says wher
   });
 });
 
+test("A run host's page shows its Health, names what needs attention, and says when it cannot be reached", async ({
+  page,
+}) => {
+  await openSettings(page, "Run Hosts");
+  const dialog = await addHost(page);
+  await dialog
+    .getByRole("button", { name: "Trust This Key and Install" })
+    .click();
+  await page.evaluate(() => window.fake.endJob("host-1", "succeeded"));
+
+  const health = page.locator("section").filter({
+    has: page.getByRole("heading", { name: "Health", exact: true }),
+  });
+  await expect(health).toContainText("nothing needs attention");
+  await expect(health).toContainText("Docker Engine");
+  await expect(health).toContainText("300.0 GiB free of 500.0 GiB (60%)");
+  await expect(health).toContainText("up 2 h");
+  expect(await calls(page, "get_agent_host_health")).not.toHaveLength(0);
+
+  await page.evaluate(() => {
+    window.fake.hostHealth = {
+      ...window.fake.hostHealth,
+      disk_free_kib: 2 * 1024 * 1024,
+      warnings: [
+        "The disk is almost full (2.0 GiB free). Free space before the next run.",
+      ],
+    };
+  });
+  await page.getByRole("button", { name: "Check Now" }).click();
+  await expect(health.getByRole("alert")).toContainText("disk is almost full");
+  await expect(health).toContainText("1 thing needs attention");
+
+  await page.evaluate(() => {
+    window.fake.hostHealth = {
+      ...window.fake.hostHealth,
+      reachable: false,
+      problem: "The host did not answer.",
+      warnings: [],
+    };
+  });
+  await page.getByRole("button", { name: "Check Now" }).click();
+  await expect(health).toContainText("The host did not answer.");
+  await expect(health).toContainText("Not reachable");
+  await expect(health.getByText("Docker Engine")).toBeHidden();
+});
+
+test("A named secret is added in Settings → Secrets, a host shows the copy it was sent, which goes out of date when changed and must leave the host before the secret is deleted", async ({
+  page,
+}) => {
+  // A host to share with.
+  await openSettings(page, "Run Hosts");
+  const dialog = await addHost(page);
+  await dialog
+    .getByRole("button", { name: "Trust This Key and Install" })
+    .click();
+  await page.evaluate(() => window.fake.endJob("host-1", "succeeded"));
+
+  // Settings → Secrets: add a secret, pasted into the Keychain.
+  await openSettings(page, "Secrets");
+  await page.getByRole("button", { name: "Add Secret…" }).click();
+  const form = page.getByRole("form", { name: "Add secret" });
+  await form.getByLabel("Name", { exact: true }).fill("Sentry token");
+  await form.getByLabel("Variable a run sees it as").fill("SENTRY_TOKEN");
+  await form.getByLabel("Value", { exact: true }).fill("sntrys_example_token");
+  await form.getByRole("button", { name: "Save" }).click();
+  // A row opens to show its details and actions.
+  await page.getByRole("button", { name: /^SENTRY_TOKEN/ }).click();
+  const entry = page.getByRole("region", { name: "Sentry token" });
+  await expect(entry).toContainText("run hosts, as SENTRY_TOKEN");
+
+  // The host's page lists only what it holds; nothing is shared from it.
+  await openSettings(page, "Run Hosts");
+  await page.getByRole("button", { name: /^runner\.example,/ }).click();
+  const secrets = page.getByRole("group", { name: "Sentry token" });
+  await expect(secrets).toBeHidden();
+  // A routine's approval or a run's start sends it there.
+  await page.evaluate(() => window.fake.sendCopy("host-1", "named-1"));
+  await openSettings(page, "Secrets");
+  // A row opens to show its details and actions.
+  await page.getByRole("button", { name: /^SENTRY_TOKEN/ }).click();
+  await expect(entry).toContainText("On runner.example");
+  await openSettings(page, "Run Hosts");
+  await page.getByRole("button", { name: /^runner\.example,/ }).click();
+  await expect(secrets).toContainText("On the host");
+  await expect(secrets).toContainText("SENTRY_TOKEN");
+  await expect(
+    secrets.getByRole("button", { name: "Send Again" }),
+  ).toBeHidden();
+
+  // A new value here leaves the host's copy behind until it is shared again.
+  await openSettings(page, "Secrets");
+  // A row opens to show its details and actions.
+  await page.getByRole("button", { name: /^SENTRY_TOKEN/ }).click();
+  await page.getByRole("button", { name: "Edit…" }).click();
+  await page
+    .getByRole("form", { name: "Edit Sentry token" })
+    .getByLabel("Value", { exact: true })
+    .fill("a-rotated-sentry-token");
+  await page
+    .getByRole("form", { name: "Edit Sentry token" })
+    .getByRole("button", { name: "Save" })
+    .click();
+  await openSettings(page, "Run Hosts");
+  await page.getByRole("button", { name: /^runner\.example,/ }).click();
+  await expect(secrets).toContainText("Out of date");
+  await secrets.getByRole("button", { name: "Send Again" }).click();
+  await expect(secrets).toContainText("On the host");
+
+  // A failed share says why and is never shown as shared.
+  await page.evaluate(() => {
+    window.fake.shareFailure = "The host did not answer.";
+  });
+  await page.evaluate(() => window.fake.sendCopy("host-1", "named-1"));
+  await openSettings(page, "Secrets");
+  // A row opens to show its details and actions.
+  await page.getByRole("button", { name: /^SENTRY_TOKEN/ }).click();
+  await page.getByRole("button", { name: "Edit…" }).click();
+  await page
+    .getByRole("form", { name: "Edit Sentry token" })
+    .getByLabel("Value", { exact: true })
+    .fill("a-second-sentry-token");
+  await page
+    .getByRole("form", { name: "Edit Sentry token" })
+    .getByRole("button", { name: "Save" })
+    .click();
+  await openSettings(page, "Run Hosts");
+  await page.getByRole("button", { name: /^runner\.example,/ }).click();
+  await secrets.getByRole("button", { name: "Send Again" }).click();
+  await expect(secrets).toContainText("Did not finish");
+  await expect(secrets).toContainText("The host did not answer.");
+  await secrets.getByRole("button", { name: "Retry" }).click();
+  await expect(secrets).toContainText("On the host");
+
+  // It cannot be deleted while a host holds a copy.
+  await openSettings(page, "Secrets");
+  // A row opens to show its details and actions.
+  await page.getByRole("button", { name: /^SENTRY_TOKEN/ }).click();
+  await page.getByRole("button", { name: "Delete…" }).click();
+  await page.getByRole("button", { name: "Delete Secret" }).click();
+  await expect(page.getByRole("alert")).toContainText(
+    "Remove it from the host",
+  );
+  await openSettings(page, "Run Hosts");
+  await page.getByRole("button", { name: /^runner\.example,/ }).click();
+  await secrets.getByRole("button", { name: "Remove from Host" }).click();
+  await expect(secrets).toBeHidden();
+  await openSettings(page, "Secrets");
+  // A row opens to show its details and actions.
+  await page.getByRole("button", { name: /^SENTRY_TOKEN/ }).click();
+  // Asked twice: Keep It changes nothing.
+  await page.getByRole("button", { name: "Delete…" }).click();
+  await page.getByRole("button", { name: "Keep It" }).click();
+  await page.getByRole("button", { name: "Delete…" }).click();
+  await page.getByRole("button", { name: "Delete Secret" }).click();
+  await expect(page.getByRole("region", { name: "Sentry token" })).toBeHidden();
+});
+
 test("Add host can trust a host key that changed", async ({ page }) => {
-  await openSettings(page, "Agents");
+  await openSettings(page, "Run Hosts");
   let dialog = await addHost(page);
   await dialog
     .getByRole("button", { name: "Trust This Key and Install" })
@@ -847,8 +1535,8 @@ test("Add host can trust a host key that changed", async ({ page }) => {
     .getByRole("navigation", { name: "Breadcrumb" })
     .getByRole("button", { name: "Run hosts" })
     .click();
-  await page.getByRole("button", { name: "Add Host…" }).click();
-  dialog = page.getByRole("dialog", { name: "Add host" });
+  await page.getByRole("button", { name: "Add Host…" }).first().click();
+  dialog = page.getByRole("region", { name: "Add a host" });
   await dialog.getByLabel("SSH user").fill("ada");
   await dialog.getByLabel("SSH host").fill("runner.example");
   await dialog.getByRole("button", { name: "Show Host Key" }).click();
@@ -1042,7 +1730,7 @@ test("Settings checks a value before saving it, and saves it when the field is l
 test("Settings turns agent access on and shows how to add Brainiac to Claude Code", async ({
   page,
 }) => {
-  await openSettings(page, "Agent Access");
+  await openSettings(page, "MCP");
   const access = page.getByRole("group", { name: "Agent access" });
   await expect(access.getByRole("button", { name: "Off" })).toHaveAttribute(
     "aria-pressed",
@@ -1215,14 +1903,19 @@ test("Settings → Secrets reads nothing, allows a restored source, and retries 
   ).toBeVisible();
   const billing = settings.getByRole("region", { name: "billing" });
   await expect(billing.getByText(/not read until you allow it/)).toBeVisible();
-  // Opening the page asked for nothing but the list.
+  // Opening the page asked for nothing but the lists: the overview, the
+  // named secrets' labels and where they are used, none of which reads a value.
   const asked = await page.evaluate(() =>
     window.fake.calls
       .map((c) => c.cmd)
       .filter((c) => /secret|credential|test_/.test(c)),
   );
   expect(asked.length).toBeGreaterThan(0);
-  expect(asked.every((c) => c === "list_secrets")).toBe(true);
+  expect(
+    asked.every((c) =>
+      ["list_secrets", "list_named_secrets", "named_secret_usage"].includes(c),
+    ),
+  ).toBe(true);
 
   await billing.getByRole("button", { name: "Allow…" }).click();
   await expect(
@@ -1977,6 +2670,8 @@ test("⇧⌘T opens another tab, ⌘1 and ⌘2 switch between them, and closing 
   await page.keyboard.press("Meta+t");
   await expect(terminalTabs(page)).toHaveCount(1);
   await expect(terminalTabs(page).first()).toContainText("Home");
+  // The tab shows before the program starts; wait for it.
+  await expect(terminalTabs(page).first()).toContainText("zsh");
   expect(await calls(page, "open_terminal")).toMatchObject([
     { request: { cwd: "" } },
   ]);

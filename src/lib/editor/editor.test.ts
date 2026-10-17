@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { insertNewlineContinueMarkup } from "@codemirror/lang-markdown";
 import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
 import { EditorState, type Transaction } from "@codemirror/state";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { keepLineEndings, lineSeparatorOf, noteText } from "./lineEndings";
 import { continueMarkup, noteMarkdown } from "./markdown";
 import { linkAt, type PreviewItem, previewItems, taskToggle } from "./preview";
@@ -28,8 +28,10 @@ function note(text: string, cursor?: number): EditorState {
     selection: { anchor },
     extensions: [keepLineEndings(doc), noteMarkdown()],
   });
-  ensureSyntaxTree(state, state.doc.length, 5000);
-  return state;
+  expect(ensureSyntaxTree(state, state.doc.length, 5000)).not.toBeNull();
+  // ensureSyntaxTree advances the parse context; a transaction publishes its
+  // completed tree to the state read by syntaxTree and the preview helpers.
+  return state.update({}).state;
 }
 
 const nodes = (state: EditorState, name: string) => {
@@ -75,6 +77,19 @@ describe("line endings", () => {
 });
 
 describe("dialect", () => {
+  it("finishes parsing when initialization yields after frontmatter", () => {
+    // Simulate initialization exceeding CodeMirror's 20 ms parse budget.
+    let time = 0;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => (time += 25));
+    try {
+      expect(
+        nodes(note("---\ntitle: x\n---\n\n---\n"), "HorizontalRule"),
+      ).toEqual(["---"]);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it("reads frontmatter only at the top and only when closed", () => {
     expect(
       nodes(note(fixture("09-frontmatter.md")), "Frontmatter"),

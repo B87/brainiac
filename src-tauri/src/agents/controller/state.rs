@@ -228,6 +228,9 @@ pub struct RunRecord {
     pub ended_at: Option<String>,
     pub expired_asleep: bool,
     pub error: Option<String>,
+    /// The routine a schedule started this run for.
+    #[serde(default)]
+    pub routine_id: Option<String>,
 }
 
 fn default_workspace_gib() -> u32 {

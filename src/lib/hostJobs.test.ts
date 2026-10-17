@@ -29,6 +29,7 @@ const host: AgentHost = {
     built_at: "2026-10-06T10:00:00Z",
     current: true,
   },
+  tools_image: null,
   missing: [],
   tests: [
     {

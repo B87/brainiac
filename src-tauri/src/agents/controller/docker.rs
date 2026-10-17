@@ -272,6 +272,7 @@ pub trait Workloads: Send + Sync + 'static {
         _socket: &str,
         _tag: &str,
         _context: Vec<u8>,
+        _base: Option<&str>,
     ) -> impl Future<Output = AppResult<String>> + Send {
         std::future::ready(Err(AppError::dependency(
             "This engine does not build the run image.",
@@ -1320,7 +1321,12 @@ impl Workloads for DockerEngine {
         // reader takes only that name, as a regular file within the limit.
         let name: &'static str = match path.rsplit('/').next() {
             Some("explanation.json") => "explanation.json",
-            _ => return Err(AppError::validation("Only an explanation's file is read.")),
+            Some("briefing.json") => "briefing.json",
+            _ => {
+                return Err(AppError::validation(
+                    "Only an explanation's or a briefing's file is read.",
+                ))
+            }
         };
         let mut reader = TarReader::new(vec![Expected {
             name,
@@ -1484,13 +1490,23 @@ impl Workloads for DockerEngine {
         })
     }
 
-    async fn build_image(&self, socket: &str, tag: &str, context: Vec<u8>) -> AppResult<String> {
+    async fn build_image(
+        &self,
+        socket: &str,
+        tag: &str,
+        context: Vec<u8>,
+        base: Option<&str>,
+    ) -> AppResult<String> {
         use futures_util::StreamExt;
         let docker = self.client(socket)?;
+        let args: HashMap<String, String> = base
+            .map(|b| HashMap::from([("BASE".to_string(), b.to_string())]))
+            .unwrap_or_default();
         let options = bollard::query_parameters::BuildImageOptionsBuilder::default()
             .dockerfile("Dockerfile")
             .t(tag)
-            .pull("true")
+            .pull(if base.is_some() { "false" } else { "true" })
+            .buildargs(&args)
             .rm(true)
             .forcerm(true)
             .labels(&std::collections::HashMap::from([(

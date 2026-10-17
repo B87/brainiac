@@ -587,7 +587,17 @@ impl AgentHostService {
         let runtime = self.connected(&row).await?;
         let tag = image::name_for(&image::recipe());
         let built = runtime
-            .build_image_remote(DOCKER_SOCKET, &tag, &image::context())
+            .build_image_remote(DOCKER_SOCKET, &tag, &image::context(), None)
+            .await?;
+        // The layer on top, always: a run or routine may ask for the tools.
+        let tools_tag = image::name_for(&image::tools_recipe(&image::recipe()));
+        let tools = runtime
+            .build_image_remote(
+                DOCKER_SOCKET,
+                &tools_tag,
+                &image::tools_context(),
+                Some(&tag),
+            )
             .await?;
         job.finish(
             at + host_jobs::image::BUILD,
@@ -595,6 +605,7 @@ impl AgentHostService {
         );
         job.begin(at + host_jobs::image::PROBE);
         let recipe = image::recipe();
+        let tools_recipe = image::tools_recipe(&recipe);
         let now = now_rfc3339();
         let host_id = id.to_string();
         self.db
@@ -604,6 +615,13 @@ impl AgentHostService {
                         version = version + 1, updated_at = ?4 WHERE id = ?1",
                     params![host_id, built, recipe, now],
                 )?;
+                {
+                    conn.execute(
+                        "UPDATE agent_hosts SET tools_image_id = ?2, tools_image_recipe = ?3,
+                            tools_image_built_at = ?4 WHERE id = ?1",
+                        params![host_id, tools, tools_recipe, now],
+                    )?;
+                }
                 Ok(())
             })
             .await?;
@@ -633,6 +651,25 @@ impl AgentHostService {
             Some(format!("{engine} · loop devices work")),
         );
         self.host(&row.id).await
+    }
+
+    /// Read the host's health now. A controller that does not answer is an
+    /// answer (`reachable: false`), not an error; a host that was never
+    /// deployed is an error.
+    pub async fn health(&self, id: &str) -> AppResult<crate::models::HostHealth> {
+        let runtime = self.runtime(id).await?;
+        let checked_at = now_rfc3339();
+        let report = match runtime.health().await {
+            Ok(report) => report,
+            Err(e) if super::host_health::not_understood(&e) => {
+                return Ok(super::host_health::needs_upgrade(checked_at))
+            }
+            Err(e) => return Ok(super::host_health::unreachable(checked_at, e.message)),
+        };
+        // The engine's answer is separate: a stopped engine is a warning on a
+        // host whose controller is up.
+        let engine = runtime.probe_engine(DOCKER_SOCKET, None).await.ok();
+        Ok(super::host_health::from_report(report, engine, checked_at))
     }
 
     pub async fn runtime(&self, id: &str) -> AppResult<Arc<RunRuntime>> {
@@ -959,7 +996,8 @@ pub fn list(conn: &Connection) -> AppResult<Vec<AgentHost>> {
             m.identity_path, m.fingerprint, h.installation, COALESCE(m.approved, 1),
             h.engine_name, h.loop_devices, h.image_id, h.image_recipe, h.image_built_at,
             h.socket, h.state_kept, h.version, h.controller_build, h.protocol,
-            h.controller_installed_at
+            h.controller_installed_at, h.tools_image_id, h.tools_image_recipe,
+            h.tools_image_built_at
          FROM agent_hosts h LEFT JOIN machines m ON m.id = h.machine_id
          ORDER BY h.kind, 3",
     )?;
@@ -990,6 +1028,21 @@ pub fn list(conn: &Connection) -> AppResult<Vec<AgentHost>> {
             }),
             _ => None,
         };
+        let tools_id: Option<String> = r.get(21)?;
+        let tools_recipe: Option<String> = r.get(22)?;
+        let tools_built: Option<String> = r.get(23)?;
+        let tools_current = image::tools_recipe(&recipe);
+        let tools_image = match (tools_id.clone(), tools_built) {
+            (Some(id), Some(built_at)) => Some(AgentImage {
+                name: image::name_for(tools_recipe.as_deref().unwrap_or("")),
+                id,
+                built_at,
+                // Built on this base: a rebuilt base makes the layer stale.
+                current: image_recipe.as_deref() == Some(recipe.as_str())
+                    && tools_recipe.as_deref() == Some(tools_current.as_str()),
+            }),
+            _ => None,
+        };
         let emergency = if kind == "ssh" {
             match (user, host, port) {
                 (Some(user), Some(host), Some(port)) => Some(format!(
@@ -1009,6 +1062,7 @@ pub fn list(conn: &Connection) -> AppResult<Vec<AgentHost>> {
                 profile_id: profile.clone(),
                 passed_at: passed_at.clone(),
                 current: revisions.get(profile) == Some(revision)
+                    // A test runs on the plain image, with or without the tools layer.
                     && image_id.as_ref() == Some(image)
                     && (kind_is_ssh || engine.is_some() && *engine == socket),
             })
@@ -1036,6 +1090,7 @@ pub fn list(conn: &Connection) -> AppResult<Vec<AgentHost>> {
             engine_name: r.get(10)?,
             loop_devices,
             image,
+            tools_image,
             missing,
             tests,
             emergency_stop: emergency,

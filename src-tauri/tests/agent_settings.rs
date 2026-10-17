@@ -42,7 +42,7 @@ fn profile<'a>(s: &'a AgentSettings, id: &str) -> &'a AgentProfile {
 
 /// What stops a Claude Code run on this Mac.
 fn missing(s: &AgentSettings) -> Vec<String> {
-    run_missing(claude(s), &s.hosts[0])
+    run_missing(claude(s), &s.hosts[0], false)
 }
 
 struct Harness {
@@ -423,6 +423,12 @@ async fn moving_to_a_command_deletes_the_old_item_and_a_failed_delete_is_retried
             Arc::clone(&h.credentials),
         )),
         Arc::clone(&h.agents),
+        Arc::new(
+            brainiac_lib::agents::named_secrets::NamedSecretService::new(
+                h.core.clone(),
+                Arc::clone(&h.credentials),
+            ),
+        ),
     );
     let owner = CredentialOwner::AgentProfile {
         id: "claude-code".into(),
@@ -619,4 +625,54 @@ async fn each_opencode_profile_takes_its_own_providers_key_and_a_model() {
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].label, "OpenCode · OpenRouter runs");
     assert_eq!(entries[0].destination, "OpenRouter, with an API key");
+}
+
+#[tokio::test]
+async fn a_runs_secrets_are_asked_for_by_variable_name_and_must_exist() {
+    let h = Harness::new();
+    for (id, name) in [("s1", "SENTRY_TOKEN"), ("s2", "GOOGLE_KEY")] {
+        let (id, name) = (id.to_string(), name.to_string());
+        h.core
+            .call(move |conn| {
+                conn.execute(
+                    "INSERT INTO named_secrets (id, label, env_name, created_at, updated_at)
+                     VALUES (?1, ?1, ?2, 'now', 'now')",
+                    rusqlite::params![id, name],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+    }
+    assert!(h.agents.secret_names(&[]).await.unwrap().is_empty());
+    // Sorted by variable name, once each.
+    assert_eq!(
+        h.agents
+            .secret_names(&["s1".into(), "s2".into(), "s1".into()])
+            .await
+            .unwrap(),
+        ["GOOGLE_KEY", "SENTRY_TOKEN"]
+    );
+    // A secret deleted meanwhile is refused, so a run never starts without it.
+    assert!(h.agents.secret_names(&["gone".into()]).await.is_err());
+    let nine: Vec<String> = (0..9).map(|i| format!("x{i}")).collect();
+    assert!(h.agents.secret_names(&nine).await.is_err());
+}
+
+#[tokio::test]
+async fn a_run_that_asks_for_the_tools_needs_the_layer_built_on_the_host() {
+    use brainiac_lib::agents::settings::image_for;
+    let h = Harness::new();
+    let s = h.agents.get().await.unwrap();
+    // This Mac has no layer yet: a run with the tools names what to do, and
+    // has no image to start from; one without them does not ask.
+    let host = &s.hosts[0];
+    assert!(host.tools_image.is_none());
+    assert!(run_missing(claude(&s), host, true)
+        .iter()
+        .any(|m| m.contains("Python and the Google Cloud CLI")));
+    assert!(image_for(true, host).is_none());
+    assert!(!run_missing(claude(&s), host, false)
+        .iter()
+        .any(|m| m.contains("Python and the Google Cloud CLI")));
 }

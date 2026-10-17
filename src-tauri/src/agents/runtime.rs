@@ -407,7 +407,7 @@ impl RunRuntime {
             return Err(StartError::Refused(cancelled_start()));
         }
         match self
-            .exchange(Request::Start(start), self.call_timeout)
+            .exchange(Request::Start(Box::new(start)), self.call_timeout)
             .await
         {
             Ok(Ok(Response::Run { run })) => Ok(run),
@@ -546,6 +546,30 @@ impl RunRuntime {
         }
     }
 
+    /// A briefing run's `.brainiac/briefing.json` (`None`: none written).
+    pub async fn read_briefing(&self, run_id: &str) -> AppResult<Option<String>> {
+        let request = Request::ReadBriefing {
+            run_id: run_id.to_string(),
+        };
+        let remote = self.is_remote();
+        match self.call(request, CALL_TIMEOUT).await.map_err(|e| {
+            if !e.message.contains("did not understand the request") {
+                e
+            } else if remote {
+                AppError::dependency(
+                    "This host's run controller is older than Brainiac, so it cannot return a briefing. Upgrade it in Settings → Agents once no run is live there.",
+                )
+            } else {
+                AppError::dependency(
+                    "The run controller is from an earlier Brainiac, so it cannot return a briefing. Run it again once the controller has exited.",
+                )
+            }
+        })? {
+            Response::Explanation { text } => Ok(text),
+            _ => Err(unexpected()),
+        }
+    }
+
     /// A remote controller just installed or restarted: ask until it
     /// answers, for a little while, and say why it did not.
     pub async fn answer(&self) -> AppResult<ControllerInfo> {
@@ -587,26 +611,46 @@ impl RunRuntime {
         &self,
         any_protocol: bool,
     ) -> AppResult<(Connection, ControllerInfo)> {
-        let Link::Remote { forward, .. } = &self.link else {
+        let Link::Remote {
+            forward, tunnel, ..
+        } = &self.link
+        else {
             return Err(AppError::dependency("This run is not on a remote host."));
         };
-        let log = forward.with_extension("log");
-        self.open_remote(&log, any_protocol)
-            .await
-            .map_err(|e| match ssh_said(&log) {
-                Some(said) => {
-                    let details = match e.details.as_deref() {
-                        Some(d) => format!("{d}\nssh: {said}"),
-                        None => format!("ssh: {said}"),
-                    };
-                    e.with_details(details)
-                }
-                None => e,
-            })
+        // Each connection forwards through a socket of its own. With one
+        // shared path, a second forward unlinked the first one's socket and
+        // its cleanup stopped it, so overlapping calls (a health check, a
+        // sync, a briefing read) failed as "could not be reached".
+        // `fetch_add` on an atomic hands each caller a different number.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 10_000_000;
+        let socket = if *tunnel {
+            forward.with_file_name(format!("f{n}.sock"))
+        } else {
+            forward.clone() // a test's own socket, not a forward
+        };
+        let log = socket.with_extension("log");
+        let result = self.open_remote(&socket, &log, any_protocol).await;
+        if *tunnel && result.is_err() {
+            let _ = std::fs::remove_file(&socket);
+        }
+        let said = ssh_said(&log);
+        let _ = std::fs::remove_file(&log);
+        result.map_err(|e| match said {
+            Some(said) => {
+                let details = match e.details.as_deref() {
+                    Some(d) => format!("{d}\nssh: {said}"),
+                    None => format!("ssh: {said}"),
+                };
+                e.with_details(details)
+            }
+            None => e,
+        })
     }
 
     async fn open_remote(
         &self,
+        forward: &Path,
         log: &Path,
         any_protocol: bool,
     ) -> AppResult<(Connection, ControllerInfo)> {
@@ -614,8 +658,8 @@ impl RunRuntime {
             target,
             token,
             installation,
-            forward,
             tunnel,
+            ..
         } = &self.link
         else {
             return Err(AppError::dependency("This run is not on a remote host."));
@@ -639,7 +683,10 @@ impl RunRuntime {
                 .map_err(|e| {
                     AppError::dependency("SSH could not be started.").with_details(e.to_string())
                 })?;
-            Some(Forward { child })
+            Some(Forward {
+                child,
+                socket: forward.to_path_buf(),
+            })
         } else {
             None
         };
@@ -721,7 +768,7 @@ impl RunRuntime {
             return Err(StartError::Refused(cancelled_start()));
         }
         match connection
-            .call(&Request::Start(start), self.call_timeout)
+            .call(&Request::Start(Box::new(start)), self.call_timeout)
             .await
         {
             Ok(Response::Run { run }) => Ok(run),
@@ -843,6 +890,127 @@ impl RunRuntime {
         Ok(())
     }
 
+    /// Keep a secret on the host, sealed; the names kept after it.
+    pub async fn put_secret(
+        &self,
+        name: &str,
+        value: String,
+        file: bool,
+    ) -> AppResult<Vec<super::controller::secret_store::SecretInfo>> {
+        let secret = super::controller::protocol::ExtraSecret {
+            name: name.to_string(),
+            value,
+            file,
+        };
+        self.secrets_reply(Request::PutSecret(secret)).await
+    }
+
+    pub async fn delete_secret(
+        &self,
+        name: &str,
+    ) -> AppResult<Vec<super::controller::secret_store::SecretInfo>> {
+        self.secrets_reply(Request::DeleteSecret {
+            name: name.to_string(),
+        })
+        .await
+    }
+
+    pub async fn list_secrets(
+        &self,
+    ) -> AppResult<Vec<super::controller::secret_store::SecretInfo>> {
+        self.secrets_reply(Request::ListSecrets).await
+    }
+
+    async fn secrets_reply(
+        &self,
+        request: Request,
+    ) -> AppResult<Vec<super::controller::secret_store::SecretInfo>> {
+        match self.call(request, self.call_timeout).await? {
+            Response::Secrets { secrets } => Ok(secrets),
+            _ => Err(unexpected()),
+        }
+    }
+
+    /// Keep a routine's schedule on this host.
+    pub async fn put_schedule(
+        &self,
+        put: super::controller::protocol::PutSchedule,
+    ) -> AppResult<()> {
+        self.done(Request::PutSchedule(Box::new(put))).await
+    }
+
+    pub async fn delete_schedule(&self, routine_id: &str) -> AppResult<()> {
+        self.done(Request::DeleteSchedule {
+            routine_id: routine_id.to_string(),
+        })
+        .await
+    }
+
+    /// Every schedule on this host, and the host's clock.
+    pub async fn schedules(
+        &self,
+    ) -> AppResult<(Vec<super::controller::protocol::ScheduleStatus>, String)> {
+        match self.call(Request::Schedules, self.call_timeout).await? {
+            Response::Schedules { schedules, now } => Ok((schedules, now)),
+            _ => Err(unexpected()),
+        }
+    }
+
+    pub async fn ack_schedule_results(&self, routine_id: &str, ids: Vec<String>) -> AppResult<()> {
+        self.done(Request::AckScheduleResults {
+            routine_id: routine_id.to_string(),
+            ids,
+        })
+        .await
+    }
+
+    /// Seal a profile's model credential on this host, for schedules.
+    pub async fn put_model_credential(
+        &self,
+        profile_id: &str,
+        key: super::controller::protocol::CredentialKey,
+        value: String,
+    ) -> AppResult<()> {
+        self.done(Request::PutModelCredential {
+            profile_id: profile_id.to_string(),
+            key,
+            value: super::controller::protocol::Sensitive(value),
+        })
+        .await
+    }
+
+    /// Send a file as this routine's code on the host (the bundle a schedule
+    /// starts its runs from), replacing the last one.
+    pub async fn send_schedule_bundle(&self, routine_id: &str, path: &Path) -> AppResult<()> {
+        let bytes = tokio::fs::read(path).await.map_err(|e| {
+            AppError::io("The routine's code was not exported.").with_details(e.to_string())
+        })?;
+        let mut connection = self.connect().await?;
+        upload_bundle(
+            &mut connection,
+            &format!("sched-{routine_id}"),
+            &bytes,
+            self.call_timeout,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    async fn done(&self, request: Request) -> AppResult<()> {
+        match self.call(request, self.call_timeout).await? {
+            Response::Done => Ok(()),
+            _ => Err(unexpected()),
+        }
+    }
+
+    /// The controller's own numbers and its host's.
+    pub async fn health(&self) -> AppResult<super::controller::health::HealthReport> {
+        match self.call(Request::Health, self.call_timeout).await? {
+            Response::Health { report } => Ok(report),
+            _ => Err(unexpected()),
+        }
+    }
+
     pub async fn probe_engine(
         &self,
         socket: &str,
@@ -868,6 +1036,7 @@ impl RunRuntime {
         socket: &str,
         tag: &str,
         context: &[u8],
+        base: Option<&str>,
     ) -> AppResult<String> {
         let hex = super::controller::protocol::encode_hex(context);
         match self
@@ -876,6 +1045,7 @@ impl RunRuntime {
                     socket: socket.to_string(),
                     tag: tag.to_string(),
                     hex,
+                    base: base.map(str::to_string),
                 },
                 COLLECT_TIMEOUT,
             )
@@ -1005,6 +1175,8 @@ fn unexpected() -> AppError {
 /// connection does not leave `ssh` running.
 struct Forward {
     child: std::process::Child,
+    /// This connection's own local socket, removed with it.
+    socket: PathBuf,
 }
 
 /// The end of what ssh wrote while it held a forward, if anything.
@@ -1028,6 +1200,7 @@ impl Drop for Forward {
             libc::kill(-pid, libc::SIGKILL);
         }
         let _ = self.child.wait();
+        let _ = std::fs::remove_file(&self.socket);
     }
 }
 

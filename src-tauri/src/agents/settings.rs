@@ -225,6 +225,37 @@ pub struct AgentSettingsService {
 }
 
 impl AgentSettingsService {
+    /// The variable names of named secrets, by ID, sorted: what a run asks
+    /// its host for. An ID that no longer exists is refused, so a run never
+    /// starts without a secret it was set to get. At most eight.
+    pub async fn secret_names(&self, ids: &[String]) -> AppResult<Vec<String>> {
+        let mut ids = ids.to_vec();
+        ids.sort();
+        ids.dedup();
+        if ids.len() > 8 {
+            return Err(AppError::validation("A run can get at most eight secrets."));
+        }
+        self.db
+            .call(move |conn| {
+                let mut names = Vec::new();
+                for id in &ids {
+                    let name: Option<String> = conn
+                        .query_row(
+                            "SELECT env_name FROM named_secrets WHERE id = ?1",
+                            params![id],
+                            |r| r.get(0),
+                        )
+                        .optional()?;
+                    names.push(name.ok_or_else(|| {
+                        AppError::validation("A secret chosen for the run no longer exists.")
+                    })?);
+                }
+                names.sort();
+                Ok(names)
+            })
+            .await
+    }
+
     pub fn new(db: Db, credentials: Arc<CredentialService>) -> Self {
         AgentSettingsService {
             db,
@@ -322,7 +353,8 @@ impl AgentSettingsService {
                 .call(move |conn| {
                     conn.execute(
                         "UPDATE agent_hosts SET socket = ?2, image_id = NULL, image_recipe = NULL,
-                           image_built_at = NULL, version = version + 1, updated_at = ?3
+                           image_built_at = NULL, tools_image_id = NULL,
+                           tools_image_recipe = NULL, tools_image_built_at = NULL, version = version + 1, updated_at = ?3
                          WHERE id = ?1",
                         params![super::hosts::LOCAL_ID, socket, now],
                     )?;
@@ -565,6 +597,9 @@ impl AgentSettingsService {
             .await?
             .ok_or_else(|| AppError::validation("Choose where runs execute first."))?;
         let built = image::build(Path::new(&socket)).await?;
+        // The layer on top, always: a run or routine may ask for the tools,
+        // and its failure fails the build, so none runs without them.
+        let tools = image::build_tools(Path::new(&socket), &built.name).await?;
         let now = now_rfc3339();
         let recorded =
             self.db
@@ -577,6 +612,23 @@ impl AgentSettingsService {
                 )?)
                 })
                 .await?;
+        {
+            let (id, recipe, now) = (
+                tools.id.clone(),
+                image::tools_recipe(&image::recipe()),
+                now_rfc3339(),
+            );
+            self.db
+                .call(move |conn| {
+                    conn.execute(
+                        "UPDATE agent_hosts SET tools_image_id = ?2, tools_image_recipe = ?3,
+                           tools_image_built_at = ?4, version = version + 1 WHERE id = ?1",
+                        params![super::hosts::LOCAL_ID, id, recipe, now],
+                    )?;
+                    Ok(())
+                })
+                .await?;
+        }
         if recorded == 0 {
             return Err(AppError::new(
                 ErrorCode::Conflict,
@@ -680,7 +732,17 @@ fn check_socket(socket: &str) -> AppResult<String> {
 /// What stops a run of this profile on this host, in the order to do it:
 /// the profile's own setup, the host's, then a passed test of the profile
 /// there that still matches (SPEC.md, Settings → Agents, Before the first run).
-pub fn run_missing(profile: &AgentProfile, host: &AgentHost) -> Vec<String> {
+/// The image a run uses on a host: the tools layer when the run or routine
+/// asks for the tools, else the run image.
+pub fn image_for(tools: bool, host: &AgentHost) -> Option<crate::models::AgentImage> {
+    if tools {
+        host.tools_image.clone()
+    } else {
+        host.image.clone()
+    }
+}
+
+pub fn run_missing(profile: &AgentProfile, host: &AgentHost, tools: bool) -> Vec<String> {
     let mut missing: Vec<String> = profile
         .missing
         .iter()
@@ -688,6 +750,19 @@ pub fn run_missing(profile: &AgentProfile, host: &AgentHost) -> Vec<String> {
         .cloned()
         .collect();
     let name = profile_name(profile);
+    if tools {
+        match &host.tools_image {
+            None => missing.push(format!(
+                "Build the image on {} to add Python and the Google Cloud CLI.",
+                host.name
+            )),
+            Some(i) if !i.current => missing.push(format!(
+                "Rebuild the image on {}: the Python and Google Cloud CLI layer is out of date.",
+                host.name
+            )),
+            Some(_) => {}
+        }
+    }
     match host.tests.iter().find(|t| t.profile_id == profile.id) {
         None => missing.push(format!("Pass a test of {name} on {}.", host.name)),
         Some(t) if !t.current => missing.push(format!(

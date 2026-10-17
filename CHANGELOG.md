@@ -11,6 +11,44 @@ into the release's section.
 
 ## [Unreleased]
 
+- A routine's memory survives its first approval and a Run Now on a scheduled routine; before, the next check of the host could replace it with the host's empty or older copy.
+- Removing a repository takes its routines' schedules off their hosts first, so a host no longer goes on running them.
+- A secret's Delete asks again, and New run no longer keeps a deleted secret chosen from last time, which made Start fail.
+- The cost ceiling field takes amounts such as 0.50, and an empty field no longer sets it to zero.
+- Approving a routine asks you to confirm its secrets can only read even while the host's copies are still unknown.
+- A run on this Mac with secrets no longer says they came from a host.
+- A routine's Schedule tab shows the run host's time now and its time zone beside the time you set, and warns when it differs from your Mac's; the approval names the zone too.
+- A routine is no longer shown as Host unreachable because its host missed one check; it is once the host misses two in a row.
+- A scheduled run its host was starting when the host's run controller stopped is started again if it is still on time; otherwise its briefing says it did not start, instead of the run going missing.
+- A routine moved to another host stops firing on the host it left, and what it ran there is listed as run there.
+
+- A secret a run was given is taken out of its briefing or explanation too, not only its conversation. A host's page lists a schedule it fires for another Mac, or from before a restore, and keeps it until you remove it; before, Brainiac deleted it with the briefings waiting there.
+
+- Approving a routine tests its agent on the host when it has not passed there with the current key and image, so a schedule no longer waits for you to press Test.
+
+- An agent is tested from its own page, on each host under Where it can run. A host's page lists the agents tested there, each opening its agent.
+
+- Settings' Runs pages use the window's width, with their title and main action at the top, so the hosts and secrets tables fit and a host's page shows its machine and health side by side. A host's page no longer keeps the steps of a job that succeeded.
+
+- Settings → Code Sharing can allow or block a provider for an existing repository or every repository in a workspace before starting a run.
+
+- Settings has a Runs heading with Agents, Run Hosts (a table of hosts with what each needs next), Secrets (a table, with Test), Code Sharing and MCP (formerly Agent Access). A host's page is the machine only: whether it answers, what it has and lacks with each action, its health, the routines it fires and what it holds. Adding a host is a page in steps, with what Install checks beside them. A routine's definition shows what scheduling it on its host needs; approving states the facts in a table and follows the host's preparation step by step.
+
+- A run or a routine now chooses its own secrets and tools (Access and Tools), instead of the agent. Approving a routine sends the secrets its host lacks and prepares the host: it upgrades the host's helper and builds its image when needed, then turns the schedule on. Settings → Secrets shows which routines use each secret and which hosts hold a copy. A run on this Mac can use secrets too: they are read when it starts and never stored.
+
+- A secret of your own can be given to a run as a file instead of a value, for tools that read a key file such as a Google service account key; its variable holds the file's path. Upgrade the host's controller to share one.
+
+- Reaching a run host no longer fails when Brainiac asks it two things at once (a health check while a briefing is read, or a secret shared during a sync).
+
+- Settings → Secrets can keep secrets of your own, such as a Sentry token. A run host keeps a sealed copy of one when a run or routine there first needs it, and its page shows when that copy is out of date.
+- New run and a run's page name the secrets the run gets.
+- Routines are saved runs that check something and leave a short report, a briefing. Run Now starts one; the Routines section lists them, each has its own page, and Today shows the ones with news.
+- A routine on a run host can have a schedule: once you approve it, the host runs it at its time with this Mac off, and Brainiac takes the briefing when it next reaches the host.
+- A routine keeps a memory that the agent and you can edit, and is shown its earlier briefings.
+- A run or routine can add Python and the Google Cloud CLI to its image (Tools), built on the host when it first needs them.
+
+- A run host's page has a Health section: whether it answers, its uptime, load, memory, disk, Docker engine and runs, with what to fix when something is wrong. Upgrade the host's controller to see it.
+
 - Right-click a repository in the sidebar to open it in your editor or a terminal, reveal it in Finder, fetch, copy its path, or remove it.
 
 - Right-clicking no longer shows the browser's menu (Reload, Cut, Spelling and so on); it still appears in text fields and the note editor.

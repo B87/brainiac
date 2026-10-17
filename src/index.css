@@ -1864,3 +1864,38 @@
     fill: var(--accent);
   }
 }
+
+/* Routines table (docs/design/routines-ux.md): columns drop with the width of
+   the table, not the window. */
+.routine-row {
+  display: grid;
+  grid-template-columns:
+    minmax(130px, 1.3fr) 90px minmax(120px, 1.1fr) minmax(110px, 1fr)
+    minmax(130px, 1.2fr) 56px;
+  gap: 12px;
+  align-items: center;
+  padding: 8px 16px;
+  box-sizing: border-box;
+}
+.routine-row[aria-pressed="true"] {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+@container (max-width: 900px) {
+  .routine-row {
+    grid-template-columns: minmax(130px, 1.3fr) minmax(120px, 1.1fr) minmax(
+        110px,
+        1fr
+      ) minmax(130px, 1.2fr);
+  }
+  .routine-opt {
+    display: none;
+  }
+}
+@container (max-width: 640px) {
+  .routine-row {
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 1fr);
+  }
+  .routine-opt2 {
+    display: none;
+  }
+}

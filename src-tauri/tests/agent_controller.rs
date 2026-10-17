@@ -11,8 +11,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use brainiac_lib::agents::controller::protocol::{
-    Activity, Credential, CredentialKey, Delivery, Event, EventBody, Outcome, Phase, RunStatus,
-    StartRun, StopReason,
+    Activity, Credential, CredentialKey, Delivery, Event, EventBody, ExtraSecret, Outcome, Phase,
+    RunStatus, StartRun, StopReason,
 };
 use brainiac_lib::agents::controller::state::StateDir;
 use brainiac_lib::agents::controller::{guard, serve, Config};
@@ -90,6 +90,7 @@ impl Harness {
             socket: self.socket(),
             idle_exit: None,
             spawn_guard: false,
+            creds_program: Some(fake_engine::fake_creds(self.tmp.path())),
             service: false,
         };
         let engine = self.engine.clone();
@@ -129,6 +130,9 @@ impl Harness {
             provider: AgentProvider::Anthropic,
             model: "opus".into(),
             known_concepts: None,
+            secrets: Vec::new(),
+            host_secrets: Vec::new(),
+            routine_id: None,
         }
     }
 
@@ -245,6 +249,140 @@ async fn the_credential_reaches_the_container_once_and_never_the_journal() {
             entry.display()
         );
     }
+}
+
+#[tokio::test]
+async fn extra_secrets_reach_the_container_once_and_never_the_journal() {
+    const SENTRY: &str = "sntrys_ExampleSentryTokenForTests0123456789";
+    let h = Harness::new().await;
+    let mut start = h.start_request("run-1", "echo-extra", RunPermissions::Act);
+    start.secrets = vec![ExtraSecret {
+        name: "SENTRY_TOKEN".into(),
+        value: SENTRY.into(),
+        file: false,
+    }];
+    h.runtime.start(start).await.unwrap();
+    h.wait("run-1", "the turn ends", idle).await;
+    let frames = h.engine.get().frames.clone();
+    assert_eq!(
+        frames,
+        vec![json!({
+            "credential": { "ANTHROPIC_API_KEY": KEY },
+            "extra": { "SENTRY_TOKEN": SENTRY },
+        })]
+    );
+    // The agent printed it whole; the journal and the reply hold the name.
+    assert_eq!(h.reply("run-1", 1).await, "SENTRY_TOKEN is [SENTRY_TOKEN]");
+    for entry in walk(h.tmp.path()) {
+        let bytes = std::fs::read(&entry).unwrap();
+        assert!(
+            !String::from_utf8_lossy(&bytes).contains(SENTRY),
+            "{} holds the secret",
+            entry.display()
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_run_opens_the_secrets_the_host_keeps_and_the_mac_sends_no_value() {
+    const SENTRY: &str = "sntrys_ExampleSentryTokenForTests0123456789";
+    let h = Harness::new().await;
+    let listed = h
+        .runtime
+        .put_secret("SENTRY_TOKEN", SENTRY.into(), false)
+        .await
+        .unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].name, "SENTRY_TOKEN");
+    // Another call lists the same, and a list holds no value.
+    assert_eq!(h.runtime.list_secrets().await.unwrap(), listed);
+
+    let mut start = h.start_request("run-1", "echo-extra", RunPermissions::Act);
+    start.host_secrets = vec!["SENTRY_TOKEN".into()];
+    h.runtime.start(start).await.unwrap();
+    h.wait("run-1", "the turn ends", idle).await;
+    assert_eq!(
+        h.engine.get().frames,
+        vec![json!({
+            "credential": { "ANTHROPIC_API_KEY": KEY },
+            "extra": { "SENTRY_TOKEN": SENTRY },
+        })]
+    );
+    assert_eq!(h.reply("run-1", 1).await, "SENTRY_TOKEN is [SENTRY_TOKEN]");
+    // Sealed on disk, and nowhere else: the stand-in rotates letters.
+    let sealed =
+        std::fs::read_to_string(h.state().root().join("secrets/SENTRY_TOKEN.cred")).unwrap();
+    assert_ne!(sealed, SENTRY);
+    for entry in walk(h.tmp.path()) {
+        let bytes = std::fs::read(&entry).unwrap();
+        assert!(
+            !String::from_utf8_lossy(&bytes).contains(SENTRY),
+            "{} holds the secret",
+            entry.display()
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_run_that_names_a_secret_the_host_lacks_fails_before_a_container_exists() {
+    let h = Harness::new().await;
+    let mut start = h.start_request("run-1", "hello", RunPermissions::Act);
+    start.host_secrets = vec!["SENTRY_TOKEN".into()];
+    h.runtime.start(start).await.unwrap();
+    let status = h
+        .wait("run-1", "the run ends", |s: &RunStatus| ended(s))
+        .await;
+    let text = format!("{status:?}");
+    assert!(text.contains("SENTRY_TOKEN"), "{text}");
+    assert!(
+        h.engine.get().frames.is_empty(),
+        "no container was given anything"
+    );
+    assert_eq!(h.engine.get().launches, 0);
+}
+
+#[tokio::test]
+async fn a_deleted_secret_is_gone_from_the_list_and_the_disk() {
+    let h = Harness::new().await;
+    h.runtime
+        .put_secret("SENTRY_TOKEN", "12345678abcd".into(), false)
+        .await
+        .unwrap();
+    assert!(h.state().root().join("secrets/SENTRY_TOKEN.cred").exists());
+    assert!(h
+        .runtime
+        .delete_secret("SENTRY_TOKEN")
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(!h.state().root().join("secrets/SENTRY_TOKEN.cred").exists());
+    // Removing again is not an error, and a bad name is refused.
+    assert!(h
+        .runtime
+        .delete_secret("SENTRY_TOKEN")
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(h.runtime.delete_secret("path/../x").await.is_err());
+    assert!(h
+        .runtime
+        .put_secret("PATH", "12345678abcd".into(), false)
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn a_secret_with_a_name_the_container_uses_is_refused_before_the_run_starts() {
+    let h = Harness::new().await;
+    let mut start = h.start_request("run-1", "hello", RunPermissions::Act);
+    start.secrets = vec![ExtraSecret {
+        name: "LD_PRELOAD".into(),
+        value: "/tmp/evil.so".into(),
+        file: false,
+    }];
+    let err = h.runtime.start(start).await.unwrap_err();
+    assert!(format!("{err:?}").contains("secret"), "{err:?}");
+    assert!(h.engine.get().frames.is_empty());
 }
 
 fn walk(dir: &std::path::Path) -> Vec<PathBuf> {
@@ -633,6 +771,7 @@ async fn a_run_on_a_real_engine() {
         socket: tmp.path().join("c").join("runner.sock"),
         idle_exit: None,
         spawn_guard: false,
+        creds_program: None,
         service: false,
     };
     let server = tokio::spawn(async move { serve(config, DockerEngine::new()).await.unwrap() });
@@ -666,6 +805,9 @@ async fn a_run_on_a_real_engine() {
         provider: AgentProvider::Anthropic,
         model: String::new(),
         known_concepts: None,
+        secrets: Vec::new(),
+        host_secrets: Vec::new(),
+        routine_id: None,
     };
     runtime.start(start).await.unwrap();
 
@@ -937,6 +1079,7 @@ async fn an_opencode_run_on_a_real_engine() {
         socket: tmp.path().join("c").join("runner.sock"),
         idle_exit: None,
         spawn_guard: false,
+        creds_program: None,
         service: false,
     };
     let server = tokio::spawn(async move { serve(config, DockerEngine::new()).await.unwrap() });
@@ -970,6 +1113,9 @@ async fn an_opencode_run_on_a_real_engine() {
         provider: AgentProvider::Openrouter,
         model: "anthropic/claude-sonnet-4.5".into(),
         known_concepts: None,
+        secrets: Vec::new(),
+        host_secrets: Vec::new(),
+        routine_id: None,
     };
     runtime.start(start).await.unwrap();
 
@@ -1470,4 +1616,52 @@ async fn upgrade_reads_live_runs_from_a_controller_of_an_older_protocol() {
     assert!(!host(&idle).live_any_protocol().await.unwrap());
     live_server.abort();
     idle_server.abort();
+}
+
+/// A run that fails for a secret the host lacks is stopped again by the
+/// controller once the engine answers, as any stop the engine did not confirm.
+#[tokio::test]
+async fn a_run_failed_for_a_missing_secret_is_stopped_again_once_the_engine_answers() {
+    let h = Harness::new().await;
+    h.engine.get().unreachable = true;
+    let mut start = h.start_request("run-1", "hello", RunPermissions::Act);
+    start.host_secrets = vec!["SENTRY_TOKEN".into()];
+    h.runtime.start(start).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let status = h.status("run-1").await;
+    assert_eq!(status.phase, Phase::Stopping, "{status:?}");
+    assert!(!status.stop_confirmed);
+    h.engine.get().unreachable = false;
+    for _ in 0..150 {
+        if h.status("run-1").await.phase == Phase::Ended {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("the stop was not retried");
+}
+
+/// A result file is read only while the run's session is open, when the
+/// values to take out of it are known; after that it is refused, never
+/// returned as it is.
+#[tokio::test]
+async fn a_result_file_is_not_read_once_the_session_has_ended() {
+    let h = Harness::new().await;
+    h.start("run-1", "hello", RunPermissions::Act).await;
+    h.wait("run-1", "the first turn ends", idle).await;
+    let dir = h.engine.get().volumes.join("run-1").join(".brainiac");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("briefing.json"),
+        format!(r#"{{"summary":"the key is {KEY}"}}"#),
+    )
+    .unwrap();
+    let open = h.runtime.read_briefing("run-1").await.unwrap().unwrap();
+    assert!(!open.contains(KEY), "{open}");
+
+    h.runtime.stop("run-1", StopReason::Cancel).await.unwrap();
+    h.wait("run-1", "the run ends", |s: &RunStatus| ended(s))
+        .await;
+    let refused = h.runtime.read_briefing("run-1").await.unwrap_err();
+    assert!(refused.message.contains("session has ended"), "{refused:?}");
 }

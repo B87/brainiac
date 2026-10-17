@@ -86,6 +86,7 @@ type Props = {
   onSelect: (id: string | null) => void;
   onNewRun: () => void;
   onOpenRepo: (id: string) => void;
+  onOpenRoutine: (id: string) => void;
   onOpenSettings: () => void;
   onError: (text: string) => void;
   onNotice: (text: string) => void;
@@ -103,7 +104,11 @@ const SHOWN: Record<Show, RunGroup[]> = {
 };
 
 /** The list's Kind filter: runs started from New run, or by Explain. */
-type Kind = "" | "run" | "explain";
+type Kind = "" | "run" | "explain" | "routine";
+
+function kindOf(run: AgentRun): Kind {
+  return run.explain ? "explain" : run.routine_id ? "routine" : "run";
+}
 
 /** The list's filters, kept while a run is open so Back returns to them. */
 type Filters = {
@@ -146,6 +151,7 @@ export default function RunsView(props: Props) {
         snapshot={props.snapshot}
         onBack={() => props.onSelect(null)}
         onOpenRepo={props.onOpenRepo}
+        onOpenRoutine={props.onOpenRoutine}
         onOpenSettings={props.onOpenSettings}
         onError={props.onError}
         onNotice={props.onNotice}
@@ -234,13 +240,13 @@ function RunList({
       seen.set(isRemote(r) ? r.host_id : "local", hostLabel(r));
     return [...seen.entries()];
   }, [runs]);
-  const explained = (runs ?? []).some((r) => r.explain);
+  const explained = (runs ?? []).some((r) => r.explain || r.routine_id);
   const filtered = (runs ?? []).filter(
     (r) =>
       (!repoFilter || r.repository_id === repoFilter) &&
       (!hostFilter || (isRemote(r) ? r.host_id : "local") === hostFilter) &&
       // A remembered Kind applies only while its menu is there to change it.
-      (!explained || !kindFilter || r.explain === (kindFilter === "explain")),
+      (!explained || !kindFilter || kindOf(r) === kindFilter),
   );
   const needing = filtered.filter((r) => groupOf(r) === "needs_you").length;
   const shown = filtered.filter((r) => SHOWN[show].includes(groupOf(r)));
@@ -312,9 +318,10 @@ function RunList({
             value={kindFilter}
             onChange={(e) => setKindFilter(e.target.value as Kind)}
           >
-            <option value="">Runs and explanations</option>
+            <option value="">All kinds</option>
             <option value="run">Runs</option>
             <option value="explain">Explanations</option>
+            <option value="routine">Routines</option>
           </select>
         )}
         <span className="flex-1" />
@@ -440,6 +447,14 @@ function RunRow({
               Explain
             </span>
           )}
+          {run.routine_id && (
+            <span
+              className="tag-box shrink-0"
+              title="A run of a routine: open it to read the briefing"
+            >
+              Routine
+            </span>
+          )}
           <span className="truncate font-medium">{runTitle(run)}</span>
         </span>
         <span className="flex min-w-0 items-center gap-1.5 text-[11.5px] text-muted">
@@ -479,6 +494,7 @@ function RunView({
   snapshot,
   onBack,
   onOpenRepo,
+  onOpenRoutine,
   onOpenSettings,
   onError,
   onNotice,
@@ -489,6 +505,7 @@ function RunView({
   snapshot: AppSnapshot;
   onBack: () => void;
   onOpenRepo: (id: string) => void;
+  onOpenRoutine: (id: string) => void;
   onOpenSettings: () => void;
   onError: (text: string) => void;
   onNotice: (text: string) => void;
@@ -702,6 +719,17 @@ function RunView({
                 fallbackName={run.repository_name}
                 onClick={repo ? () => onOpenRepo(repo.id) : undefined}
               />
+              {run.routine_id && (
+                <button
+                  type="button"
+                  className="btn btn-sm btn-ghost text-link"
+                  onClick={() =>
+                    run.routine_id && onOpenRoutine(run.routine_id)
+                  }
+                >
+                  Open routine
+                </button>
+              )}
               {explain && link ? (
                 <span>{explainedLabel(link)}</span>
               ) : (
@@ -1358,6 +1386,16 @@ function RunDetails({
       <Fact label="Image">
         <span className="mono break-all">{run.image_name}</span>
       </Fact>
+      {run.host_secrets.length > 0 && (
+        <Fact label="Secrets">
+          <span className="mono break-all">{run.host_secrets.join(", ")}</span>
+          <Note>
+            {!remote
+              ? "Read on this Mac when the run started; the agent could read them."
+              : "From the host's sealed copies; the agent could read them."}
+          </Note>
+        </Fact>
+      )}
       <div className="mt-1 flex flex-col gap-1.5 border-t pt-3">
         <span className="section-label">Files the agent says it changed</span>
         {reported.length === 0 ? (

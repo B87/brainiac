@@ -23,8 +23,9 @@ use crate::models::{AgentKind, AgentProvider, AppError, RunPermissions};
 /// probe (docs/architecture.md, Remote hosts); `Preview` and edits' diffs
 /// came later without a bump. 3 adds the run's agent and provider, and the
 /// OpenAI and OpenRouter keys: an older controller would start Claude Code
-/// with them.
-pub const PROTOCOL: u32 = 3;
+/// with them. 4 adds a run's extra secrets: an older controller would
+/// ignore the field and start the run without them.
+pub const PROTOCOL: u32 = 4;
 
 /// One piece of a bundle copied to or from the controller. Hex doubles it,
 /// and the line must stay under [`MAX_LINE_BYTES`].
@@ -51,7 +52,8 @@ pub enum Request {
     Hello { token: String, protocol: u32 },
     /// Accept a run and prepare it in the background. Repeating the same run
     /// ID and attempt returns the run as it is; it never starts another.
-    Start(StartRun),
+    // Boxed: the run's start is much larger than the other requests.
+    Start(Box<StartRun>),
     /// Every run this controller knows.
     Status,
     /// Events after `after`, waiting up to `wait_ms` for the first one.
@@ -114,6 +116,9 @@ pub enum Request {
     /// changes — v0.6). Added without a protocol bump, as `Preview` was: an
     /// older controller answers that it did not understand.
     ReadExplanation { run_id: String },
+    /// A briefing run's `.brainiac/briefing.json`, read the same way and
+    /// answered as `Explanation` (a file's text, or none).
+    ReadBriefing { run_id: String },
     /// Exit, only when no run is live: a newer Brainiac replaces it.
     Shutdown,
     /// Write the run's input bundle into the controller's state directory,
@@ -140,6 +145,36 @@ pub enum Request {
         #[serde(default)]
         image: Option<String>,
     },
+    /// The host's numbers and the controller's own (docs/design/scheduled-runs.md,
+    /// Machines). An older controller answers it as not understood.
+    Health,
+    /// Keep a secret on this host, sealed, under its name (docs/design/
+    /// scheduled-runs.md). The answer lists the names, never a value.
+    PutSecret(ExtraSecret),
+    /// Forget a secret kept on this host.
+    DeleteSecret { name: String },
+    /// The names of the secrets kept on this host and when each was set.
+    ListSecrets,
+    /// Keep a routine's schedule on this host (docs/design/routines-ux.md,
+    /// Schedules): the host fires it and keeps what it leaves until the Mac asks.
+    PutSchedule(Box<PutSchedule>),
+    /// Forget a routine's schedule, its copy of the code, and its results here.
+    DeleteSchedule { routine_id: String },
+    /// Every schedule on this host with its state and the results the Mac has
+    /// not acknowledged.
+    Schedules,
+    /// The Mac has taken these results; they are not sent again.
+    AckScheduleResults {
+        routine_id: String,
+        ids: Vec<String>,
+    },
+    /// Keep a profile's model credential on this host, sealed, so a schedule
+    /// can start a run with no Mac. It is never returned and never listed.
+    PutModelCredential {
+        profile_id: String,
+        key: CredentialKey,
+        value: Sensitive,
+    },
     /// What the engine on this host is, and whether it can attach loop devices.
     ProbeEngine {
         socket: String,
@@ -151,6 +186,10 @@ pub enum Request {
         socket: String,
         tag: String,
         hex: String,
+        /// A layer's base image, already on the engine: the Dockerfile's
+        /// BASE argument, and nothing is pulled.
+        #[serde(default)]
+        base: Option<String>,
     },
     /// Stop every live run's containers and keep them. The guard's socket
     /// answers this when the Mac cannot.
@@ -206,6 +245,209 @@ impl fmt::Debug for Credential {
     }
 }
 
+/// The most extra secrets a run takes, and the size of each value. A Google
+/// service account key is about 2.5 KiB.
+pub const MAX_EXTRA_SECRETS: usize = 8;
+pub const MIN_EXTRA_VALUE: usize = 8;
+pub const MAX_EXTRA_VALUE: usize = 16 * 1024;
+
+/// A named secret a run's agent gets in its environment beside the model's
+/// credential (docs/design/scheduled-runs.md, Credentials on the host): a
+/// Sentry token, a Google service account key. It crosses the controller's
+/// socket once, at the start, like the credential.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ExtraSecret {
+    pub name: String,
+    pub value: String,
+    /// The run gets a file of this value, in memory, and the variable holds
+    /// its path (a key file a tool reads, like GOOGLE_APPLICATION_CREDENTIALS).
+    #[serde(default)]
+    pub file: bool,
+}
+
+// A hand-written `Debug` so a logged request never shows the value.
+impl fmt::Debug for ExtraSecret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ExtraSecret")
+            .field("name", &self.name)
+            .field("value", &"[redacted]")
+            .field("file", &self.file)
+            .finish()
+    }
+}
+
+/// A name a run may give a secret: an environment variable of capitals,
+/// digits and underscores that cannot change what the container runs or
+/// where its traffic goes. Anything that loads code (`LD_`, `NODE_`,
+/// `PYTHON`, `PATH`, `BASH_ENV`), a Git or proxy setting, or a variable a
+/// provider's agent reads is refused rather than overridden.
+pub fn valid_secret_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    let shaped = name.len() <= 64
+        && chars.next().is_some_and(|c| c.is_ascii_uppercase())
+        && chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+    const EXACT: &[&str] = &[
+        "PATH",
+        "HOME",
+        "USER",
+        "SHELL",
+        "PWD",
+        "TMPDIR",
+        "IFS",
+        "ENV",
+        "BASH_ENV",
+        "CDPATH",
+        "PROXY",
+        "TERM",
+        "PROMPT_COMMAND",
+        "SHELLOPTS",
+        "BASHOPTS",
+        "GLOBIGNORE",
+        "ZDOTDIR",
+        "REQUESTS_CA_BUNDLE",
+        "LOCPATH",
+        "NLSPATH",
+        "HOSTALIASES",
+    ];
+    const PREFIXES: &[&str] = &[
+        "LD_",
+        "DYLD_",
+        "NODE_",
+        "NPM_",
+        "GIT_",
+        "PYTHON",
+        "CLAUDE",
+        "ANTHROPIC_",
+        "OPENAI_",
+        "OPENROUTER_",
+        "OPENCODE_",
+        "BRAINIAC_",
+        "SSL_",
+        "CURL_",
+        "SSH_",
+        "DOCKER_",
+        "CODEX_",
+        "GEMINI_",
+        "MALLOC_",
+        "GCONV_",
+    ];
+    shaped
+        && !EXACT.contains(&name)
+        && !PREFIXES.iter().any(|p| name.starts_with(p))
+        && !name.ends_with("_PROXY")
+        && !name.ends_with("_OPTIONS")
+        && !name.ends_with("OPT")
+}
+
+/// A value that never shows in a log: its `Debug` is redacted. It is a plain
+/// string on the wire.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Sensitive(pub String);
+
+impl fmt::Debug for Sensitive {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("[redacted]")
+    }
+}
+
+/// When a schedule fires, in the host's local time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduleDays {
+    Daily,
+    Weekdays,
+    /// 0 is Monday, 6 is Sunday.
+    Weekly(u8),
+}
+
+/// What a host needs to start a routine's run with no Mac. The model
+/// credential and the host secrets are on the host already; the code is the
+/// bundle the Mac last sent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduleSpec {
+    pub routine_id: String,
+    pub name: String,
+    pub days: ScheduleDays,
+    /// "HH:MM" in the host's local time.
+    pub time: String,
+    /// Start a missed run when the host is back, once, instead of recording it missed.
+    pub late_start: bool,
+    /// Approved and not paused.
+    pub enabled: bool,
+    pub profile_id: String,
+    pub credential_key: CredentialKey,
+    pub agent: AgentKind,
+    pub provider: AgentProvider,
+    pub model: String,
+    pub image: String,
+    pub cpus: u32,
+    pub memory_mib: u32,
+    pub workspace_gib: u32,
+    pub time_limit_secs: u64,
+    pub host_secrets: Vec<String>,
+    /// The user's words; the host adds the memory, the earlier briefings and
+    /// the file contract.
+    pub prompt: String,
+    pub previous_results: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PutSchedule {
+    pub spec: ScheduleSpec,
+    /// Replace the host's memory (the user edited it, or the schedule is new).
+    #[serde(default)]
+    pub memory: Option<String>,
+    /// The bundle uploaded for this routine (as run `sched-<routine id>`) is
+    /// complete and holds this commit.
+    #[serde(default)]
+    pub bundle_commit: Option<String>,
+    /// Count slots from this time (RFC 3339), not from when the host hears of
+    /// the schedule; the Mac's approval time, so none between is lost.
+    #[serde(default)]
+    pub since: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduledState {
+    Ready,
+    Failed,
+    /// The host was not running at the time and the schedule does not start late.
+    Missed,
+}
+
+/// What one firing left, kept until the Mac acknowledges it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduledResult {
+    pub id: String,
+    /// The time it was due, RFC 3339 with the host's offset.
+    pub slot: String,
+    pub run_id: Option<String>,
+    pub state: ScheduledState,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    /// The checked briefing, when there is one.
+    pub draft: Option<super::super::routines::Draft>,
+    pub error: Option<String>,
+    #[serde(default)]
+    pub acked: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduleStatus {
+    pub spec: ScheduleSpec,
+    pub memory: String,
+    pub bundle_commit: Option<String>,
+    pub bundle_at: Option<String>,
+    /// The next time it fires, RFC 3339 with the host's offset; none when disabled.
+    pub next_fire: Option<String>,
+    pub live_run: Option<String>,
+    /// The model credential for this profile is on the host.
+    pub credential: bool,
+    pub results: Vec<ScheduledResult>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StartRun {
     /// Brainiac's ID for the run: letters, digits, and dashes.
@@ -244,6 +486,18 @@ pub struct StartRun {
     /// the run then has no list.
     #[serde(default)]
     pub known_concepts: Option<String>,
+    /// Extra secrets for the agent's environment (protocol 4), with their
+    /// values: a run started from the Mac.
+    #[serde(default)]
+    pub secrets: Vec<ExtraSecret>,
+    /// The routine this run belongs to, when the host started it from a
+    /// schedule: the controller then reads its briefing when the turn ends.
+    #[serde(default)]
+    pub routine_id: Option<String>,
+    /// Names of secrets kept on this host, which the controller opens itself
+    /// when the run starts: a run that has no Mac to send values.
+    #[serde(default)]
+    pub host_secrets: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -292,6 +546,17 @@ pub enum Response {
     },
     Engine {
         report: EngineReport,
+    },
+    Health {
+        report: super::health::HealthReport,
+    },
+    Secrets {
+        secrets: Vec<super::secret_store::SecretInfo>,
+    },
+    Schedules {
+        schedules: Vec<ScheduleStatus>,
+        /// The host's clock when it answered, RFC 3339 with its offset.
+        now: String,
     },
     Image {
         id: String,

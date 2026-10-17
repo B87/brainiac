@@ -14,8 +14,11 @@ pub mod acp;
 pub mod archive;
 pub mod docker;
 pub mod guard;
+pub mod health;
 pub mod journal;
 pub mod protocol;
+pub mod schedule;
+pub mod secret_store;
 pub mod state;
 
 use std::collections::HashMap;
@@ -33,10 +36,10 @@ use self::acp::{Command, RunSink, Session};
 use self::docker::{CollectSpec, LaunchSpec, Running, Workloads};
 use self::journal::{journal_path, Append, Redactor, TraceJournal};
 use self::protocol::{
-    decode_hex, valid_id, Activity, CollectManifest, Credential, Delivery, EventBody, EventPage,
-    Outcome, PendingPermission, Phase, Request, Response, RunStatus, StartRun, StopReason,
-    MAX_KNOWN_CONCEPTS_BYTES, MAX_LINE_BYTES, MAX_PROMPT_BYTES, MAX_TRANSFER, PROTOCOL,
-    TRANSFER_CHUNK,
+    decode_hex, valid_id, valid_secret_name, Activity, CollectManifest, Credential, Delivery,
+    EventBody, EventPage, ExtraSecret, Outcome, PendingPermission, Phase, Request, Response,
+    RunStatus, StartRun, StopReason, MAX_EXTRA_SECRETS, MAX_EXTRA_VALUE, MAX_KNOWN_CONCEPTS_BYTES,
+    MAX_LINE_BYTES, MAX_PROMPT_BYTES, MAX_TRANSFER, MIN_EXTRA_VALUE, PROTOCOL, TRANSFER_CHUNK,
 };
 use self::state::{Ledger, RunRecord, StateDir};
 use crate::models::{AppError, AppResult, ErrorCode};
@@ -57,6 +60,7 @@ const MAX_INCLUDE: usize = 1000;
 const COLLECTOR_MEMORY_MIB: u32 = 2048;
 /// Where an explain run's agent writes its explanation, and its limit.
 pub const EXPLANATION_PATH: &str = "/workspace/.brainiac/explanation.json";
+pub const BRIEFING_PATH: &str = "/workspace/.brainiac/briefing.json";
 const MAX_EXPLANATION_BYTES: u64 = 2 * 1024 * 1024;
 /// The shortest and longest time limits a run may have.
 const MIN_TIME_LIMIT: u64 = 1;
@@ -86,6 +90,9 @@ pub struct Config {
     pub idle_exit: Option<Duration>,
     /// Start the guard beside the controller.
     pub spawn_guard: bool,
+    /// The `systemd-creds` that seals a host's secrets (`secret_store`);
+    /// `None` is the one on `PATH`. A test passes a stand-in script.
+    pub creds_program: Option<PathBuf>,
     /// Installed on a remote host: no idle exit, a group-readable socket,
     /// and a bundle path only inside this state directory.
     pub service: bool,
@@ -349,6 +356,10 @@ pub struct Controller<W: Workloads> {
     /// A service on a remote host (SPEC.md, Remote hosts).
     service: bool,
     workloads: W,
+    /// Secrets kept on this host for runs that name them.
+    secrets: secret_store::SecretStore,
+    /// Schedules this host fires (docs/design/routines-ux.md).
+    schedules: Mutex<schedule::Schedules>,
     runs: Mutex<HashMap<String, Arc<Run>>>,
     signals: mpsc::UnboundedSender<Signal>,
     connections: Arc<AtomicUsize>,
@@ -388,6 +399,7 @@ impl<W: Workloads> Controller<W> {
         installation: String,
         service: bool,
         workloads: W,
+        secrets: secret_store::SecretStore,
     ) -> AppResult<(Arc<Self>, mpsc::UnboundedReceiver<Signal>)> {
         let (signals, receiver) = mpsc::unbounded_channel();
         let mut runs = HashMap::new();
@@ -456,11 +468,14 @@ impl<W: Workloads> Controller<W> {
             }
             runs.insert(id, run);
         }
+        let schedules = schedule::Schedules::load(&state.root().join("schedules"));
         let controller = Arc::new(Self {
             state,
             installation,
             service,
             workloads,
+            secrets,
+            schedules: Mutex::new(schedules),
             runs: Mutex::new(runs),
             signals,
             connections: Arc::new(AtomicUsize::new(0)),
@@ -502,7 +517,7 @@ impl<W: Workloads> Controller<W> {
         *self.last_request.lock().unwrap_or_else(|p| p.into_inner()) = Instant::now();
         let result = match request {
             Request::Hello { .. } => Err(AppError::validation("Already connected.")),
-            Request::Start(start) => self.start(start).map(|run| Response::Run { run }),
+            Request::Start(start) => self.start(*start).map(|run| Response::Run { run }),
             Request::Status => {
                 let mut runs: Vec<RunStatus> = self.runs().values().map(|r| r.status()).collect();
                 runs.sort_by(|a, b| a.accepted_at.cmp(&b.accepted_at));
@@ -611,17 +626,66 @@ impl<W: Workloads> Controller<W> {
                         .with_details(e.to_string())),
                 }
             }
+            Request::Health => {
+                let live = live_in(&self.runs());
+                Ok(Response::Health {
+                    report: health::collect(self.state.root(), live as u32).await,
+                })
+            }
+            Request::PutSecret(secret) => self
+                .secrets
+                .put(&secret.name, &secret.value, secret.file)
+                .await
+                .map(|()| Response::Secrets {
+                    secrets: self.secrets.list(),
+                }),
+            Request::DeleteSecret { name } => {
+                self.secrets.delete(&name).map(|()| Response::Secrets {
+                    secrets: self.secrets.list(),
+                })
+            }
+            Request::ListSecrets => Ok(Response::Secrets {
+                secrets: self.secrets.list(),
+            }),
+            Request::PutSchedule(put) => self.put_schedule(*put).map(|()| Response::Done),
+            Request::DeleteSchedule { routine_id } => {
+                self.delete_schedule(&routine_id).map(|()| Response::Done)
+            }
+            Request::Schedules => {
+                let (schedules, now) = self.schedule_statuses();
+                Ok(Response::Schedules { schedules, now })
+            }
+            Request::AckScheduleResults { routine_id, ids } => {
+                self.ack_results(&routine_id, &ids).map(|()| Response::Done)
+            }
+            Request::PutModelCredential {
+                profile_id,
+                key: _,
+                value,
+            } => self
+                .put_model_credential(&profile_id, &value.0)
+                .await
+                .map(|()| Response::Done),
             Request::ProbeEngine { socket, image } => self
                 .workloads
                 .probe(&socket, image.as_deref())
                 .await
                 .map(|report| Response::Engine { report }),
-            Request::BuildImage { socket, tag, hex } => self
-                .build_image(&socket, &tag, &hex)
+            Request::BuildImage {
+                socket,
+                tag,
+                hex,
+                base,
+            } => self
+                .build_image(&socket, &tag, &hex, base.as_deref())
                 .await
                 .map(|id| Response::Image { id }),
             Request::ReadExplanation { run_id } => self
-                .read_explanation(&run_id)
+                .read_result_file(&run_id, EXPLANATION_PATH)
+                .await
+                .map(|text| Response::Explanation { text }),
+            Request::ReadBriefing { run_id } => self
+                .read_result_file(&run_id, BRIEFING_PATH)
                 .await
                 .map(|text| Response::Explanation { text }),
             Request::EmergencyStop => {
@@ -693,6 +757,7 @@ impl<W: Workloads> Controller<W> {
             ended_at: None,
             expired_asleep: false,
             error: None,
+            routine_id: start.routine_id.clone(),
         };
         record.save(&dir)?;
         let mut ledger = Ledger::open(&dir)?;
@@ -751,11 +816,41 @@ impl<W: Workloads> Controller<W> {
             permissions,
             ..
         } = start.clone();
+        // Secrets this host keeps are opened here, so a run needs no Mac.
+        // One that is missing or cannot be opened fails the run before a
+        // container exists, naming the secret and never its value.
+        let mut secrets = start.secrets.clone();
+        for name in &start.host_secrets {
+            match self.secrets.get(name).await {
+                Ok((value, file)) => secrets.push(ExtraSecret {
+                    name: name.clone(),
+                    value,
+                    file,
+                }),
+                Err(error) => {
+                    let _ = run.settle(&prompt_id, None);
+                    // No container is being made any more, so a stop the
+                    // engine does not confirm now is tried again by `tick`.
+                    {
+                        let mut inner = run.lock();
+                        inner.launching = false;
+                        inner.cancel_launch = None;
+                    }
+                    self.stop_run(&run, Outcome::Failed, Some(error.message), false)
+                        .await;
+                    self.finish_stop(&run).await;
+                    return;
+                }
+            }
+        }
         let mut redactor = Redactor::new();
         redactor.register(&credential.value, credential.key.as_str());
+        for secret in &secrets {
+            redactor.register_secret(&secret.value, &secret.name);
+        }
         let redactor = Arc::new(redactor);
         run.lock().redactor = Some(Arc::clone(&redactor));
-        let frame = frame(credential);
+        let frame = frame_with(credential, secrets);
         let (cancel_launch, cancelled) = watch::channel(false);
         run.lock().cancel_launch = Some(cancel_launch);
         let spec = LaunchSpec {
@@ -1297,9 +1392,15 @@ impl<W: Workloads> Controller<W> {
 
     /// An explain run's file, from its agent's container, while the session
     /// waits for a prompt or after it stopped and before Discard.
-    async fn read_explanation(&self, run_id: &str) -> AppResult<Option<String>> {
+    ///
+    /// The values the run was given are taken out first, as from its
+    /// journal: an agent that wrote its key, or a secret's file, into the
+    /// result would otherwise put it into Today, a note, or MCP. The run's
+    /// redactor is there while its session is open, which is when a result
+    /// is read.
+    async fn read_result_file(&self, run_id: &str, path: &str) -> AppResult<Option<String>> {
         let run = self.run(run_id)?;
-        let (socket, container) = {
+        let (socket, container, redactor) = {
             let inner = run.lock();
             if inner.launching {
                 return Err(conflict("The run is still starting."));
@@ -1307,18 +1408,30 @@ impl<W: Workloads> Controller<W> {
             let Some(container) = inner.record.container_id.clone() else {
                 return Err(conflict("The run has no container to read from."));
             };
-            (inner.record.engine_socket.clone(), container)
+            // The values to take out live only while the session is open
+            // (not after it closed, nor after a restart): without them the
+            // file is not read, so a secret it quotes cannot leave.
+            let Some(redactor) = inner.redactor.clone() else {
+                return Err(conflict(
+                    "The run's session has ended, so its result can no longer be read safely.",
+                ));
+            };
+            (inner.record.engine_socket.clone(), container, redactor)
         };
         let bytes = self
             .workloads
-            .read_file(&socket, &container, EXPLANATION_PATH, MAX_EXPLANATION_BYTES)
+            .read_file(&socket, &container, path, MAX_EXPLANATION_BYTES)
             .await?;
-        bytes
+        let text = bytes
             .map(|b| {
                 String::from_utf8(b)
-                    .map_err(|_| AppError::validation("The explanation's file is not UTF-8."))
+                    .map_err(|_| AppError::validation("The result file is not UTF-8."))
             })
-            .transpose()
+            .transpose()?;
+        Ok(text.map(|mut text| {
+            redactor.redact_json(&mut text);
+            text
+        }))
     }
 
     async fn discard(&self, run_id: &str, fallback_image: Option<String>) -> AppResult<()> {
@@ -1388,6 +1501,12 @@ impl<W: Workloads> Controller<W> {
                 self.spawn(async move { controller.finish_stop(&run).await });
             }
         }
+        // Reading a container or sealing a key can wait on the engine: that
+        // must not hold up expiring a run or retrying a stop.
+        if self.service {
+            let controller = Arc::clone(self);
+            self.spawn(async move { controller.schedule_tick().await });
+        }
         if let Some(idle) = idle_exit {
             let quiet = self
                 .last_request
@@ -1456,15 +1575,27 @@ impl<W: Workloads> Controller<W> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        // Written beside the bundle and moved into place when it is whole, so a
+        // run or a schedule never starts from half of one.
+        let part = path.with_extension("bundle.part");
         use std::io::{Seek, SeekFrom, Write};
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .write(true)
             .truncate(offset == 0)
-            .open(&path)?;
+            .open(&part)?;
         file.seek(SeekFrom::Start(offset))?;
         file.write_all(&bytes)?;
         let size = file.metadata()?.len();
+        drop(file);
+        if offset + bytes.len() as u64 == total {
+            if size != total {
+                return Err(AppError::validation(
+                    "The bundle is not the size it was sent as.",
+                ));
+            }
+            std::fs::rename(&part, &path)?;
+        }
         Ok((path.display().to_string(), size))
     }
 
@@ -1499,7 +1630,13 @@ impl<W: Workloads> Controller<W> {
         Ok((offset, total, protocol::encode_hex(&buf)))
     }
 
-    async fn build_image(&self, socket: &str, tag: &str, hex: &str) -> AppResult<String> {
+    async fn build_image(
+        &self,
+        socket: &str,
+        tag: &str,
+        hex: &str,
+        base: Option<&str>,
+    ) -> AppResult<String> {
         if tag.is_empty() || tag.len() > 128 || tag.contains('\n') {
             return Err(AppError::validation("That image name is not usable."));
         }
@@ -1508,7 +1645,10 @@ impl<W: Workloads> Controller<W> {
         if bytes.len() > MAX_LINE_BYTES {
             return Err(AppError::validation("The image context is too large."));
         }
-        self.workloads.build_image(socket, tag, bytes).await
+        if base.is_some_and(|b| b.is_empty() || b.len() > 128 || b.contains('\n')) {
+            return Err(AppError::validation("That base image name is not usable."));
+        }
+        self.workloads.build_image(socket, tag, bytes, base).await
     }
 
     /// Stop every live run's containers and keep them (SPEC.md, Emergency stop).
@@ -1584,7 +1724,55 @@ fn check_start(start: &StartRun) -> AppResult<()> {
             "The token or key is not one line of printable characters.",
         ));
     }
+    check_secrets(&start.secrets)?;
+    check_host_secret_names(&start.secrets, &start.host_secrets)?;
     check_prompt(&start.prompt)
+}
+
+/// Names of host secrets: valid, not repeated, not also sent with a value,
+/// and few enough together with the values sent.
+fn check_host_secret_names(sent: &[ExtraSecret], host: &[String]) -> AppResult<()> {
+    if sent.len() + host.len() > MAX_EXTRA_SECRETS {
+        return Err(AppError::validation("A run takes at most 8 extra secrets."));
+    }
+    let mut seen: HashSet<&str> = sent.iter().map(|s| s.name.as_str()).collect();
+    for name in host {
+        if !valid_secret_name(name) || name.starts_with(secret_store::MODEL_PREFIX) {
+            return Err(AppError::validation("That is not a secret's name."));
+        }
+        if !seen.insert(name.as_str()) {
+            return Err(AppError::validation("Two secrets have the same name."));
+        }
+    }
+    Ok(())
+}
+
+/// A run's extra secrets: few, each under a name that is safe to export,
+/// once, with a value of a sensible size and no NUL. Whitespace is allowed
+/// (a service account key is JSON). Messages never include a value.
+fn check_secrets(secrets: &[ExtraSecret]) -> AppResult<()> {
+    if secrets.len() > MAX_EXTRA_SECRETS {
+        return Err(AppError::validation("A run takes at most 8 extra secrets."));
+    }
+    let mut seen = HashSet::new();
+    for secret in secrets {
+        if !valid_secret_name(&secret.name) {
+            return Err(AppError::validation(
+                "A secret's name must be capitals, digits and underscores, and not one the agent or the container uses.",
+            ));
+        }
+        if !seen.insert(secret.name.as_str()) {
+            return Err(AppError::validation("Two secrets have the same name."));
+        }
+        if !(MIN_EXTRA_VALUE..=MAX_EXTRA_VALUE).contains(&secret.value.len())
+            || secret.value.contains('\0')
+        {
+            return Err(AppError::validation(
+                "A secret's value is the wrong size, or holds a NUL character.",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn check_prompt(text: &str) -> AppResult<()> {
@@ -1613,11 +1801,44 @@ fn safe_relative(path: &str) -> bool {
 }
 
 pub fn frame(credential: Credential) -> Vec<u8> {
+    frame_with(credential, Vec::new())
+}
+
+/// The same frame, with a run's extra secrets. Without any it is `BRB1`
+/// exactly as before. With some it is `BRB2`: JSON with `credential` (one
+/// key, as in `BRB1`) and `extra` (name to value). An image whose entrypoint
+/// knows only `BRB1` refuses it, so a run never starts without the secrets
+/// it was asked to have.
+pub fn frame_with(credential: Credential, extra: Vec<ExtraSecret>) -> Vec<u8> {
     let Credential { key, value } = credential;
-    let mut payload =
-        serde_json::to_vec(&serde_json::json!({ key.as_str(): value })).expect("JSON serializes");
+    let (magic, mut payload) = if extra.is_empty() {
+        (
+            b"BRB1",
+            serde_json::to_vec(&serde_json::json!({ key.as_str(): value }))
+                .expect("JSON serializes"),
+        )
+    } else {
+        // The names that arrive as files; without any, the frame is as it was.
+        let files: Vec<String> = extra
+            .iter()
+            .filter(|s| s.file)
+            .map(|s| s.name.clone())
+            .collect();
+        let extra: serde_json::Map<String, serde_json::Value> = extra
+            .into_iter()
+            .map(|s| (s.name, serde_json::Value::String(s.value)))
+            .collect();
+        let mut body = serde_json::json!({
+            "credential": { key.as_str(): value },
+            "extra": extra,
+        });
+        if !files.is_empty() {
+            body["files"] = serde_json::json!(files);
+        }
+        (b"BRB2", serde_json::to_vec(&body).expect("JSON serializes"))
+    };
     let mut frame = Vec::with_capacity(8 + payload.len());
-    frame.extend_from_slice(b"BRB1");
+    frame.extend_from_slice(magic);
     frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
     frame.extend_from_slice(&payload);
     payload.fill(0);
@@ -1805,6 +2026,7 @@ fn bind(socket: &std::path::Path, service: bool) -> AppResult<UnixListener> {
 
 /// Run the controller until it is idle, asked to shut down, or stopped.
 pub async fn serve<W: Workloads>(config: Config, workloads: W) -> AppResult<()> {
+    health::mark_started();
     config.state.ensure()?;
     if config.service {
         use std::os::unix::fs::PermissionsExt;
@@ -1833,6 +2055,13 @@ pub async fn serve<W: Workloads>(config: Config, workloads: W) -> AppResult<()> 
         installation,
         config.service,
         workloads,
+        secret_store::SecretStore::new(
+            config.state.root(),
+            config
+                .creds_program
+                .clone()
+                .unwrap_or_else(|| PathBuf::from("systemd-creds")),
+        ),
     )?;
     let _owned = Owned(Arc::clone(&controller));
 
@@ -1941,6 +2170,7 @@ pub fn main(args: &[String]) -> i32 {
                 Some(Duration::from_secs(10 * 60))
             },
             spawn_guard: true,
+            creds_program: None,
             service,
         };
         runtime.block_on(serve(config, docker::DockerEngine::new()))
@@ -2012,6 +2242,90 @@ mod tests {
             object["CLAUDE_CODE_OAUTH_TOKEN"],
             "sk-ant-oat01-example-token-value"
         );
+    }
+
+    #[test]
+    fn extra_secrets_make_a_second_kind_of_frame() {
+        let credential = || Credential {
+            key: protocol::CredentialKey::AnthropicApiKey,
+            value: "sk-ant-api03-example-key-value".into(),
+        };
+        // Without extras the frame is the one an older image knows.
+        assert_eq!(&frame_with(credential(), Vec::new())[..4], b"BRB1");
+        let frame = frame_with(
+            credential(),
+            vec![ExtraSecret {
+                name: "SENTRY_TOKEN".into(),
+                value: "sntrys_example_token".into(),
+                file: false,
+            }],
+        );
+        assert_eq!(&frame[..4], b"BRB2");
+        let len = u32::from_be_bytes(frame[4..8].try_into().unwrap()) as usize;
+        assert_eq!(frame.len(), 8 + len);
+        let value: serde_json::Value = serde_json::from_slice(&frame[8..]).unwrap();
+        assert_eq!(value["credential"].as_object().unwrap().len(), 1);
+        assert_eq!(
+            value["credential"]["ANTHROPIC_API_KEY"],
+            "sk-ant-api03-example-key-value"
+        );
+        assert_eq!(value["extra"]["SENTRY_TOKEN"], "sntrys_example_token");
+        // No secret as a file, no `files` key: an image that predates files
+        // sees the frame it knows.
+        assert!(value.get("files").is_none());
+        let frame = frame_with(
+            credential(),
+            vec![ExtraSecret {
+                name: "GCP_KEY".into(),
+                value: "{\"type\":\"service_account\"}".into(),
+                file: true,
+            }],
+        );
+        let value: serde_json::Value = serde_json::from_slice(&frame[8..]).unwrap();
+        assert_eq!(value["files"], serde_json::json!(["GCP_KEY"]));
+    }
+
+    #[test]
+    fn extra_secrets_are_checked_before_a_run_starts() {
+        let secret = |name: &str, value: &str| ExtraSecret {
+            name: name.into(),
+            value: value.into(),
+            file: false,
+        };
+        assert!(check_secrets(&[secret("SENTRY_TOKEN", "12345678")]).is_ok());
+        assert!(check_secrets(&[]).is_ok());
+        // A key file has newlines; that is fine.
+        assert!(check_secrets(&[secret(
+            "GCP_KEY_JSON",
+            "{\n \"type\": \"service_account\"\n}"
+        )])
+        .is_ok());
+        for bad in [
+            secret("sentry", "12345678"),
+            secret("PATH", "12345678"),
+            secret("NODE_OPTIONS", "12345678"),
+            secret("LD_PRELOAD", "12345678"),
+            secret("HTTPS_PROXY", "12345678"),
+            secret("ANTHROPIC_API_KEY", "12345678"),
+            secret("BRAINIAC_X", "12345678"),
+            secret("", "12345678"),
+            secret("SENTRY_TOKEN", "short"),
+            secret("SENTRY_TOKEN", "has\0nul-in-it"),
+        ] {
+            assert!(
+                check_secrets(std::slice::from_ref(&bad)).is_err(),
+                "{bad:?}"
+            );
+        }
+        assert!(check_secrets(&[
+            secret("SENTRY_TOKEN", "12345678"),
+            secret("SENTRY_TOKEN", "87654321"),
+        ])
+        .is_err());
+        let many: Vec<_> = (0..9)
+            .map(|i| secret(&format!("TOKEN_{i}"), "12345678"))
+            .collect();
+        assert!(check_secrets(&many).is_err());
     }
 
     #[test]

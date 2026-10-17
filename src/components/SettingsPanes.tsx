@@ -51,6 +51,84 @@ export function Group({
   );
 }
 
+/**
+ * A Runs page's title row (docs/design/routines-ux.md): the page's name, its
+ * state, and its main action on the right, with what it is for underneath.
+ * A sub-page links back to its list before the name ("Run hosts › vegeta").
+ * It is the page's only `h1`: these pages have no title in the top bar.
+ */
+export function PageTitle({
+  title,
+  crumb,
+  pill,
+  actions,
+  children,
+}: {
+  title: string;
+  /** The list this page belongs to, and how to go back to it. */
+  crumb?: { label: string; onBack: () => void };
+  pill?: ReactNode;
+  actions?: ReactNode;
+  /** What the page is for: one or two sentences. */
+  children?: ReactNode;
+}) {
+  return (
+    <header className="flex flex-col gap-1.5">
+      <div className="flex min-h-9 flex-wrap items-center gap-x-3 gap-y-2">
+        {crumb && (
+          <nav aria-label="Breadcrumb" className="text-[13px]">
+            <button
+              type="button"
+              className="text-link hover:underline"
+              onClick={crumb.onBack}
+            >
+              {crumb.label}
+            </button>
+            <span aria-hidden="true" className="ml-1.5 text-muted">
+              ›
+            </span>
+          </nav>
+        )}
+        <h1 className="m-0 min-w-0 text-[21px] leading-tight font-semibold">
+          {title}
+        </h1>
+        {pill}
+        <span className="flex-1" />
+        {actions && <div className="flex flex-wrap gap-2">{actions}</div>}
+      </div>
+      {children && (
+        <p className="m-0 max-w-180 text-[12.5px] text-fg-2">{children}</p>
+      )}
+    </header>
+  );
+}
+
+/**
+ * A card on a host's page (SPEC.md, Remote hosts, A host's page): a titled
+ * box whose rows are `.settings-row`s, with actions in its header.
+ */
+export function Card({
+  title,
+  actions,
+  children,
+  className = "",
+}: {
+  title: string;
+  actions?: ReactNode;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <section aria-label={title} className={`settings-group ${className}`}>
+      <div className="flex min-h-11 items-center gap-3 px-3.5 py-2">
+        <h3 className="m-0 flex-1 text-[13px] font-semibold">{title}</h3>
+        {actions}
+      </div>
+      <div className="flex flex-col border-line-soft border-t">{children}</div>
+    </section>
+  );
+}
+
 export function Hint({ children, id }: { children: ReactNode; id?: string }) {
   return (
     <span id={id} className="text-[12px] text-muted">
@@ -568,11 +646,6 @@ export function AccountsPane({ onChanged }: { onChanged: () => void }) {
 export function SecretsPane() {
   return (
     <>
-      <Lede>
-        Where each account's token and each connection's password comes from,
-        and what needs your attention. Change a source where it is entered: in
-        Accounts, in the connection's Edit Connection…, or in Agents.
-      </Lede>
       <SecretsSection />
       <Hint>
         Brainiac keeps a secret it read for as long as it runs. Refresh forgets
@@ -619,11 +692,11 @@ export function AgentsPane({
 
   return (
     <>
-      <Lede>
+      <PageTitle title="MCP">
         Lets agents such as Claude Code use your notes, tasks, and tracked
         repositories over MCP. A change applies at once to agents already
         connected.
-      </Lede>
+      </PageTitle>
       <div className="settings-group">
         <div className="settings-row flex-col items-stretch gap-2.5">
           <fieldset

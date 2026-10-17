@@ -91,7 +91,11 @@ pub async fn remove_repository(
     repository_id: String,
     service: State<'_, Service>,
     watcher: State<'_, RepositoryWatcher>,
+    routines: State<'_, Routines>,
 ) -> AppResult<()> {
+    // Its routines first: a scheduled one is removed from its host, which
+    // the database's cascade could not do.
+    routines.delete_for_repository(&repository_id).await?;
     watcher.unwatch(&repository_id);
     service.remove(&repository_id).await
 }
@@ -761,6 +765,324 @@ pub async fn find_secret_program(name: String) -> AppResult<String> {
     crate::credentials::find_program(&name).map(|p| p.display().to_string())
 }
 
+pub type NamedSecrets = Arc<crate::agents::named_secrets::NamedSecretService>;
+
+/// Settings → Secrets, named secrets (docs/design/scheduled-runs.md).
+#[tauri::command]
+pub async fn list_named_secrets(
+    named: State<'_, NamedSecrets>,
+) -> AppResult<Vec<crate::models::NamedSecret>> {
+    named.list().await
+}
+
+#[tauri::command]
+pub async fn save_named_secret(
+    request: crate::models::SaveNamedSecretRequest,
+    named: State<'_, NamedSecrets>,
+) -> AppResult<crate::models::NamedSecret> {
+    named.save(request).await
+}
+
+#[tauri::command]
+pub async fn delete_named_secret(
+    id: String,
+    expected_version: i64,
+    named: State<'_, NamedSecrets>,
+) -> AppResult<()> {
+    named.delete(&id, expected_version).await
+}
+
+/// A run host's page, **Secrets on this host**: asks the host what it holds.
+#[tauri::command]
+pub async fn get_host_secrets(
+    host_id: String,
+    named: State<'_, NamedSecrets>,
+    hosts: State<'_, AgentHosts>,
+) -> AppResult<crate::models::HostSecrets> {
+    let runtime = hosts.runtime(&host_id).await?;
+    named.host_secrets(&host_id, Some(&runtime)).await
+}
+
+/// **Share**: send the secret to the host, which keeps a sealed copy.
+#[tauri::command]
+pub async fn share_secret_with_host(
+    id: String,
+    host_id: String,
+    named: State<'_, NamedSecrets>,
+    hosts: State<'_, AgentHosts>,
+) -> AppResult<crate::models::HostSecrets> {
+    let runtime = hosts.runtime(&host_id).await?;
+    named.share(&id, &host_id, &runtime).await
+}
+
+/// **Remove from host**: the host forgets its copy.
+#[tauri::command]
+pub async fn remove_secret_from_host(
+    id: String,
+    host_id: String,
+    named: State<'_, NamedSecrets>,
+    hosts: State<'_, AgentHosts>,
+) -> AppResult<crate::models::HostSecrets> {
+    let runtime = hosts.runtime(&host_id).await?;
+    named.unshare(&id, &host_id, &runtime).await
+}
+
+// Routines (docs/design/scheduled-runs.md; SPEC.md, Today → Routines).
+
+pub type Routines = Arc<crate::agents::routines::RoutineService>;
+
+#[tauri::command]
+pub async fn list_routines(
+    routines: State<'_, Routines>,
+) -> AppResult<Vec<crate::models::RoutineOverview>> {
+    routines.overview().await
+}
+
+/// Set a routine's schedule; it stays off until approved.
+#[tauri::command]
+pub async fn set_routine_schedule(
+    request: crate::models::SetScheduleRequest,
+    routines: State<'_, Routines>,
+) -> AppResult<()> {
+    routines.set_schedule(request).await
+}
+
+#[tauri::command]
+pub async fn remove_routine_schedule(id: String, routines: State<'_, Routines>) -> AppResult<()> {
+    routines.remove_schedule(&id).await
+}
+
+/// What a run host fires that this Mac has no routine for (Run hosts › a
+/// host, Routines on this host).
+#[tauri::command]
+pub async fn host_schedules_only(
+    host_id: String,
+    routines: State<'_, Routines>,
+) -> AppResult<Vec<crate::models::HostScheduleOnly>> {
+    routines.host_schedules_only(&host_id).await
+}
+
+/// A run host's clock, which its schedules' times are in.
+#[tauri::command]
+pub async fn host_clock(
+    host_id: String,
+    routines: State<'_, Routines>,
+) -> AppResult<crate::models::HostClock> {
+    routines.host_clock(&host_id).await
+}
+
+/// Remove, on the user's word, a schedule a host fires for no routine here.
+#[tauri::command]
+pub async fn remove_host_schedule_only(
+    host_id: String,
+    routine_id: String,
+    routines: State<'_, Routines>,
+) -> AppResult<Vec<crate::models::HostScheduleOnly>> {
+    routines
+        .remove_host_schedule_only(&host_id, &routine_id)
+        .await
+}
+
+/// Approve the schedule as it is: the host gets the agent's key and the code.
+#[tauri::command]
+pub async fn approve_routine_schedule(id: String, routines: State<'_, Routines>) -> AppResult<()> {
+    routines.approve(&id).await
+}
+
+#[tauri::command]
+pub async fn pause_routine(
+    id: String,
+    paused: bool,
+    routines: State<'_, Routines>,
+) -> AppResult<()> {
+    routines.set_paused(&id, paused).await
+}
+
+/// Listen to the hosts that fire schedules, and take what they left.
+#[tauri::command]
+pub async fn sync_routines(routines: State<'_, Routines>) -> AppResult<()> {
+    routines.sync_all().await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn list_routine_results(
+    routine_id: String,
+    routines: State<'_, Routines>,
+) -> AppResult<Vec<crate::models::BriefingResult>> {
+    routines.results(&routine_id).await
+}
+
+#[tauri::command]
+pub async fn save_routine(
+    request: crate::models::SaveRoutineRequest,
+    routines: State<'_, Routines>,
+) -> AppResult<crate::models::Routine> {
+    routines.save(request).await
+}
+
+#[tauri::command]
+pub async fn delete_routine(id: String, routines: State<'_, Routines>) -> AppResult<()> {
+    routines.delete(&id).await
+}
+
+/// **Run now**: start the routine's run.
+#[tauri::command]
+pub async fn run_routine_now(
+    id: String,
+    routines: State<'_, Routines>,
+) -> AppResult<crate::models::BriefingResult> {
+    routines.run_now(&id).await
+}
+
+/// **Save as note**: the routine as a note in the vault, linked to its repository.
+#[tauri::command]
+pub async fn save_briefing_as_note(
+    result_id: String,
+    routines: State<'_, Routines>,
+    notes: State<'_, Notes>,
+) -> AppResult<crate::models::NoteSummary> {
+    let (routine, result, body) = routines.markdown(&result_id).await?;
+    let date = result.started_at.get(..10).unwrap_or_default().to_string();
+    let title = format!("{} {date}", routine.name);
+    notes
+        .create_with_body(
+            crate::models::CreateNoteRequest {
+                folder: Some("Briefings".to_string()),
+                title: Some(title),
+                repository_id: Some(routine.repository_id.clone()),
+            },
+            vec![
+                ("routine".to_string(), routine.name.clone()),
+                ("date".to_string(), result.started_at.clone()),
+            ],
+            body,
+        )
+        .await
+}
+
+/// **Create task** from a proposal of a ready routine, once.
+#[tauri::command]
+pub async fn create_briefing_task(
+    result_id: String,
+    proposal_key: String,
+    routines: State<'_, Routines>,
+    tasks: State<'_, Tasks>,
+) -> AppResult<crate::models::BriefingResult> {
+    let proposal = routines.proposal(&result_id, &proposal_key).await?;
+    if proposal.kind != crate::models::BriefingProposalKind::Task {
+        return Err(crate::models::AppError::validation(
+            "Only a task proposal can be made into a task here.",
+        ));
+    }
+    if proposal.made_id.is_some() {
+        return Err(crate::models::AppError::validation(
+            "A task was already made from this proposal.",
+        ));
+    }
+    let task = tasks
+        .create(crate::models::TaskFields {
+            title: proposal.title,
+            description: proposal.body,
+            status: crate::models::TaskStatus::Todo,
+            planned_date: None,
+            due_date: None,
+            note_id: None,
+            repository_id: None,
+            sorted: false,
+        })
+        .await?;
+    routines
+        .mark_made(&result_id, &proposal_key, &task.id)
+        .await
+}
+
+/// **Save as Note** on a note proposal of a ready routine, once.
+#[tauri::command]
+pub async fn create_briefing_note(
+    result_id: String,
+    proposal_key: String,
+    routines: State<'_, Routines>,
+    notes: State<'_, Notes>,
+) -> AppResult<crate::models::NoteSummary> {
+    let proposal = routines.proposal(&result_id, &proposal_key).await?;
+    if proposal.kind != crate::models::BriefingProposalKind::Note {
+        return Err(crate::models::AppError::validation(
+            "Only a note proposal can be made into a note here.",
+        ));
+    }
+    if proposal.made_id.is_some() {
+        return Err(crate::models::AppError::validation(
+            "A note was already made from this proposal.",
+        ));
+    }
+    let (routine, result, _) = routines.markdown(&result_id).await?;
+    let body = format!("# {}\n\n{}\n", proposal.title, proposal.body);
+    let note = notes
+        .create_with_body(
+            crate::models::CreateNoteRequest {
+                folder: Some("Briefings".to_string()),
+                title: Some(proposal.title.clone()),
+                repository_id: Some(routine.repository_id.clone()),
+            },
+            vec![
+                ("routine".to_string(), routine.name.clone()),
+                ("date".to_string(), result.started_at.clone()),
+            ],
+            body,
+        )
+        .await?;
+    routines
+        .mark_made(&result_id, &proposal_key, &note.id)
+        .await?;
+    Ok(note)
+}
+
+/// Settings → Secrets: where each named secret is used and which hosts hold a copy.
+#[tauri::command]
+pub async fn named_secret_usage(
+    named: State<'_, NamedSecrets>,
+) -> AppResult<Vec<crate::models::NamedSecretUsage>> {
+    named.usage().await
+}
+
+/// Settings → Secrets, **Test**: the length of the value, never the value.
+#[tauri::command]
+pub async fn test_named_secret(
+    id: String,
+    named: State<'_, NamedSecrets>,
+) -> AppResult<crate::models::NamedSecretTest> {
+    named.test(&id).await
+}
+
+/// New run, **Send and start**: the run's access goes to its host first, then
+/// the run starts. The dialog listed what goes.
+#[tauri::command]
+pub async fn send_run_secrets(
+    host_id: String,
+    secret_ids: Vec<String>,
+    named: State<'_, NamedSecrets>,
+    hosts: State<'_, AgentHosts>,
+) -> AppResult<()> {
+    if secret_ids.is_empty() || host_id.is_empty() {
+        return Ok(());
+    }
+    let runtime = hosts.runtime(&host_id).await?;
+    named.ensure_on_host(&secret_ids, &host_id, &runtime).await
+}
+
+/// **Remove** a copy the host holds that no secret here names.
+#[tauri::command]
+pub async fn remove_unlisted_host_secret(
+    name: String,
+    host_id: String,
+    named: State<'_, NamedSecrets>,
+    hosts: State<'_, AgentHosts>,
+) -> AppResult<crate::models::HostSecrets> {
+    let runtime = hosts.runtime(&host_id).await?;
+    named.remove_unlisted(&name, &host_id, &runtime).await
+}
+
 // v0.5: agent runs (SPEC.md, section 13).
 
 pub type AgentSettingsState = Arc<crate::agents::AgentSettingsService>;
@@ -874,6 +1196,15 @@ pub async fn approve_agent_host(
     hosts: State<'_, AgentHosts>,
 ) -> AppResult<crate::models::AgentHost> {
     hosts.approve(request).await
+}
+
+/// Machines → a run host, **Health**: its numbers now (docs/design/scheduled-runs.md).
+#[tauri::command]
+pub async fn get_agent_host_health(
+    id: String,
+    hosts: State<'_, AgentHosts>,
+) -> AppResult<crate::models::HostHealth> {
+    hosts.health(&id).await
 }
 
 pub type HostJobs = Arc<crate::agents::host_jobs::HostJobService>;

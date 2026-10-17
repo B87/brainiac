@@ -13,6 +13,8 @@ Nothing is built. The Preparation section lists the few changes worth making bef
 
 The review on 10 October read the file against v0.6 (explaining changes, 52 commits after the first draft). Its findings are in What v0.6 showed, the import table, the Preparation list, and the reshaped module interface (An entity kind is the deep abstraction; Actions are contributed by the consumer; Start from `install`, not a manifest).
 
+A review on 17 October 2026 checked the file against how other apps run and trust extensions, from primary sources (maintainers' posts, official docs, the code on that day). Its findings are the paragraphs dated 17 October below: the two tiers (VS Code, Zed), the sandbox (Zed, Figma), permissions (Chrome, Zed, Tauri, Obsidian), enforcement (Tauri, Figma), dependencies (IntelliJ, Home Assistant), and the timeline. It found nothing for or against entity kinds, core-owned links, and distribution, which rest on the 15 October reading of Backstage and Home Assistant alone.
+
 ## Why
 
 - **Adding a feature touches everything.** Databases (v0.4) and agent runs (v0.5) each had to edit:
@@ -155,19 +157,36 @@ A manifest is a declaration format, and Rust already has one: the trait. Built-i
 
 Honestly stated: adding a module then edits one line in `lib.rs` and one in the frontend, not "no core file." A manifest is needed only where code cannot be trusted to call the core: extensions (C, below). `requires` (What v0.6 showed) is part of the trait: a module names the modules it depends on, and the core turns it off with them.
 
+Checked on 17 October 2026 against IntelliJ and Home Assistant, the two platforms that run built-in and third-party modules on one mechanism. Both are manifest-first: the descriptor is read before any module code runs and validated in the repository (IntelliJ's `plugin.xml`; Home Assistant's `manifest.json`, checked by `hassfest`, which sorts its keys and rejects a dependency on an integration that always loads). Code-first stays the choice here for compiled-in modules: Rust checks what a manifest would declare, and a manifest earns its parser only at the trust boundary. What both have and this file lacked is a second relation. Beside the hard one (IntelliJ's `<depends>`, Home Assistant's `dependencies`: set up first, and the dependent fails when it is absent) each has a soft one (IntelliJ's optional dependency with its own descriptor for the parts that need it; Home Assistant's `after_dependencies`, set up first only if present). The soft one is what actions need: Save as note and Explain should still load when their targets are absent, and simply contribute nothing. So the trait has both: `requires` (off together) and `uses` (contributes to it if present). Home Assistant's hard relation also decides setup order and detects cycles; Brainiac's decides what turns off together, and the order of installs is the order written in `lib.rs` until a second need appears.
+
 ### Links are the core's, not each module's
 
 Today every link has its own table: `note_repository_links`, `db_connection_repositories`, `tasks.linked_note_id`, `tasks.linked_repository_id`. A repository's Notes tab knows about notes and connections by name.
 
-A single links table owned by the core (from one entity to another, with a kind) means:
+Reviewed on 15 October 2026 against how other apps do it. Backstage (relations between catalog entities of a kind) and Home Assistant (registries linking entities by ID) share one shape with this design. VS Code has no shared data model at all, and Obsidian derives its links from file content. Three corrections to the first draft followed.
+
+**The identity matters more than the table.** The piece every module needs is one reference type, `EntityRef { kind, id }`, owned by the core and used by every module wherever it points at another module's item. A links table is one place to store such references, and the first consumer of the type, not the other way round. Building the type and the registry of kinds first (An entity kind is the deep abstraction) pays off with no storage change.
+
+**There are two kinds of link, and they live in different files.**
+
+- *Authored* links are something the user did: a note linked to a repository, a task linked to a note, a database connection linked to a repository. They cannot be rebuilt, so they belong in `brainiac.db`.
+- *Derived* links are found by reading content: wikilinks, issue keys in a branch name or a task title, the repositories a note mentions. They can be recomputed, so they belong in `index.db`, which can be deleted (Storage layout). Obsidian has only this kind.
+
+One table for both would break the rule that `index.db` is rebuildable. So: one `EntityRef`, an authored table in `brainiac.db`, and derived links in the index, read through one query that returns both.
+
+**A generic table gives up what per-feature tables had.** It loses foreign keys, typed columns, and cleanup on delete. Two measures keep it from becoming a free-for-all. Each module registers the link kinds it uses, as (from kind, to kind, link kind) triples, and the core refuses a pair nobody registered, such as task to database connection. And a link whose target is missing shows as unavailable, as note-to-repository links already do, which every reader of links must handle, so the core's read function does it once.
+
+**Where an authored link is kept is decided per link kind.** The vault's Markdown files are the source of truth for notes, yet a note's repository link is a row in `brainiac.db` today, so moving a vault to another machine loses it. A link kind says whether it lives in the note's frontmatter (and is indexed from there) or in the database. v0.6's saved note already points back to its explanation in frontmatter, which is the first example of the first kind.
+
+What this buys, once a consumer needs it:
 
 - a repository's side panel lists linked items from any module, with no change to the repository code;
-- a module that is removed leaves links that show as unavailable, as note-to-repository links already do;
+- a module that is removed leaves links that show as unavailable;
 - a future extension (an issue tracker) can link issues to repositories and tasks without anyone else changing.
 
-v0.6 added two more links of its own shape: an explanation to its subject (repository, commit or range, agent, depth) and a saved note to the explanation it came from, in the note's frontmatter. Both would be rows in the one table.
+**Existing link tables stay until a consumer needs them to move.** `note_repository_links`, `db_connection_repositories`, and the task columns are migrated into the authored table one at a time, only when a module must show another module's links without importing it. The first such consumer is the repository side panel, which names notes and connections today. v0.6's two links (an explanation to its subject, a saved note to its explanation) are shaped to be rows in the same table when that happens. A generic table with one migrated link would be the same code as the table it replaces, with less checking.
 
-This is the most general-purpose piece of the design, and the one that makes modules truly independent.
+This is the most general-purpose piece of the design, and the one that makes modules truly independent. It is also the one most likely to be built too general, so each step below has to remove something that exists today.
 
 ### Notes as a module
 
@@ -206,6 +225,8 @@ An extension's backend is a WebAssembly component run by an embedded runtime (wa
   - extensions limited to languages that compile to components (Rust, JavaScript, Go, Python, with varying maturity);
   - no native libraries, so a database driver needs the host to provide sockets.
 
+Two editors that run untrusted code chose a Wasm sandbox (checked 17 October 2026). Zed (April to October 2024) chose wasmtime and WIT so that an extension "cannot crash Zed", after crashes from third-party C scanners, and after looking at a JavaScript direction (Deno's V8 bindings) and not wanting it. Figma launched on a JavaScript Realms shim in August 2019, had escapes disclosed within weeks, and shipped QuickJS compiled to Wasm on 25 September 2019, "somewhat slower for certain plugins, but intrinsically more secure". Both paid in performance and designed around it: Zed runs only the lexer in Wasm, because copying a syntax tree out of Wasm memory on every parse would not do; Figma measured about 0.1 ms per message round-trip (serializing one large document to an iframe took 14 seconds) and keeps plugin logic in the main-thread sandbox, with only the UI in a null-origin iframe reached by `postMessage`. The lasting complaints about Figma's sandbox are speed and impenetrable errors. For Brainiac: the Wasm boundary and the frame's messages stay out of hot paths (a search provider called on every keystroke, a view redrawn on every event get a batch and a debounce in the host, not a call each), and the host hands back readable errors from inside the component.
+
 ### D. JavaScript in the main window
 
 Extensions run as scripts in the WebView, with access to the app's IPC (the Obsidian model). It is the simplest option and has the largest pool of authors, but any extension can call any command and see everything the window sees. Every hard rule then depends on every extension's author. Rejected.
@@ -235,6 +256,8 @@ So:
 
 These are different layers with different abstractions. Changes to the internal interface stay inside the repository, and the extension API changes only with a new version.
 
+Checked on 17 October 2026 against VS Code and Zed. VS Code says of its stable API that "once we introduce an API, we cannot easily change it anymore", which is why it keeps a proposed tier that published extensions may not use; the stable tier accretes `@deprecated` markers rather than losing anything, and the rare removal (`previewHtml`, 1.33 in March 2019) broke extensions. Zed pins an API version per extension, written into the Wasm binary, and exposes a new version on Dev and Nightly before Stable (0.8.0 staged, 0.6.0 stable in October 2026). Home Assistant is the one-tier counter-example: one manifest format for core and custom integrations, possible only because a custom integration is in-process Python with no trust boundary. So the narrow tier is the one that freezes. It needs a version per extension from its first release and a channel where an addition runs before it is stable, and nothing in it should be published before a built-in module has used it through the host.
+
 B stays as a fallback for an extension that truly needs native code. It would need a stronger warning at install, since nothing confines it.
 
 ## Extensions: trust
@@ -251,11 +274,15 @@ An extension's manifest declares what it needs. Install shows the list, and the 
 
 An update that asks for more is not applied until the user allows it, as with a restored secret's source today.
 
+Checked on 17 October 2026. The precedents that enforce permissions keep the set narrow and host-mediated. Chrome's manifest declares API permissions and host permissions (match patterns that gate CORS-free `fetch`, cookies, and request interception), with optional ones granted at run time "to avoid alarming warnings", and the user may withhold a declared host permission since Chrome 70. Zed has exactly three capabilities (running a program, downloading a file, installing an npm package), glob-scoped, declared in the manifest and granted in a user setting, and none for data, UI, or credentials. Tauri's plugins ship named permissions for their commands, but the app author binds them to windows in capability files, and a webview with no matching capability has no IPC at all. Obsidian is the counter-model: it "cannot reliably restrict plugins", trusts developer policies, automated scanning of every version shown as a safety scorecard, and manual review, and in May 2026 announced that plugins will declare what they access, as disclosure, not enforcement. The list above is broader than any of them. Two consequences: keep the manifest's vocabulary as small as the extension API (Network, Items, and Credentials have precedents; Repositories and Agent tools are Brainiac's own), and let a permission be granted at first use as well as at install, as Chrome does, so the install dialog does not become the warning nobody reads. One caveat from Tauri: on Linux and Android it cannot tell an embedded iframe from its window, so a sandboxed frame's permissions cannot rest on Tauri's per-webview capabilities there (Open questions).
+
 ### Secrets are used through the host, never read
 
 An extension never receives a secret's value. It asks the host to send a request to a declared destination with a declared credential, and the host attaches the secret (from the user's chosen source, through `CredentialService`) and returns the response. The rule that a secret is sent only where it belongs is then enforced by the host, whatever the extension's code does.
 
 This is the deepest single decision in the extension API: one call hides sources, caching, refusal, approval, and destinations.
+
+It is also the shape every other boundary should take (checked 17 October 2026). Tauri passes a scope to each command and leaves enforcement "implemented by the command itself", and the result was a run of bypass advisories from 2022 to August 2026 (symlinks, dotfiles, a glob edge case, a default deny that failed when its parent was allowed). Figma's language-level isolation escaped within weeks of launch. The host enforces every permission itself, once, as it does for secrets; no extension validates its own scope, and no host function trusts a path, host name, or entity reference an extension hands it.
 
 ### Distribution
 
@@ -265,6 +292,8 @@ This is the deepest single decision in the extension API: one call hides sources
 - Installing from a URL, outside the catalog, is possible with a warning, for developers and private extensions.
 
 Running a catalog means review, takedowns, and a service to host. It could start as a curated list of GitHub releases in a repository (Open questions).
+
+Not checked against other catalogs yet (17 October 2026): the marketplace incidents, signing, and revocation lists of VS Code, Open VSX, JetBrains, and Zed's pull-request catalog are still to be read. The nearest verified fact is Obsidian's scanning of every plugin version with a scorecard, which is review, not signing.
 
 ## Compatibility
 
@@ -297,7 +326,9 @@ Each of these simplifies today's code on its own:
 
 1. **Internal modules, compiled in, one registry at a time.** The first draft read as one step: define the core, then move features into it. Better is to add each piece of the core in the release that next needs it, where it replaces a `match`, a union, or a block of wiring that exists today, and to convert the existing features as that piece arrives. In order of payoff:
    1. the event channel (replaces the aliases and constants; no behavior change; done 10 October 2026);
-   2. the entity registry, with links in one table (replaces the `View` union's open-by-id, the palette's imports, and the per-feature link tables);
+   2. the entity registry, in two steps (Links are the core's):
+      1. `EntityRef` and the registry of kinds, Rust and TypeScript, starting with the kinds that already link (note, repository, database connection); replaces the `View` union's open-by-id and the palette's imports; no storage change;
+      2. the authored links table and the derived-link query, with the repository side panel as the first consumer; each existing link table moves only when a module needs it to, and a table is removed in the same change that moves it;
    3. capabilities and actions (Save as note and Explain stop naming their targets);
    4. `install(&Core)` (replaces the setup block and the frontend's feature imports).
 
@@ -308,6 +339,8 @@ Each of these simplifies today's code on its own:
 5. **A catalog:** signing, updates, revocation.
 
 Phases 1–3 pay for themselves in a smaller `lib.rs`, `App.tsx`, and `commands.rs`, even if 4 and 5 never come. Each step of phase 1 pays for itself without the next.
+
+How long the later phases took elsewhere (17 October 2026): Zed shipped Wasm grammars in April 2024, a Rust and WIT extension API in October 2024, a capability enum in July 2025, user-granted capabilities in October 2025, and their documentation in November 2025, about eighteen months from the first sandboxed extension to a documented permission model that covers three operations. Figma replaced its sandbox five weeks after launch. Phases 4 and 5 are years of work for a funded team, and for this project worth starting only with a first extension the maintainer needs.
 
 ## Not in this design
 
@@ -323,9 +356,12 @@ Phases 1–3 pay for themselves in a smaller `lib.rs`, `App.tsx`, and `commands.
 - In what order do several modules' decorations appear on one item, and who decides when they conflict (two panels beside one patch)?
 - What is the general shape of a run owned by another module (prompt, file read back, listing, cleanup), and does anything other than explain want one before it is worth generalizing?
 - Is a repository's code-sharing answer (`sharing.rs`) a core concern like credentials, or part of agent runs? Two modules depend on it today and a third provider of any kind would too, which argues for the core.
+- Which link kinds keep their authored link in a note's frontmatter and which in `brainiac.db`? A note-to-repository link in frontmatter survives moving the vault, but names a repository by something that must mean the same on another machine (`hosting.rs` has a candidate).
+- Do the allowed (from kind, to kind, link kind) triples belong to the module that owns the link, or to the core's registry so two modules can share a kind?
 - Is a capability (renders as Markdown, has a commit range, has a patch) a Rust trait each item type implements, or a registry entry, and how does the frontend learn which items have which?
 - Are repositories and the Git viewer core, or is the viewer (Changes, History, Branches) a module over core repositories?
 - WebAssembly (C) or separate processes (B) for extensions: is the sandbox worth the narrower set of languages and the runtime's size?
+- Is a sandboxed extension view an iframe inside the main webview (Figma's shape, where the host alone polices its messages) or a Tauri webview of its own (which gets Tauri's capability binding, but not on Linux or Android, where Tauri cannot tell a frame from its window)?
 - How extension UIs keep the app's look: shared design tokens and a small component kit for sandboxed frames.
 - Who runs the catalog, and whether a curated list in a GitHub repository is enough at first.
 - The project's license (not confirmed yet) decides what extension authors may do with the API and what the catalog can accept.

@@ -29,11 +29,13 @@ import {
   type CodeSharingQuestion,
   errorMessage,
   ipc,
+  type NamedSecret,
   type RunPermissions,
   type RunStartPreview,
 } from "../lib/ipc";
 import { plural } from "../lib/repo";
 import { requestSettings } from "../lib/settings";
+import AccessPicker, { toSend, useHostCopies } from "./AccessPicker";
 import Dialog from "./Dialog";
 import {
   AlertIcon,
@@ -91,6 +93,9 @@ export default function NewRunDialog({
   const [profileId, setProfileId] = useState("");
   const [hostId, setHostId] = useState("");
   const [limits, setLimits] = useState(false);
+  // The run's access and its tools (docs/design/routines-ux.md).
+  const [secretIds, setSecretIds] = useState<string[]>([]);
+  const [tools, setTools] = useState(false);
   // Whether the repository's code may go to the agent's provider (SPEC.md,
   // section 13, Code sharing): asked here the first time.
   const [question, setQuestion] = useState<CodeSharingQuestion | null>(null);
@@ -182,7 +187,7 @@ export default function NewRunDialog({
   const profiles = settings?.profiles ?? [];
   /** What stops each profile's runs on the chosen host. */
   const missingOf = (p: AgentProfile) =>
-    chosen ? runMissing(p, chosen) : p.missing;
+    chosen ? runMissing(p, chosen, tools) : p.missing;
   const profile = profiles.find((p) => p.id === profileId) ?? null;
   // The first profile ready on the host, until one is chosen; a host that
   // cannot run the chosen one moves to the first that it can.
@@ -191,11 +196,46 @@ export default function NewRunDialog({
     if (!settings || !chosen) return;
     if (profile && missingOf(profile).length === 0) return;
     const first =
-      settings.profiles.find((p) => runMissing(p, chosen).length === 0) ??
-      (profile ? null : settings.profiles[0]);
+      settings.profiles.find(
+        (p) => runMissing(p, chosen, tools).length === 0,
+      ) ?? (profile ? null : settings.profiles[0]);
     if (first) chooseProfile(first);
   }, [settings, chosen?.id]);
   const blocked = profile ? missingOf(profile) : [];
+
+  // The run's access and tools, as last time on this host (a convenience
+  // kept in this window's storage; none for a host never used).
+  const hostKey = remote && chosen ? chosen.id : "";
+  useEffect(() => {
+    let last: { secretIds?: string[]; tools?: boolean } = {};
+    try {
+      last = JSON.parse(
+        localStorage.getItem(`newRun.access.${hostKey}`) ?? "{}",
+      );
+    } catch {
+      // Storage may be unavailable; start with nothing.
+    }
+    setSecretIds(Array.isArray(last.secretIds) ? last.secretIds : []);
+    setTools(last.tools === true);
+  }, [hostKey]);
+  const held = useHostCopies(hostKey);
+  // The chosen secrets' names, from the list (a host's answer has them too).
+  const [named, setNamed] = useState<NamedSecret[] | null>(null);
+  useEffect(() => {
+    ipc
+      .listNamedSecrets()
+      .then(setNamed)
+      .catch(() => {});
+  }, []);
+  // A secret remembered from last time may have been deleted since: it could
+  // not be unticked here, and Start would be refused for it.
+  const chosenIds = named
+    ? secretIds.filter((id) => named.some((n) => n.id === id))
+    : secretIds;
+  const secretNames = (named ?? [])
+    .filter((n) => chosenIds.includes(n.id))
+    .map((n) => n.env_name);
+  const sending = toSend(chosenIds, held);
   const agent = profile?.agent ?? "claude_code";
   const ends = new Date(Date.now() + timeLimit * 60_000).toLocaleTimeString(
     "en-GB",
@@ -248,6 +288,18 @@ export default function NewRunDialog({
         if (!answer) return;
       }
       if (!preview) return;
+      // The access the host lacks goes first; the dialog said what goes.
+      if (hostKey && chosenIds.length > 0) {
+        await ipc.sendRunSecrets(hostKey, chosenIds);
+      }
+      try {
+        localStorage.setItem(
+          `newRun.access.${hostKey}`,
+          JSON.stringify({ secretIds: chosenIds, tools }),
+        );
+      } catch {
+        // Not remembered; nothing else depends on it.
+      }
       const run = await ipc.startAgentRun({
         repository_id: repo,
         start_commit: preview.commit,
@@ -260,6 +312,9 @@ export default function NewRunDialog({
         model: model.trim(),
         host_id: hostId,
         profile_id: profile.id,
+        routine: null,
+        secret_ids: chosenIds,
+        tools,
       });
       onStarted(run);
     } catch (e) {
@@ -602,6 +657,25 @@ export default function NewRunDialog({
           </div>
         )}
         <div className="flex flex-col gap-1.5">
+          <FieldLabel>Access</FieldLabel>
+          <AccessPicker
+            hostId={hostKey}
+            hostName={hostName}
+            chosen={chosenIds}
+            onChange={setSecretIds}
+            sentWith="Start"
+            chips
+          />
+          <label className="flex items-center gap-2 text-[12.5px]">
+            <input
+              type="checkbox"
+              checked={tools}
+              onChange={(e) => setTools(e.target.checked)}
+            />
+            Python and the Google Cloud CLI in the run's image
+          </label>
+        </div>
+        <div className="flex flex-col gap-1.5">
           <FieldLabel id={`${id}-perm`}>Permissions</FieldLabel>
           <fieldset
             className="seg m-0 self-start border-0"
@@ -725,6 +799,22 @@ export default function NewRunDialog({
             The network is unrestricted: the agent can reach any site, including
             services on {remote ? `${hostName}'s` : "your"} network.
           </Disclosure>
+          {secretNames.length > 0 && (
+            <Disclosure icon={<KeyIcon size={15} />}>
+              This run gets {secretNames.join(", ")}
+              {remote
+                ? ` from ${hostName}'s sealed copies.`
+                : ", read on this Mac when it starts and never stored."}{" "}
+              The agent can read {secretNames.length === 1 ? "it" : "them"}, and
+              so can the repository's code.
+              {sending.length > 0 && (
+                <strong>
+                  {" "}
+                  Starting sends {sending.join(", ")} to {hostName} first.
+                </strong>
+              )}
+            </Disclosure>
+          )}
           <Disclosure icon={<KeyIcon size={15} />}>
             The agent can read your {credential}, and so can the repository's
             code{agent === "claude_code" ? " and its Claude Code settings" : ""}

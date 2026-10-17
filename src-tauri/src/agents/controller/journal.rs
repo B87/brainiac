@@ -188,11 +188,99 @@ impl Redactor {
         }
     }
 
+    /// An extra secret: the whole value, and for one that spans lines (a
+    /// service account key) each long line too, since an agent that prints
+    /// part of it still shows the part. Exact matching is a mitigation, not
+    /// a guarantee against a transformed copy.
+    ///
+    /// A value that is JSON (a service account key) is also read as JSON:
+    /// its strings are what a tool prints decoded (`jq -r .private_key`
+    /// prints the PEM with real line breaks, which the file holds as `\n`),
+    /// so each long line of each string counts too.
+    pub fn register_secret(&mut self, value: &str, name: &str) {
+        self.register(value, name);
+        if value.contains('\n') {
+            self.register_lines(value, name);
+        }
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(value) {
+            self.register_strings(&json, name);
+        }
+    }
+
+    fn register_lines(&mut self, text: &str, name: &str) {
+        for line in text.lines().map(str::trim) {
+            if line.len() >= 24 {
+                self.register(line, name);
+            }
+        }
+    }
+
+    fn register_strings(&mut self, value: &serde_json::Value, name: &str) {
+        match value {
+            serde_json::Value::String(s) => self.register_lines(s, name),
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    self.register_strings(item, name);
+                }
+            }
+            serde_json::Value::Object(fields) => {
+                for item in fields.values() {
+                    self.register_strings(item, name);
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub fn redact(&self, text: &mut String) {
         for (value, name) in &self.values {
             if text.contains(value.as_str()) {
                 *text = text.replace(value.as_str(), name);
             }
+        }
+    }
+
+    /// A result file the agent wrote (a briefing, an explanation): JSON, so
+    /// each string in it is redacted as decoded text, where an escaped line
+    /// of a key file reads as the line itself. Text that is not JSON is
+    /// redacted as it is; its check fails later anyway.
+    pub fn redact_json(&self, text: &mut String) {
+        if self.values.is_empty() {
+            return;
+        }
+        match serde_json::from_str::<serde_json::Value>(text) {
+            Ok(mut value) => {
+                let mut changed = false;
+                self.redact_value(&mut value, &mut changed);
+                if changed {
+                    if let Ok(redacted) = serde_json::to_string(&value) {
+                        *text = redacted;
+                    }
+                }
+            }
+            Err(_) => self.redact(text),
+        }
+    }
+
+    fn redact_value(&self, value: &mut serde_json::Value, changed: &mut bool) {
+        match value {
+            serde_json::Value::String(s) => {
+                if self.values.iter().any(|(v, _)| s.contains(v.as_str())) {
+                    self.redact(s);
+                    *changed = true;
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    self.redact_value(item, changed);
+                }
+            }
+            serde_json::Value::Object(fields) => {
+                for item in fields.values_mut() {
+                    self.redact_value(item, changed);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -245,6 +333,61 @@ pub fn journal_path(run_dir: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_service_account_key_printed_decoded_is_still_taken_out() {
+        let pem_line = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7";
+        // In pieces, so secret scanning does not take this placeholder for a key.
+        let (begin, end) = (
+            concat!("-----BEGIN PRIVATE", " KEY-----"),
+            concat!("-----END PRIVATE", " KEY-----"),
+        );
+        let key = serde_json::json!({
+            "type": "service_account",
+            "private_key": format!("{begin}\n{pem_line}\n{end}\n"),
+        })
+        .to_string();
+        let mut redactor = Redactor::new();
+        redactor.register_secret(&key, "GOOGLE_APPLICATION_CREDENTIALS");
+        // What `jq -r .private_key` prints: real line breaks, no escapes.
+        let mut printed = format!("{begin}\n{pem_line}\n{end}");
+        redactor.redact(&mut printed);
+        assert!(!printed.contains(pem_line), "{printed}");
+    }
+
+    #[test]
+    fn a_result_file_loses_the_secrets_it_quotes_even_escaped_in_json() {
+        let key = "{\n  \"type\": \"service_account\",\n  \"private_key\": \"MIIEvQIBADANBgkqhkiG9w0BAQEFAASC\"\n}";
+        let mut redactor = Redactor::new();
+        redactor.register("sk-ant-api03-secret-value", "ANTHROPIC_API_KEY");
+        redactor.register_secret(key, "GOOGLE_APPLICATION_CREDENTIALS");
+        // The agent quoted the key file in a finding: inside JSON, its lines
+        // are escaped, and its token in the summary is plain.
+        let briefing = serde_json::json!({
+            "status": "findings",
+            "summary": "Used sk-ant-api03-secret-value to look.",
+            "findings": [{ "detail": format!("The key was:\n{key}") }],
+        })
+        .to_string();
+        let mut text = briefing.clone();
+        redactor.redact_json(&mut text);
+        assert!(!text.contains("sk-ant-api03-secret-value"), "{text}");
+        assert!(!text.contains("MIIEvQIBADANBgkqhkiG9w0BAQEFAASC"), "{text}");
+        assert!(text.contains("[ANTHROPIC_API_KEY]"), "{text}");
+        let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(parsed["status"], "findings");
+
+        // Text with nothing to take out is left as the agent wrote it.
+        let mut clean = r#"{ "status": "ok", "summary": "Nothing new." }"#.to_string();
+        let before = clean.clone();
+        redactor.redact_json(&mut clean);
+        assert_eq!(clean, before);
+
+        // Text that is not JSON is redacted as it is.
+        let mut broken = "not json: sk-ant-api03-secret-value".to_string();
+        redactor.redact_json(&mut broken);
+        assert_eq!(broken, "not json: [ANTHROPIC_API_KEY]");
+    }
+
     use super::*;
     use crate::agents::controller::protocol::PlanEntry;
 

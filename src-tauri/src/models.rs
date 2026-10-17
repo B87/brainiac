@@ -3287,6 +3287,11 @@ pub enum CredentialOwner {
     AgentProfile {
         id: String,
     },
+    /// Settings → Secrets: a secret of its own, such as a Sentry token, that
+    /// can be shared with a run host.
+    NamedSecret {
+        id: String,
+    },
 }
 
 /// The outcome of the last Test of a saved source, in this run.
@@ -3533,6 +3538,9 @@ pub struct AgentHost {
     /// The engine can attach the workspace's loop devices.
     pub loop_devices: bool,
     pub image: Option<AgentImage>,
+    /// The tools layer (Python and the Google Cloud CLI) built on `image`;
+    /// `None` until a build with a profile that asks for it.
+    pub tools_image: Option<AgentImage>,
     /// What still stops this host from taking a run, whatever the profile
     /// (the engine, the install, the image), in the order to do it.
     pub missing: Vec<String>,
@@ -3577,6 +3585,9 @@ pub enum HostJobKind {
     Test,
     /// Add host: install, build the image, and test, one after another.
     Setup,
+    /// For an approved routine: upgrade the helper if it is older, then build
+    /// the image if it is not current.
+    Prepare,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -3929,6 +3940,10 @@ pub struct AgentRun {
     /// An explain run (SPEC.md, section 14): its conversation is How it was
     /// written, read only, and it is not listed in Runs.
     pub explain: bool,
+    /// The variable names (never values) of the host secrets the run was given.
+    pub host_secrets: Vec<String>,
+    /// The routine this run is a run of, when it is one.
+    pub routine_id: Option<String>,
     /// The journal sequence mirrored so far.
     #[ts(type = "number")]
     pub cursor: u64,
@@ -3968,6 +3983,24 @@ pub struct StartRunRequest {
     pub host_id: String,
     /// The agent and provider: one of Settings → Agents' profiles.
     pub profile_id: String,
+    /// Set when a routine starts the run: the run is titled by the routine's
+    /// name and linked to it in Runs.
+    pub routine: Option<RunRoutine>,
+    /// The named secrets (Settings → Secrets) the run gets, by ID. Only a
+    /// Linux run host can give them; the caller sends any the host lacks first.
+    #[serde(default)]
+    pub secret_ids: Vec<String>,
+    /// The run uses the image with Python and the Google Cloud CLI.
+    #[serde(default)]
+    pub tools: bool,
+}
+
+/// The routine a run belongs to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RunRoutine {
+    pub id: String,
+    pub name: String,
 }
 
 /// One entry of a run's conversation, as the journal recorded it:
@@ -4158,6 +4191,177 @@ pub struct RunControllerStatus {
     pub running: bool,
     pub pid: Option<u32>,
     pub live_runs: u32,
+}
+
+/// A run host's health, read now (docs/design/scheduled-runs.md, Machines).
+/// A live view, not monitoring: nothing is stored or alerted on.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct HostHealth {
+    /// The controller answered. When it did not, only `problem` and
+    /// `checked_at` are set.
+    pub reachable: bool,
+    /// A safe sentence for what failed, with no raw output.
+    pub problem: Option<String>,
+    pub checked_at: String,
+    pub controller_version: Option<String>,
+    #[ts(type = "number | null")]
+    pub controller_uptime_secs: Option<u64>,
+    pub live_runs: u32,
+    #[ts(type = "number | null")]
+    pub host_uptime_secs: Option<u64>,
+    /// The 1, 5, and 15 minute load averages.
+    pub load: Option<Vec<f64>>,
+    #[ts(type = "number | null")]
+    pub memory_total_kib: Option<u64>,
+    #[ts(type = "number | null")]
+    pub memory_available_kib: Option<u64>,
+    #[ts(type = "number | null")]
+    pub disk_total_kib: Option<u64>,
+    #[ts(type = "number | null")]
+    pub disk_free_kib: Option<u64>,
+    /// The engine's name when it answered, and whether the host can take a run.
+    pub engine_name: Option<String>,
+    pub engine_supported: Option<bool>,
+    pub engine_problem: Option<String>,
+    /// What to do about each thing that is wrong, in the order to do it.
+    pub warnings: Vec<String>,
+}
+
+/// A secret that is neither an account's token nor a connection's password,
+/// which a run host can keep for its runs (docs/design/scheduled-runs.md).
+/// The value is never here; `credential_source` says where it is read from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct NamedSecret {
+    pub id: String,
+    pub label: String,
+    /// The environment variable a run sees it as, and its name on a host.
+    pub env_name: String,
+    /// A run gets a file holding the value; the variable is the file's path.
+    pub as_file: bool,
+    pub note: String,
+    pub credential_source: SecretSource,
+    pub credential: CredentialState,
+    #[ts(type = "number")]
+    pub version: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Where a named secret is used and which hosts hold a copy, from what
+/// Brainiac recorded (Settings → Secrets). The hosts are not asked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct NamedSecretUsage {
+    pub secret_id: String,
+    /// The names of the routines whose runs get it.
+    pub routines: Vec<String>,
+    pub copies: Vec<SecretCopy>,
+}
+
+/// **Test** of a named secret's source: how much it printed and how long it
+/// took. Never the value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct NamedSecretTest {
+    pub chars: u32,
+    pub millis: u32,
+}
+
+/// One host's copy of a named secret.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SecretCopy {
+    pub host_id: String,
+    pub host_name: String,
+    pub state: HostSecretState,
+    pub shared_at: Option<String>,
+    pub failure: Option<String>,
+}
+
+/// Settings → Secrets, **Add secret…** and **Edit**.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SaveNamedSecretRequest {
+    /// `None` adds a secret.
+    pub id: Option<String>,
+    #[ts(type = "number")]
+    pub expected_version: i64,
+    pub label: String,
+    pub env_name: String,
+    /// A run gets the value as a file, and the variable holds its path.
+    #[serde(default)]
+    pub as_file: bool,
+    pub note: String,
+    /// The Keychain, an environment variable, or a command.
+    pub source: SecretSource,
+    /// The Keychain: the pasted value; `None` keeps the one saved.
+    pub secret: Option<String>,
+}
+
+// Written by hand instead of derived so a pasted value never reaches a log.
+impl std::fmt::Debug for SaveNamedSecretRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SaveNamedSecretRequest")
+            .field("id", &self.id)
+            .field("env_name", &self.env_name)
+            .field("as_file", &self.as_file)
+            .field("source", &self.source)
+            .field("secret", &self.secret.as_ref().map(|_| "[redacted]"))
+            .finish()
+    }
+}
+
+/// Where a named secret stands on one host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum HostSecretState {
+    /// Sent, and the host lists it.
+    Shared,
+    /// Sent, but the source or the saved value changed since.
+    OutOfDate,
+    /// Brainiac sent it, and the host no longer lists it.
+    MissingOnHost,
+    /// The last Share or Remove did not finish.
+    Failed,
+    /// Never sent to this host.
+    NotShared,
+}
+
+/// One named secret as the host's page shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct HostSecretRow {
+    pub secret_id: String,
+    pub label: String,
+    pub env_name: String,
+    pub state: HostSecretState,
+    pub shared_at: Option<String>,
+    /// A safe sentence for a failed Share or Remove.
+    pub failure: Option<String>,
+}
+
+/// A secret the host holds that no named secret here names.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct HostSecretOnly {
+    pub name: String,
+    #[ts(type = "number")]
+    pub set_at: u64,
+}
+
+/// Machines → a run host, **Secrets on this host**.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct HostSecrets {
+    pub host_id: String,
+    pub rows: Vec<HostSecretRow>,
+    pub only_on_host: Vec<HostSecretOnly>,
+    /// Why the host could not be asked, when it could not. The rows then say
+    /// only what Brainiac sent.
+    pub problem: Option<String>,
 }
 
 /// An event telling the window that a run changed: its state, its
@@ -4849,4 +5053,274 @@ pub struct TerminalExitedEvent {
     pub id: String,
     /// Absent when it was ended by a signal.
     pub code: Option<i32>,
+}
+
+// ---------------------------------------------------------------------------
+// Routines (docs/design/scheduled-runs.md; SPEC.md, Today → Routines)
+// ---------------------------------------------------------------------------
+
+/// A saved run whose job is a short report on Today.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Routine {
+    pub id: String,
+    pub name: String,
+    pub repository_id: String,
+    pub profile_id: String,
+    /// Empty: this Mac.
+    pub host_id: String,
+    /// A branch or commit, resolved at each start.
+    pub start: String,
+    pub prompt: String,
+    pub time_limit_minutes: u32,
+    /// The named secrets its runs get, by ID: the routine is where the agent,
+    /// the host and the access meet (docs/design/routines-ux.md).
+    pub secret_ids: Vec<String>,
+    /// Its runs use the image with Python and the Google Cloud CLI.
+    pub tools: bool,
+    /// Text the agent rewrites after each run and the user can edit; part of
+    /// the next run's prompt.
+    pub memory: String,
+    pub memory_updated_at: Option<String>,
+    /// How many earlier results the next run is shown (0 to 10).
+    pub previous_results: u32,
+    #[ts(type = "number")]
+    pub version: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SaveRoutineRequest {
+    /// `None` adds one.
+    pub id: Option<String>,
+    #[ts(type = "number")]
+    pub expected_version: i64,
+    pub name: String,
+    pub repository_id: String,
+    pub profile_id: String,
+    pub host_id: String,
+    pub start: String,
+    pub prompt: String,
+    pub time_limit_minutes: u32,
+    pub secret_ids: Vec<String>,
+    pub tools: bool,
+    pub memory: String,
+    pub previous_results: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum BriefingState {
+    /// The run is going; nothing to read yet.
+    Working,
+    Ready,
+    /// There is no routine: the reason is `error`. Never read as "nothing found".
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum BriefingStatus {
+    NothingFound,
+    Findings,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum BriefingSeverity {
+    Info,
+    Low,
+    Medium,
+    High,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct BriefingFinding {
+    /// Stable across days (such as a Sentry issue id), so "seen before" works.
+    pub key: String,
+    pub title: String,
+    /// Only when the routine is about problems.
+    pub severity: Option<BriefingSeverity>,
+    pub detail: String,
+    /// An http(s) address, or empty.
+    pub link: String,
+    /// The previous routine of this definition had a finding with this key.
+    pub seen_before: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum BriefingProposalKind {
+    /// Created in Brainiac on approval.
+    Task,
+    /// A bug to file in a tracker; shown to copy, never created here.
+    Issue,
+    /// A note in the vault on approval.
+    Note,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct BriefingProposal {
+    pub key: String,
+    pub kind: BriefingProposalKind,
+    pub title: String,
+    pub body: String,
+    /// The finding it comes from, when it names one.
+    pub finding_key: Option<String>,
+    /// The task or note made from it, once the user approved it.
+    pub made_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct BriefingResult {
+    pub id: String,
+    pub routine_id: String,
+    pub run_id: Option<String>,
+    pub state: BriefingState,
+    /// A claim the agent made about a check; `None` on a ready report that
+    /// makes none (ideas, a digest). Never set while working or failed.
+    pub status: Option<BriefingStatus>,
+    pub summary: String,
+    pub findings: Vec<BriefingFinding>,
+    pub proposals: Vec<BriefingProposal>,
+    pub error: Option<String>,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    pub duration_secs: Option<u32>,
+    /// What the agent reported the run cost, in millionths of a unit of
+    /// `cost_currency`; none when it reported nothing.
+    #[ts(type = "number | null")]
+    pub cost_micros: Option<i64>,
+    pub cost_currency: Option<String>,
+}
+
+/// A routine and its latest result, for Today.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RoutineOverview {
+    pub routine: Routine,
+    pub repository_name: String,
+    /// "This Mac" or the run host's name.
+    pub host_name: String,
+    pub latest: Option<BriefingResult>,
+    /// The schedule, when the routine has one.
+    pub schedule: Option<RoutineSchedule>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ScheduleDaysKind {
+    Daily,
+    Weekdays,
+    /// On `weekday`.
+    Weekly,
+}
+
+/// When a routine fires on its host, in the host's local time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ScheduleWhen {
+    pub days: ScheduleDaysKind,
+    /// 0 is Monday, 6 is Sunday; only for `weekly`.
+    pub weekday: u8,
+    /// "HH:MM".
+    pub time: String,
+    /// Start a missed run when the host is back, once.
+    pub late_start: bool,
+    /// A run's cost ceiling in millionths of a US dollar.
+    #[ts(type = "number")]
+    pub cost_ceiling_micros: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum ScheduleState {
+    /// The host fires it.
+    Active,
+    Paused,
+    /// Something it depends on changed since it was approved; it is off.
+    NeedsApproval,
+    /// The host has not been heard from since a run was due.
+    Overdue,
+    /// The host cannot be reached now; nothing is known to be missed.
+    Unreachable,
+    /// Approved; the host's helper is being upgraded or its image built, and
+    /// the schedule is sent once that is done.
+    Preparing,
+}
+
+/// A run host's clock as it last answered: a schedule's time is in the host's
+/// own time zone, so the Schedule tab shows it beside the time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct HostClock {
+    /// The host's time when it answered, RFC 3339 with its offset.
+    pub now: String,
+    /// The host's offset from UTC, in minutes (120 for CEST).
+    pub utc_offset_minutes: i32,
+}
+
+/// A schedule a run host fires for no routine of this Mac on that host: one
+/// made by another Mac using the same host, or by this one before an older
+/// backup was restored, which Brainiac leaves there; or this Mac's own after
+/// it moved, until a sync stops it. The host's page lists each, and only the
+/// user removes one (docs/design/routines-ux.md).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct HostScheduleOnly {
+    pub routine_id: String,
+    /// The routine's name, as the host was given it.
+    pub name: String,
+    /// Approved and not paused there: it still fires.
+    pub enabled: bool,
+    /// The next time it fires, RFC 3339 with the host's offset.
+    pub next_fire: Option<String>,
+    /// Briefings it left that no Mac has taken; removing it deletes them.
+    pub results_waiting: u32,
+    /// A routine of this Mac that no longer runs on this host (it moved, or
+    /// its schedule here went): the next sync takes what it left and stops
+    /// it, unless that could not be done.
+    pub mine: bool,
+}
+
+/// A routine's schedule and what is known of the host's side of it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RoutineSchedule {
+    pub when: ScheduleWhen,
+    pub state: ScheduleState,
+    /// Why it is paused or off, in words.
+    pub notice: Option<String>,
+    /// What changed since it was approved (`needs_approval`).
+    pub changed: Vec<String>,
+    /// The next time the host fires it, RFC 3339 with the host's offset.
+    pub next_fire: Option<String>,
+    /// When the host last answered.
+    pub synced_at: Option<String>,
+    /// The commit of the code on the host, and when it was sent.
+    pub code_commit: Option<String>,
+    pub code_at: Option<String>,
+    /// The last sync's problem, when the host could not be reached.
+    pub error: Option<String>,
+    /// What this month's briefings cost, as the agent reported, in millionths
+    /// of a US dollar.
+    #[ts(type = "number")]
+    pub month_cost_micros: i64,
+}
+
+/// Add or replace a routine's schedule. It stays off until approved.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SetScheduleRequest {
+    pub routine_id: String,
+    pub when: ScheduleWhen,
 }

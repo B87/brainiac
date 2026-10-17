@@ -15,6 +15,7 @@ import NewRunDialog from "./components/NewRunDialog";
 import NotesView from "./components/NotesView";
 import PullRequestView from "./components/PullRequestView";
 import RepositoryView from "./components/RepositoryView";
+import RoutinesView from "./components/RoutinesView";
 import RunsView from "./components/RunsView";
 import SettingsPage from "./components/SettingsPage";
 import Sidebar, { type View } from "./components/Sidebar";
@@ -41,6 +42,7 @@ import {
   onPullRequestChanged,
   onRepositoryChanged,
   type PinEntityType,
+  type RoutineOverview,
   type SavedQuery,
   type SuggestedMove,
   subscribe,
@@ -58,6 +60,7 @@ import {
   relocatedNotice,
   relocationQuestion,
 } from "./lib/repo";
+import { routineNeedsYou } from "./lib/routines";
 import { OPEN_SETTINGS_EVENT, type SettingsSection } from "./lib/settings";
 import { SIDE_PANEL_KEY, SidePanelState } from "./lib/sidePanel";
 import {
@@ -114,6 +117,16 @@ export default function App() {
   /** Runs (v0.5), for the sidebar badge and the Runs view. */
   const [runs, setRuns] = useState<AgentRun[] | null>(null);
   const [newRun, setNewRun] = useState<{ repositoryId?: string } | null>(null);
+  /** Routines, for the sidebar badge, Today's digest and the Routines view. */
+  const [routines, setRoutines] = useState<RoutineOverview[] | null>(null);
+  const reloadRoutines = useCallback(async () => {
+    try {
+      setRoutines(await ipc.listRoutines());
+    } catch (e) {
+      setRoutines((r) => r ?? []);
+      setBanner(errorMessage(e));
+    }
+  }, []);
   const reloadRuns = useCallback(async () => {
     try {
       setRuns((await ipc.listAgentRuns()).runs);
@@ -380,7 +393,8 @@ export default function App() {
       setPaletteOpen(false);
       setView((v) => ({
         kind: "settings",
-        section,
+        // A host's page lives in Run hosts.
+        section: host && section === "runs" ? "hosts" : section,
         back: v.kind === "settings" ? v.back : v,
         host,
         profile,
@@ -725,6 +739,26 @@ export default function App() {
     void reloadSnapshot();
   }, [reloadSnapshot]);
 
+  // Routines: look again every few seconds while one is working, else each
+  // minute, and when the window comes back.
+  const routineWorking = (routines ?? []).some(
+    (i) => i.latest?.state === "working",
+  );
+  useEffect(() => {
+    void reloadRoutines();
+    const timer = setInterval(
+      () => void reloadRoutines(),
+      routineWorking ? 4000 : 60_000,
+    );
+    // Coming back to the window: hear the hosts, then look again.
+    const focus = () => void ipc.syncRoutines().finally(reloadRoutines);
+    window.addEventListener("focus", focus);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("focus", focus);
+    };
+  }, [reloadRoutines, routineWorking]);
+
   useEffect(() => {
     void reloadRuns();
     let pending = false;
@@ -792,6 +826,8 @@ export default function App() {
       if (e.id === "show_databases")
         actions.current.showView({ kind: "databases" });
       if (e.id === "show_runs") actions.current.showView({ kind: "runs" });
+      if (e.id === "show_routines")
+        actions.current.showView({ kind: "routines" });
       if (e.id === "new_run") setNewRun({});
     }).then((u) => (disposed ? u() : unlisteners.push(u)));
     return () => {
@@ -841,12 +877,18 @@ export default function App() {
             }
             host={view.host}
             onHost={(host) =>
-              setView({ ...view, host: host ?? undefined, profile: undefined })
+              setView({
+                ...view,
+                section: "hosts",
+                host: host ?? undefined,
+                profile: undefined,
+              })
             }
             profile={view.profile}
             onProfile={(profile) =>
               setView({
                 ...view,
+                section: "runs",
                 profile: profile ?? undefined,
                 host: undefined,
               })
@@ -867,6 +909,9 @@ export default function App() {
               snapshot={snapshot}
               reviewCounts={reviewCounts}
               runsNeedingYou={(runs ?? []).filter(needsYou).length}
+              routinesNeedingYou={
+                (routines ?? []).filter(routineNeedsYou).length
+              }
               vault={vault}
               view={view}
               open={sidebarOpen}
@@ -901,6 +946,11 @@ export default function App() {
                     onNew={() => void newTask()}
                     onOpenNote={openNote}
                     onOpenRepo={openRepo}
+                    routines={routines ?? []}
+                    onOpenRoutine={(routineId) =>
+                      showView({ kind: "routines", routineId, tab: "latest" })
+                    }
+                    onAllRoutines={() => showView({ kind: "routines" })}
                     onFetch={(ids) => void fetchRepositories(ids)}
                     onError={setBanner}
                   />
@@ -951,9 +1001,31 @@ export default function App() {
                     }
                     onNewRun={() => setNewRun({})}
                     onOpenRepo={openRepo}
+                    onOpenRoutine={(routineId) =>
+                      showView({ kind: "routines", routineId, tab: "latest" })
+                    }
                     onOpenSettings={() => openSettings("runs")}
                     onError={setBanner}
                     onNotice={setNotice}
+                  />
+                ) : view.kind === "routines" ? (
+                  <RoutinesView
+                    routines={routines}
+                    repositories={snapshot.repositories}
+                    routineId={view.routineId ?? null}
+                    tab={view.tab ?? "latest"}
+                    onOpen={(routineId, tab) =>
+                      setView({
+                        kind: "routines",
+                        routineId: routineId ?? undefined,
+                        tab,
+                      })
+                    }
+                    onBack={() => setView({ kind: "routines" })}
+                    onReload={() => void reloadRoutines()}
+                    onOpenRun={(runId) => showView({ kind: "runs", runId })}
+                    onOpenNote={openNote}
+                    onError={setBanner}
                   />
                 ) : view.kind === "pullRequest" ? (
                   <PullRequestView

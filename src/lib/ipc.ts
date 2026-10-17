@@ -20,6 +20,7 @@ import type { AppError } from "./generated/AppError";
 import type { ApproveAgentHostRequest } from "./generated/ApproveAgentHostRequest";
 import type { AppSnapshot } from "./generated/AppSnapshot";
 import type { BranchComparison } from "./generated/BranchComparison";
+import type { BriefingResult } from "./generated/BriefingResult";
 import type { BusyTerminal } from "./generated/BusyTerminal";
 import type { Cell } from "./generated/Cell";
 import type { CellValue } from "./generated/CellValue";
@@ -84,8 +85,12 @@ import type { HealthSnapshot } from "./generated/HealthSnapshot";
 import type { HealthStatement } from "./generated/HealthStatement";
 import type { HealthTable } from "./generated/HealthTable";
 import type { HistoryEntry } from "./generated/HistoryEntry";
+import type { HostClock } from "./generated/HostClock";
+import type { HostHealth } from "./generated/HostHealth";
 import type { HostJob } from "./generated/HostJob";
 import type { HostJobKind } from "./generated/HostJobKind";
+import type { HostScheduleOnly } from "./generated/HostScheduleOnly";
+import type { HostSecrets } from "./generated/HostSecrets";
 import type { IndexStatus } from "./generated/IndexStatus";
 import type { ListCommitsRequest } from "./generated/ListCommitsRequest";
 import type { ListPullRequestsRequest } from "./generated/ListPullRequestsRequest";
@@ -95,6 +100,9 @@ import type { MergeMethod } from "./generated/MergeMethod";
 import type { MergeOptions } from "./generated/MergeOptions";
 import type { MergeOutcome } from "./generated/MergeOutcome";
 import type { MergeRequest } from "./generated/MergeRequest";
+import type { NamedSecret } from "./generated/NamedSecret";
+import type { NamedSecretTest } from "./generated/NamedSecretTest";
+import type { NamedSecretUsage } from "./generated/NamedSecretUsage";
 import type { NoteChangedEvent } from "./generated/NoteChangedEvent";
 import type { NoteContent } from "./generated/NoteContent";
 import type { NoteContext } from "./generated/NoteContext";
@@ -134,6 +142,8 @@ import type { RestoreResult } from "./generated/RestoreResult";
 import type { ResultColumn } from "./generated/ResultColumn";
 import type { ReviewCounts } from "./generated/ReviewCounts";
 import type { ReviewDrafts } from "./generated/ReviewDrafts";
+import type { Routine } from "./generated/Routine";
+import type { RoutineOverview } from "./generated/RoutineOverview";
 import type { RunBranchCommand } from "./generated/RunBranchCommand";
 import type { RunChanges } from "./generated/RunChanges";
 import type { RunControllerStatus } from "./generated/RunControllerStatus";
@@ -151,16 +161,19 @@ import type { SaveDbConnectionRequest } from "./generated/SaveDbConnectionReques
 import type { SavedQuery } from "./generated/SavedQuery";
 import type { SaveForgeAccountOutcome } from "./generated/SaveForgeAccountOutcome";
 import type { SaveForgeAccountRequest } from "./generated/SaveForgeAccountRequest";
+import type { SaveNamedSecretRequest } from "./generated/SaveNamedSecretRequest";
 import type { SaveNoteRequest } from "./generated/SaveNoteRequest";
 import type { SaveNoteResult } from "./generated/SaveNoteResult";
 import type { SaveQueryRequest } from "./generated/SaveQueryRequest";
 import type { SaveReviewDraftRequest } from "./generated/SaveReviewDraftRequest";
+import type { SaveRoutineRequest } from "./generated/SaveRoutineRequest";
 import type { SearchRequest } from "./generated/SearchRequest";
 import type { SearchResults } from "./generated/SearchResults";
 import type { SecretEntry } from "./generated/SecretEntry";
 import type { SecretSource } from "./generated/SecretSource";
 import type { SecretsOverview } from "./generated/SecretsOverview";
 import type { SetRepositoryForgeRequest } from "./generated/SetRepositoryForgeRequest";
+import type { SetScheduleRequest } from "./generated/SetScheduleRequest";
 import type { Settings } from "./generated/Settings";
 import type { StartExplanationRequest } from "./generated/StartExplanationRequest";
 import type { StartRunRequest } from "./generated/StartRunRequest";
@@ -211,6 +224,9 @@ export type { AgentTestStep } from "./generated/AgentTestStep";
 export type { AnswerCodeSharingRequest } from "./generated/AnswerCodeSharingRequest";
 export type { Backlink } from "./generated/Backlink";
 export type { BranchComparison } from "./generated/BranchComparison";
+export type { BriefingFinding } from "./generated/BriefingFinding";
+export type { BriefingProposal } from "./generated/BriefingProposal";
+export type { BriefingResult } from "./generated/BriefingResult";
 export type { BusyTerminal } from "./generated/BusyTerminal";
 export type { ChangedFile } from "./generated/ChangedFile";
 export type { ChangedFileStatus } from "./generated/ChangedFileStatus";
@@ -260,11 +276,17 @@ export type { ForgeSource } from "./generated/ForgeSource";
 export type { ForgeTarget } from "./generated/ForgeTarget";
 export type { ForgeTokenKind } from "./generated/ForgeTokenKind";
 export type { ForgeUser } from "./generated/ForgeUser";
+export type { HostClock } from "./generated/HostClock";
+export type { HostHealth } from "./generated/HostHealth";
 export type { HostJob } from "./generated/HostJob";
 export type { HostJobKind } from "./generated/HostJobKind";
 export type { HostJobState } from "./generated/HostJobState";
 export type { HostJobStep } from "./generated/HostJobStep";
 export type { HostJobStepState } from "./generated/HostJobStepState";
+export type { HostScheduleOnly } from "./generated/HostScheduleOnly";
+export type { HostSecretRow } from "./generated/HostSecretRow";
+export type { HostSecretState } from "./generated/HostSecretState";
+export type { HostSecrets } from "./generated/HostSecrets";
 export type { Hunk } from "./generated/Hunk";
 export type { IndexState } from "./generated/IndexState";
 export type { KnownConcept } from "./generated/KnownConcept";
@@ -274,6 +296,8 @@ export type { LeftOutFile } from "./generated/LeftOutFile";
 export type { LinkedRepository } from "./generated/LinkedRepository";
 export type { MemberOrigin } from "./generated/MemberOrigin";
 export type { MemberStatus } from "./generated/MemberStatus";
+export type { NamedSecret } from "./generated/NamedSecret";
+export type { NamedSecretUsage } from "./generated/NamedSecretUsage";
 export type { NoteDraft } from "./generated/NoteDraft";
 export type { NotePlacement } from "./generated/NotePlacement";
 export type { NoteTextState } from "./generated/NoteTextState";
@@ -293,6 +317,9 @@ export type { ReviewDraft } from "./generated/ReviewDraft";
 export type { Reviewer } from "./generated/Reviewer";
 export type { ReviewState } from "./generated/ReviewState";
 export type { ReviewVerdict } from "./generated/ReviewVerdict";
+export type { Routine } from "./generated/Routine";
+export type { RoutineOverview } from "./generated/RoutineOverview";
+export type { RoutineSchedule } from "./generated/RoutineSchedule";
 export type { RunActivity } from "./generated/RunActivity";
 export type { RunBranchCommand } from "./generated/RunBranchCommand";
 export type { RunChanges } from "./generated/RunChanges";
@@ -312,9 +339,16 @@ export type { RunPlanEntry } from "./generated/RunPlanEntry";
 export type { RunPreview } from "./generated/RunPreview";
 export type { RunStartPreview } from "./generated/RunStartPreview";
 export type { RunStartStep } from "./generated/RunStartStep";
+export type { SaveNamedSecretRequest } from "./generated/SaveNamedSecretRequest";
+export type { SaveRoutineRequest } from "./generated/SaveRoutineRequest";
+export type { ScheduleDaysKind } from "./generated/ScheduleDaysKind";
+export type { ScheduleState } from "./generated/ScheduleState";
+export type { ScheduleWhen } from "./generated/ScheduleWhen";
 export type { SearchGroup } from "./generated/SearchGroup";
 export type { SearchHit } from "./generated/SearchHit";
 export type { SearchKind } from "./generated/SearchKind";
+export type { SecretCopy } from "./generated/SecretCopy";
+export type { SetScheduleRequest } from "./generated/SetScheduleRequest";
 export type { StartExplanationRequest } from "./generated/StartExplanationRequest";
 export type { StartRunRequest } from "./generated/StartRunRequest";
 export type { SuggestedMove } from "./generated/SuggestedMove";
@@ -674,6 +708,64 @@ export const ipc = {
   /** This Mac's Test of one profile: a short run, a prompt, a cancel, a collection. */
   testAgentSetup: (profileId: string) =>
     invoke<AgentTestResult>("test_agent_setup", { profileId }),
+  /** Settings → Secrets, named secrets that can be shared with a run host. */
+  listRoutines: () => invoke<RoutineOverview[]>("list_routines"),
+  saveRoutine: (request: SaveRoutineRequest) =>
+    invoke<Routine>("save_routine", { request }),
+  deleteRoutine: (id: string) => invoke<void>("delete_routine", { id }),
+  setRoutineSchedule: (request: SetScheduleRequest) =>
+    invoke<void>("set_routine_schedule", { request }),
+  removeRoutineSchedule: (id: string) =>
+    invoke<void>("remove_routine_schedule", { id }),
+  /** What a run host fires that this Mac has no routine for. */
+  hostClock: (hostId: string) => invoke<HostClock>("host_clock", { hostId }),
+  hostSchedulesOnly: (hostId: string) =>
+    invoke<HostScheduleOnly[]>("host_schedules_only", { hostId }),
+  removeHostScheduleOnly: (hostId: string, routineId: string) =>
+    invoke<HostScheduleOnly[]>("remove_host_schedule_only", {
+      hostId,
+      routineId,
+    }),
+  approveRoutineSchedule: (id: string) =>
+    invoke<void>("approve_routine_schedule", { id }),
+  pauseRoutine: (id: string, paused: boolean) =>
+    invoke<void>("pause_routine", { id, paused }),
+  syncRoutines: () => invoke<void>("sync_routines"),
+  listRoutineResults: (routineId: string) =>
+    invoke<BriefingResult[]>("list_routine_results", { routineId }),
+  runRoutineNow: (id: string) =>
+    invoke<BriefingResult>("run_routine_now", { id }),
+  saveBriefingAsNote: (resultId: string) =>
+    invoke<NoteSummary>("save_briefing_as_note", { resultId }),
+  createBriefingTask: (resultId: string, proposalKey: string) =>
+    invoke<BriefingResult>("create_briefing_task", { resultId, proposalKey }),
+  createBriefingNote: (resultId: string, proposalKey: string) =>
+    invoke<NoteSummary>("create_briefing_note", { resultId, proposalKey }),
+  listNamedSecrets: () => invoke<NamedSecret[]>("list_named_secrets"),
+  saveNamedSecret: (request: SaveNamedSecretRequest) =>
+    invoke<NamedSecret>("save_named_secret", { request }),
+  deleteNamedSecret: (id: string, expectedVersion: number) =>
+    invoke<void>("delete_named_secret", { id, expectedVersion }),
+  /** A run host's page, Secrets on this host: asks the host what it holds. */
+  getHostSecrets: (hostId: string) =>
+    invoke<HostSecrets>("get_host_secrets", { hostId }),
+  shareSecretWithHost: (id: string, hostId: string) =>
+    invoke<HostSecrets>("share_secret_with_host", { id, hostId }),
+  removeSecretFromHost: (id: string, hostId: string) =>
+    invoke<HostSecrets>("remove_secret_from_host", { id, hostId }),
+  /** Settings → Secrets: the routines using each secret and its copies on hosts. */
+  namedSecretUsage: () => invoke<NamedSecretUsage[]>("named_secret_usage"),
+  /** Settings → Secrets, Test: the value's length, never the value. */
+  testNamedSecret: (id: string) =>
+    invoke<NamedSecretTest>("test_named_secret", { id }),
+  /** New run: send the run's access its host lacks, before Start. */
+  sendRunSecrets: (hostId: string, secretIds: string[]) =>
+    invoke<void>("send_run_secrets", { hostId, secretIds }),
+  removeUnlistedHostSecret: (name: string, hostId: string) =>
+    invoke<HostSecrets>("remove_unlisted_host_secret", { name, hostId }),
+  /** Machines → a run host, Health: read now, nothing stored. */
+  getAgentHostHealth: (id: string) =>
+    invoke<HostHealth>("get_agent_host_health", { id }),
   getRunControllerStatus: () =>
     invoke<RunControllerStatus>("get_run_controller_status"),
 

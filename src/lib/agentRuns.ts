@@ -120,9 +120,23 @@ export function credentialWord(payment: AgentPayment): string {
  * the profile's own setup, the host's, then a passed test of the profile
  * there that still matches (Rust `settings::run_missing`).
  */
-export function runMissing(profile: AgentProfile, host: AgentHost): string[] {
+export function runMissing(
+  profile: AgentProfile,
+  host: AgentHost,
+  tools = false,
+): string[] {
   const missing = [...profile.missing, ...host.missing];
   const name = profileName(profile);
+  if (tools) {
+    if (!host.tools_image)
+      missing.push(
+        `Build the image on ${host.name} to add Python and the Google Cloud CLI.`,
+      );
+    else if (!host.tools_image.current)
+      missing.push(
+        `Rebuild the image on ${host.name}: the Python and Google Cloud CLI layer is out of date.`,
+      );
+  }
   const test = host.tests.find((t) => t.profile_id === profile.id);
   if (!test) missing.push(`Pass a test of ${name} on ${host.name}.`);
   else if (!test.current)

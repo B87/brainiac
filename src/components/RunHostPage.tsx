@@ -8,8 +8,9 @@ import {
   profileTestState,
 } from "../lib/agentRuns";
 import {
+  currentStep,
+  type HostTone,
   hostState,
-  shortFingerprint,
   useHostJobsContext,
 } from "../lib/hostJobs";
 import {
@@ -18,82 +19,60 @@ import {
   type AgentProfile,
   type AgentRun,
   type AgentSettings,
-  type AgentTestResult,
   errorMessage,
   type HostJobKind,
   ipc,
   type RunControllerStatus,
 } from "../lib/ipc";
+import HostHealthCard, { healthPill, useHostHealth } from "./HostHealthGroup";
 import HostJobView, { HostPill } from "./HostJobView";
-import { Group, Hint } from "./SettingsPanes";
+import HostSchedulesGroup from "./HostSchedulesGroup";
+import HostSecretsGroup from "./HostSecretsGroup";
+import { Card, Group, Hint, PageTitle } from "./SettingsPanes";
 
 /**
- * Agents › Run hosts › a host, or Agents › a profile: where the breadcrumb
- * goes back to.
+ * A host page's title row: "Run hosts ›", the host's name and one state,
+ * with its actions on the right and what the page is for underneath.
  */
-export function Breadcrumb({
-  name,
-  via,
-  onBack,
-}: {
-  name: string;
-  /** The list between Agents and the page, such as "Run hosts". */
-  via?: string;
-  onBack: () => void;
-}) {
-  return (
-    <nav aria-label="Breadcrumb" className="text-[12px] text-muted">
-      <button
-        type="button"
-        className="text-link hover:underline"
-        onClick={onBack}
-      >
-        Agents
-      </button>{" "}
-      ›{" "}
-      {via && (
-        <>
-          <button
-            type="button"
-            className="text-link hover:underline"
-            onClick={onBack}
-          >
-            {via}
-          </button>{" "}
-          ›{" "}
-        </>
-      )}
-      {name}
-    </nav>
-  );
-}
-
 function PageHeader({
   host,
   subtitle,
   actions,
+  pill,
+  onBack,
 }: {
   host: AgentHost;
   subtitle: ReactNode;
   actions?: ReactNode;
+  /** What the pill says; the host's setup state unless given. */
+  pill?: { label: string; tone: HostTone };
+  onBack: () => void;
 }) {
   const jobs = useHostJobsContext();
-  const state = hostState(host, jobs[host.id]);
+  const state = pill ?? hostState(host, jobs[host.id]);
   return (
-    <header className="flex flex-wrap items-start justify-between gap-4">
-      <div className="flex min-w-0 flex-col gap-1">
-        <div className="flex flex-wrap items-center gap-2.5">
-          <h2 className="m-0 text-[19px] font-semibold">{host.name}</h2>
-          <HostPill label={state.label} tone={state.tone} />
-        </div>
-        <span className="text-[12.5px] text-muted">{subtitle}</span>
-      </div>
-      {actions && <div className="flex flex-wrap gap-2">{actions}</div>}
-    </header>
+    <PageTitle
+      title={host.name}
+      crumb={{ label: "Run hosts", onBack }}
+      pill={<HostPill label={state.label} tone={state.tone} />}
+      actions={actions}
+    >
+      {subtitle}
+    </PageTitle>
   );
 }
 
-function Check({ done }: { done: boolean }) {
+function Check({ done, warn = false }: { done: boolean; warn?: boolean }) {
+  if (warn)
+    return (
+      <span
+        role="img"
+        aria-label="Needs attention"
+        className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-dirty/20 text-[11px] font-bold text-dirty"
+      >
+        !
+      </span>
+    );
   return done ? (
     <svg
       width="16"
@@ -127,18 +106,24 @@ function Check({ done }: { done: boolean }) {
 
 function SetupRow({
   done,
+  warn,
+  label,
   title,
   detail,
   children,
 }: {
   done: boolean;
+  /** Not wrong, but to see to: an older controller, an engine that cannot run. */
+  warn?: boolean;
+  /** The row's name for assistive technology, when the title varies. */
+  label?: string;
   title: string;
   detail: ReactNode;
   children?: ReactNode;
 }) {
   return (
-    <li className="settings-row">
-      <Check done={done} />
+    <li className="settings-row" aria-label={label}>
+      <Check done={done} warn={warn} />
       <span className="flex min-w-55 flex-1 flex-col gap-0.5">
         <span className="font-medium">{title}</span>
         <Hint>{detail}</Hint>
@@ -203,25 +188,35 @@ function ImageRow({
   children: ReactNode;
 }) {
   const recipe = "Claude Code, its ACP adapter, and OpenCode";
+  const tools = host.tools_image;
   return (
     <SetupRow
-      done={!!host.image?.current}
-      title={host.image ? "Image built" : "Image not built"}
+      done={!!host.image?.current && (!tools || tools.current)}
+      warn={
+        !!host.image && (!host.image.current || (!!tools && !tools.current))
+      }
+      title={
+        building
+          ? "Building the image"
+          : host.image
+            ? tools?.current
+              ? "Image with Python and the Google Cloud CLI"
+              : "Image"
+            : "No image yet"
+      }
       detail={
-        host.image ? (
+        building ? (
+          "Downloads the base image and packages; it takes a few minutes."
+        ) : host.image ? (
           <>
-            <span className="mono">{imageSummary(host.image)}</span> ·{" "}
+            <span className="mono">{imageSummary(host.image)}</span> · built{" "}
             {dayLabel(host.image.built_at)}
             {!host.image.current &&
               " · this Brainiac changed the Dockerfile: rebuild it"}
-            {host.kind === "ssh" &&
-              host.engine_name &&
-              ` · ${host.engine_name}`}
-            {building &&
-              " · building downloads the base image and packages; it takes a few minutes"}
+            {tools &&
+              !tools.current &&
+              " · its Python and Google Cloud CLI layer is out of date: rebuild it"}
           </>
-        ) : building ? (
-          "Building downloads the base image and packages; it takes a few minutes."
         ) : (
           `${recipe}, each at a pinned version.`
         )
@@ -241,98 +236,56 @@ function ImageRow({
 }
 
 /**
- * One test line per profile on a host: passed, to run again, not run, or
- * what the profile lacks first (SPEC.md, Settings → Agents, Test).
+ * Which agents passed their test here (SPEC.md, Settings → Agents, Test):
+ * one line, each name opening that agent's page, where Test is. A test is
+ * of an agent, so it is run from the agent; the host only says what it can
+ * take.
  */
-function ProfileTests({
+function TestedAgents({
   host,
   profiles,
-  disabled,
-  testing,
-  onTest,
-  result,
+  onAgent,
 }: {
   host: AgentHost;
   profiles: AgentProfile[];
-  /** Nothing can be tested now: the host is busy or not ready. */
-  disabled: boolean;
-  /** The profile being tested now, if any. */
-  testing?: string | null;
-  onTest: (profileId: string) => void;
-  /** This Mac's last test, under its profile's line. */
-  result?: { profileId: string; result: AgentTestResult } | null;
+  onAgent?: (profileId: string) => void;
 }) {
+  const passed = profiles.filter(
+    (p) => profileTestState(p, host).kind === "passed",
+  );
+  const rest = profiles.length - passed.length;
   return (
-    <>
-      {profiles.map((profile) => {
-        const name = profileName(profile);
-        const state = profileTestState(profile, host);
-        const title =
-          state.kind === "passed"
-            ? `${name} · test passed ${dayLabel(state.at)}`
-            : state.kind === "stale"
-              ? `${name} · test to run again`
-              : `${name} · not tested`;
-        const detail =
-          state.kind === "passed"
-            ? "With this token or key, image, and engine."
-            : state.kind === "stale"
-              ? `Passed ${dayLabel(state.at)}, before the token or key, the image, or the engine changed.`
-              : state.kind === "blocked"
-                ? state.reason
-                : "Runs of it start here once it passes.";
-        const shown = result?.profileId === profile.id ? result.result : null;
-        return (
-          <li
-            key={profile.id}
-            className="settings-row flex-col items-stretch gap-2"
-          >
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-              <Check done={state.kind === "passed"} />
-              <span className="flex min-w-55 flex-1 flex-col gap-0.5">
-                <span className="font-medium">{title}</span>
-                <Hint>{detail}</Hint>
-              </span>
-              <button
-                type="button"
-                className="btn btn-sm"
-                aria-label={`Test ${name}`}
-                disabled={disabled || state.kind === "blocked" || !!testing}
-                onClick={() => onTest(profile.id)}
-              >
-                {testing === profile.id
-                  ? "Testing…"
-                  : state.kind === "passed" || state.kind === "stale"
-                    ? "Test Again"
-                    : "Test"}
-              </button>
-            </div>
-            {shown && (
-              <div className="flex flex-col gap-1 pl-8">
-                {shown.steps.map((step) => (
-                  <div key={step.name} className="flex gap-2 text-[12.5px]">
-                    <span
-                      className={step.passed ? "text-added" : "text-conflict"}
-                    >
-                      {step.passed ? "✓" : "✕"}
-                    </span>
-                    <span>{step.name}</span>
-                    {step.detail && (
-                      <span className="truncate text-muted">{step.detail}</span>
-                    )}
-                  </div>
-                ))}
-                <Hint>
-                  {shown.passed
-                    ? `Passed at ${dayLabel(shown.tested_at)}.`
-                    : `The test did not pass; runs of ${name} cannot start here yet.`}
-                </Hint>
-              </div>
-            )}
-          </li>
-        );
-      })}
-    </>
+    <SetupRow
+      done={passed.length > 0}
+      label="Agents tested here"
+      title="Agents tested here"
+      detail={
+        <>
+          {passed.length === 0 && "None yet. "}
+          {passed.map((p, i) => (
+            <span key={p.id}>
+              {i > 0 && ", "}
+              {onAgent ? (
+                <button
+                  type="button"
+                  className="text-link hover:underline"
+                  onClick={() => onAgent(p.id)}
+                >
+                  {profileName(p)}
+                </button>
+              ) : (
+                profileName(p)
+              )}
+            </span>
+          ))}
+          {passed.length > 0 && rest > 0 && " · "}
+          {rest > 0 &&
+            `${rest} ${rest === 1 ? "agent" : "agents"} not tested here. `}
+          A run of an agent starts here once its test passes; Test is on the
+          agent's page, in Agents.
+        </>
+      }
+    />
   );
 }
 
@@ -340,12 +293,15 @@ const CANCEL_LABEL: Partial<Record<HostJobKind, string>> = {
   install: "Cancel install",
   upgrade: "Cancel upgrade",
   setup: "Cancel setup",
+  prepare: "Cancel preparation",
 };
 
 /**
- * A remote host's page (SPEC.md, Remote hosts): its state, an upgrade when
- * one is available, its last job, its setup in order, its live runs,
- * Emergency stop, and Remove.
+ * A remote host's page (SPEC.md, Remote hosts, A host's page): the machine
+ * only. Its header says whether it answers; The machine lists what it has
+ * and lacks, Health its numbers, Routines on this host what it fires, Held
+ * here what it keeps. What runs here, with what access, is set on each
+ * routine or run, never here.
  */
 export function RemoteHostPage({
   host,
@@ -355,6 +311,8 @@ export function RemoteHostPage({
   onConfirmKey,
   onViewDockerfile,
   onOpenRun,
+  onSecrets,
+  onAgent,
 }: {
   host: AgentHost;
   profiles: AgentProfile[];
@@ -364,11 +322,16 @@ export function RemoteHostPage({
   onConfirmKey: (host: AgentHost) => void;
   onViewDockerfile: () => void;
   onOpenRun?: (runId: string) => void;
+  onSecrets?: () => void;
+  /** Opens an agent's page, where its test on this host is run. */
+  onAgent?: (profileId: string) => void;
 }) {
   const jobs = useHostJobsContext();
   const job = jobs[host.id];
   const running = job?.state === "running";
   const live = useLiveRuns(host.id);
+  const settled = host.installed && host.approved && !running;
+  const health = useHostHealth(host.id, settled);
   const [error, setError] = useState<string | null>(null);
   const [showKey, setShowKey] = useState(false);
   const [removing, setRemoving] = useState(false);
@@ -421,23 +384,34 @@ export function RemoteHostPage({
   const failed =
     job && (job.state === "failed" || job.state === "interrupted") && !running;
   const address = `${host.ssh_user}@${host.ssh_host}:${host.ssh_port ?? 22}`;
+  // The header's pill: what the host lacks, or whether it answers.
+  const setup = hostState(host, job);
+  const pill =
+    setup.tone === "ready" && health.health ? healthPill(health.health) : setup;
+  const reachable = health.health?.reachable;
+  const buildingImage =
+    running &&
+    job?.steps[currentStep(job)]?.title.startsWith("Build the image");
 
   return (
     <div className="flex flex-col gap-5">
-      <Breadcrumb name={host.name} via="Run hosts" onBack={onBack} />
       <PageHeader
         host={host}
-        subtitle={
-          <>
-            {address}
-            {host.fingerprint && ` · key ${shortFingerprint(host.fingerprint)}`}
-            {host.installed &&
-              !running &&
-              " · keeps working while this Mac sleeps"}
-          </>
-        }
+        onBack={onBack}
+        pill={pill}
+        subtitle="The machine only. What runs here, with what access, is set on each routine or run."
         actions={
           <>
+            {settled && (
+              <button
+                type="button"
+                className="btn btn-sm"
+                disabled={health.busy}
+                onClick={() => void health.check()}
+              >
+                {health.busy ? "Checking…" : "Check Now"}
+              </button>
+            )}
             {running && job && CANCEL_LABEL[job.kind] && (
               <button
                 type="button"
@@ -459,9 +433,12 @@ export function RemoteHostPage({
                 className="btn btn-sm btn-primary"
                 disabled={busy}
                 onClick={() =>
+                  // A test, or a routine's preparation, is again of its agent.
                   void start(
                     job.kind,
-                    job.kind === "test" ? job.profile_ids[0] : undefined,
+                    job.kind === "test" || job.kind === "prepare"
+                      ? job.profile_ids[0]
+                      : undefined,
                   )
                 }
               >
@@ -516,40 +493,9 @@ export function RemoteHostPage({
         </Banner>
       )}
 
-      {host.upgrade_available && host.approved && !running && (
-        <Banner
-          tone="blue"
-          title="An upgrade of the run controller is available"
-        >
-          <p className="m-0">
-            {host.name} runs{" "}
-            {host.controller_build
-              ? `build ${host.controller_build}`
-              : "an earlier build"}
-            ; this Brainiac builds {host.available_build}. Upgrading restarts
-            the controller, so it waits while a run is live
-            {live.length > 0
-              ? `: ${live.length === 1 ? `“${live[0].title}” is live` : `${live.length} runs are live`} there now.`
-              : "."}
-          </p>
-          <div className="flex flex-wrap items-center gap-2.5">
-            <button
-              type="button"
-              className="btn btn-sm btn-primary"
-              disabled={busy}
-              onClick={() => void start("upgrade")}
-            >
-              {live.length > 0 ? "Upgrade When Runs End" : "Upgrade"}
-            </button>
-            <span className="text-[12px]">
-              Builds the new controller now, so the restart itself takes
-              seconds. New runs on {host.name} wait from then until it is done.
-            </span>
-          </div>
-        </Banner>
-      )}
-
-      {job && <HostJobView job={job} />}
+      {/* A job that succeeded says so once, in the window; the rows below
+          show what it changed. One that failed or stopped stays, with its log. */}
+      {job && job.state !== "succeeded" && <HostJobView job={job} />}
 
       {host.approved && host.installed && <HostMissing host={host} />}
 
@@ -557,7 +503,8 @@ export function RemoteHostPage({
         job &&
         (job.kind === "upgrade" ||
           job.kind === "install" ||
-          job.kind === "setup") && (
+          job.kind === "setup" ||
+          job.kind === "prepare") && (
           <Group label="Meanwhile">
             <ul className="m-0 flex list-disc flex-col gap-1.5 rounded-[10px] border bg-app py-3 pr-4 pl-8 text-[12.5px] leading-relaxed text-fg-2">
               <li>
@@ -580,107 +527,155 @@ export function RemoteHostPage({
           </Group>
         )}
 
-      <Group label="Setup">
-        <ol className="settings-group m-0 list-none p-0">
-          <SetupRow
-            done={host.approved}
-            title={host.approved ? "Host key confirmed" : "Host key to confirm"}
-            detail={
-              showKey || !host.fingerprint
-                ? (host.fingerprint ?? "No key saved")
-                : shortFingerprint(host.fingerprint)
-            }
-          >
-            {host.fingerprint && (
+      <div className="flex flex-wrap items-start gap-4">
+        <Card title="The machine" className="min-w-[420px] flex-1">
+          <ol className="m-0 flex list-none flex-col p-0">
+            <SetupRow
+              done={host.approved && reachable !== false}
+              title={
+                reachable === true
+                  ? "Connected"
+                  : reachable === false
+                    ? "Not answering"
+                    : host.approved
+                      ? "Key trusted"
+                      : "Key to confirm"
+              }
+              detail={
+                <>
+                  <span className="mono">{address}</span>
+                  {host.fingerprint &&
+                    ` · ${host.approved ? "key trusted" : "key to confirm"}${
+                      showKey ? `: ${host.fingerprint}` : ""
+                    }`}
+                </>
+              }
+            >
+              {host.fingerprint && (
+                <button
+                  type="button"
+                  className="btn btn-sm btn-ghost text-link"
+                  onClick={() => setShowKey(!showKey)}
+                >
+                  {showKey ? "Hide Key" : "Show Key"}
+                </button>
+              )}
+            </SetupRow>
+            <SetupRow
+              done={host.installed && !host.upgrade_available}
+              warn={host.installed && host.upgrade_available}
+              label="Run controller"
+              title={
+                host.installed
+                  ? `Run controller ${host.controller_build ?? "(an earlier build)"}`
+                  : "Run controller not installed"
+              }
+              detail={
+                host.upgrade_available
+                  ? `Older than this Brainiac, which builds ${host.available_build ?? "a newer one"}. The next approval of a routine here upgrades it, or do it now; upgrading restarts the controller, so it waits while a run is live${
+                      live.length > 0
+                        ? `: ${live.length === 1 ? `“${live[0].title}” is live` : `${live.length} runs are live`} there now`
+                        : ""
+                    }.`
+                  : host.installed
+                    ? [
+                        host.protocol != null && `protocol ${host.protocol}`,
+                        "systemd service brainiac-runner",
+                        host.controller_installed_at &&
+                          `installed ${dayLabel(host.controller_installed_at)}`,
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")
+                    : "Install puts it on the host as a systemd service, with the sudo actions you approved."
+              }
+            >
+              {host.upgrade_available && host.approved && !running && (
+                <button
+                  type="button"
+                  className="btn btn-sm btn-primary"
+                  disabled={busy}
+                  onClick={() => void start("upgrade")}
+                >
+                  {live.length > 0 ? "Upgrade When Runs End" : "Upgrade"}
+                </button>
+              )}
               <button
                 type="button"
                 className="btn btn-sm btn-ghost text-link"
-                onClick={() => setShowKey(!showKey)}
+                disabled={blocked}
+                onClick={() => void start("install")}
               >
-                {showKey ? "Hide Key" : "Show Key"}
+                {host.installed ? "Reinstall" : "Install"}
               </button>
-            )}
-          </SetupRow>
-          <SetupRow
-            done={host.installed}
-            title={
-              host.installed
-                ? "Run controller installed"
-                : "Run controller not installed"
-            }
-            detail={
-              host.installed
-                ? [
-                    host.controller_build
-                      ? `Build ${host.controller_build}`
-                      : "An earlier build",
-                    host.protocol != null && `protocol ${host.protocol}`,
-                    "systemd service brainiac-runner",
-                    host.controller_installed_at &&
-                      dayLabel(host.controller_installed_at),
-                  ]
-                    .filter(Boolean)
-                    .join(" · ")
-                : "Install puts it on the host as a systemd service, with the sudo actions you approved."
-            }
-          >
-            <button
-              type="button"
-              className="btn btn-sm btn-ghost text-link"
-              disabled={blocked}
-              onClick={() => void start("install")}
+            </SetupRow>
+            <SetupRow
+              done={!!host.engine_name && host.loop_devices}
+              warn={!!host.engine_name && !host.loop_devices}
+              title={host.engine_name ?? "Docker"}
+              detail={
+                host.engine_name
+                  ? host.loop_devices
+                    ? "Runs start in containers on it."
+                    : "It cannot attach the workspace's loop devices, so no run can start."
+                  : "Known once the image is built there."
+              }
+            />
+            <ImageRow
+              host={host}
+              building={buildingImage}
+              onViewDockerfile={onViewDockerfile}
             >
-              {host.installed ? "Reinstall" : "Install"}
-            </button>
-          </SetupRow>
-          <ImageRow host={host} onViewDockerfile={onViewDockerfile}>
-            <button
-              type="button"
-              className="btn btn-sm btn-ghost text-link"
-              disabled={blocked || !host.installed}
-              onClick={() => void start("build_image")}
-            >
-              {host.image ? "Rebuild" : "Build Image"}
-            </button>
-          </ImageRow>
-          <ProfileTests
-            host={host}
-            profiles={profiles}
-            disabled={
-              blocked || !host.image?.current || host.missing.length > 0
-            }
-            testing={
-              running && job?.kind === "test" ? job.profile_ids[0] : null
-            }
-            onTest={(profileId) => void start("test", profileId)}
+              <button
+                type="button"
+                className="btn btn-sm btn-ghost text-link"
+                disabled={blocked || !host.installed}
+                onClick={() => void start("build_image")}
+              >
+                {host.image ? "Rebuild" : "Build Image"}
+              </button>
+            </ImageRow>
+            <TestedAgents host={host} profiles={profiles} onAgent={onAgent} />
+          </ol>
+        </Card>
+        {settled && (
+          <HostHealthCard
+            key={`health-${host.id}`}
+            state={health}
+            className="w-[300px] flex-none"
           />
-        </ol>
-        <Hint>
-          A test starts a short run, sends a prompt, cancels, and collects. It
-          is the first time that token or key goes to {host.name}.
-        </Hint>
-      </Group>
+        )}
+      </div>
+
+      {settled && (
+        <HostSchedulesGroup key={`schedules-${host.id}`} host={host} />
+      )}
+
+      {settled && (
+        <HostSecretsGroup
+          key={`secrets-${host.id}`}
+          host={host}
+          onSecrets={onSecrets}
+        />
+      )}
 
       {live.length > 0 && (
-        <Group label={`Runs on ${host.name}`}>
-          <ul className="settings-group m-0 list-none p-0">
-            {live.map((run) => (
-              <li key={run.id} className="settings-row">
-                <span className="min-w-0 flex-1 truncate">{run.title}</span>
-                <Hint>{activityLabel(run)}</Hint>
-                {onOpenRun && (
-                  <button
-                    type="button"
-                    className="btn btn-sm"
-                    onClick={() => onOpenRun(run.id)}
-                  >
-                    Open
-                  </button>
-                )}
-              </li>
-            ))}
-          </ul>
-        </Group>
+        <Card title={`Runs on ${host.name}`}>
+          {live.map((run) => (
+            <div key={run.id} className="settings-row">
+              <span className="min-w-0 flex-1 truncate">{run.title}</span>
+              <Hint>{activityLabel(run)}</Hint>
+              {onOpenRun && (
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() => onOpenRun(run.id)}
+                >
+                  Open
+                </button>
+              )}
+            </div>
+          ))}
+        </Card>
       )}
 
       {host.emergency_stop && (
@@ -718,16 +713,15 @@ export function RemoteHostPage({
 
       <section
         aria-label={`Remove ${host.name}`}
-        className="flex flex-wrap items-center gap-3 border-t pt-3"
+        className="flex flex-wrap items-center gap-3 text-[12.5px]"
       >
-        <span className="flex min-w-55 flex-1 flex-col gap-0.5">
-          <span className="font-medium">Remove {host.name}</span>
-          <Hint>
-            Uninstalls the run controller. Possible once no run is live there;
-            work still waiting for a decision keeps its files on the host.
-            {host.state_kept && " Files from earlier runs remain on the host."}
-          </Hint>
-        </span>
+        <Hint>
+          Removing the host uninstalls the run controller and deletes what it
+          holds there: its sealed secrets and its schedules. Possible once no
+          run is live; work still waiting for a decision keeps its files.
+          {host.state_kept && " Files from earlier runs remain on the host."}
+        </Hint>
+        <span className="flex-1" />
         {removing ? (
           <span className="flex gap-2">
             <button
@@ -749,11 +743,11 @@ export function RemoteHostPage({
         ) : (
           <button
             type="button"
-            className="btn btn-sm text-conflict"
+            className="btn btn-sm btn-ghost text-conflict"
             disabled={busy || running || live.length > 0}
             onClick={() => setRemoving(true)}
           >
-            Remove…
+            Remove host…
           </button>
         )}
       </section>
@@ -795,6 +789,7 @@ export function LocalHostPage({
   onViewDockerfile,
   onSettings,
   onError,
+  onAgent,
 }: {
   host: AgentHost;
   settings: AgentSettings;
@@ -804,19 +799,14 @@ export function LocalHostPage({
   onViewDockerfile: () => void;
   onSettings: (settings: AgentSettings) => void;
   onError: (message: string | null) => void;
+  /** Opens an agent's page, where its test on this Mac is run. */
+  onAgent?: (profileId: string) => void;
 }) {
   const [engines, setEngines] = useState<AgentEngine[] | null>(null);
   const [controller, setController] = useState<RunControllerStatus | null>(
     null,
   );
   const [building, setBuilding] = useState(false);
-  /** The profile being tested, and the last test's result under its line. */
-  const [testing, setTesting] = useState<string | null>(null);
-  const [testResult, setTestResult] = useState<{
-    profileId: string;
-    result: AgentTestResult;
-  } | null>(null);
-
   const loadEngines = useCallback(() => {
     setEngines(null);
     ipc
@@ -854,27 +844,11 @@ export function LocalHostPage({
       setBuilding(false);
     }
   };
-  /** Test: minutes when a wrong token is retried; the page stays usable. */
-  const runTest = async (profileId: string) => {
-    setTesting(profileId);
-    onError(null);
-    setTestResult(null);
-    try {
-      const result = await ipc.testAgentSetup(profileId);
-      setTestResult({ profileId, result });
-      onSettings(await ipc.getAgentSettings());
-    } catch (e) {
-      onError(errorMessage(e));
-    } finally {
-      setTesting(null);
-    }
-  };
-
   return (
     <div className="flex flex-col gap-5">
-      <Breadcrumb name="This Mac" via="Run hosts" onBack={onBack} />
       <PageHeader
         host={host}
+        onBack={onBack}
         subtitle="Runs pause while this Mac sleeps; when it wakes, a run past its time limit is stopped."
       />
 
@@ -943,21 +917,12 @@ export function LocalHostPage({
               {building ? "Building…" : host.image ? "Rebuild" : "Build Image"}
             </button>
           </ImageRow>
-          <ProfileTests
+          <TestedAgents
             host={host}
             profiles={settings.profiles}
-            disabled={busy || building || host.missing.length > 0}
-            testing={testing}
-            onTest={(profileId) => void runTest(profileId)}
-            result={testResult}
+            onAgent={onAgent}
           />
         </ol>
-        <Hint>
-          A test starts a short run, sends a prompt, cancels, and collects. A
-          run of an agent cannot start until its test passes for this token or
-          key, image, and engine. A wrong token or key can take a few minutes to
-          be refused: the agent retries it first.
-        </Hint>
       </Group>
     </div>
   );

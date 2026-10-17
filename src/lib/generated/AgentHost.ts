@@ -28,6 +28,11 @@ installed: boolean, engine_name: string | null,
  */
 loop_devices: boolean, image: AgentImage | null, 
 /**
+ * The tools layer (Python and the Google Cloud CLI) built on `image`;
+ * `None` until a build with a profile that asks for it.
+ */
+tools_image: AgentImage | null, 
+/**
  * What still stops this host from taking a run, whatever the profile
  * (the engine, the install, the image), in the order to do it.
  */

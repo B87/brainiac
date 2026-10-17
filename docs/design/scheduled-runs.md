@@ -2,9 +2,13 @@
 
 Design notes for a run that starts on a schedule on an always-on run host and leaves a short report, a briefing, for the user to read on Today. The motivating case: every morning, check a production environment (Google Cloud and Sentry, through scripts and skill instructions kept in one repository), and turn what is found into a note and proposed tasks or Jira issues.
 
+## Terminology (16 Oct 2026)
+
+This document says "briefing" for the saved definition because it was written first. The visible words are now **Routine** for the definition (what to run, where, and optionally when) and **Briefing** for a result it leaves, as `routines-ux.md` sets out. Read "briefing" below as "routine" where it means the definition, and as "briefing" where it means the report or `.brainiac/briefing.json`.
+
 ## Status: proposal (15 Oct 2026)
 
-Nothing here is built, and none of it is in scope for v0.6. It reverses three lines in [`agent-runs.md`](agent-runs.md) and [`secrets.md`](secrets.md) (below), so it needs its own decision in `architecture.md` before any code.
+Phase 4 is built (17 Oct 2026), with the deviations in `architecture.md` (17 Oct 2026): the host starts from the code the Mac last sent it, the agent's key is sealed on the host, cost is checked after a run and not during it, and time is the host's. Phase 3 is built (16 Oct 2026): briefings, the `briefing.json` result and its checks, Run now, and the Today card with Create Task and Save as Note (`SPEC.md`, section 6; `architecture.md`, Decisions). How briefings and their schedules are listed, opened and read is redesigned in [`routines-ux.md`](routines-ux.md), whose steps 1 to 3 are built (16 and 17 Oct 2026). Phase 1 is started (15 Oct 2026): the controller's `Health` request and a Health section on a run host's page (`SPEC.md`, Remote hosts; `architecture.md`, Decisions). Not built: the Machines pane of its own, the last hour kept in memory, and phase 5 (later). None of it was in scope for v0.6. It reverses three lines in [`agent-runs.md`](agent-runs.md) and [`secrets.md`](secrets.md) (below); the decisions that do so are in `architecture.md` (15 to 17 Oct 2026).
 
 ## Why
 
@@ -30,6 +34,23 @@ A scheduled run is still a run of the existing kind: same container, deadline, j
 
 The agent writes `.brainiac/briefing.json`; Brainiac reads back only that file from the container's archive and validates it before showing anything, as it does for `.brainiac/explanation.json` (`code-explanations.md`). Shape, to be defined in `models.rs` when built: status, a summary, findings (title, severity, a link, a stable key such as the Sentry issue id), and proposed items (title, body, kind, the finding key). Unknown fields are dropped; sizes are bounded. The stable key lets Today say "seen yesterday" and lets Create skip an item already created.
 
+### Memory and earlier results
+
+Decided (16 Oct 2026). A briefing is useful across days only if a run knows what the last ones found. Two things carry that, both in the run's prompt, as data and never as instructions:
+
+- **Memory:** bounded text (16,000 characters) on the briefing that the agent may replace by writing `memory` in `briefing.json`, and the user may edit. Absent in the file means unchanged; a user edit made while a run is going wins. It is in `brainiac.db` with the definition, so a backup holds it. It is not a file copied into the container: the container receives nothing new, and the controller needs no new input.
+- **Earlier results:** the last N ready results (0 to 10, three by default), as dates, summaries and the keys and titles of their findings, cut to 6,000 characters.
+
+Both come from earlier runs, so both can carry text that came from outside (a Sentry message, a web page). The prompt labels them as data, the agent's own file contract is the only thing that makes Brainiac act, and nothing in them is run or fetched by Brainiac. When schedules fire on the host (phase 4) the host needs the memory and the earlier results too; the definition then moves to the host with them.
+
+### Result vocabulary
+
+A briefing is not only about problems. `status` is optional (`nothing_found` and `findings` are claims about a check; no status is a report), `severity` is optional, and a proposal may be a task, an issue, or a note. A result with no usable file is still a failure and never a report.
+
+### Continuing a run later
+
+Not built; the design keeps it possible. A result stores its `run_id`, and following a run (reading the file) is separate from ending it (Finish, or Cancel when Finish refuses). A later setting could keep the run open for a few minutes after the file is read, so the user can continue its conversation from Runs, at the cost of the container and the host secrets staying alive. A scheduled run would rather start a new run from the same commit with the briefing as context than keep one open, because an agent session does not outlive its container.
+
 ### Credentials on the host
 
 Decided (15 Oct 2026): credentials live in the **host's own local credential store**, Linux hosts only for now. Google Secret Manager is not used in this design; it stays a later source (`secrets.md`, phase 2). This is the real change. Today a credential is resolved on the Mac, handed to the controller's memory once, and never stored there; the controller "cannot resolve Mac credential sources or renew credentials while the Mac is away" (`agent-runs.md`, Credentials and disclosure). An unattended run has no Mac to ask.
@@ -40,9 +61,9 @@ A Sentry token is neither an account's token nor a connection's password, so Set
 
 - **Model credential: the profile's existing choice.** A profile already delivers exactly one of a Claude plan token or an API key (`agent-runs.md`, Subscription token). A scheduled run uses its profile's choice. The Claude plan option stays subject to the open terms question there.
 - **Sentry and Google Cloud credentials:** named secrets (above) chosen on the profile, delivered to the container under names the descriptor approves. The Google Cloud one is a service account key for the checks themselves, with viewer roles only.
-- **Which local store.** `secrets.md` plans the Secret Service on Linux for a later phase, but a headless server often has no D-Bus session or unlocked collection, and Brainiac does not fall back to a plain file. The lead candidate for a server is systemd's credential facility (`systemd-creds`, delivered to the controller's service with `LoadCredentialEncrypted=`): encrypted to the host, no session or unlock, readable only by that service. The Secret Service stays the choice for a desktop host. Which one ships first is settled by a spike (Open questions).
+- **Which local store.** Decided (15 Oct 2026): `systemd-creds --user`, which encrypts a value so that only that user on that machine can decrypt it, with the ciphertext as a file in the controller's state folder. Tried on the target host (Ubuntu, systemd 259) as the controller's user `brainiac`: a value encrypted and decrypted without root or a login session. Still to confirm on that host: a stored value decrypts again after a reboot. `secrets.md` plans the Secret Service for a desktop Linux host later, and a host without `systemd-creds --user` cannot take secrets, with the reason shown; there is no plain-file fallback.
 - **What this saves.** No Google authentication changes, no service account that exists only to read secrets, and no second network hop at 07:00. The cost is that rotation means sharing again from the app, and there is no central audit log.
-- The home server is reached over Tailscale with the system SSH, verified host keys, and the controller as a service, as in `agent-runs.md` (Remote sessions); a private network is not a reason to loosen any of that. Outbound access from the host still goes through the allowlist.
+- The home server is reached over Tailscale with the system SSH, verified host keys, and the controller as a service, as in `agent-runs.md` (Remote sessions); a private network is not a reason to loosen any of that.
 
 Each share on a host has a visible state, in the host's Secrets section and on the profile that uses it:
 
@@ -58,9 +79,28 @@ Scope rules that follow, because anyone with access to the host can read what it
 - **No Jira write token in the run** (below).
 - The profile shows each credential's scope at approval, and warns from the same age as the subscription token.
 
-### The network allowlist comes first
+### The tools layer
 
-Decided (15 Oct 2026): the allowlist is part of this work, not optional. A run that holds production read access must not have unrestricted egress. This depends on the allowlist mode in `agent-runs.md` (Isolation and permissions): provider, plus the user-added hosts for Google APIs and Sentry, nothing else, with no unrestricted fallback. Schedules are not enabled for a host until the allowlist is tested on it.
+Decided (15 Oct 2026). The run image today is Node 22 on Debian with `git`, `ripgrep` and the two agents (`src-tauri/src/agents/image/Dockerfile`), and it is one image for every run. The morning check needs Python and the Google Cloud CLI (`gcloud`). Adding them to that image would make every run's image and build larger for a tool most runs never use, and installing at run time would also make a run depend on the network at its start.
+
+So Brainiac builds an optional **tools layer** on top of the base image, from a Dockerfile compiled into Brainiac like the base one, with the same rules: pinned base digest, pinned packages, the build context is those files and nothing else, and a repository's own Dockerfile or `requirements.txt` is never read at build.
+
+- The layer adds `python3` (Debian's, with its standard library) and `gcloud` at a pinned version from Google's package source. It installs no Python packages: the first script this was designed for imports only the standard library (`argparse`, `json`, `os`, `re`, `sys`, `time`, `urllib`), so there is no `pip` step, no package index to reach at build, and nothing to pin there. A fixed list can be added later if a script needs one.
+- Built and tried on 15 Oct 2026 (`src-tauri/src/agents/image/tools/Dockerfile`, not yet wired into Build image): Python 3.11.2 and Google Cloud CLI 589.0.0 run as the unprivileged `node` user, the first script's imports all resolve, and the layer adds about 640 MB to the 1.07 GB run image. The apt repository's signing key is pinned by SHA-256 in the Dockerfile and the package by version.
+- A profile ticks **Python and Google Cloud CLI** to use it. Other profiles keep the base image. The layer has its own recipe hash, tag and current/rebuild state, shown next to the base image on the host's page, and **Build image** builds both when the profile needs the layer.
+- The layer is part of what a schedule's approval records (image digest), so a rebuild asks for approval again.
+- The user's scripts live in the repository, which the run already has. A script that imports a third-party package will not find it; that is a limit of the layer, shown in its description, until a list exists.
+
+### The network allowlist is out of scope
+
+Decided (16 Oct 2026): this work does not include the network allowlist. It was a prerequisite in the first draft; the maintainer moved it out. The consequence is plain and is shown, not hidden: a run that holds host secrets has the same unrestricted egress as any run (`agent-runs.md`, Isolation and permissions), so a prompt-injected run could send a secret it holds to any address. What limits that, until an allowlist exists:
+
+- Only secrets the user names on a profile reach a run, and only on a host the user shared them to.
+- Use tokens that can read and nothing more; the Share section says so.
+- New run and the profile list the secrets a run will get, next to the unrestricted network disclosure.
+- Schedules (phase 4) show the same disclosure in their approval.
+
+The allowlist remains a later, separate design (`agent-runs.md`). It is not a gate for schedules.
 
 ### Outward writes are proposals
 
@@ -94,7 +134,7 @@ Scheduled runs need a host to be more than an entry in Settings → Agents, so t
 ## Phases
 
 1. **Machines pane and Health:** the pane, reachability, and the controller's `health` request. Useful with runs on a host today, before any schedule.
-2. **Secrets on a host and the network allowlist** (the allowlist is a separate design): write-only secrets stored on a Linux host and read by its controller when a run starts, with the share states; named secrets in Settings → Secrets.
+2. **Secrets on a host, and a profile's choice of them:** write-only secrets stored on a Linux host and read by its controller when a run starts, with the share states; named secrets in Settings → Secrets.
 3. **Briefing and Run now:** the `briefing` result kind, validation, the Today card, Save as note, Create task. No schedule yet.
 4. **Schedules on the host:** records, firing, missed-run handling, approval and re-approval, cost and pause, overdue display.
 5. **Later:** a Jira adapter for approve-and-create, notifications, several schedules per profile.
@@ -107,15 +147,25 @@ Scheduled runs need a host to be more than an entry in Settings → Agents, so t
 - Production access beyond read-only tokens; the user's own gcloud login in a container.
 - Recurring tasks and reminders in Brainiac itself (`roadmap.md`), which this does not need.
 
+## Checking a real host
+
+A container rehearsal (16 Oct 2026, Debian trixie, systemd 257, a privileged container with `/var/lib/systemd` on a volume) sealed a value with `systemd-creds --user --name=TOK` as an unprivileged user and opened it again after the container was restarted, from a system service with no login session. A different `--name` failed, and so did a missing `/var/lib/systemd/credential.secret`. So a sealed file is tied to that host key file and the user's uid: restoring a host without the file loses every secret and model key on it. A container is not a reboot and has no TPM. On the real host, as an administrator:
+
+1. `systemctl --version | head -1` and `sudo ls -l /var/lib/systemd/credential.secret; systemd-analyze has-tpm2`
+2. `printf s3cret | sudo -u brainiac systemd-creds encrypt --user --name=TOK - - > /var/lib/brainiac-test.sealed`
+3. `sudo -u brainiac systemd-creds decrypt --user --name=TOK - - < /var/lib/brainiac-test.sealed`
+4. Reboot, then `sudo systemd-run --pipe --wait -p User=brainiac systemd-creds decrypt --user --name=TOK - - < /var/lib/brainiac-test.sealed`, and delete the test file.
+
+Then upgrade the host's controller from its page (it must run this build: protocol 4 and the schedule requests), share a secret, approve a schedule a few minutes ahead, and check the briefing arrives with this Mac asleep.
+
 ## Open questions
 
 | Question | Decides |
 | --- | --- |
-| Which local store does the Linux host have for the service account key: `systemd-creds` for the controller's service, or a Secret Service collection unlocked without a login? Does the controller run as a user that can reach it at 07:00 with no one logged in? | The first store backend, and whether the Secret Service waits for phase 3 |
-| Is the host's engine one whose network policy Brainiac can enforce and test? | Whether schedules can ship on that host |
+| Does a value stored with `systemd-creds --user` still decrypt after the host reboots? Works as the controller's user without root (tried 15 Oct 2026) | Whether the store survives a restart |
 | Does the skill need anything beyond one repository and API access? | Whether a multi-repository run is needed (the design assumes not) |
 | Does the model credential for an unattended run (a `claude setup-token` token or an API key) fall under the open terms question in `agent-runs.md`? | Whether a Claude plan may power scheduled runs at all |
 | How long may a host be silent before a schedule is overdue? | The overdue window |
 | How are extra secrets (a Sentry token, a Google key) delivered? The bootstrap contract carries the model credential and "descriptor-approved keys" exported as environment variables, and phase 1 injects no registry tokens (`agent-runs.md`, Credentials and disclosure) | The descriptor and entrypoint change that phase 2 needs, including trace filtering of each new value |
 | The Google service account key is a JSON file. Deliver the JSON as one environment variable that the script passes to the client library or writes to tmpfs, or let the entrypoint write a file to tmpfs? | Whether the delivery contract stays environment-only |
-| Does the run image have what the scripts need (Python and its packages, `gcloud`)? Setup builds the image from app-controlled content and never from a repository's Dockerfile, so tooling may need a custom image Brainiac builds and pins by digest | Whether the user's existing scripts run unchanged |
+| Which third-party Python packages might other scripts import? Resolved for the first script (standard library only); decide a fixed list only when a second script needs one | Whether the layer ever needs a `pip` step |

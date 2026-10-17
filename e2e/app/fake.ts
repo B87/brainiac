@@ -13,6 +13,7 @@ import type {
   AgentSettings,
   AnswerCodeSharingRequest,
   AppSnapshot,
+  BriefingResult,
   Cell,
   CodeAnswer,
   Comment,
@@ -24,9 +25,14 @@ import type {
   FolderEntry,
   ForgeAccountSlot,
   HealthSample,
+  HostHealth,
   HostJob,
+  HostScheduleOnly,
+  HostSecretRow,
+  HostSecrets,
   ListPullRequestsRequest,
   MergeRequest,
+  NamedSecret,
   NoteContent,
   NoteSummary,
   PullRequest,
@@ -39,13 +45,18 @@ import type {
   ResolveThreadRequest,
   ReviewDraft,
   ReviewDrafts,
+  Routine,
+  RoutineOverview,
+  RoutineSchedule,
   RunEvent,
   RunStatementRequest,
   SaveDbConnectionRequest,
   SavedQuery,
   SaveForgeAccountRequest,
+  SaveNamedSecretRequest,
   SaveQueryRequest,
   SaveReviewDraftRequest,
+  ScheduleWhen,
   SearchHit,
   SecretsOverview,
   Settings,
@@ -545,6 +556,8 @@ function sampleRun(fields: Partial<AgentRun>): AgentRun {
     snapshot_accepted: false,
     cleanup_pending: null,
     explain: false,
+    host_secrets: [],
+    routine_id: null,
     cursor: 0,
     created_at: minutesFromNow(-20),
     updated_at: minutesFromNow(0),
@@ -916,6 +929,7 @@ function agentHost(fields: Partial<AgentHost>): AgentHost {
     engine_name: null,
     loop_devices: false,
     image: null,
+    tools_image: null,
     missing: [],
     tests: [],
     emergency_stop: null,
@@ -998,7 +1012,13 @@ export class FakeBackend {
         host.upgrade_available = false;
         host.emergency_stop = `ssh -p ${host.ssh_port} ${host.ssh_user}@${host.ssh_host} sudo -n -u brainiac /usr/local/bin/brainiac-runner emergency-stop --state /var/lib/brainiac-runner`;
       }
-      if (job.kind === "build_image" || job.kind === "setup") {
+      if (
+        job.kind === "build_image" ||
+        job.kind === "setup" ||
+        (job.kind === "prepare" && !host.image?.current)
+      ) {
+        // A new image ID: a test passed on the old one no longer matches.
+        host.tests = host.tests.map((t) => ({ ...t, current: false }));
         host.image = {
           name: "brainiac-agents:4d1e",
           id: "sha256:4d1e",
@@ -1008,11 +1028,31 @@ export class FakeBackend {
         host.loop_devices = true;
         host.engine_name = "Docker 27.3";
       }
-      if (job.kind === "test" || job.kind === "setup")
+      if (job.kind === "test" || job.kind === "setup" || job.kind === "prepare")
         for (const id of job.profile_ids) this.passTest(host, id);
     }
     this.refreshAgents();
     this.emit("agent_host_job", this.hostJobs[hostId]);
+    // The schedules waiting on this host, as `finish_preparing`: one that is
+    // ready goes there; one whose agent this job did not prepare gets a
+    // preparation of its own; one this job failed to prepare stays off.
+    for (const [routineId, sched] of this.schedules) {
+      const routine = this.routines.find((r) => r.id === routineId);
+      if (!sched.preparing || !routine || routine.host_id !== hostId) continue;
+      if (!this.needsPreparing(host, routine)) {
+        sched.preparing = false;
+        sched.approved = true;
+        continue;
+      }
+      const ours =
+        job.kind === "prepare" && job.profile_ids.includes(routine.profile_id);
+      if (!ours) {
+        this.startHostJob(hostId, "prepare", routine.profile_id);
+        return;
+      }
+      sched.preparing = false;
+      sched.notice = `${host.name} could not be prepared: ${this.hostJobs[hostId].error ?? "it is not ready yet."} Approve again to retry.`;
+    }
   }
   /** Settings → Agents: nothing set up yet, OrbStack running. */
   hostKey = "SHA256:preview";
@@ -1035,6 +1075,25 @@ export class FakeBackend {
     );
     return inWorkspaces.find((a) => !a.allowed) ?? inWorkspaces[0];
   }
+  /** Run host Health: what the controller reports; a test changes it. */
+  hostHealth: HostHealth = {
+    reachable: true,
+    problem: null,
+    checked_at: new Date().toISOString(),
+    controller_version: "0.6.4",
+    controller_uptime_secs: 7200,
+    live_runs: 0,
+    host_uptime_secs: 3 * 86400,
+    load: [0.1, 0.2, 0.3],
+    memory_total_kib: 16 * 1024 * 1024,
+    memory_available_kib: 8 * 1024 * 1024,
+    disk_total_kib: 500 * 1024 * 1024,
+    disk_free_kib: 300 * 1024 * 1024,
+    engine_name: "Docker Engine",
+    engine_supported: true,
+    engine_problem: null,
+    warnings: [],
+  };
   agentSettings: AgentSettings = {
     profiles: [
       agentProfile("claude-code", "claude_code", "anthropic"),
@@ -1051,6 +1110,95 @@ export class FakeBackend {
     for (const p of this.agentSettings.profiles) p.missing = profileMissing(p);
     for (const h of this.agentSettings.hosts)
       h.missing = hostMissing(h, this.agentSettings.engine_socket);
+  }
+  /** As `needs_preparing`: what approving a routine on its host still needs. */
+  needsPreparing(host: AgentHost, routine: Routine): boolean {
+    return (
+      host.upgrade_available ||
+      !host.image?.current ||
+      (routine.tools && !host.tools_image?.current) ||
+      !host.tests.some((t) => t.profile_id === routine.profile_id && t.current)
+    );
+  }
+  /** A host job, as `HostJobService::start` begins it. */
+  startHostJob(
+    hostId: string,
+    kind: HostJob["kind"],
+    profileId?: string,
+  ): HostJob {
+    const host = this.agentSettings.hosts.find((h) => h.id === hostId);
+    if (!host) throw { code: "NOT_FOUND", message: "That host is not saved." };
+    if (this.hostJobs[hostId]?.state === "running")
+      throw {
+        code: "CONFLICT",
+        message: `${host.name} already has a job running.`,
+      };
+    const install = [
+      `Reach ${host.name}`,
+      "Build the run controller for linux/amd64",
+      `Copy it to ${host.name} and check its SHA-256`,
+      `Wait until no run is live on ${host.name}`,
+      "Install the program and its service",
+      "Check that it answers",
+    ];
+    const image = [
+      `Build the image on ${host.name}`,
+      "Check its Docker engine",
+    ];
+    // Test is of one profile; setup tests each profile that is ready.
+    this.refreshAgents();
+    // A routine's approval always carries its agent: the job tests it
+    // after the image, unless a test still matches then.
+    const tested = this.agentSettings.profiles.filter((p) =>
+      kind === "test" || kind === "prepare"
+        ? p.id === profileId
+        : kind === "setup" && p.missing.length === 0,
+    );
+    const tests = tested.length
+      ? tested.map((p) => `Test ${fakeProfileName(p)}`)
+      : ["Test a run"];
+    const titles =
+      kind === "build_image"
+        ? image
+        : kind === "test"
+          ? tests
+          : kind === "setup"
+            ? [...install, ...image, ...tests]
+            : kind === "prepare"
+              ? [...install, ...image, ...(tested.length ? tests : [])]
+              : install;
+    const now = new Date().toISOString();
+    const job: HostJob = {
+      id: `job-${Object.keys(this.hostJobs).length + 1}`,
+      host_id: host.id,
+      host_name: host.name,
+      kind,
+      state: "running",
+      started_at: now,
+      ended_at: null,
+      steps: titles.map((title, i) => ({
+        title,
+        detail: "",
+        state: i === 0 ? "done" : i === 1 ? "running" : "waiting",
+        started_at: i < 2 ? now : null,
+        ended_at: i === 0 ? now : null,
+        progress: i === 1 ? "214 crates compiled" : null,
+      })),
+      log_tail: [
+        "   Compiling tokio-util v0.7.16",
+        "   Compiling bollard v0.19.2",
+      ],
+      error: null,
+      error_details: null,
+      cancellable: kind !== "build_image" && kind !== "test",
+      from_build: host.controller_build,
+      to_build:
+        kind === "build_image" || kind === "test" ? null : host.available_build,
+      profile_ids: tested.map((p) => p.id),
+    };
+    this.hostJobs[host.id] = job;
+    this.later("agent_host_job", job);
+    return job;
   }
   /** A passed test of a profile on a host, current. */
   passTest(host: AgentHost, profileId: string) {
@@ -1129,9 +1277,180 @@ export class FakeBackend {
         input_required: c.password.kind === "ask" && !c.password_ready,
         last_test: null,
       }));
+    const named = this.namedSecrets.map((n) => ({
+      owner: { kind: "named_secret", id: n.id } as const,
+      label: n.label,
+      destination: `run hosts, as ${n.env_name}`,
+      source: n.credential_source,
+      state: n.credential,
+      input_required: false,
+      last_test: null,
+    }));
     return {
       store: "macOS login keychain",
-      entries: [...accounts, ...connections],
+      entries: [...accounts, ...connections, ...named],
+    };
+  }
+
+  /** Settings → Secrets, named secrets; and what was shared with hosts. */
+  namedSecrets: NamedSecret[] = [];
+  /** What each host holds, by variable name; and what Brainiac sent. */
+  hostCopies = new Map<string, Set<string>>();
+  hostShares = new Map<
+    string,
+    { revision: number; at: string; failure: string | null }
+  >();
+  /** A test makes the next Share fail with this sentence. */
+  shareFailure: string | null = null;
+  routines: Routine[] = [];
+  /** Schedules by routine: what the user set, and what the host says. */
+  schedules = new Map<
+    string,
+    {
+      when: ScheduleWhen;
+      approved: boolean;
+      paused: boolean;
+      changed: string[];
+      overdue: boolean;
+      /** Approved, waiting for the host's preparation job. */
+      preparing?: boolean;
+      /** Why the last approval did not turn it on. */
+      notice?: string | null;
+    }
+  >();
+  /** What each host fires for no routine of this Mac, by host ID. */
+  hostSchedulesOnly: Record<string, HostScheduleOnly[]> = {};
+  /** The next time the fake host says it fires, in the host's own time. */
+  hostNextFire = "2026-10-14T07:00:00+02:00";
+  scheduleView(routineId: string): RoutineSchedule | null {
+    const s = this.schedules.get(routineId);
+    if (!s) return null;
+    const state = s.preparing
+      ? "preparing"
+      : !s.approved
+        ? "needs_approval"
+        : s.paused
+          ? "paused"
+          : s.overdue
+            ? "overdue"
+            : "active";
+    return {
+      when: s.when,
+      state,
+      notice: s.notice ?? null,
+      changed: s.changed,
+      next_fire: s.approved && !s.paused ? this.hostNextFire : null,
+      synced_at: new Date().toISOString(),
+      code_commit: s.approved
+        ? "3f9c41e1a2b0c7d8e9f0a1b2c3d4e5f6a7b8c9d0"
+        : null,
+      code_at: s.approved ? new Date().toISOString() : null,
+      error: null,
+      month_cost_micros: 410_000,
+    };
+  }
+  briefingResults: BriefingResult[] = [];
+  /** The agent finished a briefing's run: Ready with a finding and a proposal, or Failed. */
+  finishBriefing(id: string, how: "findings" | "failed") {
+    const r = this.briefingResults.find((x) => x.id === id);
+    if (!r) return;
+    const prev = this.briefingResults.find(
+      (x) => x.routine_id === r.routine_id && x.state === "ready",
+    );
+    r.finished_at = new Date().toISOString();
+    r.duration_secs = 120;
+    if (how === "failed") {
+      r.state = "failed";
+      r.error = "The run ended before it wrote the briefing.";
+      return;
+    }
+    r.state = "ready";
+    r.status = "findings";
+    r.summary = "One new error in checkout.";
+    r.findings = [
+      {
+        key: "SENTRY-1",
+        title: "TypeError in checkout",
+        severity: "high",
+        detail: "12 events since yesterday",
+        link: "https://sentry.example/i/1",
+        seen_before: !!prev,
+      },
+    ];
+    r.proposals = [
+      {
+        key: "fix-1",
+        kind: "task",
+        title: "Fix the checkout error",
+        body: "",
+        finding_key: "SENTRY-1",
+        made_id: null,
+      },
+      {
+        key: "note-1",
+        kind: "note",
+        title: "Post idea: checkout errors",
+        body: "Angle: ...",
+        finding_key: null,
+        made_id: null,
+      },
+      {
+        key: "bug-1",
+        kind: "issue",
+        title: "Checkout TypeError",
+        body: "See SENTRY-1",
+        finding_key: "SENTRY-1",
+        made_id: null,
+      },
+    ];
+  }
+
+  /** What sending a secret to a host leaves: a copy at its revision. */
+  sendCopy(hostId: string, secretId: string) {
+    const secret = this.namedSecrets.find((n) => n.id === secretId);
+    if (!secret || !hostId) return;
+    this.hostShares.set(`${hostId}:${secret.id}`, {
+      revision: secret.credential.revision,
+      at: new Date().toISOString(),
+      failure: null,
+    });
+    const copies = this.hostCopies.get(hostId) ?? new Set<string>();
+    copies.add(secret.env_name);
+    this.hostCopies.set(hostId, copies);
+  }
+
+  hostSecrets(hostId: string): HostSecrets {
+    const copies = this.hostCopies.get(hostId) ?? new Set<string>();
+    const rows: HostSecretRow[] = this.namedSecrets.map((n) => {
+      const share = this.hostShares.get(`${hostId}:${n.id}`);
+      const state: HostSecretRow["state"] = !share
+        ? copies.has(n.env_name)
+          ? "out_of_date"
+          : "not_shared"
+        : share.failure
+          ? "failed"
+          : share.revision !== n.credential.revision
+            ? "out_of_date"
+            : copies.has(n.env_name)
+              ? "shared"
+              : "missing_on_host";
+      return {
+        secret_id: n.id,
+        label: n.label,
+        env_name: n.env_name,
+        state,
+        shared_at: share?.at ?? null,
+        failure: share?.failure ?? null,
+      };
+    });
+    const known = new Set(this.namedSecrets.map((n) => n.env_name));
+    return {
+      host_id: hostId,
+      rows,
+      only_on_host: [...copies]
+        .filter((name) => !known.has(name))
+        .map((name) => ({ name, set_at: 1_760_000_000 })),
+      problem: null,
     };
   }
 
@@ -1139,6 +1458,8 @@ export class FakeBackend {
     if (owner.kind === "forge_account")
       return this.accounts.find((s) => s.kind === owner.provider)?.account
         ?.credential;
+    if (owner.kind === "named_secret")
+      return this.namedSecrets.find((n) => n.id === owner.id)?.credential;
     return this.dbConnections.find((c) => c.id === owner.id)?.credential;
   }
 
@@ -1907,76 +2228,12 @@ export class FakeBackend {
         this.refreshAgents();
         return saved;
       }
-      case "start_agent_host_job": {
-        const host = this.agentSettings.hosts.find((h) => h.id === args.id);
-        if (!host)
-          throw { code: "NOT_FOUND", message: "That host is not saved." };
-        const kind = args.kind as HostJob["kind"];
-        const install = [
-          `Reach ${host.name}`,
-          "Build the run controller for linux/amd64",
-          `Copy it to ${host.name} and check its SHA-256`,
-          `Wait until no run is live on ${host.name}`,
-          "Install the program and its service",
-          "Check that it answers",
-        ];
-        const image = [
-          `Build the image on ${host.name}`,
-          "Check its Docker engine",
-        ];
-        // Test is of one profile; setup tests each profile that is ready.
-        this.refreshAgents();
-        const tested = this.agentSettings.profiles.filter((p) =>
-          kind === "test"
-            ? p.id === args.profileId
-            : kind === "setup" && p.missing.length === 0,
+      case "start_agent_host_job":
+        return this.startHostJob(
+          String(args.id),
+          args.kind as HostJob["kind"],
+          args.profileId as string | undefined,
         );
-        const tests = tested.length
-          ? tested.map((p) => `Test ${fakeProfileName(p)}`)
-          : ["Test a run"];
-        const titles =
-          kind === "build_image"
-            ? image
-            : kind === "test"
-              ? tests
-              : kind === "setup"
-                ? [...install, ...image, ...tests]
-                : install;
-        const now = new Date().toISOString();
-        const job: HostJob = {
-          id: `job-${Object.keys(this.hostJobs).length + 1}`,
-          host_id: host.id,
-          host_name: host.name,
-          kind,
-          state: "running",
-          started_at: now,
-          ended_at: null,
-          steps: titles.map((title, i) => ({
-            title,
-            detail: "",
-            state: i === 0 ? "done" : i === 1 ? "running" : "waiting",
-            started_at: i < 2 ? now : null,
-            ended_at: i === 0 ? now : null,
-            progress: i === 1 ? "214 crates compiled" : null,
-          })),
-          log_tail: [
-            "   Compiling tokio-util v0.7.16",
-            "   Compiling bollard v0.19.2",
-          ],
-          error: null,
-          error_details: null,
-          cancellable: kind !== "build_image" && kind !== "test",
-          from_build: host.controller_build,
-          to_build:
-            kind === "build_image" || kind === "test"
-              ? null
-              : host.available_build,
-          profile_ids: tested.map((p) => p.id),
-        };
-        this.hostJobs[host.id] = job;
-        this.later("agent_host_job", job);
-        return job;
-      }
       case "cancel_agent_host_job": {
         const job = this.hostJobs[args.id as string];
         if (!job?.cancellable)
@@ -2079,9 +2336,19 @@ export class FakeBackend {
         this.refreshAgents();
         return this.agentSettings;
       }
-      case "build_agent_image":
+      case "build_agent_image": {
         this.readyThisMac();
+        const local = this.agentSettings.hosts.find((h) => h.kind === "local");
+        // The tools layer is built with every image.
+        if (local)
+          local.tools_image = {
+            name: "brainiac-agents:7a1d52c0e9b3",
+            id: "sha256:7a1d52c0e9b3",
+            built_at: "2026-10-05T12:05:00Z",
+            current: true,
+          };
         return this.agentSettings;
+      }
       case "agent_dockerfile":
         return "FROM node:22-bookworm-slim\n";
       case "list_agent_runs":
@@ -2136,6 +2403,11 @@ export class FakeBackend {
           deadline_at: null,
           created_at: new Date().toISOString(),
           starting: "copy",
+          host_secrets: (
+            (args.request as { secret_ids?: string[] }).secret_ids ?? []
+          )
+            .map((id) => this.namedSecrets.find((n) => n.id === id)?.env_name)
+            .filter((n): n is string => !!n),
         });
         this.runs.push(run);
         this.runEvents[run.id] = [];
@@ -2234,6 +2506,8 @@ export class FakeBackend {
           command:
             "git fetch --no-tags '/data/agent-runs/repos/repo.git' 'refs/brainiac/runs/run-done/result:refs/heads/agent/add-pagination-run-done'",
         };
+      case "get_agent_host_health":
+        return { ...this.hostHealth, checked_at: new Date().toISOString() };
       case "get_run_controller_status":
         return { running: false, pid: null, live_runs: 0 };
       case "test_agent_setup": {
@@ -2668,6 +2942,129 @@ export class FakeBackend {
       }
       case "list_secrets":
         return this.secrets();
+      case "list_named_secrets":
+        return this.namedSecrets;
+      case "save_named_secret": {
+        const r = args.request as SaveNamedSecretRequest;
+        const found = this.namedSecrets.find((n) => n.id === r.id);
+        const changed =
+          !found ||
+          r.secret !== null ||
+          JSON.stringify(r.source) !== JSON.stringify(found.credential_source);
+        const next: NamedSecret = {
+          id: found?.id ?? `named-${this.namedSecrets.length + 1}`,
+          label: r.label,
+          env_name: r.env_name,
+          as_file: r.as_file,
+          note: r.note,
+          credential_source: r.source,
+          credential: {
+            needs_approval: false,
+            pending: null,
+            revision: (found?.credential.revision ?? 0) + (changed ? 1 : 0),
+          },
+          version: (found?.version ?? 0) + 1,
+          created_at: "2026-10-15T08:00:00Z",
+          updated_at: "2026-10-15T08:00:00Z",
+        };
+        this.namedSecrets = found
+          ? this.namedSecrets.map((n) => (n.id === found.id ? next : n))
+          : [...this.namedSecrets, next];
+        return next;
+      }
+      case "delete_named_secret": {
+        const id = String(args.id);
+        if ([...this.hostShares.keys()].some((k) => k.endsWith(`:${id}`)))
+          throw {
+            code: "validation",
+            message:
+              "This secret is on a run host. Remove it from the host first, so no copy is left behind.",
+            retryable: false,
+            details: null,
+          };
+        this.namedSecrets = this.namedSecrets.filter((n) => n.id !== id);
+        return null;
+      }
+      case "get_host_secrets":
+        return this.hostSecrets(String(args.hostId));
+      case "share_secret_with_host": {
+        if (!this.shareFailure) {
+          this.sendCopy(String(args.hostId), String(args.id));
+          return this.hostSecrets(String(args.hostId));
+        }
+        const hostId = String(args.hostId);
+        const secret = this.namedSecrets.find((n) => n.id === args.id);
+        if (!secret) throw new Error("no such secret");
+        const key = `${hostId}:${secret.id}`;
+        if (this.shareFailure) {
+          const failure = this.shareFailure;
+          this.shareFailure = null;
+          const earlier = this.hostShares.get(key);
+          this.hostShares.set(key, {
+            revision: earlier?.revision ?? 0,
+            at: earlier?.at ?? "2026-10-15T08:00:00Z",
+            failure,
+          });
+          throw {
+            code: "dependency_unavailable",
+            message: failure,
+            retryable: true,
+            details: null,
+          };
+        }
+        this.hostShares.set(key, {
+          revision: secret.credential.revision,
+          at: new Date().toISOString(),
+          failure: null,
+        });
+        const copies = this.hostCopies.get(hostId) ?? new Set<string>();
+        copies.add(secret.env_name);
+        this.hostCopies.set(hostId, copies);
+        return this.hostSecrets(hostId);
+      }
+      case "remove_secret_from_host": {
+        const hostId = String(args.hostId);
+        const secret = this.namedSecrets.find((n) => n.id === args.id);
+        if (!secret) throw new Error("no such secret");
+        this.hostShares.delete(`${hostId}:${secret.id}`);
+        this.hostCopies.get(hostId)?.delete(secret.env_name);
+        return this.hostSecrets(hostId);
+      }
+      case "named_secret_usage":
+        return this.namedSecrets.map((n) => ({
+          secret_id: n.id,
+          routines: this.routines
+            .filter((r) => r.secret_ids.includes(n.id))
+            .map((r) => r.name),
+          copies: [...this.hostShares.entries()]
+            .filter(([key]) => key.endsWith(`:${n.id}`))
+            .map(([key, share]) => {
+              const hostId = key.slice(0, key.length - n.id.length - 1);
+              return {
+                host_id: hostId,
+                host_name:
+                  this.agentSettings.hosts.find((h) => h.id === hostId)?.name ??
+                  hostId,
+                state: share.failure
+                  ? "failed"
+                  : share.revision === n.credential.revision
+                    ? "shared"
+                    : "out_of_date",
+                shared_at: share.at,
+                failure: share.failure,
+              };
+            }),
+        }));
+      case "send_run_secrets": {
+        for (const id of args.secretIds as string[])
+          this.sendCopy(String(args.hostId), id);
+        return null;
+      }
+      case "remove_unlisted_host_secret": {
+        const hostId = String(args.hostId);
+        this.hostCopies.get(hostId)?.delete(String(args.name));
+        return this.hostSecrets(hostId);
+      }
       case "approve_secret_source": {
         const owner = args.owner as CredentialOwner;
         const credential = this.credentialOf(owner);
@@ -2755,6 +3152,200 @@ export class FakeBackend {
         this.tasks.set(t.id, t);
         this.later("task_changed", { task_id: t.id, version: t.version });
         return t;
+      }
+      case "list_routines":
+        return this.routines.map(
+          (routine): RoutineOverview => ({
+            routine,
+            repository_name: "parser",
+            host_name: routine.host_id === "" ? "This Mac" : "runner.example",
+            schedule: this.scheduleView(routine.id),
+            latest:
+              [...this.briefingResults]
+                .reverse()
+                .find((r) => r.routine_id === routine.id) ?? null,
+          }),
+        );
+      case "save_routine": {
+        const r = args.request as Routine & {
+          id: string | null;
+          expected_version: number;
+        };
+        const found = this.routines.find((b) => b.id === r.id);
+        const saved: Routine = {
+          id: found?.id ?? uid("routine"),
+          name: r.name,
+          repository_id: r.repository_id,
+          profile_id: r.profile_id,
+          host_id: r.host_id,
+          start: r.start,
+          prompt: r.prompt,
+          time_limit_minutes: r.time_limit_minutes,
+          secret_ids: r.secret_ids ?? [],
+          tools: r.tools ?? false,
+          memory: r.memory,
+          memory_updated_at: r.memory ? new Date().toISOString() : null,
+          previous_results: r.previous_results,
+          version: (found?.version ?? 0) + 1,
+        };
+        const schedule = found && this.schedules.get(found.id);
+        if (found && schedule?.approved && found.prompt !== saved.prompt) {
+          schedule.approved = false;
+          schedule.changed = ["the prompt"];
+        }
+        if (found) Object.assign(found, saved);
+        else this.routines.push(saved);
+        return saved;
+      }
+      case "set_routine_schedule": {
+        const r = args.request as { routine_id: string; when: ScheduleWhen };
+        const routine = this.routines.find((b) => b.id === r.routine_id);
+        if (!routine) throw new Error("no such routine");
+        if (routine.start.trim().toUpperCase() === "HEAD")
+          throw {
+            code: "VALIDATION",
+            message: "A schedule starts from a branch or a commit, not HEAD.",
+          };
+        if (routine.host_id === "")
+          throw {
+            code: "VALIDATION",
+            message:
+              "A schedule runs on a run host, not on this Mac, which sleeps. Choose a host for the routine first.",
+          };
+        const found = this.schedules.get(r.routine_id);
+        this.schedules.set(r.routine_id, {
+          when: r.when,
+          approved: false,
+          paused: found?.paused ?? false,
+          changed: found ? ["the schedule"] : ["a new schedule"],
+          overdue: false,
+        });
+        return null;
+      }
+      case "approve_routine_schedule": {
+        const s = this.schedules.get(String(args.id));
+        if (!s) throw new Error("no schedule");
+        // The routine's access goes to its host with the approval.
+        const routine = this.routines.find((r) => r.id === args.id);
+        for (const id of routine?.secret_ids ?? [])
+          this.sendCopy(routine?.host_id ?? "", id);
+        s.changed = [];
+        // As `needs_preparing`: an older controller, no current image, or
+        // no current test of the routine's agent there.
+        const host = this.agentSettings.hosts.find(
+          (h) => h.id === routine?.host_id,
+        );
+        s.notice = null;
+        if (host && routine && this.needsPreparing(host, routine)) {
+          s.preparing = true;
+          // A job already running: this one waits for it, as `approve`.
+          if (this.hostJobs[host.id]?.state !== "running")
+            this.startHostJob(host.id, "prepare", routine.profile_id);
+          return null;
+        }
+        s.approved = true;
+        return null;
+      }
+      case "pause_routine": {
+        const s = this.schedules.get(String(args.id));
+        if (!s) throw new Error("no schedule");
+        if (!args.paused && !s.approved)
+          throw {
+            code: "VALIDATION",
+            message: "Approve the schedule before it runs again.",
+          };
+        s.paused = args.paused === true;
+        return null;
+      }
+      case "host_clock":
+        // A host on UTC, as a fresh Linux server is.
+        return { now: new Date().toISOString(), utc_offset_minutes: 0 };
+      case "host_schedules_only":
+        return this.hostSchedulesOnly[String(args.hostId)] ?? [];
+      case "remove_host_schedule_only": {
+        const hostId = String(args.hostId);
+        this.hostSchedulesOnly[hostId] = (
+          this.hostSchedulesOnly[hostId] ?? []
+        ).filter((o) => o.routine_id !== args.routineId);
+        return this.hostSchedulesOnly[hostId];
+      }
+      case "remove_routine_schedule":
+        this.schedules.delete(String(args.id));
+        return null;
+      case "sync_routines":
+        return null;
+      case "list_routine_results":
+        return [...this.briefingResults]
+          .reverse()
+          .filter((r) => r.routine_id === args.routineId);
+      case "delete_routine":
+        this.routines = this.routines.filter((b) => b.id !== args.id);
+        return null;
+      case "run_routine_now": {
+        const result: BriefingResult = {
+          id: uid("result"),
+          routine_id: String(args.id),
+          run_id: "run-1",
+          state: "working",
+          status: null,
+          summary: "",
+          findings: [],
+          proposals: [],
+          error: null,
+          started_at: new Date().toISOString(),
+          finished_at: null,
+          duration_secs: null,
+          cost_micros: null,
+          cost_currency: null,
+        };
+        this.briefingResults.push(result);
+        const routine = this.routines.find((b) => b.id === args.id);
+        this.runs.push(
+          sampleRun({
+            id: "run-routine-1",
+            title: routine?.name ?? "Routine",
+            routine_id: String(args.id),
+            phase: "running",
+            activity: "working",
+          }),
+        );
+        return result;
+      }
+      case "save_briefing_as_note": {
+        const result = this.briefingResults.find((r) => r.id === args.resultId);
+        const briefing = this.routines.find((b) => b.id === result?.routine_id);
+        return this.handle("create_note", {
+          request: {
+            folder: "Briefings",
+            title: `${briefing?.name ?? "Briefing"} today`,
+            repository_id: briefing?.repository_id ?? null,
+          },
+        });
+      }
+      case "create_briefing_task": {
+        const result = this.briefingResults.find((r) => r.id === args.resultId);
+        const proposal = result?.proposals.find(
+          (p) => p.key === args.proposalKey,
+        );
+        if (!result || !proposal) throw new Error("no such proposal");
+        proposal.made_id = uid("task");
+        return result;
+      }
+      case "create_briefing_note": {
+        const result = this.briefingResults.find((r) => r.id === args.resultId);
+        const proposal = result?.proposals.find(
+          (p) => p.key === args.proposalKey,
+        );
+        if (!result || !proposal) throw new Error("no such proposal");
+        const note = this.handle("create_note", {
+          request: {
+            folder: "Briefings",
+            title: proposal.title,
+            repository_id: null,
+          },
+        }) as { id: string };
+        proposal.made_id = note.id;
+        return note;
       }
       case "get_today": {
         const all = [...this.tasks.values()];

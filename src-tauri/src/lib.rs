@@ -209,6 +209,11 @@ pub fn run() {
                 Arc::clone(&credentials),
             ));
             app.manage(Arc::clone(&agent_settings));
+            let named_secrets = Arc::new(agents::named_secrets::NamedSecretService::new(
+                stores.core.clone(),
+                Arc::clone(&credentials),
+            ));
+            app.manage(Arc::clone(&named_secrets));
             let artifacts = Arc::new(agents::RunArtifacts::new(
                 service.git_service().cloned(),
                 &data_dir,
@@ -252,11 +257,12 @@ pub fn run() {
                 run_emitter,
             );
             runs.set_hosts(Arc::clone(&agent_hosts));
+            runs.set_named(Arc::clone(&named_secrets));
             app.manage(Arc::clone(&runs));
             let explain_runs = Arc::clone(&runs);
             let explain_agent_settings = Arc::clone(&agent_settings);
             let (explain_core, explain_history) = (stores.core.clone(), stores.history.clone());
-            app.manage(Arc::new(agents::host_jobs::HostJobService::new(
+            let host_jobs = Arc::new(agents::host_jobs::HostJobService::new(
                 agent_hosts,
                 Arc::clone(&runs),
                 Arc::clone(&agent_settings),
@@ -265,7 +271,8 @@ pub fn run() {
                 // The window says it too; a notification is for when Brainiac
                 // is not the active app (SPEC.md, Host jobs).
                 events::notifier(handle.clone(), events::Notify::WhenInactive),
-            )));
+            ));
+            app.manage(Arc::clone(&host_jobs));
             // Reconnect to runs left live or uncollected, and apply retention
             // once an hour (SPEC.md, Leaving and coming back; Deleting and keeping).
             let reconnecting = Arc::clone(&runs);
@@ -282,6 +289,7 @@ pub fn run() {
                 accounts,
                 Arc::clone(&connections),
                 agent_settings,
+                Arc::clone(&named_secrets),
             )));
             app.manage(Arc::new(databases::health::HealthService::new(
                 Arc::clone(&connections),
@@ -307,6 +315,29 @@ pub fn run() {
             let notes = NoteService::new(stores, data_dir.clone(), events::to_window(handle.clone()));
             notes.set_write_note_ids(settings.write_note_ids);
             app.manage(Arc::clone(&notes));
+
+            // --- Routines (docs/design/routines-ux.md) ------------------
+            let routines = agents::routines::RoutineService::new(
+                explain_core.clone(),
+                explain_history.clone(),
+                Arc::clone(&explain_runs),
+                Arc::clone(&explain_agent_settings),
+                Arc::clone(&named_secrets),
+                host_jobs,
+                run_changes.clone(),
+            );
+            app.manage(Arc::clone(&routines));
+            // Follow what was running, then listen to the hosts that fire
+            // schedules: shortly after launch, and every five minutes.
+            tauri::async_runtime::spawn(async move {
+                routines.reconnect().await;
+                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                let mut ticker = tokio::time::interval(std::time::Duration::from_secs(300));
+                loop {
+                    ticker.tick().await;
+                    routines.sync_all().await;
+                }
+            });
 
             // --- Explaining changes (v0.6) ----------------------------------
             let explanations = explain::service::ExplanationService::new(
@@ -555,6 +586,33 @@ pub fn run() {
             commands::start_agent_host_job,
             commands::cancel_agent_host_job,
             commands::list_agent_host_jobs,
+            commands::get_agent_host_health,
+            commands::list_named_secrets,
+            commands::save_named_secret,
+            commands::delete_named_secret,
+            commands::get_host_secrets,
+            commands::share_secret_with_host,
+            commands::remove_secret_from_host,
+            commands::remove_unlisted_host_secret,
+            commands::list_routines,
+            commands::list_routine_results,
+            commands::set_routine_schedule,
+            commands::remove_routine_schedule,
+            commands::host_schedules_only,
+            commands::host_clock,
+            commands::remove_host_schedule_only,
+            commands::approve_routine_schedule,
+            commands::pause_routine,
+            commands::sync_routines,
+            commands::save_routine,
+            commands::delete_routine,
+            commands::run_routine_now,
+            commands::save_briefing_as_note,
+            commands::create_briefing_task,
+            commands::create_briefing_note,
+            commands::named_secret_usage,
+            commands::test_named_secret,
+            commands::send_run_secrets,
             commands::get_agent_host_job_log,
             commands::remove_agent_host,
             commands::get_run_controller_status,
@@ -889,6 +947,7 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
     let show_notes = MenuItem::with_id(app, "show_notes", "Notes", true, None::<&str>)?;
     let show_databases = MenuItem::with_id(app, "show_databases", "Databases", true, None::<&str>)?;
     let show_runs = MenuItem::with_id(app, "show_runs", "Runs", true, None::<&str>)?;
+    let show_routines = MenuItem::with_id(app, "show_routines", "Routines", true, None::<&str>)?;
     let check_updates = MenuItem::with_id(
         app,
         "check_updates",
@@ -959,6 +1018,7 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
             &show_notes,
             &show_databases,
             &show_runs,
+            &show_routines,
             &show_terminal,
             &PredefinedMenuItem::separator(app)?,
             &refresh,

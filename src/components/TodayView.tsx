@@ -4,6 +4,7 @@ import {
   errorMessage,
   ipc,
   type RepositorySummary,
+  type RoutineOverview,
   type Task,
   type TodayView as Today,
 } from "../lib/ipc";
@@ -20,6 +21,7 @@ import {
   TodayIcon,
 } from "./icons";
 import { RepoLine } from "./RepoChip";
+import RoutinesDigest from "./RoutinesDigest";
 import SidePanelButton from "./SidePanelButton";
 import TaskRow from "./TaskRow";
 import { toggleTask, useTaskEvents } from "./TasksView";
@@ -37,6 +39,9 @@ export default function TodayView({
   onNew,
   onOpenNote,
   onOpenRepo,
+  routines,
+  onOpenRoutine,
+  onAllRoutines,
   onFetch,
   onError,
 }: {
@@ -46,6 +51,9 @@ export default function TodayView({
   onNew: () => void;
   onOpenNote: (noteId: string) => void;
   onOpenRepo: (repositoryId: string) => void;
+  routines: RoutineOverview[];
+  onOpenRoutine: (routineId: string) => void;
+  onAllRoutines: () => void;
   onFetch: (ids: string[]) => void;
   onError: (message: string | null) => void;
 }) {
@@ -149,6 +157,12 @@ export default function TodayView({
           </button>
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto pb-6">
+          <RoutinesDigest
+            routines={routines}
+            today={date}
+            onOpen={onOpenRoutine}
+            onAll={onAllRoutines}
+          />
           {today && today.to_sort.length > 0 && (
             <button
               type="button"

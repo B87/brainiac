@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 import {
   credentialWord,
   dayLabel,
@@ -32,10 +32,10 @@ import {
   sourceOf,
 } from "../lib/secrets";
 import { parseInRange, requestSettings } from "../lib/settings";
+import AgentHostTests from "./AgentHostTests";
 import { HostPill } from "./HostJobView";
-import { Breadcrumb } from "./RunHostPage";
 import SecretSourceFields from "./SecretSourceFields";
-import { CommitField, Group, Hint } from "./SettingsPanes";
+import { CommitField, Group, Hint, PageTitle } from "./SettingsPanes";
 
 /**
  * Agents › a profile (SPEC.md, Settings → Agents): how one agent and model
@@ -59,6 +59,10 @@ export default function AgentProfilePage({
   onHost: (hostId: string) => void;
 }) {
   const name = profileName(profile);
+  // A test that ended: read the hosts' results again.
+  const reload = useCallback(() => {
+    void act(() => ipc.getAgentSettings());
+  }, [act]);
   const save = (patch: Partial<SaveAgentSettingsRequest>) =>
     act(() => ipc.saveAgentSettings(settingsRequest(profile, patch)));
   const tested = settings.hosts.filter((h) =>
@@ -67,34 +71,33 @@ export default function AgentProfilePage({
 
   return (
     <div className="flex flex-col gap-5">
-      <Breadcrumb name={name} onBack={onBack} />
-      <header className="flex min-w-0 flex-col gap-1">
-        <div className="flex flex-wrap items-center gap-2.5">
-          <h2 className="m-0 text-[19px] font-semibold">{name}</h2>
-          {profile.missing.length === 0 ? (
+      <PageTitle
+        title={name}
+        crumb={{ label: "Agents", onBack }}
+        pill={
+          profile.missing.length === 0 ? (
             <HostPill label="Ready" tone="ready" />
           ) : (
             <HostPill label="Not ready" tone="attention" />
-          )}
-        </div>
-        <span className="text-[12.5px] text-muted">
-          Sends code to {destinationLabel(profile)}.{" "}
-          {tested.length > 0 ? "Tested on " : "Not tested on any host yet."}
-          {tested.map((h, i) => (
-            <span key={h.id}>
-              {i > 0 && ", "}
-              <button
-                type="button"
-                className="text-link hover:underline"
-                onClick={() => onHost(h.id)}
-              >
-                {h.name}
-              </button>
-            </span>
-          ))}
-          {tested.length > 0 && "."}
-        </span>
-      </header>
+          )
+        }
+      >
+        Sends code to {destinationLabel(profile)}.{" "}
+        {tested.length > 0 ? "Tested on " : "Not tested on any host yet."}
+        {tested.map((h, i) => (
+          <span key={h.id}>
+            {i > 0 && ", "}
+            <button
+              type="button"
+              className="text-link hover:underline"
+              onClick={() => onHost(h.id)}
+            >
+              {h.name}
+            </button>
+          </span>
+        ))}
+        {tested.length > 0 && "."}
+      </PageTitle>
 
       {profile.credential.needs_approval && (
         <div className="settings-group">
@@ -160,7 +163,7 @@ export default function AgentProfilePage({
         </Group>
       )}
 
-      <Group label="Pay with">
+      <Group label="Key and who pays">
         <CredentialSection
           profile={profile}
           planOffered={settings.plan_offered}
@@ -301,6 +304,15 @@ export default function AgentProfilePage({
           />
         </div>
       </Group>
+
+      <AgentHostTests
+        profile={profile}
+        hosts={settings.hosts}
+        onHost={onHost}
+        onChanged={reload}
+      />
+
+      <UsedBy profileId={profile.id} />
     </div>
   );
 }
@@ -530,5 +542,49 @@ function CredentialSection({
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * The routines that run with this agent. An agent is only the AI and who
+ * pays: the access and tools a run gets are chosen by the run or routine.
+ */
+function UsedBy({ profileId }: { profileId: string }) {
+  const [names, setNames] = useState<string[] | null>(null);
+  useEffect(() => {
+    let alive = true;
+    ipc
+      .listRoutines()
+      .then(
+        (all) =>
+          alive &&
+          setNames(
+            all
+              .filter((o) => o.routine.profile_id === profileId)
+              .map((o) => `${o.routine.name} · ${o.host_name}`),
+          ),
+      )
+      .catch(() => alive && setNames([]));
+    return () => {
+      alive = false;
+    };
+  }, [profileId]);
+  return (
+    <Group label="Used by">
+      <div className="settings-group">
+        <div className="settings-row flex-col items-start gap-1">
+          {names === null ? (
+            <span className="text-muted">Loading…</span>
+          ) : names.length === 0 ? (
+            <span className="text-muted">No routine runs with this agent.</span>
+          ) : (
+            names.map((n) => <span key={n}>{n}</span>)
+          )}
+          <Hint>
+            Secrets and tools are chosen by each run or routine, not here.
+          </Hint>
+        </div>
+      </div>
+    </Group>
   );
 }

@@ -137,6 +137,15 @@ pub fn steps_for(
             steps.extend(test_steps(name, profiles));
             steps
         }
+        HostJobKind::Prepare => {
+            let mut steps = install_steps(name, user);
+            steps.extend(image_steps(name));
+            // The routine's agent, when it has no current test here.
+            if !profiles.is_empty() {
+                steps.extend(test_steps(name, profiles));
+            }
+            steps
+        }
     }
 }
 
@@ -613,6 +622,26 @@ impl HostJobService {
                 .into_iter()
                 .filter(|p| p.missing.is_empty())
                 .collect(),
+            // A routine's approval: its agent is tested here unless a test
+            // still matches after the image, so the schedule can start runs
+            // of it.
+            // Always carried, even when a test still matches now: building
+            // the image makes it stale, and `run` decides after the build.
+            HostJobKind::Prepare => match profile_id {
+                Some(id) => {
+                    let profile = profiles
+                        .into_iter()
+                        .find(|p| p.id == id)
+                        .ok_or_else(|| AppError::not_found("There is no such agent profile."))?;
+                    if let Some(first) = profile.missing.first() {
+                        return Err(AppError::validation(format!(
+                            "Settings → Agents is not ready: {first}"
+                        )));
+                    }
+                    vec![profile]
+                }
+                _ => Vec::new(),
+            },
             _ => Vec::new(),
         };
         let profile_ids: Vec<String> = tested.iter().map(|p| p.id.clone()).collect();
@@ -636,13 +665,17 @@ impl HostJobService {
             error_details: None,
             cancellable: matches!(
                 kind,
-                HostJobKind::Install | HostJobKind::Upgrade | HostJobKind::Setup
+                HostJobKind::Install
+                    | HostJobKind::Upgrade
+                    | HostJobKind::Setup
+                    | HostJobKind::Prepare
             ),
             from_build: host.controller_build.clone(),
             to_build: match kind {
                 HostJobKind::Install | HostJobKind::Upgrade | HostJobKind::Setup => {
                     host.available_build.clone()
                 }
+                HostJobKind::Prepare if host.upgrade_available => host.available_build.clone(),
                 _ => None,
             },
             profile_ids: profile_ids.clone(),
@@ -686,6 +719,38 @@ impl HostJobService {
                 self.hosts.deploy(id, job, 0).await.map(|_| ())
             }
             HostJobKind::BuildImage => self.hosts.build_image(id, job, 0).await.map(|_| ()),
+            // Only what is behind is done; the rest is marked as skipped.
+            HostJobKind::Prepare => {
+                let host = self.hosts.host(id).await?;
+                if host.upgrade_available {
+                    self.hosts.deploy(id, job, 0).await?;
+                } else {
+                    for i in 0..install::COUNT {
+                        job.skip(i, "Already current");
+                    }
+                }
+                let host = self.hosts.host(id).await?;
+                let current =
+                    |i: &Option<crate::models::AgentImage>| i.as_ref().is_some_and(|i| i.current);
+                if current(&host.image) && current(&host.tools_image) {
+                    for i in 0..image::COUNT {
+                        job.skip(install::COUNT + i, "Already built");
+                    }
+                } else {
+                    self.hosts.build_image(id, job, install::COUNT).await?;
+                }
+                // Then the routine's agent, which a new image asks again of.
+                let Some(profile) = profiles.first() else {
+                    return Ok(());
+                };
+                let at = install::COUNT + image::COUNT;
+                if tested_here(&self.hosts.host(id).await?, profile) {
+                    job.skip(at, "Already passed with this key, image, and engine");
+                    Ok(())
+                } else {
+                    self.test(id, profile, job, at, true).await
+                }
+            }
             HostJobKind::Test => match profiles.first() {
                 Some(profile) => self.test(id, profile, job, 0, true).await,
                 None => Err(AppError::validation("Choose the agent to test.")),
@@ -770,6 +835,14 @@ impl HostJobService {
     }
 }
 
+/// A test of `profile` passed on `host` and still matches its key, image,
+/// and engine (SPEC.md, Settings → Agents, Test).
+pub fn tested_here(host: &AgentHost, profile: &str) -> bool {
+    host.tests
+        .iter()
+        .any(|t| t.profile_id == profile && t.current)
+}
+
 /// Refuses a job its host is not ready for, before anything starts.
 fn check_start(host: &AgentHost, kind: HostJobKind) -> AppResult<()> {
     if host.kind != "ssh" {
@@ -784,9 +857,13 @@ fn check_start(host: &AgentHost, kind: HostJobKind) -> AppResult<()> {
     }
     match kind {
         HostJobKind::Install | HostJobKind::Setup => Ok(()),
-        HostJobKind::Upgrade | HostJobKind::BuildImage if !host.installed => Err(
-            AppError::validation("Install the run controller on this host first."),
-        ),
+        HostJobKind::Upgrade | HostJobKind::BuildImage | HostJobKind::Prepare
+            if !host.installed =>
+        {
+            Err(AppError::validation(
+                "Install the run controller on this host first.",
+            ))
+        }
         HostJobKind::Test if host.image.as_ref().is_none_or(|i| !i.current) => Err(
             AppError::validation("Build the image on this host before testing it."),
         ),
@@ -848,6 +925,10 @@ pub fn outcome(job: &HostJob) -> Option<(String, String)> {
                     ),
                 }
             }
+            HostJobKind::Prepare => (
+                format!("{name} is prepared"),
+                format!("In {took}. The approved schedule goes there now."),
+            ),
         }),
         HostJobState::Failed | HostJobState::Interrupted => {
             let at = job
@@ -873,6 +954,7 @@ fn failed_title(job: &HostJob) -> String {
         HostJobKind::BuildImage => format!("The image build on {name} failed"),
         HostJobKind::Test => format!("{name}'s test did not pass"),
         HostJobKind::Setup => format!("Setting up {name} failed"),
+        HostJobKind::Prepare => format!("Preparing {name} for a routine failed"),
     }
 }
 
@@ -906,6 +988,23 @@ pub fn duration_words(seconds: i64) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn prepare_tests_the_routines_agent_only_when_one_is_named() {
+        let plain = steps_for(HostJobKind::Prepare, "build-01", "ci", &[]);
+        assert_eq!(plain.len(), install::COUNT + image::COUNT);
+        let tested = steps_for(
+            HostJobKind::Prepare,
+            "build-01",
+            "ci",
+            &["Claude Code".to_string()],
+        );
+        assert_eq!(tested.len(), install::COUNT + image::COUNT + 1);
+        assert_eq!(
+            tested[install::COUNT + image::COUNT].title,
+            "Test Claude Code"
+        );
+    }
+
     use super::*;
 
     fn job(kind: HostJobKind) -> HostJob {

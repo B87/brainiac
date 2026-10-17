@@ -3,4 +3,4 @@
 /**
  * What a host job does (SPEC.md, Remote hosts, Host jobs).
  */
-export type HostJobKind = "install" | "upgrade" | "build_image" | "test" | "setup";
+export type HostJobKind = "install" | "upgrade" | "build_image" | "test" | "setup" | "prepare";

@@ -80,6 +80,14 @@ cleanup_pending: string | null,
  */
 explain: boolean, 
 /**
+ * The variable names (never values) of the host secrets the run was given.
+ */
+host_secrets: Array<string>, 
+/**
+ * The routine this run is a run of, when it is one.
+ */
+routine_id: string | null, 
+/**
  * The journal sequence mirrored so far.
  */
 cursor: number, created_at: string, updated_at: string, version: number, 

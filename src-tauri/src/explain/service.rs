@@ -339,7 +339,7 @@ impl ExplanationService {
                     .map(|host| ExplainHostOption {
                         host_id: host.id.clone(),
                         name: host.name.clone(),
-                        missing: run_missing(profile, host),
+                        missing: run_missing(profile, host, false),
                         busy: self
                             .runs
                             .host_busy(&host.id)
@@ -383,7 +383,7 @@ impl ExplanationService {
         let ready = agents
             .profiles
             .iter()
-            .find(|p| local.is_some_and(|host| run_missing(p, host).is_empty()));
+            .find(|p| local.is_some_and(|host| run_missing(p, host, false).is_empty()));
         match ready.or_else(|| agents.profiles.first()) {
             Some(p) => (
                 Some(p.id.clone()),

@@ -153,6 +153,8 @@ pub struct AgentRunService {
     runtime: Arc<RunRuntime>,
     /// Remote hosts, when the app has them. Tests leave this empty.
     hosts: Mutex<Option<Arc<super::hosts::AgentHostService>>>,
+    /// Named secrets, read for a run on this Mac. Tests may leave it empty.
+    named: Mutex<Option<Arc<super::named_secrets::NamedSecretService>>>,
     /// Whether each remote host answered last. This Mac uses `connected`.
     links: Mutex<HashMap<String, bool>>,
     /// A test run's controller, when it is not this Mac's.
@@ -196,6 +198,7 @@ impl AgentRunService {
             artifacts,
             runtime,
             hosts: Mutex::new(None),
+            named: Mutex::new(None),
             links: Mutex::new(HashMap::new()),
             test_runtimes: Mutex::new(HashMap::new()),
             repositories,
@@ -273,7 +276,25 @@ impl AgentRunService {
         }
     }
 
+    /// Reach a host's controller through this runtime instead of over SSH.
+    /// For tests, which run a controller in their own process.
+    pub fn use_runtime_for_host(&self, host_id: &str, runtime: Arc<RunRuntime>) {
+        self.test_runtimes
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(format!("host:{host_id}"), runtime);
+    }
+
     async fn runtime_for(&self, host_id: &str) -> AppResult<Arc<RunRuntime>> {
+        if let Some(runtime) = self
+            .test_runtimes
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&format!("host:{host_id}"))
+            .cloned()
+        {
+            return Ok(runtime);
+        }
         if host_id.is_empty() || host_id == super::hosts::LOCAL_ID {
             return Ok(Arc::clone(&self.runtime));
         }
@@ -436,6 +457,11 @@ impl AgentRunService {
         *self.hosts.lock().unwrap_or_else(|p| p.into_inner()) = Some(hosts);
     }
 
+    /// Named secrets, read here for a run on this Mac.
+    pub fn set_named(&self, named: Arc<super::named_secrets::NamedSecretService>) {
+        *self.named.lock().unwrap_or_else(|p| p.into_inner()) = Some(named);
+    }
+
     /// New run, **Start run**: refuse what Settings still lacks, copy the
     /// start, read the credential, hand the run to the controller.
     pub async fn start(self: &Arc<Self>, request: StartRunRequest) -> AppResult<AgentRun> {
@@ -458,11 +484,12 @@ impl AgentRunService {
             .find(|h| h.id == host_id)
             .cloned()
             .ok_or_else(|| AppError::validation("Choose a host for the run."))?;
-        if let Some(first) = settings::run_missing(&profile, &host).first() {
+        if let Some(first) = settings::run_missing(&profile, &host, request.tools).first() {
             return Err(AppError::validation(format!(
                 "Settings → Agents is not ready: {first}"
             )));
         }
+        let host_secrets = self.settings.secret_names(&request.secret_ids).await?;
         // The repository's answer for this provider, before anything is
         // copied; New run asked when there was none.
         self.sharing
@@ -503,9 +530,7 @@ impl AgentRunService {
         }
         let run_id = uuid::Uuid::new_v4().to_string();
         // `run_missing` above promised the image, and on this Mac the engine.
-        let image = host
-            .image
-            .clone()
+        let image = settings::image_for(request.tools, &host)
             .ok_or_else(|| AppError::validation("Build the image first."))?;
         let (socket, engine_name) = if remote {
             self.refuse_if_upgrading(&host_id)?;
@@ -525,7 +550,25 @@ impl AgentRunService {
         // The credential is read on the Mac, after everything that could be
         // refused, and goes once to the controller.
         let credential = self.credential(&profile).await?;
-        let title = title_of(&prompt, &credential.value);
+        // A run host opens its own sealed copies by name. This Mac keeps
+        // none: each value is read here and goes to the run once, beside the
+        // credential, never stored.
+        let local_secrets = if !remote && !request.secret_ids.is_empty() {
+            let named = self
+                .named
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()
+                .ok_or_else(|| AppError::dependency("Named secrets are not available."))?;
+            named.values(&request.secret_ids).await?
+        } else {
+            Vec::new()
+        };
+        let title = request
+            .routine
+            .as_ref()
+            .map(|r| r.name.clone())
+            .unwrap_or_else(|| title_of(&prompt, &credential.value));
         let row = RunRow::new(store::NewRun {
             id: run_id.clone(),
             repository_id: request.repository_id.clone(),
@@ -554,6 +597,8 @@ impl AgentRunService {
             workspace_gib: workspace,
             model: model.clone(),
             explain: false,
+            host_secrets: host_secrets.clone(),
+            routine_id: request.routine.as_ref().map(|r| r.id.clone()),
         });
         let start = StartRun {
             run_id: run_id.clone(),
@@ -575,6 +620,9 @@ impl AgentRunService {
             provider: profile.provider,
             model,
             known_concepts: None,
+            secrets: local_secrets,
+            host_secrets: if remote { host_secrets } else { Vec::new() },
+            routine_id: None,
         };
         self.begin(row, start, host_id, request.repository_id.clone(), root)
             .await?;
@@ -608,7 +656,7 @@ impl AgentRunService {
             .find(|h| h.id == host_id)
             .cloned()
             .ok_or_else(|| AppError::validation("Choose a host in Settings → Explanations."))?;
-        if let Some(first) = settings::run_missing(&profile, &host).first() {
+        if let Some(first) = settings::run_missing(&profile, &host, false).first() {
             return Err(AppError::validation(format!(
                 "Settings → Agents is not ready: {first}"
             )));
@@ -688,6 +736,8 @@ impl AgentRunService {
             workspace_gib: profile.workspace_gib,
             model: model.clone(),
             explain: true,
+            host_secrets: Vec::new(),
+            routine_id: None,
         });
         let start = StartRun {
             run_id: run_id.clone(),
@@ -708,6 +758,9 @@ impl AgentRunService {
             provider: profile.provider,
             model,
             known_concepts: request.known_concepts,
+            secrets: Vec::new(),
+            host_secrets: Vec::new(),
+            routine_id: None,
         };
         self.begin(row, start, host_id, request.repository_id, root)
             .await?;
@@ -1735,6 +1788,116 @@ impl AgentRunService {
         self.rt(run_id).await?.read_explanation(run_id).await
     }
 
+    /// The model credential a profile's runs start with, read here. A
+    /// routine's schedule seals a copy on its host.
+    pub async fn model_credential(&self, profile: &AgentProfile) -> AppResult<Credential> {
+        self.credential(profile).await
+    }
+
+    /// The controller of a host ("" is this Mac).
+    pub async fn runtime_of(&self, host_id: &str) -> AppResult<Arc<RunRuntime>> {
+        self.runtime_for(host_id).await
+    }
+
+    /// Export a repository's commit as the code a schedule starts from, under
+    /// its own key, and return the bundle's path.
+    pub async fn export_code(
+        &self,
+        repository_id: &str,
+        commit: &str,
+        key: &str,
+    ) -> AppResult<PathBuf> {
+        let (_, root) = self.repositories.locate(repository_id).await?;
+        Ok(self
+            .artifacts
+            .export(repository_id, &root, commit, key)
+            .await?
+            .bundle)
+    }
+
+    /// Take a run the host's schedule started into Runs, so it is listed,
+    /// followed, and kept or removed like any other. A run already known is
+    /// left as it is.
+    /// `host_id` is the host the run is on, which is the routine's own
+    /// unless it moved since.
+    pub async fn adopt_routine_run(
+        self: &Arc<Self>,
+        routine: &crate::models::Routine,
+        host_id: &str,
+        run_id: &str,
+        start_commit: &str,
+    ) -> AppResult<()> {
+        if self.row(run_id).await.is_ok() {
+            return Ok(());
+        }
+        let settings = self.settings.get().await?;
+        let profile = settings
+            .profiles
+            .iter()
+            .find(|p| p.id == routine.profile_id)
+            .cloned()
+            .ok_or_else(|| AppError::validation("The routine's agent no longer exists."))?;
+        let host = settings
+            .hosts
+            .iter()
+            .find(|h| h.id == host_id)
+            .cloned()
+            .ok_or_else(|| AppError::validation("The run's host no longer exists."))?;
+        let image = settings::image_for(routine.tools, &host);
+        let (name, _) = self.repositories.locate(&routine.repository_id).await?;
+        let host_secrets = self.settings.secret_names(&routine.secret_ids).await?;
+        let row = RunRow::new(store::NewRun {
+            id: run_id.to_string(),
+            repository_id: routine.repository_id.clone(),
+            repository_name: name,
+            title: routine.name.clone(),
+            start_commit: start_commit.to_string(),
+            start_subject: String::new(),
+            profile_id: profile.id.clone(),
+            agent: profile.agent,
+            provider: profile.provider,
+            payment: profile.payment,
+            credential_source: "the host's sealed copy of the key".to_string(),
+            host_id: host.id.clone(),
+            host_name: host.name.clone(),
+            engine_socket: "/var/run/docker.sock".to_string(),
+            engine_name: host.engine_name.clone().unwrap_or_else(|| "Docker".into()),
+            image_name: image.as_ref().map(|i| i.name.clone()).unwrap_or_default(),
+            image_id: image.map(|i| i.id).unwrap_or_default(),
+            permissions: RunPermissions::Act,
+            time_limit_minutes: routine.time_limit_minutes,
+            cpus: profile.cpus,
+            memory_mib: profile.memory_mib,
+            workspace_gib: profile.workspace_gib,
+            model: profile.model.clone(),
+            explain: false,
+            host_secrets,
+            routine_id: Some(routine.id.clone()),
+        });
+        self.history
+            .call(move |conn| store::insert(conn, &row))
+            .await?;
+        self.emit(run_id, false);
+        self.spawn_sync(run_id);
+        Ok(())
+    }
+
+    /// A briefing run's file, read from its agent's container.
+    pub async fn read_briefing(&self, run_id: &str) -> AppResult<Option<String>> {
+        self.rt(run_id).await?.read_briefing(run_id).await
+    }
+
+    /// Resolve a briefing's start (a branch or commit) to a commit, as New
+    /// run's preview does: the repository and that commit's tree are checked.
+    pub async fn resolve_start(&self, repository_id: &str, start: &str) -> AppResult<String> {
+        let (_, root) = self.repositories.locate(repository_id).await?;
+        Ok(self
+            .artifacts
+            .preview(repository_id, &root, start)
+            .await?
+            .commit)
+    }
+
     /// The cost an explain run's agent last reported, from its journal.
     pub async fn reported_cost(&self, run_id: &str) -> Option<(u64, String)> {
         let journal = self.journal(run_id).await.ok()?;
@@ -2174,9 +2337,7 @@ impl AgentRunService {
             .engine_socket
             .clone()
             .ok_or_else(|| AppError::validation("Choose where runs execute first."))?;
-        let image = host
-            .image
-            .clone()
+        let image = settings::image_for(false, &host)
             .ok_or_else(|| AppError::validation("Build the image first."))?;
         let run_id = format!("test-{}", uuid::Uuid::new_v4());
         let started = self
@@ -2218,9 +2379,7 @@ impl AgentRunService {
     ) -> AppResult<AgentTestResult> {
         let settings = self.settings.get().await?;
         let (profile, host) = test_subject(&settings, host_id, profile_id)?;
-        let image = host
-            .image
-            .clone()
+        let image = settings::image_for(false, &host)
             .ok_or_else(|| AppError::validation("Build the image on this host first."))?;
         let hosts = self
             .hosts
@@ -2316,6 +2475,9 @@ impl AgentRunService {
             // The profile's model, so a name the plan or key cannot use fails here.
             model: profile.model.clone(),
             known_concepts: None,
+            secrets: Vec::new(),
+            host_secrets: Vec::new(),
+            routine_id: None,
         };
         self.rt(run_id).await?.start(start).await?;
         Ok(())

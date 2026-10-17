@@ -30,6 +30,7 @@ import {
   SlidersIcon,
   TerminalIcon,
 } from "./icons";
+import RunHostsPane from "./RunHostsPane";
 import {
   AccountsPane,
   AgentsPane,
@@ -52,6 +53,7 @@ const ICONS: Record<SettingsSection, ReactNode> = {
   secrets: <KeyIcon size={16} />,
   agents: <TerminalIcon size={16} />,
   runs: <PlayIcon size={16} />,
+  hosts: <BoxIcon size={16} />,
   sharing: <LockIcon size={16} />,
   backup: <ArchiveIcon size={16} />,
   "explain-agent": <BulbIcon size={16} />,
@@ -62,11 +64,25 @@ const ICONS: Record<SettingsSection, ReactNode> = {
 /** The sidebar's headings, in order. */
 const GROUPS: { id: SettingsGroup; label: string }[] = [
   { id: "settings", label: "Settings" },
+  { id: "runs", label: "Runs" },
   { id: "explanations", label: "Explanations" },
 ];
 
 /** Sections whose list takes the page's full width. */
 const WIDE: SettingsSection[] = ["explain-concepts", "explain-stored"];
+
+/**
+ * The Runs pages (docs/design/routines-ux.md): wide, for their tables and
+ * side-by-side cards, with their title in the page (`PageTitle`) instead of
+ * the top bar, so a sub-page can lead with "Run hosts ›".
+ */
+const TITLED: SettingsSection[] = [
+  "runs",
+  "hosts",
+  "secrets",
+  "sharing",
+  "agents",
+];
 
 /** Saves a change to the settings; true when it was saved. */
 export type SaveSettings = (patch: Partial<Settings>) => Promise<boolean>;
@@ -124,6 +140,7 @@ export default function SettingsPage({
   // Where a page draws what goes beside its title, such as a list's count.
   const [titleSlot, setTitleSlot] = useState<HTMLSpanElement | null>(null);
   const wide = WIDE.includes(section);
+  const titled = TITLED.includes(section);
   const show = useCallback(
     () => setShown(Object.assign({}, confirmed.current, ...pending.current)),
     [],
@@ -217,24 +234,31 @@ export default function SettingsPage({
       </nav>
       <main className="flex min-w-0 flex-1 flex-col bg-app">
         {top}
-        <div
-          data-tauri-drag-region
-          className="flex h-12 shrink-0 items-center gap-2 border-b bg-header px-4"
-        >
-          <h1 className="m-0 text-[14px] font-semibold">
-            {sectionLabel(section)}
-          </h1>
-          <span
-            ref={setTitleSlot}
-            className="flex min-w-0 flex-1 items-center gap-2 text-[13px]"
-          />
-        </div>
+        {titled ? (
+          // Room to drag the window by; the page has its own title.
+          <div data-tauri-drag-region className="h-6 shrink-0 bg-header" />
+        ) : (
+          <div
+            data-tauri-drag-region
+            className="flex h-12 shrink-0 items-center gap-2 border-b bg-header px-4"
+          >
+            <h1 className="m-0 text-[14px] font-semibold">
+              {sectionLabel(section)}
+            </h1>
+            <span
+              ref={setTitleSlot}
+              className="flex min-w-0 flex-1 items-center gap-2 text-[13px]"
+            />
+          </div>
+        )}
         <div className="min-h-0 flex-1 overflow-auto bg-header">
           <div
             className={
-              wide
-                ? "flex flex-col gap-3 px-6 pb-8"
-                : "mx-auto flex max-w-160 flex-col gap-5 px-6 pt-5 pb-8"
+              titled
+                ? "mx-auto flex w-full max-w-275 flex-col gap-4 px-8 pt-2 pb-8"
+                : wide
+                  ? "flex flex-col gap-3 px-6 pb-8"
+                  : "mx-auto flex max-w-160 flex-col gap-5 px-6 pt-5 pb-8"
             }
           >
             {error && (
@@ -264,15 +288,25 @@ export default function SettingsPage({
             {section === "accounts" && <AccountsPane onChanged={onChanged} />}
             {section === "secrets" && <SecretsPane />}
             {section === "agents" && (
-              <AgentsPane settings={shown} save={save} />
+              // Prose and switches: kept to a readable width.
+              <div className="mx-auto flex w-full max-w-160 flex-col gap-5">
+                <AgentsPane settings={shown} save={save} />
+              </div>
             )}
             {section === "runs" && (
               <AgentRunsPane
-                hostId={host ?? null}
                 onHost={onHost}
                 profileId={profile ?? null}
                 onProfile={onProfile}
+              />
+            )}
+            {section === "hosts" && (
+              <RunHostsPane
+                hostId={host ?? null}
+                onHost={onHost}
                 onOpenRun={onOpenRun}
+                onSecrets={() => onSection("secrets")}
+                onAgent={onProfile}
               />
             )}
             {section === "explain-agent" && (
