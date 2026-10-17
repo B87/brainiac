@@ -42,7 +42,7 @@ flowchart TD
     Main[Main WebView] --> IPC[Tauri commands]
     Agent[Agent through brainiac mcp, v0.2.x] --> MCP[MCP server]
     MCP --> Services
-    Capture[Quick capture WebView, v0.7] --> IPC
+    Capture[Quick capture WebView, v0.8] --> IPC
     IPC --> Services[Rust domain services]
     Services --> Files[Markdown files, v0.2]
     Services --> DB[SQLite worker]
@@ -50,8 +50,8 @@ flowchart TD
     Queue --> Services
     Services --> Git[Git subprocesses, v0.1]
     Services --> Forges[GitHub and Bitbucket Cloud, v0.3]
-    Services --> AI[Ollama, v0.8+]
-    DB --> Search[FTS5, v0.2; vectors, v0.8]
+    Services --> AI[Ollama, v0.9+]
+    DB --> Search[FTS5, v0.2; vectors, v0.9]
     Services --> Events[Committed change events]
     Events --> Main
     Events --> Capture
@@ -116,7 +116,7 @@ brainiac/
 
 The Claude Code plugin is outside the Cargo project: `.claude-plugin/marketplace.json` at the repository root lists `plugins/brainiac/`, which holds `.claude-plugin/plugin.json`, `.mcp.json`, and `skills/brainiac/SKILL.md`.
 
-Create modules as their behavior is implemented; the scaffold does not need empty placeholders for every file. Add `imports.rs` in v0.7, then AI modules at their milestones.
+Create modules as their behavior is implemented; the scaffold does not need empty placeholders for every file. Add `imports.rs` in v0.8, then AI modules at their milestones.
 
 In Rust, a **package** is described by `Cargo.toml`; a **crate** is a compilation unit, such as its library or executable; a **module** organizes code within a crate. Tauri's scaffold has a small desktop binary (`main.rs`) that delegates to the application library (`lib.rs`). This is scaffold reuse, not a separate backend service.
 
@@ -131,7 +131,7 @@ Files become modules through declarations such as `mod notes;` in `lib.rs`. A di
 - Start with two concurrent Git status jobs and one embedding job; adjust after measurement.
 - On sleep, suspend timers; on wake and application activation, reconcile stale state.
 - On quit, flush accepted saves and draft checkpoints, cancel jobs, close the database, and unregister shortcuts. If flushing fails, preserve the draft and offer retry or quit with recovery.
-- Support a single application instance. Before v0.7, closing the last window quits after flushing. In v0.7, closing the window may keep capture available in the menu bar; `Cmd+Q` still quits.
+- Support a single application instance. Before v0.8, closing the last window quits after flushing. In v0.8, closing the window may keep capture available in the menu bar; `Cmd+Q` still quits.
 
 ## Storage
 
@@ -171,7 +171,7 @@ Only two things cannot be rebuilt: the vault's Markdown files and a small core d
 | --- | --- | --- | --- |
 | Vault (`.md` files) | Note text, frontmatter including `brainiac_id`, links written in notes | Source of truth | By the user, and in Brainiac's export |
 | `brainiac.db` | Settings, repositories, workspaces, pins, activity, vaults, note identity, tasks and their search table, note-to-repository links | No | Snapshots before migrations and daily, and export |
-| `index.db` | Note bodies, the notes search table, parsed links between notes; chunks and vectors from v0.8 | Yes, from the vault | Never; rebuilt after a restore |
+| `index.db` | Note bodies, the notes search table, parsed links between notes; chunks and vectors from v0.9 | Yes, from the vault | Never; rebuilt after a restore |
 | `history.db` | Note revisions and draft checkpoints; from v0.4, query run history and open query tabs | No, but optional | Its own snapshots, less often than `brainiac.db` |
 | `forge.db`, v0.3 | Cached pull requests, files, conversations, checks, and each request's ETag | Yes, from the providers | Never |
 
@@ -182,7 +182,7 @@ Only two things cannot be rebuilt: the vault's Markdown files and a small core d
 
 ### Data model
 
-Tables of v0.7 onward are in `docs/roadmap.md` or the design it points to and are not created before their release; v0.3's and v0.4's are created by the code that first uses them. IDs are UUID strings and timestamps are UTC instants. The v0.1 schema is `src-tauri/migrations/0001_init.sql`; v0.2's core tables arrive in `0002`, v0.3's accounts in `0003`, its forge mapping in `0004`, and review drafts in `0005`; v0.4's databases in `0006` and secret sources in `0007`; v0.5's agent settings in `0008`; `index.db` and `history.db` get their own migration lists.
+Tables of v0.8 onward are in `docs/roadmap.md` or the design it points to and are not created before their release; v0.3's and v0.4's are created by the code that first uses them. IDs are UUID strings and timestamps are UTC instants. The v0.1 schema is `src-tauri/migrations/0001_init.sql`; v0.2's core tables arrive in `0002`, v0.3's accounts in `0003`, its forge mapping in `0004`, and review drafts in `0005`; v0.4's databases in `0006` and secret sources in `0007`; v0.5's agent settings in `0008`; `index.db` and `history.db` get their own migration lists.
 
 | Entity | Essential fields and constraints | Release |
 | --- | --- | --- |
@@ -279,7 +279,7 @@ An export is a new folder `Brainiac Export <date> <time>` holding `manifest.json
 - Migrations stay append-only and run at startup after a pre-migration snapshot; an app refuses a database newer than it knows (Storage, above). That is enough for one user on one machine.
 - Rows use UUIDs, notes are identified by vault ID plus relative path, and unknown frontmatter keys are preserved, so multiple vaults or sync can be added later without rewriting identity. Absolute paths stay only where they are local by nature, such as a repository's folder; its remote URL is the identity that travels.
 - Sync, if it comes, cannot migrate every device at once, because devices run different app versions: record a format version on synced records and translate on read. [Ink & Switch: Cambria](https://www.inkandswitch.com/cambria/)
-- New embedding models or chunkers (v0.8) add a profile; they never change existing vectors in place.
+- New embedding models or chunkers (v0.9) add a profile; they never change existing vectors in place.
 
 ## Git
 
@@ -738,7 +738,7 @@ These are initial targets to measure, not framework guarantees. Use a release bu
 | Local note edit reflected in an idle editor, v0.2 | Within 2 seconds when watcher delivery succeeds |
 | Selected text diff / first 100 history records, v0.1 | p95 under 500 ms on representative repos, with visible loading beyond that |
 | Local Git change reflected in viewer, v0.1 | Within 2 seconds after event delivery on representative repos; stale state visible otherwise |
-| Quick-capture activation, v0.7 | p95 under 250 ms with warm window |
+| Quick-capture activation, v0.8 | p95 under 250 ms with warm window |
 | Idle CPU with dashboard/AI inactive | Under 1% averaged over five minutes |
 | Core app memory, AI runtime excluded | Initial budget under 250 MiB, measured across app/WebView processes |
 
@@ -868,3 +868,4 @@ Decisions already made. Add new ones at the end with a date; do not edit an acce
 - **17 Oct 2026 — A host's start of a scheduled run survives a stop, and one missed look is not a host gone.** The controller saved a schedule's cursor past a slot before starting its run, so a controller stopped in between (a crash, a restart, or a look cut short at its two-minute limit) lost that slot with no result. The record now carries `firing` (the slot and the run ID about to start), saved with the cursor and cleared once the start has succeeded or failed. A look that finds it left over checks for the run's `run.json`, which `start` writes before any side effect: with one the run started and is followed for that slot; without one it is started again for the slot while on time (or late, when the schedule starts late), and is otherwise a failed result that says the controller stopped while starting it. On the Mac, a sync a host did not answer marked every routine there **Host unreachable** at once; `RoutineService` now keeps when each host first stopped answering (in memory, cleared by an answer) and marks its routines only once that is four minutes old, which is the second of the five-minute looks. A quit resets it, so the first look after a launch never marks; Overdue still covers a host silent since a run was due. The one sync mutex for all hosts is left as it is.
 - **17 Oct 2026 — The Schedule tab shows the host's clock.** A schedule's time is the host's local time (`chrono::Local` on the host), and a fresh Linux server runs on UTC, so a time typed in the Mac's zone fired hours off with nothing saying so. The controller already answered `Schedules` with its time as RFC 3339 with its offset; `RoutineService` now keeps it per host (`HostClock`, in memory, refreshed by every sync) and `host_clock` asks the host when the tab opens, falling back to the last answer. The tab works out the host's time from the offset, so it stays current without asking again, and warns when the offset is not the Mac's. No protocol change: the offset is shown (UTC+2), not the zone's name, which the controller does not send.
 - **17 Oct 2026 — Fixes from the pull request's automated review.** A result file is read only while the run's redactor exists (its session is open); without one `read_result_file` refuses instead of returning the file unredacted, and the redactor is still not kept past the session, so secret values do not outlive it in the controller's memory. Removing a repository first deletes its routines through `RoutineService::delete_for_repository`, called by the `remove_repository` command (the shell, so `workspaces` does not import `agents`): every host with an approved schedule is told before anything is deleted, and the removal is refused while one cannot be reached; the cascade from `repositories` to `routines` remains for rows with no schedule and for safety. A routine's memory is marked unsent when it is created with one, when a Run Now leaves one, and when a host that lost the schedule is sent it again, because a sync otherwise takes the host's copy as the truth and the host had none. A run failed for a missing host secret clears `launching` before its stop, so `tick` retries a stop the engine did not confirm.
+- **17 Oct 2026 — Routines and scheduled runs become v0.7, and the releases after it move one number on.** They were built after v0.6 as phases 1 to 4 of `docs/design/scheduled-runs.md` and steps 1 to 3 of `docs/design/routines-ux.md`, and they add a sidebar section, a migration, controller requests, and a release-sized changelog, so they ship as a minor release rather than inside 0.6.x. Content imports and global capture become v0.8, semantic retrieval v0.9, and grounded AI answers v0.10; the plans themselves do not change. Decisions above that name the earlier numbers keep them.
