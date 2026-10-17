@@ -11,6 +11,12 @@ into the release's section.
 
 ## [Unreleased]
 
+- A routine's memory survives its first approval and a Run Now on a scheduled routine; before, the next check of the host could replace it with the host's empty or older copy.
+- Removing a repository takes its routines' schedules off their hosts first, so a host no longer goes on running them.
+- A secret's Delete asks again, and New run no longer keeps a deleted secret chosen from last time, which made Start fail.
+- The cost ceiling field takes amounts such as 0.50, and an empty field no longer sets it to zero.
+- Approving a routine asks you to confirm its secrets can only read even while the host's copies are still unknown.
+- A run on this Mac with secrets no longer says they came from a host.
 - A routine's Schedule tab shows the run host's time now and its time zone beside the time you set, and warns when it differs from your Mac's; the approval names the zone too.
 - A routine is no longer shown as Host unreachable because its host missed one check; it is once the host misses two in a row.
 - A scheduled run its host was starting when the host's run controller stopped is started again if it is still on time; otherwise its briefing says it did not start, instead of the run going missing.
@@ -34,7 +40,12 @@ into the release's section.
 
 - Reaching a run host no longer fails when Brainiac asks it two things at once (a health check while a briefing is read, or a secret shared during a sync).
 
-- Settings → Secrets can keep secrets of your own, such as a Sentry token, and a run host's page can share them: the host keeps a sealed copy, and shows when it is out of date. An agent's page can choose which secrets its runs on a Linux run host get; New run and the run's page name them. Routines are saved runs that check something and leave a short report (a briefing), started with Run Now: a Routines section lists them, each has its own page, and Today shows the ones with news. A routine on a run host can have a schedule: after you approve it, the host runs it at its time with this Mac off, and Brainiac takes the briefing when it next reaches the host. A routine keeps a memory the agent and you can edit, and is shown its earlier briefings. An agent's page can add Python and the Google Cloud CLI to its runs' image, built by the next Build image.
+- Settings → Secrets can keep secrets of your own, such as a Sentry token. A run host keeps a sealed copy of one when a run or routine there first needs it, and its page shows when that copy is out of date.
+- New run and a run's page name the secrets the run gets.
+- Routines are saved runs that check something and leave a short report, a briefing. Run Now starts one; the Routines section lists them, each has its own page, and Today shows the ones with news.
+- A routine on a run host can have a schedule: once you approve it, the host runs it at its time with this Mac off, and Brainiac takes the briefing when it next reaches the host.
+- A routine keeps a memory that the agent and you can edit, and is shown its earlier briefings.
+- A run or routine can add Python and the Google Cloud CLI to its image (Tools), built on the host when it first needs them.
 
 - A run host's page has a Health section: whether it answers, its uptime, load, memory, disk, Docker engine and runs, with what to fix when something is wrong. Upgrade the host's controller to see it.
 

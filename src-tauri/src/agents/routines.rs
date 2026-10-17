@@ -251,8 +251,9 @@ impl RoutineService {
                     conn.execute(
                         "INSERT INTO routines (id, name, repository_id, profile_id, host_id,
                            start, prompt, time_limit_minutes, created_at, updated_at, memory,
-                           memory_updated_at, previous_results, tools)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?10, ?11, ?12, ?13)",
+                           memory_updated_at, previous_results, tools, memory_unsent)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?10, ?11, ?12, ?13,
+                           ?10 <> '')",
                         params![
                             id,
                             name,
@@ -325,6 +326,44 @@ impl RoutineService {
                 Ok(())
             })
             .await
+    }
+
+    /// Delete a repository's routines before the repository goes, each as
+    /// Delete does: a schedule is removed from its host first, or the host
+    /// would go on firing it. Every host is told before anything is deleted,
+    /// so a host that cannot be reached leaves the repository and its routines.
+    pub async fn delete_for_repository(self: &Arc<Self>, repository_id: &str) -> AppResult<()> {
+        let key = repository_id.to_string();
+        let ids: Vec<String> = self
+            .core
+            .call(move |conn| {
+                let mut stmt = conn.prepare("SELECT id FROM routines WHERE repository_id = ?1")?;
+                let rows = stmt.query_map(params![key], |r| r.get::<_, String>(0))?;
+                Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+            })
+            .await?;
+        for id in &ids {
+            let routine = self.routine(id).await?;
+            if self
+                .sched(id)
+                .await
+                .is_ok_and(|s| s.approved_parts.is_some())
+            {
+                self.remove_schedule(id).await.map_err(|e| {
+                    AppError::new(
+                        e.code,
+                        format!(
+                            "The repository was not removed: its routine “{}” is scheduled on a host. {}",
+                            routine.name, e.message
+                        ),
+                    )
+                })?;
+            }
+        }
+        for id in &ids {
+            self.delete(id).await?;
+        }
+        Ok(())
     }
 
     async fn routine(&self, id: &str) -> AppResult<Routine> {
@@ -635,14 +674,16 @@ impl RoutineService {
             ..row.clone()
         };
         let _ = self.history.call(move |conn| update(conn, &done)).await;
-        // The agent's new memory, unless the user edited it after this run began.
+        // The agent's new memory, unless the user edited it after this run
+        // began. Unsent: a schedule's host has the older one, which a sync
+        // would otherwise take back.
         if let Some(memory) = memory {
             let (id, started) = (row.routine_id.clone(), row.started_at.clone());
             let _ = self
                 .core
                 .call(move |conn| {
                     conn.execute(
-                        "UPDATE routines SET memory = ?2, memory_updated_at = ?3
+                        "UPDATE routines SET memory = ?2, memory_updated_at = ?3, memory_unsent = 1
                          WHERE id = ?1 AND (memory_updated_at IS NULL OR memory_updated_at <= ?4)",
                         params![id, memory, now_rfc3339(), started],
                     )?;

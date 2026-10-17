@@ -1390,7 +1390,7 @@ function RunDetails({
         <Fact label="Secrets">
           <span className="mono break-all">{run.host_secrets.join(", ")}</span>
           <Note>
-            {run.host_id === "local"
+            {!remote
               ? "Read on this Mac when the run started; the agent could read them."
               : "From the host's sealed copies; the agent could read them."}
           </Note>

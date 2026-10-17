@@ -829,6 +829,13 @@ impl<W: Workloads> Controller<W> {
                 }),
                 Err(error) => {
                     let _ = run.settle(&prompt_id, None);
+                    // No container is being made any more, so a stop the
+                    // engine does not confirm now is tried again by `tick`.
+                    {
+                        let mut inner = run.lock();
+                        inner.launching = false;
+                        inner.cancel_launch = None;
+                    }
                     self.stop_run(&run, Outcome::Failed, Some(error.message), false)
                         .await;
                     self.finish_stop(&run).await;
@@ -1401,11 +1408,15 @@ impl<W: Workloads> Controller<W> {
             let Some(container) = inner.record.container_id.clone() else {
                 return Err(conflict("The run has no container to read from."));
             };
-            (
-                inner.record.engine_socket.clone(),
-                container,
-                inner.redactor.clone(),
-            )
+            // The values to take out live only while the session is open
+            // (not after it closed, nor after a restart): without them the
+            // file is not read, so a secret it quotes cannot leave.
+            let Some(redactor) = inner.redactor.clone() else {
+                return Err(conflict(
+                    "The run's session has ended, so its result can no longer be read safely.",
+                ));
+            };
+            (inner.record.engine_socket.clone(), container, redactor)
         };
         let bytes = self
             .workloads
@@ -1418,9 +1429,7 @@ impl<W: Workloads> Controller<W> {
             })
             .transpose()?;
         Ok(text.map(|mut text| {
-            if let Some(redactor) = &redactor {
-                redactor.redact_json(&mut text);
-            }
+            redactor.redact_json(&mut text);
             text
         }))
     }

@@ -1114,9 +1114,15 @@ impl RoutineService {
                 .map(|c| c.is_empty())
                 .unwrap_or(false);
         let Some(status) = status else {
-            // The host lost it (a reinstall, a new state folder): send it all again.
+            // The host lost it (a reinstall, a new state folder): send it all
+            // again, the memory too, or the host starts from none and the next
+            // sync takes that back.
             if approved {
-                return self.push(routine, s, runtime, true, enabled, None).await;
+                let all = Sched {
+                    memory_unsent: true,
+                    ..s.clone()
+                };
+                return self.push(routine, &all, runtime, true, enabled, None).await;
             }
             return Ok(());
         };

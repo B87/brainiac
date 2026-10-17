@@ -263,6 +263,8 @@ function SecretRow({
   onDelete?: () => Promise<void>;
 }) {
   const [confirming, setConfirming] = useState(false);
+  /** Delete was pressed once: what goes is said, and it is asked again. */
+  const [deleting, setDeleting] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [refreshed, setRefreshed] = useState(false);
@@ -338,20 +340,46 @@ function SecretRow({
               Edit…
             </button>
           )}
-          {onDelete && (
+          {onDelete && !deleting && (
             <button
               type="button"
               className="btn btn-sm"
               disabled={busy}
-              onClick={() =>
-                void act(async () => {
-                  await onDelete();
-                  return null;
-                })
-              }
+              onClick={() => setDeleting(true)}
             >
-              Delete
+              Delete…
             </button>
+          )}
+          {onDelete && deleting && (
+            <>
+              <span className="self-center text-[12px] text-conflict">
+                {usage && usage.routines.length > 0
+                  ? `${usage.routines.join(", ")} will run without it. `
+                  : ""}
+                A value kept in the Keychain cannot be recovered.
+              </span>
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={() => setDeleting(false)}
+              >
+                Keep It
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm text-conflict"
+                disabled={busy}
+                onClick={() =>
+                  void act(async () => {
+                    setDeleting(false);
+                    await onDelete();
+                    return null;
+                  })
+                }
+              >
+                Delete Secret
+              </button>
+            </>
           )}
           {refreshable && (
             <button

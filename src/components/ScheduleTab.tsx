@@ -69,6 +69,18 @@ function useHostClock(hostId: string): HostClock | null {
   return clock;
 }
 
+/** Millionths of a dollar as the field shows them: "1", "0.5". */
+function dollars(micros: number): string {
+  return (micros / 1_000_000).toString();
+}
+
+/** What the ceiling field holds, in millionths of a dollar, when it is an amount above zero. */
+function ceilingMicros(text: string): number | null {
+  if (!/^\s*\d*(\.\d*)?\s*$/.test(text)) return null;
+  const micros = Math.round(Number(text) * 1_000_000);
+  return Number.isFinite(micros) && micros > 0 ? micros : null;
+}
+
 /** Whether a host's clock is in another zone than this Mac's. */
 function otherZone(clock: HostClock | null): boolean {
   return (
@@ -96,6 +108,12 @@ export default function ScheduleTab({
     schedule?.when ?? NEW_SCHEDULE,
   );
   const [editing, setEditing] = useState(false);
+  // The ceiling as typed: "0." on the way to "0.5", or nothing yet. Only a
+  // positive amount reaches the draft.
+  const [ceilingText, setCeilingText] = useState(
+    dollars(draft.cost_ceiling_micros),
+  );
+  const ceilingValid = ceilingMicros(ceilingText) !== null;
   const [busy, setBusy] = useState<string | null>(null);
   const [approving, setApproving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -151,6 +169,7 @@ export default function ScheduleTab({
           className="btn"
           onClick={() => {
             setDraft(NEW_SCHEDULE);
+            setCeilingText(dollars(NEW_SCHEDULE.cost_ceiling_micros));
             setEditing(true);
           }}
         >
@@ -238,16 +257,20 @@ export default function ScheduleTab({
             className="field w-28"
             aria-label="Cost ceiling in dollars"
             inputMode="decimal"
-            value={(draft.cost_ceiling_micros / 1_000_000).toString()}
+            aria-invalid={!ceilingValid}
+            value={ceilingText}
             onChange={(e) => {
-              const dollars = Number(e.target.value);
-              if (Number.isFinite(dollars))
-                setDraft({
-                  ...draft,
-                  cost_ceiling_micros: Math.round(dollars * 1_000_000),
-                });
+              setCeilingText(e.target.value);
+              const micros = ceilingMicros(e.target.value);
+              if (micros !== null)
+                setDraft({ ...draft, cost_ceiling_micros: micros });
             }}
           />
+          {!ceilingValid && (
+            <span className="text-[12px] text-conflict">
+              An amount in dollars above zero, such as 0.50.
+            </span>
+          )}
           <Hint>
             When a run reports a cost over this, the schedule is paused.
             Brainiac reads the cost after the run; it cannot stop one in the
@@ -346,7 +369,7 @@ export default function ScheduleTab({
           <button
             type="button"
             className="btn btn-primary"
-            disabled={busy !== null}
+            disabled={busy !== null || !ceilingValid}
             onClick={() =>
               void act("save", async () => {
                 await ipc.setRoutineSchedule({
@@ -364,7 +387,7 @@ export default function ScheduleTab({
           <button
             type="button"
             className="btn btn-primary"
-            disabled={!dirty || busy !== null}
+            disabled={!dirty || busy !== null || !ceilingValid}
             onClick={() =>
               void act("save", async () => {
                 await ipc.setRoutineSchedule({
@@ -468,7 +491,12 @@ function ApproveDialog({
   const hostName = host?.name ?? item.host_name;
   // What approving does to the host before the schedule can go there.
   const prepare = host ? preparation(host, routine.tools, profile) : [];
-  const confirmed = sending.length === 0 || readOnly;
+  // What the user confirms can only read: what goes now, or, while the
+  // host's copies are not known (loading, or the host did not say), every
+  // chosen secret, since the approval may send any of them.
+  const unknownCopies = held === null && secrets.length > 0;
+  const askFor = unknownCopies ? secrets.map((n) => n.env_name) : sending;
+  const confirmed = askFor.length === 0 || readOnly;
   const job = useHostJobsContext()[routine.host_id];
   const clock = useHostClock(routine.host_id);
 
@@ -610,7 +638,7 @@ function ApproveDialog({
           issues, which wait for you.
         </Fact>
       </dl>
-      {sending.length > 0 && (
+      {askFor.length > 0 && (
         <label
           className="run-card mt-3 flex-row items-start gap-2.5"
           data-tone="amber"
@@ -622,8 +650,10 @@ function ApproveDialog({
             onChange={(e) => setReadOnly(e.target.checked)}
           />
           <span>
-            {sending.join(", ")} can read and nothing more. Brainiac cannot
-            check this, and a run can print it.
+            {askFor.join(", ")} can read and nothing more. Brainiac cannot check
+            this, and a run can print it.
+            {unknownCopies &&
+              ` ${hostName}'s copies could not be read, so any of them may be sent now.`}
           </span>
         </label>
       )}

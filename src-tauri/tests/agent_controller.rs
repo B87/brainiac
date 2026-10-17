@@ -1617,3 +1617,51 @@ async fn upgrade_reads_live_runs_from_a_controller_of_an_older_protocol() {
     live_server.abort();
     idle_server.abort();
 }
+
+/// A run that fails for a secret the host lacks is stopped again by the
+/// controller once the engine answers, as any stop the engine did not confirm.
+#[tokio::test]
+async fn a_run_failed_for_a_missing_secret_is_stopped_again_once_the_engine_answers() {
+    let h = Harness::new().await;
+    h.engine.get().unreachable = true;
+    let mut start = h.start_request("run-1", "hello", RunPermissions::Act);
+    start.host_secrets = vec!["SENTRY_TOKEN".into()];
+    h.runtime.start(start).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let status = h.status("run-1").await;
+    assert_eq!(status.phase, Phase::Stopping, "{status:?}");
+    assert!(!status.stop_confirmed);
+    h.engine.get().unreachable = false;
+    for _ in 0..150 {
+        if h.status("run-1").await.phase == Phase::Ended {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("the stop was not retried");
+}
+
+/// A result file is read only while the run's session is open, when the
+/// values to take out of it are known; after that it is refused, never
+/// returned as it is.
+#[tokio::test]
+async fn a_result_file_is_not_read_once_the_session_has_ended() {
+    let h = Harness::new().await;
+    h.start("run-1", "hello", RunPermissions::Act).await;
+    h.wait("run-1", "the first turn ends", idle).await;
+    let dir = h.engine.get().volumes.join("run-1").join(".brainiac");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("briefing.json"),
+        format!(r#"{{"summary":"the key is {KEY}"}}"#),
+    )
+    .unwrap();
+    let open = h.runtime.read_briefing("run-1").await.unwrap().unwrap();
+    assert!(!open.contains(KEY), "{open}");
+
+    h.runtime.stop("run-1", StopReason::Cancel).await.unwrap();
+    h.wait("run-1", "the run ends", |s: &RunStatus| ended(s))
+        .await;
+    let refused = h.runtime.read_briefing("run-1").await.unwrap_err();
+    assert!(refused.message.contains("session has ended"), "{refused:?}");
+}

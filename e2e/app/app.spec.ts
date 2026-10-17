@@ -1500,7 +1500,8 @@ test("A named secret is added in Settings → Secrets, a host shows the copy it 
   await openSettings(page, "Secrets");
   // A row opens to show its details and actions.
   await page.getByRole("button", { name: /^SENTRY_TOKEN/ }).click();
-  await page.getByRole("button", { name: "Delete", exact: true }).click();
+  await page.getByRole("button", { name: "Delete…" }).click();
+  await page.getByRole("button", { name: "Delete Secret" }).click();
   await expect(page.getByRole("alert")).toContainText(
     "Remove it from the host",
   );
@@ -1511,7 +1512,11 @@ test("A named secret is added in Settings → Secrets, a host shows the copy it 
   await openSettings(page, "Secrets");
   // A row opens to show its details and actions.
   await page.getByRole("button", { name: /^SENTRY_TOKEN/ }).click();
-  await page.getByRole("button", { name: "Delete", exact: true }).click();
+  // Asked twice: Keep It changes nothing.
+  await page.getByRole("button", { name: "Delete…" }).click();
+  await page.getByRole("button", { name: "Keep It" }).click();
+  await page.getByRole("button", { name: "Delete…" }).click();
+  await page.getByRole("button", { name: "Delete Secret" }).click();
   await expect(page.getByRole("region", { name: "Sentry token" })).toBeHidden();
 });
 

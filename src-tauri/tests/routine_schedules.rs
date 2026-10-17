@@ -780,3 +780,80 @@ async fn a_hosts_clock_is_read_and_kept_when_it_goes_quiet() {
     assert_eq!(h.routines.host_clock(HOST).await.unwrap(), clock);
     assert!(h.routines.host_clock("host-never-seen").await.is_err());
 }
+
+/// A routine's memory reaches its host with the first approval, and a host
+/// that lost the schedule gets it back with the rest: a sync never replaces
+/// it with the host's empty copy.
+#[tokio::test]
+async fn a_routines_memory_survives_approval_and_a_host_that_lost_it() {
+    let h = Harness::new().await;
+    let routine = h.routine().await;
+    h.routines
+        .set_schedule(SetScheduleRequest {
+            routine_id: routine.id.clone(),
+            when: h.when(30),
+        })
+        .await
+        .unwrap();
+    h.routines.approve(&routine.id).await.unwrap();
+    let on_host = || async { h.runtime.schedules().await.unwrap().0[0].memory.clone() };
+    let here = || async {
+        h.routines
+            .overview()
+            .await
+            .unwrap()
+            .remove(0)
+            .routine
+            .memory
+    };
+    assert_eq!(on_host().await, "Ignore SENTRY-9.");
+    h.routines.sync_host(HOST).await.unwrap();
+    assert_eq!(here().await, "Ignore SENTRY-9.");
+
+    // The host loses it (a reinstall): it is sent again, memory and all.
+    h.runtime.delete_schedule(&routine.id).await.unwrap();
+    h.routines.sync_host(HOST).await.unwrap();
+    assert_eq!(on_host().await, "Ignore SENTRY-9.");
+    h.routines.sync_host(HOST).await.unwrap();
+    assert_eq!(here().await, "Ignore SENTRY-9.");
+}
+
+/// Removing a repository deletes its routines as Delete does: each schedule
+/// is taken off its host first, and nothing goes while a host cannot be told.
+#[tokio::test]
+async fn removing_a_repository_takes_its_routines_schedules_off_the_host_first() {
+    let h = Harness::new().await;
+    let routine = h.routine().await;
+    h.routines
+        .set_schedule(SetScheduleRequest {
+            routine_id: routine.id.clone(),
+            when: h.when(30),
+        })
+        .await
+        .unwrap();
+    h.routines.approve(&routine.id).await.unwrap();
+
+    let gone = tempfile::tempdir().unwrap();
+    h.runs.use_runtime_for_host(
+        HOST,
+        Arc::new(RunRuntime::attach(
+            StateDir::new(gone.path().join("c")),
+            gone.path().join("c").join("runner.sock"),
+        )),
+    );
+    let refused = h
+        .routines
+        .delete_for_repository(&h.repository_id)
+        .await
+        .unwrap_err();
+    assert!(refused.message.contains("was not removed"), "{refused:?}");
+    assert_eq!(h.routines.overview().await.unwrap().len(), 1);
+
+    h.runs.use_runtime_for_host(HOST, Arc::clone(&h.runtime));
+    h.routines
+        .delete_for_repository(&h.repository_id)
+        .await
+        .unwrap();
+    assert!(h.runtime.schedules().await.unwrap().0.is_empty());
+    assert!(h.routines.overview().await.unwrap().is_empty());
+}

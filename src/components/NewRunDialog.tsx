@@ -220,17 +220,22 @@ export default function NewRunDialog({
   }, [hostKey]);
   const held = useHostCopies(hostKey);
   // The chosen secrets' names, from the list (a host's answer has them too).
-  const [named, setNamed] = useState<NamedSecret[]>([]);
+  const [named, setNamed] = useState<NamedSecret[] | null>(null);
   useEffect(() => {
     ipc
       .listNamedSecrets()
       .then(setNamed)
       .catch(() => {});
   }, []);
-  const secretNames = named
-    .filter((n) => secretIds.includes(n.id))
+  // A secret remembered from last time may have been deleted since: it could
+  // not be unticked here, and Start would be refused for it.
+  const chosenIds = named
+    ? secretIds.filter((id) => named.some((n) => n.id === id))
+    : secretIds;
+  const secretNames = (named ?? [])
+    .filter((n) => chosenIds.includes(n.id))
     .map((n) => n.env_name);
-  const sending = toSend(secretIds, held);
+  const sending = toSend(chosenIds, held);
   const agent = profile?.agent ?? "claude_code";
   const ends = new Date(Date.now() + timeLimit * 60_000).toLocaleTimeString(
     "en-GB",
@@ -284,13 +289,13 @@ export default function NewRunDialog({
       }
       if (!preview) return;
       // The access the host lacks goes first; the dialog said what goes.
-      if (hostKey && secretIds.length > 0) {
-        await ipc.sendRunSecrets(hostKey, secretIds);
+      if (hostKey && chosenIds.length > 0) {
+        await ipc.sendRunSecrets(hostKey, chosenIds);
       }
       try {
         localStorage.setItem(
           `newRun.access.${hostKey}`,
-          JSON.stringify({ secretIds, tools }),
+          JSON.stringify({ secretIds: chosenIds, tools }),
         );
       } catch {
         // Not remembered; nothing else depends on it.
@@ -308,7 +313,7 @@ export default function NewRunDialog({
         host_id: hostId,
         profile_id: profile.id,
         routine: null,
-        secret_ids: secretIds,
+        secret_ids: chosenIds,
         tools,
       });
       onStarted(run);
@@ -656,7 +661,7 @@ export default function NewRunDialog({
           <AccessPicker
             hostId={hostKey}
             hostName={hostName}
-            chosen={secretIds}
+            chosen={chosenIds}
             onChange={setSecretIds}
             sentWith="Start"
             chips

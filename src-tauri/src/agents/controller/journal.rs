@@ -336,16 +336,20 @@ mod tests {
     #[test]
     fn a_service_account_key_printed_decoded_is_still_taken_out() {
         let pem_line = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7";
+        // In pieces, so secret scanning does not take this placeholder for a key.
+        let (begin, end) = (
+            concat!("-----BEGIN PRIVATE", " KEY-----"),
+            concat!("-----END PRIVATE", " KEY-----"),
+        );
         let key = serde_json::json!({
             "type": "service_account",
-            "private_key": format!("-----BEGIN PRIVATE KEY-----\n{pem_line}\n-----END PRIVATE KEY-----\n"),
+            "private_key": format!("{begin}\n{pem_line}\n{end}\n"),
         })
         .to_string();
         let mut redactor = Redactor::new();
         redactor.register_secret(&key, "GOOGLE_APPLICATION_CREDENTIALS");
         // What `jq -r .private_key` prints: real line breaks, no escapes.
-        let mut printed =
-            format!("-----BEGIN PRIVATE KEY-----\n{pem_line}\n-----END PRIVATE KEY-----");
+        let mut printed = format!("{begin}\n{pem_line}\n{end}");
         redactor.redact(&mut printed);
         assert!(!printed.contains(pem_line), "{printed}");
     }

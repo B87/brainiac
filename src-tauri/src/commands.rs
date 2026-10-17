@@ -91,7 +91,11 @@ pub async fn remove_repository(
     repository_id: String,
     service: State<'_, Service>,
     watcher: State<'_, RepositoryWatcher>,
+    routines: State<'_, Routines>,
 ) -> AppResult<()> {
+    // Its routines first: a scheduled one is removed from its host, which
+    // the database's cascade could not do.
+    routines.delete_for_repository(&repository_id).await?;
     watcher.unwatch(&repository_id);
     service.remove(&repository_id).await
 }

@@ -6,8 +6,8 @@ Proposal, 16 Oct 2026; steps 1 to 3 built 16 and 17 Oct 2026. It reworks where r
 
 - **Routine:** the saved definition. Section "Routines", button "New Routine…", Runs tag **Routine**.
 - **Briefing:** a result a routine leaves ("No briefing" when a run left nothing usable, `.brainiac/briefing.json`, the Briefings folder for notes).
-- **Schedule:** when a routine fires on its host. Planned, not built.
-- Code keeps the earlier names (`briefings` tables, commands and files); the visible words follow this section.
+- **Schedule:** when a routine fires on its host. Built (17 Oct 2026).
+- Code uses these words too (`routines`, `RoutineService`, `list_routines`), since the rename of 16 Oct 2026; a briefing's rows stay in `briefing_results`.
 
 ## Why redo it
 
