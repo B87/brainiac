@@ -432,6 +432,11 @@ pub struct ScheduledResult {
     pub error: Option<String>,
     #[serde(default)]
     pub acked: bool,
+    /// The commit the run started from, as the host recorded it: the code
+    /// the Mac sent may have changed between the run and the Mac's next
+    /// look. A controller before 0.7.2 does not send it.
+    #[serde(default)]
+    pub start_commit: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

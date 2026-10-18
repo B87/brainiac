@@ -170,6 +170,9 @@ async fn the_host_fires_a_due_slot_reads_the_briefing_and_keeps_it_until_acknowl
     let status = h.first_result().await;
     let result = &status.results[0];
     assert_eq!(result.state, ScheduledState::Ready, "{result:?}");
+    // The run's own start goes with it: the code held may change before the
+    // Mac next looks.
+    assert_eq!(result.start_commit.as_deref(), Some(COMMIT));
     let draft = result.draft.as_ref().unwrap();
     assert_eq!(draft.status, Some(BriefingStatus::Findings));
     assert_eq!(draft.findings[0].key, "SENTRY-1");

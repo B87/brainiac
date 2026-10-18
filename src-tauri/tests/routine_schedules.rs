@@ -25,8 +25,8 @@ use brainiac_lib::git::GitService;
 use brainiac_lib::machines::MachineService;
 use brainiac_lib::models::{
     AgentPayment, AgentProvider, AnswerCodeSharingRequest, BriefingState, HostJobKind, Routine,
-    SaveAgentCredentialRequest, SaveNamedSecretRequest, SaveRoutineRequest, ScheduleDaysKind,
-    ScheduleState, ScheduleWhen, SecretSource, SetScheduleRequest, Settings,
+    RunCollection, SaveAgentCredentialRequest, SaveNamedSecretRequest, SaveRoutineRequest,
+    ScheduleDaysKind, ScheduleState, ScheduleWhen, SecretSource, SetScheduleRequest, Settings,
 };
 use brainiac_lib::sharing::CodeSharingService;
 use brainiac_lib::workspaces::RepositoryService;
@@ -386,6 +386,26 @@ async fn a_schedule_is_off_until_approved_then_the_host_fires_it_and_the_app_tak
     // Taken once: another sync does not bring it again.
     h.routines.sync_host(HOST).await.unwrap();
     assert_eq!(h.routines.results(&routine.id).await.unwrap().len(), 1);
+
+    // Its work is collected like a run started here, although this Mac never
+    // exported its start: the host ran the code the routine sent.
+    let mut collected = run;
+    for _ in 0..120 {
+        if matches!(
+            collected.collection,
+            RunCollection::Ready | RunCollection::NoChanges | RunCollection::Failed
+        ) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        collected = h.runs.get(&collected.id).await.unwrap();
+    }
+    assert_eq!(
+        collected.collection,
+        RunCollection::Ready,
+        "{:?}",
+        collected.collection_error
+    );
 }
 
 #[tokio::test]

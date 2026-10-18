@@ -1226,9 +1226,12 @@ impl RoutineService {
             if let Some(run_id) = &r.run_id {
                 // A run that cannot be taken into Runs (its row, say) is
                 // still a briefing worth keeping.
+                // The host's record of where the run started; the code it
+                // holds now may be newer. A controller before 0.7.2 sends none.
+                let start = r.start_commit.as_deref().unwrap_or(start_commit);
                 if let Err(e) = self
                     .runs
-                    .adopt_routine_run(routine, host_id, run_id, start_commit)
+                    .adopt_routine_run(routine, host_id, run_id, start)
                     .await
                 {
                     tracing::warn!(run = %run_id, error = %e, "a scheduled run was not listed");

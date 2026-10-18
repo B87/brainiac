@@ -539,6 +539,83 @@ impl RunArtifacts {
         format!("refs/brainiac/runs/{run_id}/{name}")
     }
 
+    /// The commit `reference` names in `repo`, or `None` when there is no
+    /// such ref. Any other failure is an error.
+    async fn ref_commit(&self, repo: &Path, reference: &str) -> AppResult<Option<String>> {
+        let out = self
+            .git(
+                repo,
+                &["rev-parse", "--verify", "--quiet", reference],
+                CHECK_TIMEOUT,
+            )
+            .await?;
+        if out.success() {
+            return Ok(Some(
+                String::from_utf8_lossy(&out.stdout).trim().to_string(),
+            ));
+        }
+        // With `--quiet`, a ref that does not exist exits 1 and prints nothing.
+        if out.code == Some(1) && out.stderr.trim().is_empty() {
+            return Ok(None);
+        }
+        Err(
+            AppError::io("Git could not read the repository.").with_details(format!(
+                "git rev-parse --verify --quiet {reference}\n{}",
+                out.stderr
+            )),
+        )
+    }
+
+    /// Record `commit` as the start of a run this Mac did not export: one a
+    /// host's schedule started from code the routine sent earlier, which is
+    /// kept under the routine's ref (`sched-<routine id>`), not the run's.
+    /// The commit must already be in Brainiac's repository. A start already
+    /// recorded is left as it is, so this can be repeated.
+    pub async fn mark_start(
+        &self,
+        repository_id: &str,
+        run_id: &str,
+        commit: &str,
+    ) -> AppResult<()> {
+        check_id("repository", repository_id)?;
+        check_id("run", run_id)?;
+        if commit.len() != 40 || !commit.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(AppError::validation("Invalid commit ID."));
+        }
+        let lock = Arc::clone(
+            self.imports
+                .lock()
+                .expect("imports lock")
+                .entry(repository_id.to_string())
+                .or_default(),
+        );
+        let _held = lock.lock().await;
+        let missing = || AppError::io("The run's start is no longer in Brainiac's repository.");
+        let repo = self.repository_dir(repository_id);
+        if !repo.join("HEAD").exists() {
+            return Err(missing());
+        }
+        let start_ref = Self::run_ref(run_id, "start");
+        if self.ref_commit(&repo, &start_ref).await?.is_some() {
+            return Ok(());
+        }
+        let object = format!("{commit}^{{commit}}");
+        let found = self
+            .git(&repo, &["cat-file", "-e", &object], CHECK_TIMEOUT)
+            .await?;
+        if !found.success() {
+            return Err(missing().with_details(commit.to_string()));
+        }
+        // An empty old value makes Git create the ref only if it is still absent.
+        self.git_ok(
+            &repo,
+            &["update-ref", &start_ref, commit, ""],
+            CHECK_TIMEOUT,
+        )
+        .await?;
+        Ok(())
+    }
+
     /// Import a collected `result.bundle` (docs/architecture.md, Agent runs —
     /// v0.5, Artifacts): one regular file of bounded size, one advertised
     /// ref at exactly `result`, whose only parent is `start`, fetched with
@@ -617,14 +694,8 @@ impl RunArtifacts {
                 .or_default(),
         );
         let _held = lock.lock().await;
-        let known = self
-            .git_ok(
-                &repo,
-                &["rev-parse", "--verify", "--quiet", &start_ref],
-                CHECK_TIMEOUT,
-            )
-            .await?;
-        if known.trim() != start {
+        let known = self.ref_commit(&repo, &start_ref).await?;
+        if known.as_deref() != Some(start) {
             return Err(AppError::io(
                 "The run's start is no longer in Brainiac's repository.",
             ));
