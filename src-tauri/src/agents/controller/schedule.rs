@@ -699,7 +699,10 @@ impl<W: Workloads> Controller<W> {
         self.start(start).map(|_| ())
     }
 
-    fn record_result(&self, routine_id: &str, result: ScheduledResult) {
+    fn record_result(&self, routine_id: &str, mut result: ScheduledResult) {
+        if result.start_commit.is_none() {
+            result.start_commit = result.run_id.as_deref().and_then(|id| self.run_start(id));
+        }
         let mut schedules = self.schedules();
         let Some(record) = schedules.records.get_mut(routine_id) else {
             return;
@@ -784,6 +787,7 @@ impl<W: Workloads> Controller<W> {
                         draft: None,
                         error: Some(why),
                         acked: false,
+                        start_commit: None,
                     },
                 );
                 continue;
@@ -804,6 +808,7 @@ impl<W: Workloads> Controller<W> {
                                 .into(),
                         ),
                         acked: false,
+                    start_commit: None,
                     },
                 );
                 let _ = self.request_stop(&run_id, StopReason::Cancel);
@@ -874,12 +879,20 @@ impl<W: Workloads> Controller<W> {
                                 problems.join(" ")
                             )),
                             acked: false,
+                            start_commit: None,
                         },
                     );
                     let _ = self.request_stop(&run_id, StopReason::Cancel);
                 }
             }
         }
+    }
+
+    /// The commit a run this controller has started from, when it has it.
+    fn run_start(&self, run_id: &str) -> Option<String> {
+        let run = self.run(run_id).ok()?;
+        let start = run.lock().record.start_commit.clone();
+        Some(start).filter(|s| !s.is_empty())
     }
 
     /// Keep a checked briefing and the memory the agent returned.
@@ -891,6 +904,7 @@ impl<W: Workloads> Controller<W> {
         started_at: &str,
         draft: Draft,
     ) {
+        let start_commit = self.run_start(run_id);
         let mut schedules = self.schedules();
         let Some(record) = schedules.records.get_mut(routine_id) else {
             return;
@@ -919,6 +933,7 @@ impl<W: Workloads> Controller<W> {
                 draft: Some(draft),
                 error: None,
                 acked: false,
+                start_commit,
             },
         );
         prune(&mut record.results);
@@ -939,6 +954,7 @@ fn failure(slot: DateTime<Local>, run_id: Option<String>, why: &str) -> Schedule
         draft: None,
         error: Some(why.to_string()),
         acked: false,
+        start_commit: None,
     }
 }
 
@@ -956,6 +972,7 @@ fn missed_result(slot: DateTime<Local>) -> ScheduledResult {
             slot.format("%H:%M on %a %-d %b")
         )),
         acked: false,
+        start_commit: None,
     }
 }
 

@@ -1592,6 +1592,13 @@ impl AgentRunService {
                 ));
             }
             let bundle = out_dir.join("result.bundle");
+            // A run a schedule started (taken before 0.7.2, or whose start
+            // could not be recorded then) gets its start ref here.
+            if row.routine_id.is_some() {
+                self.artifacts
+                    .mark_start(&row.repository_id, run_id, &row.start_commit)
+                    .await?;
+            }
             let result = if manifest.result == manifest.start {
                 manifest.result.clone()
             } else {
@@ -1874,6 +1881,16 @@ impl AgentRunService {
             host_secrets,
             routine_id: Some(routine.id.clone()),
         });
+        // The host ran code the routine sent, which Brainiac keeps under the
+        // routine's ref; collecting the run looks for its own. Collect tries
+        // again, so a failure here only stops the run's work being taken.
+        if let Err(e) = self
+            .artifacts
+            .mark_start(&routine.repository_id, run_id, start_commit)
+            .await
+        {
+            tracing::warn!(run = %run_id, error = %e, details = ?e.details, "a scheduled run's start was not recorded");
+        }
         self.history
             .call(move |conn| store::insert(conn, &row))
             .await?;

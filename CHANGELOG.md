@@ -11,6 +11,8 @@ into the release's section.
 
 ## [Unreleased]
 
+- A run a host started on schedule is collected when Brainiac takes it, instead of failing with "Git could not read the repository." Retry collection recovers one that already failed.
+
 ## [0.7.1] - 2026-10-18
 
 - Brainiac installed from a release can set up and upgrade a run host: it downloads the host's run controller from its own release instead of needing a copy of the source code and a build in Docker.
