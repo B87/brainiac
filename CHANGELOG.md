@@ -11,6 +11,8 @@ into the release's section.
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-10-18
+
 - A run a host started on schedule is collected when Brainiac takes it, instead of failing with "Git could not read the repository." Retry collection recovers one that already failed.
 
 ## [0.7.1] - 2026-10-18
@@ -243,7 +245,8 @@ First public build: a read-only Git viewer and multi-repository tracker for macO
 - The Branches tab is a placeholder.
 - Not signed with an Apple Developer certificate; the first launch needs right-click > Open (see the README).
 
-[Unreleased]: https://github.com/B87/brainiac/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/B87/brainiac/compare/v0.7.2...HEAD
+[0.7.2]: https://github.com/B87/brainiac/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/B87/brainiac/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/B87/brainiac/compare/v0.6.4...v0.7.0
 [0.6.4]: https://github.com/B87/brainiac/compare/v0.6.3...v0.6.4
