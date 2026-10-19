@@ -1282,6 +1282,15 @@ impl GitService {
         Some(String::from_utf8_lossy(&out).trim().to_string()).filter(|v| !v.is_empty())
     }
 
+    /// Whether the repository is a shallow clone: some commits' parents were
+    /// never downloaded.
+    pub async fn is_shallow(&self, root: &Path) -> AppResult<bool> {
+        let out = self
+            .run_raw(Some(root), &["rev-parse", "--is-shallow-repository"])
+            .await?;
+        Ok(String::from_utf8_lossy(&out).trim() == "true")
+    }
+
     /// The remote's configured fetch refspecs that only write remote-tracking
     /// refs or tags. Anything else (a mirror refspec such as
     /// `+refs/heads/*:refs/heads/*` would rewrite local branches) is dropped;
@@ -1318,12 +1327,14 @@ impl GitService {
     /// told not to open windows, and SSH runs in batch mode unless the user
     /// configured their own `core.sshCommand`. A refspec for a branch the remote
     /// no longer has would fail the whole fetch, so it is dropped and the fetch
-    /// retried; the dropped sources are returned.
+    /// retried; the dropped sources are returned. `unshallow` also fetches
+    /// the history a shallow clone left out (Fetch full history).
     pub async fn fetch(
         &self,
         root: &Path,
         remote: &str,
         refspecs: &[String],
+        unshallow: bool,
         timeout: Duration,
     ) -> AppResult<Vec<String>> {
         validate_revision(remote)?;
@@ -1357,6 +1368,9 @@ impl GitService {
             let mut args: Vec<&str> = FETCH_CONFIG.to_vec();
             args.push("fetch");
             args.extend(FETCH_FLAGS);
+            if unshallow {
+                args.push("--unshallow");
+            }
             args.push(remote);
             args.extend(specs.iter().map(String::as_str));
             let out = self

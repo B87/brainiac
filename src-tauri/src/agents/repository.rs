@@ -55,6 +55,16 @@ pub struct ExportedStart {
 }
 
 /// A refusal with its remedy, before any container starts or credential is read.
+/// A shallow clone's refusal, for a run and an explanation alike: the dialogs
+/// answer its code with Fetch full history (SPEC.md, Fetching).
+pub fn shallow_clone() -> AppError {
+    AppError::new(
+        ErrorCode::ShallowClone,
+        "This repository is a shallow clone, so a run cannot get the commit's whole history. \
+         Fetch the rest with git fetch --unshallow, then try again.",
+    )
+}
+
 fn refused(reason: &str, remedy: &str) -> AppError {
     AppError::validation(format!("{reason} {remedy}"))
 }
@@ -202,10 +212,7 @@ impl RunArtifacts {
             })?;
         let mut lines = out.lines();
         if lines.next() == Some("true") {
-            return Err(refused(
-                "This repository is a shallow clone, so a run cannot get the commit's whole history.",
-                "Fetch the rest with git fetch --unshallow, then try again.",
-            ));
+            return Err(shallow_clone());
         }
         let format = lines.next().unwrap_or_default();
         if format != "sha1" {
@@ -1238,10 +1245,8 @@ mod tests {
             ],
         );
         let err = artifacts.preview("r", &shallow, "HEAD").await.unwrap_err();
-        assert!(
-            err.message.contains("shallow") && err.message.contains("--unshallow"),
-            "{err:?}"
-        );
+        assert_eq!(err.code, ErrorCode::ShallowClone, "{err:?}");
+        assert!(err.message.contains("--unshallow"), "{err:?}");
 
         let partial = base.path().join("partial");
         git(

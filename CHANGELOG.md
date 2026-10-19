@@ -11,6 +11,8 @@ into the release's section.
 
 ## [Unreleased]
 
+- New run and Explain offer **Fetch full history** when a repository is a shallow clone, instead of only naming the Git command to run.
+
 ## [0.7.2] - 2026-10-18
 
 - A run a host started on schedule is collected when Brainiac takes it, instead of failing with "Git could not read the repository." Retry collection recovers one that already failed.

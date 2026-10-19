@@ -37,6 +37,7 @@ import { plural } from "../lib/repo";
 import { requestSettings } from "../lib/settings";
 import AccessPicker, { toSend, useHostCopies } from "./AccessPicker";
 import Dialog from "./Dialog";
+import FullHistoryFetch, { isShallowClone } from "./FullHistoryFetch";
 import {
   AlertIcon,
   BoxIcon,
@@ -82,7 +83,12 @@ export default function NewRunDialog({
   const [repo, setRepo] = useState(repositoryId ?? repos[0]?.id ?? "");
   const [start, setStart] = useState("HEAD");
   const [preview, setPreview] = useState<RunStartPreview | null>(null);
-  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [previewError, setPreviewError] = useState<{
+    message: string;
+    shallow: boolean;
+  } | null>(null);
+  // Bumped after Fetch full history, to resolve the start again.
+  const [previewTry, setPreviewTry] = useState(0);
   const [prompt, setPrompt] = useState("");
   const [permissions, setPermissions] = useState<RunPermissions>("ask");
   const [timeLimit, setTimeLimit] = useState(60);
@@ -143,7 +149,9 @@ export default function NewRunDialog({
     };
   }, [repo]);
 
-  // The start is resolved once, as the user leaves the field or picks a repository.
+  // The start is resolved once, as the user leaves the field or picks a
+  // repository, and again after Fetch full history.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: previewTry asks again after a fetch
   useEffect(() => {
     if (!repo) return;
     let alive = true;
@@ -153,13 +161,20 @@ export default function NewRunDialog({
       ipc
         .previewRunStart(repo, start)
         .then((p) => alive && setPreview(p))
-        .catch((e) => alive && setPreviewError(errorMessage(e)));
+        .catch(
+          (e) =>
+            alive &&
+            setPreviewError({
+              message: errorMessage(e),
+              shallow: isShallowClone(e),
+            }),
+        );
     }, 300);
     return () => {
       alive = false;
       clearTimeout(timer);
     };
-  }, [repo, start]);
+  }, [repo, start, previewTry]);
 
   // A host with a job running is shown with its step, not offered (SPEC.md, New run).
   const busyHosts = (settings?.hosts ?? []).filter(
@@ -484,7 +499,16 @@ export default function NewRunDialog({
               </div>
             </>
           ) : previewError ? (
-            <span className="text-conflict">{previewError}</span>
+            <div className="flex flex-col gap-2">
+              <span className="text-conflict">{previewError.message}</span>
+              {previewError.shallow && (
+                <FullHistoryFetch
+                  key={repo}
+                  repositoryId={repo}
+                  onFetched={() => setPreviewTry((n) => n + 1)}
+                />
+              )}
+            </div>
           ) : (
             <span className="text-muted">Resolving…</span>
           )}

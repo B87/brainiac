@@ -793,3 +793,24 @@ async fn a_pull_request_from_a_fork_is_not_explained() {
     assert_eq!(refused.code, ErrorCode::Validation);
     assert_eq!(h.engine.get().launches, 0);
 }
+
+#[tokio::test]
+async fn a_shallow_clone_offers_fetch_full_history_before_anything_else() {
+    let h = Harness::new().await;
+    h.allow().await;
+    // Git reads `.git/shallow` as "these commits' parents were not
+    // downloaded", as `git clone --depth` leaves it. The check comes before
+    // the merge base, which a shallow clone often lacks.
+    let tip = h.head("main");
+    std::fs::write(h.repo.join(".git").join("shallow"), format!("{tip}\n")).unwrap();
+    let dialog = h
+        .explanations
+        .dialog(&h.repository_id, h.feature())
+        .await
+        .unwrap();
+    assert!(dialog.fetch_history, "{:?}", dialog.blocked);
+    assert!(dialog.blocked.unwrap().contains("shallow clone"));
+    let refused = h.explain(h.feature()).await.unwrap_err();
+    assert_eq!(refused.code, ErrorCode::ShallowClone);
+    assert_eq!(h.engine.get().launches, 0);
+}

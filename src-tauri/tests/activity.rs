@@ -68,16 +68,31 @@ impl Fixture {
 /// remote.git with one commit on main; `work` (registered, in a workspace) and
 /// `mate` are clones of it.
 async fn fixture() -> Fixture {
+    fixture_with(false).await
+}
+
+/// As `fixture`; when `shallow`, main has two commits, the first tagged
+/// `v1`, and `work` holds only the last one (`git clone --depth 1`).
+async fn fixture_with(shallow: bool) -> Fixture {
     let tmp = tempfile::tempdir().unwrap();
     let remote = tmp.path().join("remote.git");
     let seed = tmp.path().join("seed");
     std::fs::create_dir_all(&seed).unwrap();
     git(&seed, &["init", "-q", "-b", "main"]);
     commit(&seed, "Test", "README.md", "hello\n", "initial");
+    if shallow {
+        git(&seed, &["tag", "v1"]);
+        commit(&seed, "Test", "NOTES.md", "notes\n", "Add notes");
+    }
     git(tmp.path(), &["clone", "-q", "--bare", "seed", "remote.git"]);
-    git(tmp.path(), &["clone", "-q", "remote.git", "work"]);
+    if shallow {
+        // A local path ignores --depth; a file:// URL honours it.
+        let url = format!("file://{}", remote.display());
+        git(tmp.path(), &["clone", "-q", "--depth", "1", &url, "work"]);
+    } else {
+        git(tmp.path(), &["clone", "-q", "remote.git", "work"]);
+    }
     git(tmp.path(), &["clone", "-q", "remote.git", "mate"]);
-    let _ = remote;
 
     // The service runs Git through a wrapper that logs each command.
     let git_log = tmp.path().join("git.log");
@@ -264,6 +279,61 @@ async fn force_push_and_tags() {
     assert_eq!(tagged.ref_name, "v1.0");
     assert_eq!(tagged.detail.authors, vec!["Jo Martin".to_string()]);
     assert_eq!(f.svc.team_pulse(&f.workspace_id).await.unwrap().releases, 1);
+}
+
+#[tokio::test]
+async fn fetch_full_history_completes_a_shallow_clone() {
+    let f = fixture_with(true).await;
+    let shallow = || git(&f.work, &["rev-parse", "--is-shallow-repository"]);
+    assert_eq!(shallow(), "true");
+    let head = git(&f.work, &["rev-parse", "HEAD"]);
+    let _ = f.git_calls("");
+
+    // Fetch now keeps the clone shallow; Fetch full history completes it.
+    f.svc.fetch(&f.repo_id, false).await.unwrap();
+    assert_eq!(shallow(), "true");
+    let result = f.svc.fetch_full_history(&f.repo_id).await.unwrap();
+    assert!(result.fetched_at.is_some());
+    assert_eq!(shallow(), "false");
+    assert_eq!(git(&f.work, &["rev-list", "--count", "HEAD"]), "2");
+    // Only the history: local branches and HEAD are where they were.
+    assert_eq!(git(&f.work, &["rev-parse", "HEAD"]), head);
+    let calls = f.git_calls("--unshallow");
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert!(calls[0].contains("--no-recurse-submodules"), "{calls:?}");
+
+    // The old tag came with the history, and is not news.
+    assert!(!git(&f.work, &["tag", "--list", "v1"]).is_empty());
+    let feed = f.svc.workspace_activity(&f.workspace_id).await.unwrap();
+    assert!(
+        !feed.items.iter().any(|i| i.kind == ActivityKind::Tagged),
+        "{:?}",
+        feed.items
+    );
+
+    // A complete repository is left alone.
+    let result = f.svc.fetch_full_history(&f.repo_id).await.unwrap();
+    assert!(result.fetched_at.is_none());
+    assert!(f.git_calls("--unshallow").is_empty());
+}
+
+#[tokio::test]
+async fn fetch_full_history_survives_the_followed_branch_being_gone() {
+    let f = fixture_with(true).await;
+    // The clone follows only a branch the remote no longer has.
+    git(
+        &f.work,
+        &[
+            "config",
+            "remote.origin.fetch",
+            "+refs/heads/gone:refs/remotes/origin/gone",
+        ],
+    );
+    f.svc.fetch_full_history(&f.repo_id).await.unwrap();
+    assert_eq!(
+        git(&f.work, &["rev-parse", "--is-shallow-repository"]),
+        "false"
+    );
 }
 
 #[tokio::test]

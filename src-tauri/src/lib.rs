@@ -492,6 +492,7 @@ pub fn run() {
             commands::remove_workspace,
             commands::set_pinned,
             commands::fetch_repository,
+            commands::fetch_full_history,
             commands::get_workspace_activity,
             commands::get_team_pulse,
             commands::mark_activity_seen,

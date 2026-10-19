@@ -589,6 +589,9 @@ export const ipc = {
     invoke<void>("set_pinned", { entityType, entityId, pinned }),
   fetchRepository: (repositoryId: string) =>
     invoke<FetchResult>("fetch_repository", { repositoryId }),
+  /** Fetch now with the history a shallow clone left out (SPEC.md, Fetching). */
+  fetchFullHistory: (repositoryId: string) =>
+    invoke<FetchResult>("fetch_full_history", { repositoryId }),
   getWorkspaceActivity: (workspaceId: string) =>
     invoke<WorkspaceActivity>("get_workspace_activity", { workspaceId }),
   getTeamPulse: (workspaceId: string) =>

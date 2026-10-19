@@ -9,12 +9,25 @@ use std::time::Duration;
 
 use super::RepositoryService;
 use crate::db::{self, RepositoryRow};
-use crate::fetcher::{last_fetch_at, Scope};
+use crate::fetcher::{last_fetch_at, Outcome, Scope};
 use crate::git::Checkout;
 use crate::models::{AppError, AppResult, ChangeOrigin, FetchResult};
 
 /// Shortest auto-fetch interval a setting can ask for.
 const MIN_INTERVAL: Duration = Duration::from_secs(5 * 60);
+/// How long Fetch full history may take: it downloads the whole history,
+/// which for a large repository is far more than a fetch's usual minute.
+const FULL_HISTORY_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// A Fetch now already in flight is joined, not repeated; Fetch full history
+/// asks again this many times before giving up.
+const FULL_HISTORY_TRIES: usize = 3;
+
+#[derive(Clone, Copy)]
+enum Kind {
+    Now,
+    Auto,
+    FullHistory,
+}
 
 impl RepositoryService {
     /// Fetch the repository's remote. `auto` fetches only the branches the
@@ -22,6 +35,39 @@ impl RepositoryService {
     /// directory is refreshed afterwards, which updates ahead/behind counts
     /// and the activity feed (and shows a failure in the next snapshot).
     pub async fn fetch(self: &Arc<Self>, id: &str, auto: bool) -> AppResult<FetchResult> {
+        let kind = if auto { Kind::Auto } else { Kind::Now };
+        Ok(self.fetch_as(id, kind).await?.0)
+    }
+
+    /// Fetch full history: Fetch now with `--unshallow`, the remedy a run or
+    /// an explanation offers for a shallow clone (SPEC.md, Fetching). A
+    /// repository that is already complete is left alone.
+    pub async fn fetch_full_history(self: &Arc<Self>, id: &str) -> AppResult<FetchResult> {
+        let mut tries = 0;
+        loop {
+            tries += 1;
+            let (result, joined) = self.fetch_as(id, Kind::FullHistory).await?;
+            let row = self.row(id).await?;
+            if !self
+                .git()?
+                .is_shallow(Path::new(&row.canonical_root))
+                .await?
+            {
+                return Ok(result);
+            }
+            // A Fetch now that was already running answered instead: ask again.
+            if !joined || tries >= FULL_HISTORY_TRIES {
+                return Err(AppError::validation(
+                    "Part of this repository's history is still missing: the remote's branches \
+                     do not reach all of it. Clone the repository again without --depth.",
+                ));
+            }
+        }
+    }
+
+    /// The fetch's result, and whether it was another request's that this
+    /// one joined.
+    async fn fetch_as(self: &Arc<Self>, id: &str, kind: Kind) -> AppResult<(FetchResult, bool)> {
         let row = self.row(id).await?;
         let checkout = Checkout::from(&row);
         if !checkout.root.is_dir() {
@@ -32,19 +78,30 @@ impl RepositoryService {
         }
         let git = self.git()?.clone();
         let store = checkout.store();
-        let scope = if auto {
-            Scope::Watched {
+        let scope = match kind {
+            Kind::Auto => Scope::Watched {
                 patterns: self.auto_fetch_patterns(&store).await?,
                 interval: self.auto_fetch_interval(),
-            }
-        } else {
-            Scope::Remote
+            },
+            Kind::Now => Scope::Remote,
+            Kind::FullHistory => Scope::FullHistory,
         };
-        let timeout = Duration::from_secs(self.settings().fetch_timeout_seconds.max(10));
+        let mut timeout = Duration::from_secs(self.settings().fetch_timeout_seconds.max(10));
+        if matches!(kind, Kind::FullHistory) {
+            timeout = timeout.max(FULL_HISTORY_TIMEOUT);
+        }
+        let full_history = matches!(kind, Kind::FullHistory);
+        if full_history {
+            self.tracker.set_quiet_tags(&store, true);
+        }
         let outcome = self.fetcher.fetch(&git, &checkout, scope, timeout).await;
         let ran = outcome.changed_state();
+        let joined = matches!(outcome, Outcome::Joined(_));
         if ran {
             self.refresh_store(&store).await;
+        }
+        if full_history {
+            self.tracker.set_quiet_tags(&store, false);
         }
         let fetched = outcome.into_result()?;
         let result = FetchResult {
@@ -58,7 +115,7 @@ impl RepositoryService {
         if ran {
             self.fetch_moved(&result);
         }
-        Ok(result)
+        Ok((result, joined))
     }
 
     fn auto_fetch_interval(&self) -> Duration {
