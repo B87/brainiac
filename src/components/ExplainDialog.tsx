@@ -19,6 +19,7 @@ import {
 } from "../lib/ipc";
 import { requestSettings } from "../lib/settings";
 import Dialog from "./Dialog";
+import FullHistoryFetch, { isShallowClone } from "./FullHistoryFetch";
 
 function FieldLabel({ children, id }: { children: string; id?: string }) {
   return (
@@ -58,6 +59,8 @@ export default function ExplainDialog({
   const [details, setDetails] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The start was refused for a shallow clone: Fetch full history fixes it.
+  const [shallow, setShallow] = useState(false);
 
   const load = useMemo(
     () => () =>
@@ -116,6 +119,7 @@ export default function ExplainDialog({
   const fetchNow = () => {
     setFetching(true);
     setError(null);
+    setShallow(false);
     ipc
       .fetchRepository(repositoryId)
       .then(() => load())
@@ -127,6 +131,7 @@ export default function ExplainDialog({
     if (!profile || !host) return;
     setBusy(true);
     setError(null);
+    setShallow(false);
     try {
       if (answer !== undefined) {
         await ipc.answerCodeSharing({
@@ -151,6 +156,7 @@ export default function ExplainDialog({
       onStarted(record);
     } catch (e) {
       setError(errorMessage(e));
+      setShallow(isShallowClone(e));
     } finally {
       setBusy(false);
     }
@@ -222,6 +228,16 @@ export default function ExplainDialog({
           <div role="alert" className="text-[12.5px] text-conflict">
             {error}
           </div>
+        )}
+        {error && shallow && (
+          <FullHistoryFetch
+            repositoryId={repositoryId}
+            onFetched={() => {
+              setError(null);
+              setShallow(false);
+              void load();
+            }}
+          />
         )}
         {!data && !error && <span className="text-muted">Loading…</span>}
         {data && data.profiles.length === 0 && (
@@ -307,6 +323,12 @@ export default function ExplainDialog({
               >
                 {blocked}
               </div>
+            )}
+            {blocked && data.fetch_history && (
+              <FullHistoryFetch
+                repositoryId={repositoryId}
+                onFetched={() => void load()}
+              />
             )}
             {subject.kind === "pull_request" && !blocked && (
               <p className="m-0 text-[12.5px] text-fg-2">

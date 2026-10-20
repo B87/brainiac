@@ -450,6 +450,7 @@ impl ExplanationService {
         // A pull request whose head is not here yet is explained after a fetch.
         let fetch_first = matches!(&resolved, Err(e) if e.code == ErrorCode::NotFound)
             && pull_request.as_ref().is_some_and(|pr| !pr.from_fork);
+        let fetch_history = matches!(&resolved, Err(e) if e.code == ErrorCode::ShallowClone);
         let head_author = pull_request
             .as_ref()
             .filter(|pr| !pr.mine)
@@ -497,6 +498,7 @@ impl ExplanationService {
             estimates,
             blocked,
             fetch_first,
+            fetch_history,
             head_author,
         })
     }
@@ -566,6 +568,14 @@ impl ExplanationService {
                     .map(|out| out.trim().to_string())
             }
         };
+        // Checked first: in a shallow clone a merge base or a parent can be
+        // missing, which would read as a branch with no shared history or a
+        // root commit.
+        if subject.kind != ExplainSubjectKind::Run
+            && git(vec!["rev-parse".into(), "--is-shallow-repository".into()]).await? == "true"
+        {
+            return Err(crate::agents::repository::shallow_clone());
+        }
         match subject.kind {
             ExplainSubjectKind::Commit => {
                 crate::git::validate_revision(&subject.reference)?;

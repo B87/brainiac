@@ -39,6 +39,10 @@ blocked: string | null,
  */
 fetch_first: boolean, 
 /**
+ * The repository is a shallow clone: Fetch full history completes it.
+ */
+fetch_history: boolean, 
+/**
  * Who wrote the pull request, when it is not the account's user: their
  * agent settings run with the user's token.
  */

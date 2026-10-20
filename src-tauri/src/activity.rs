@@ -154,6 +154,9 @@ pub struct ActivityTracker {
     /// Team-pulse inputs per Git directory, reused while the ref files and
     /// the patterns they were read for are unchanged.
     pulse_cache: Mutex<HashMap<String, RepoPulse>>,
+    /// Git directories whose new tags join the baseline silently while set:
+    /// Fetch full history brings a repository's old tags with its history.
+    quiet_tags: Mutex<HashSet<String>>,
 }
 
 impl ActivityTracker {
@@ -164,6 +167,17 @@ impl ActivityTracker {
             fingerprints: Mutex::new(HashMap::new()),
             last_notified: Mutex::new(HashMap::new()),
             pulse_cache: Mutex::new(HashMap::new()),
+            quiet_tags: Mutex::new(HashSet::new()),
+        }
+    }
+
+    /// While `quiet`, tags new to `store`'s baseline are not news.
+    pub fn set_quiet_tags(&self, store: &str, quiet: bool) {
+        let mut set = self.quiet_tags.lock().expect("quiet tags");
+        if quiet {
+            set.insert(store.to_string());
+        } else {
+            set.remove(store);
         }
     }
 
@@ -348,6 +362,7 @@ impl ActivityTracker {
             })
             .collect();
 
+        let quiet_tags = self.quiet_tags.lock().expect("quiet tags").contains(&store);
         let now = now_rfc3339();
         let mut events = Vec::new();
         let mut fork_base: Option<Option<String>> = None;
@@ -370,6 +385,7 @@ impl ActivityTracker {
             let kind = match (old, tip.is_tag) {
                 // A tag that moves is unusual and not news; just follow it.
                 (Some(_), true) => continue,
+                (None, true) if quiet_tags => continue,
                 (None, true) => ActivityKind::Tagged,
                 (None, false) => ActivityKind::Created,
                 (Some(old), false) => classify_move(git, root, old, &tip.target).await?,

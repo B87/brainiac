@@ -42,6 +42,10 @@ pub enum Scope {
     /// `origin`), with its configured refspecs minus any that would write
     /// outside remote-tracking refs and tags.
     Remote,
+    /// Fetch full history: as Fetch now, with `--unshallow`, so a shallow
+    /// clone gets the history it left out. Nothing runs when the repository
+    /// is complete.
+    FullHistory,
     /// Auto-fetch: these watched branch patterns from `origin` (else the only
     /// remote); failures back off from `interval`.
     Watched {
@@ -179,11 +183,17 @@ impl Fetcher {
 
         let interval = match &scope {
             Scope::Watched { interval, .. } => Some(*interval),
-            Scope::Remote => None,
+            Scope::Remote | Scope::FullHistory => None,
         };
-        let outcome = match self.jobs.acquire().await {
-            Ok(_permit) => self.run(git, checkout, scope, timeout).await,
-            Err(_) => Outcome::Failed(AppError::new(ErrorCode::Cancelled, "Fetch cancelled.")),
+        // Fetch full history can take many minutes; it is pressed by hand,
+        // at most one per Git directory, so it does not hold up the others.
+        let outcome = if matches!(scope, Scope::FullHistory) {
+            self.run(git, checkout, scope, timeout).await
+        } else {
+            match self.jobs.acquire().await {
+                Ok(_permit) => self.run(git, checkout, scope, timeout).await,
+                Err(_) => Outcome::Failed(AppError::new(ErrorCode::Cancelled, "Fetch cancelled.")),
+            }
         };
 
         let recorded = match &outcome {
@@ -229,11 +239,27 @@ impl Fetcher {
             Ok(t) => t,
             Err(e) => return Outcome::Failed(e),
         };
-        let refspecs = match &scope {
-            Scope::Remote => match git.safe_fetch_refspecs(root, &remote).await {
-                Ok(r) => r,
+        let unshallow = matches!(scope, Scope::FullHistory);
+        if unshallow {
+            match git.is_shallow(root).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    return Outcome::Fetched(Fetched {
+                        remote,
+                        fetched_at: None,
+                        moved: Vec::new(),
+                    })
+                }
                 Err(e) => return Outcome::Failed(e),
-            },
+            }
+        }
+        let refspecs = match &scope {
+            Scope::Remote | Scope::FullHistory => {
+                match git.safe_fetch_refspecs(root, &remote).await {
+                    Ok(r) => r,
+                    Err(e) => return Outcome::Failed(e),
+                }
+            }
             Scope::Watched { patterns, .. } => {
                 let missing = self.missing_for(&store);
                 auto_refspecs(&remote, patterns)
@@ -249,8 +275,33 @@ impl Fetcher {
                 moved: Vec::new(),
             });
         }
-        let skipped = match git.fetch(root, &remote, &refspecs, timeout).await {
+        let mut fetched = git
+            .fetch(root, &remote, &refspecs, unshallow, timeout)
+            .await;
+        // The branches a shallow clone follows can all be gone from the
+        // remote; the history is then fetched through the standard mapping.
+        let all_gone = |skipped: &Vec<String>| {
+            let gone: HashSet<String> = skipped.iter().cloned().collect();
+            refspecs
+                .iter()
+                .filter(|s| !s.starts_with('^'))
+                .all(|s| refspec_source_in(s, &gone))
+        };
+        if unshallow && matches!(&fetched, Ok(skipped) if all_gone(skipped)) {
+            let standard = vec![format!("+refs/heads/*:refs/remotes/{remote}/*")];
+            fetched = git.fetch(root, &remote, &standard, true, timeout).await;
+        }
+        let skipped = match fetched {
             Ok(skipped) => skipped,
+            // Completed meanwhile (a fetch from a terminal): Git refuses
+            // `--unshallow` on a complete repository, and nothing is left to do.
+            Err(_) if unshallow && matches!(git.is_shallow(root).await, Ok(false)) => {
+                return Outcome::Fetched(Fetched {
+                    remote,
+                    fetched_at: None,
+                    moved: Vec::new(),
+                })
+            }
             // Git itself found a lock held by another command.
             Err(e) if e.code == ErrorCode::Conflict => return Outcome::Busy(e),
             Err(e) => return Outcome::Failed(e),

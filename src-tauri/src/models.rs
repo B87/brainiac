@@ -24,6 +24,9 @@ pub enum ErrorCode {
     /// A server did not accept the credential: a wrong password, or a token
     /// revoked or expired. The next use reads or asks for it again.
     Unauthenticated,
+    /// The repository is a shallow clone, which a run or an explanation
+    /// cannot copy: Fetch full history completes it (SPEC.md, Fetching).
+    ShallowClone,
     Io,
     Db,
     DependencyUnavailable,
@@ -4815,6 +4818,8 @@ pub struct ExplainDialog {
     pub blocked: Option<String>,
     /// The pull request's head is not on this Mac: a fetch may bring it.
     pub fetch_first: bool,
+    /// The repository is a shallow clone: Fetch full history completes it.
+    pub fetch_history: bool,
     /// Who wrote the pull request, when it is not the account's user: their
     /// agent settings run with the user's token.
     pub head_author: Option<String>,

@@ -292,6 +292,14 @@ pub async fn fetch_repository(
 }
 
 #[tauri::command]
+pub async fn fetch_full_history(
+    repository_id: String,
+    service: State<'_, Service>,
+) -> AppResult<FetchResult> {
+    service.fetch_full_history(&repository_id).await
+}
+
+#[tauri::command]
 pub async fn get_workspace_activity(
     workspace_id: String,
     service: State<'_, Service>,
