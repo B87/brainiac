@@ -1,29 +1,30 @@
 ---
 name: software-design-philosophy
-description: Software design philosophy and vocabulary based on John Ousterhout's "A Philosophy of Software Design," centered on managing complexity. Use during code reviews, architecture/API design, module decomposition, refactoring, and error-handling design. Trigger when the user asks whether design is too complex, how to split modules, reduce coupling, improve interfaces, handle errors, name things well, or whether a design makes sense — even without using book terms. Also trigger on getLine/putLine APIs, split/join at call sites, UI-named storage methods (backspace, deleteSelection), APIs mirroring internal structures, deep vs shallow modules, information leakage, or feedback on structure, boundaries, and naming beyond bug fixes.
+description: Evaluate software designs to reduce complexity and make code easier to change. Use during code reviews, architecture and API design, module decomposition, refactoring, and error-handling design. Helps assess coupling, information hiding, interface depth, naming, duplicated knowledge, premature abstraction, and when to commit to a design choice. Apply when the user asks whether a design makes sense, how to split responsibilities, or how to simplify code without adding speculative flexibility.
 ---
 
 # Software Design Philosophy
 
-Distilled from John Ousterhout's *A Philosophy of Software Design*. Central thesis: **the
+Grounded in John Ousterhout's *A Philosophy of Software Design*, with complementary
+guidance on commitment timing from Lean software development, Real Options, and YAGNI.
+Dave Thomas and Andy Hunt's *The Pragmatic Programmer* adds guidance on changeability,
+duplicated knowledge, independence between concerns, and learning through implementation.
+Ousterhout's central thesis: **the
 core challenge of software design is managing complexity**, and complexity is created by
 the accumulation of many small decisions, not a single catastrophic one. That's why the
 right mindset is zero-tolerance — treat "minor" complexity in a name, an interface, or an
 error path as worth fixing, because it never stays minor once it compounds.
 
-Use this skill to bring vocabulary and a diagnostic lens to design conversations — naming
-symptoms precisely (shallow module, information leakage, pass-through method) is often
-more useful than a vague "this feels off." If a repo already has its own code-review or
-simplification tooling, this skill supplies the conceptual framing underneath it; it
-doesn't replace mechanical diff-checking.
+Name design symptoms precisely and explain their consequences. This skill supplies
+conceptual framing alongside repository review tooling; it does not replace mechanical
+checks.
 
 ## How to apply this
 
-1. **Diagnose before prescribing.** Read the code/design in question and ask which of the
-   three complexity symptoms (below) it produces. Naming the symptom is usually more
-   useful to the user than jumping straight to a fix.
-2. **Reach for the Red Flags table** (Section 14) as a fast checklist during code review —
-   it's the compressed version of everything below.
+1. **Diagnose before prescribing.** Read the code/design and identify which of the three
+   complexity symptoms (below) it produces before proposing a fix.
+2. **Use the Red Flags table** (Section 14) during review, including its knowledge-based
+   interpretation of DRY.
 3. **Explain the "why," not just the rule.** Ousterhout's ideas land better as reasoning
    ("this interface forces every caller to know about an implementation detail") than as
    a citation ("rule #4 says..."). Adapt the framing to the code in front of you rather
@@ -32,12 +33,12 @@ doesn't replace mechanical diff-checking.
    downward are usually right, but a smaller/uglier special-case solution is sometimes the
    pragmatic choice under real deadlines. Say so when it applies — the goal is better
    judgment, not rule-following.
-5. **Reach for a worked example when it'll land better than another abstract description.**
-   `references/examples.md` has concrete illustrations from the book — pull one in if the
-   user is going deeper, seems unconvinced, or asks for an example. Don't dump them by
-   default.
-6. **Match the example to the symptom** — read only the relevant section of
-   `references/examples.md`:
+   Apply *The Pragmatic Programmer*'s Easier to Change (ETC) lens: compare designs against
+   a concrete, plausible change and trace what each would require. Include today's
+   interface and maintenance costs; hypothetical flexibility alone is insufficient.
+5. **Match examples to symptoms.** When an example would clarify the reasoning, the user
+   asks to go deeper, or seems unconvinced, read the relevant section of
+   `references/examples.md`. Do not load or recite all examples by default:
 
    | If the conversation is about… | Pull… |
    | --- | --- |
@@ -46,6 +47,23 @@ doesn't replace mechanical diff-checking.
    | Interface too wide for what it does | Unix I/O vs Java streams |
    | Errors/cases forced on every caller | Unix unlink vs Windows delete; Java checked exceptions |
    | Hard internal choice exposed as config or caller duty | hash map resizing |
+
+6. **Check commitment timing for consequential choices.** Consider uncertainty, reversal
+   cost, and what further work could teach you. Make inexpensive, reversible choices to
+   keep progress moving. Defer costly commitments when useful evidence is forthcoming
+   and alternatives remain viable. When recommending deferral, identify what remains
+   open, how to learn, and the event or deadline that requires commitment, allowing time
+   for implementation and validation. Decide sooner when waiting blocks valuable work,
+   increases risk, or offers little additional information. Preserve options through
+   clear boundaries; justify additional abstraction by its current benefit. For uncertain
+   architectural choices, speculative flexibility, or expensive migrations, read
+   [Decision timing](references/decision-timing.md), including its examples and sources.
+
+For questions about DRY, independent concerns, or competing abstractions, read
+[Changeability](references/changeability.md). It explains how to distinguish duplicated
+knowledge from coincidental similarity and apply orthogonality without creating shallow
+wrappers. For prototypes and tracer bullets, use the learning techniques in
+[Decision timing](references/decision-timing.md#choosing-a-learning-technique).
 
 ---
 
@@ -72,9 +90,6 @@ stay simple if it's decomposed well.
 - **Obscurity** — important information isn't obvious: vague names, missing context,
   implicit conventions, unstated constraints.
 
-Because complexity accumulates from many small decisions rather than one big one, treat
-every instance — even ones that seem trivial in isolation — as worth calling out.
-
 ## 2. Strategic vs. tactical programming
 
 **Tactical programming** optimizes for "get this feature working now" and defers design
@@ -90,6 +105,10 @@ it's a clean abstraction.
 When reviewing code or a plan, it's fair to flag when something looks like the tactical
 shortcut (a special case bolted on, a TODO instead of a decision) versus a strategic
 investment.
+
+Deliberately deferring a costly commitment can also be strategic when it includes a
+learning action and a concrete trigger for deciding. An unexplained TODO does neither;
+see [Decision timing](references/decision-timing.md).
 
 ## 3. Deep modules — the most important idea here
 
@@ -108,9 +127,6 @@ implementation has to do more work internally, or rare cases require a more elab
 call. A simple interface is worth more than a simple implementation — and the common path
 should never have to pay for the existence of rare ones.
 
-*(For why "it works" isn't the same question as "it's well designed," the text-editor
-class study in `references/examples.md` is the sharpest illustration.)*
-
 ## 4. Information hiding and information leakage
 
 Each module should encapsulate a design decision — a data structure, an algorithm, a
@@ -128,8 +144,10 @@ To fix leakage: merge the modules that share the knowledge, or — if that's not
 concentrate the shared information behind one new, deep module that both can depend on
 instead of directly on each other.
 
-*(When a storage class takes UI types like `Cursor` or `Selection`, see the text-editor
-`Text` class example in `references/examples.md`.)*
+Check **orthogonality** as well: can unrelated concerns change independently? A display
+change should not require changing persistence policy. Assess actual dependencies and
+shared state, not class count; splitting a cohesive module into shallow wrappers can make
+change harder. See [Changeability](references/changeability.md#orthogonality).
 
 ## 5. General-purpose vs. special-purpose modules
 
@@ -140,6 +158,11 @@ When designing something new, ask: *what's the most general-purpose interface th
 satisfies what I need right now?* That's a question about the **interface**, not the
 implementation — the implementation should still only do what's actually needed today;
 don't over-build behind a general API just because the API is general.
+
+A general interface that simplifies today's callers is useful now. Extra extension
+points, configuration, or frameworks for hypothetical requirements need separate
+justification; generality alone is not a reason to add them (see YAGNI in
+[Decision timing](references/decision-timing.md)).
 
 Keep general-purpose and special-purpose code cleanly separated rather than mixed in the
 same module — mixing them is its own red flag (see Section 14).
@@ -154,8 +177,6 @@ on interface shape.)*
 A system's layers should each contribute a genuinely different abstraction. If two
 adjacent layers look similar, something is probably wrong with how responsibility is
 split between them.
-
-Two concrete tells:
 
 - **Pass-through method** (red flag) — a method that does almost nothing but forward its
   arguments to another method with a near-identical signature. It signals the layers
@@ -182,18 +203,11 @@ Two common anti-patterns that do the opposite:
 Both look like they save implementation effort, but they multiply complexity across every
 place that has to deal with the consequence.
 
-*(The line-oriented vs character-oriented `Text` API in `references/examples.md` is the
-canonical "pull complexity downward" illustration for API design. Java's checked
-exceptions and hash-map resizing there are good contrasting examples too — one pushes
-complexity up, the other pulls it down.)*
-
 ## 8. Define errors out of existence
 
 Exception and error handling is one of the largest sources of complexity in most systems,
 so reducing how many error paths exist — not just handling them more gracefully — is one
 of the highest-leverage design moves available.
-
-Ways to do this:
 
 - **Redefine the semantics** so the error condition simply can't occur. E.g., a
   `delete(key)`-type operation that succeeds whether or not the key existed, because its
@@ -209,9 +223,6 @@ This isn't about swallowing errors that matter — a dropped network packet stil
 real handling. It's about noticing which "errors" are only errors because of an
 arbitrary interface decision, and removing that decision.
 
-*(Unix `unlink` vs. Windows file deletion, in `references/examples.md`, is a good real-world
-contrast of two systems making opposite calls on the same operation.)*
-
 ## 9. Design it twice
 
 For any design decision worth deliberating over, sketch at least two genuinely different
@@ -219,6 +230,10 @@ approaches before picking one — even when the first idea already looks good. C
 on interface simplicity, generality, performance, and how hard each is to implement. The
 point isn't ceremony; it's that the second option, even a bad one, usually reveals
 something about the first that wasn't visible when it had no competition.
+
+Comparing alternatives need not force an immediate commitment. If a consequential
+uncertainty remains, use a focused experiment or a reversible implementation to learn
+before choosing; account for the cost of carrying multiple options.
 
 ## 10. The philosophy of comments
 
@@ -234,8 +249,6 @@ anything true about the code that isn't visible just by reading it.
 **Comment repeats code** (red flag): a comment that's just an English transliteration of
 the line beneath it adds no information and is dead weight the moment the code changes.
 
-Three layers worth distinguishing:
-
 - **Interface comments** — what a piece of code does and why, with no implementation
   detail leaking in.
 - **Implementation comments** — how and why it's built this particular way internally.
@@ -244,10 +257,8 @@ Three layers worth distinguishing:
 
 ## 11. The art of naming
 
-A good name is precise (unambiguous), consistent (always means the same thing across the
-codebase), and informative enough to act as documentation on its own.
-
-Two red flags:
+A good name is unambiguous, means the same thing across the codebase, and is informative
+enough to serve as documentation.
 
 - **Vague name** — generic placeholders like `data`, `result`, `tmp`, `info` that carry no
   real information about what the thing is.
@@ -279,8 +290,7 @@ looks syntactically.
 
 ## 14. Red flags quick reference
 
-Use this as a fast checklist during review — each row names a smell precisely enough to
-say out loud:
+Use this checklist to name design smells during review:
 
 | Signal | Meaning |
 | --- | --- |
@@ -290,7 +300,7 @@ say out loud:
 | Overexposure | The common API path forces callers to know about rarely-used features |
 | Pass-Through Method | A method just forwards its args to another method with a similar signature |
 | Pass-Through Variable | A parameter threaded through layers that never use it |
-| Repetition | Non-trivial logic duplicated across locations |
+| Duplicated Knowledge (DRY) | The same rule or decision has representations that must change together; similar-looking code alone is insufficient evidence |
 | Special-General Mixture | General-purpose and special-purpose code aren't cleanly separated |
 | Conjoined Methods | You can't understand one method without also understanding another |
 | Comment Repeats Code | The comment is just an English translation of the code beneath it |
@@ -314,6 +324,10 @@ say out loud:
 - Push complexity down into the module, not out onto every caller.
 - Define errors (and other special cases) out of existence where the semantics allow it.
 - Design it twice before committing to the first idea.
+- Compare designs against plausible changes; keep unrelated concerns independent and
+  consolidate duplicated knowledge without coupling independent policies.
+- For consequential choices, assess when to commit as well as what to choose: prefer
+  reversible progress, and tie deliberate deferral to evidence and a commitment trigger.
 - Comments exist to say what the code can't — never to restate it.
 - Names should be precise, consistent, and informative; software should be designed for
   ease of reading, not ease of writing.
