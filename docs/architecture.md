@@ -726,6 +726,10 @@ Proposed support target is macOS 13+ on Apple Silicon, validated against the sel
 
 Sign and notarize builds before distribution to other users. Verify packaged builds on a clean supported Mac. Releases are tag-driven GitHub releases built by CI (`docs/RELEASING.md`), and the app updates itself from the latest release through the Tauri updater: artifacts are signed with a minisign key held outside the repository, the public key is embedded in `tauri.conf.json`, and the app checks silently after launch plus on demand from "Check for Updates…". Apple Developer signing and notarization are optional in the workflow and switched on by adding the secrets. [Tauri macOS signing](https://v2.tauri.app/distribute/sign/macos/), [Tauri updater](https://v2.tauri.app/plugin/updater/)
 
+## Window drag areas
+
+The macOS window uses an overlay title bar. Each view marks its header background and empty spacers with `data-tauri-drag-region`; interactive controls are left unmarked. The sidebar and its collapsed rail retain their own title strips, and per-view `pl-lead` padding keeps controls clear of the native traffic lights. Runs and run details mark their header backgrounds, routine page headers remain sticky while their content scrolls. WebKit checks hit-test exposed targets in the top 48 pixels across the main screens and both sidebar layouts; they verify that a marker is actually reachable rather than only present on a hidden element. Native window movement itself is provided by Tauri.
+
 ## Quality and verification
 
 These are initial targets to measure, not framework guarantees. Use a release build on a reference Apple Silicon Mac with 16 GiB RAM; record its exact model and OS in benchmark results.

@@ -11,6 +11,7 @@ into the release's section.
 
 ## [Unreleased]
 
+- The window can be dragged from the headers of Runs, run details, and routine pages, including while a routine is scrolled.
 - New run and Explain offer **Fetch full history** when a repository is a shallow clone, instead of only naming the Git command to run.
 
 ## [0.7.2] - 2026-10-18
