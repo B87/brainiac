@@ -259,8 +259,13 @@ function RunList({
   ];
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex min-h-12 shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b px-4 py-2 pl-lead">
-        <h1 className="m-0 text-[15px] font-semibold">Runs</h1>
+      <div
+        data-tauri-drag-region
+        className="flex min-h-12 shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b px-4 py-2 pl-lead"
+      >
+        <h1 data-tauri-drag-region className="m-0 text-[15px] font-semibold">
+          Runs
+        </h1>
         {(runs?.length ?? 0) > 0 && (
           <fieldset className="seg seg-sm m-0 border-0" aria-label="Show">
             {showOptions.map(([value, label]) => (
@@ -324,7 +329,7 @@ function RunList({
             <option value="routine">Routines</option>
           </select>
         )}
-        <span className="flex-1" />
+        <div data-tauri-drag-region className="h-8 min-w-4 flex-1" />
         <button
           type="button"
           className="btn btn-sm"
@@ -693,8 +698,14 @@ function RunView({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <header className="flex shrink-0 flex-col border-b bg-header px-5 pt-3 pl-lead">
-        <div className="flex flex-wrap items-start gap-x-6 gap-y-2 pb-2">
+      <header
+        data-tauri-drag-region
+        className="flex shrink-0 flex-col border-b bg-header px-5 pt-3 pl-lead"
+      >
+        <div
+          data-tauri-drag-region
+          className="flex flex-wrap items-start gap-x-6 gap-y-2 pb-2"
+        >
           <div className="flex min-w-0 flex-[999_1_380px] flex-col gap-1">
             <nav
               aria-label="Breadcrumb"

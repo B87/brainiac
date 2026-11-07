@@ -101,7 +101,10 @@ export default function RoutinePage({
   if (!item || !routine) {
     return (
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-        <header className="flex flex-col gap-1 border-b bg-header px-5 py-3">
+        <header
+          data-tauri-drag-region
+          className="sticky top-0 z-10 flex shrink-0 flex-col gap-1 border-b bg-header px-5 py-3 pl-lead"
+        >
           {crumb}
           <h1 className="m-0 text-[17px] font-semibold">New routine</h1>
         </header>
@@ -126,7 +129,10 @@ export default function RoutinePage({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-      <header className="flex flex-col gap-1.5 border-b bg-header px-5 py-3">
+      <header
+        data-tauri-drag-region
+        className="sticky top-0 z-10 flex shrink-0 flex-col gap-1.5 border-b bg-header px-5 py-3 pl-lead"
+      >
         {crumb}
         <div className="flex flex-wrap items-center gap-2">
           <h1 className="m-0 min-w-0 flex-1 truncate text-[17px] font-semibold">

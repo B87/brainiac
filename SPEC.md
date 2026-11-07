@@ -106,6 +106,8 @@ Use a quiet macOS layout: system font, light/dark appearance, native menu bar, s
 
 The sidebar switches scope and shares the window's title bar area with the traffic lights. The center shows either a dashboard (All repositories or one workspace) or a selected repository's viewer. A dashboard is a table of repositories with a side panel for the selected row: branch, upstream, last commit, a peek at its changed files, and Open repository, Open in editor, and Reveal in Finder. Brainiac works in half and three-quarter windows (about 760 and 960 points wide beside an editor): each pane adapts to its own width, never the window's, and what folds stays one click or one key away.
 
+Each main screen keeps an exposed title area that moves the window when dragged, with the sidebar expanded or collapsed. Header buttons and fields remain interactive. A routine's header stays visible when its page scrolls.
+
 - A dashboard's header keeps its breadcrumb whole and gives up its totals first (shorter words, then none below 800 points), then the labels of Fetch all, Add, and Refresh all. A workspace's title and totals share one line below 1000 points.
 - The repositories table drops columns as it narrows: Checked and Commit below 1100 points, the path under the name below 860 (it stays in the row's tooltip), Workspace below 760, and Upstream below 680, whose ahead and behind then follow the branch. The state chips shorten their labels below 760 points and keep only a dot and the count below 640.
 - A patch's toolbar moves Unified/Split, Wrap, and Ignore whitespace into one **View** menu below 760 points, and shows Split only from 900 points of pane; narrower, a split choice shows unified until there is room.

@@ -935,7 +935,13 @@ export default function App() {
               >
                 {banners}
                 {!snapshot ? (
-                  <div className="p-6 text-muted">Loading…</div>
+                  <>
+                    <div
+                      data-tauri-drag-region
+                      className="h-12 shrink-0 border-b bg-header"
+                    />
+                    <div className="p-6 text-muted">Loading…</div>
+                  </>
                 ) : view.kind === "terminal" ? (
                   terminal.terminalView
                 ) : view.kind === "today" ? (
